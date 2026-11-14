@@ -57,21 +57,7 @@
 #   lanes-edit.sh [--no-sweep]         append-line        "<text>"            # LANDING/LANDED lines
 #                                        (attribution: $LANES_LANE, else the
 #                                         "lane <name>" the text itself names)
-#   lanes-edit.sh                      append-line        --landing-expired <holder> --pr <n> --repo <owner/repo>
-#                                        --word '<quote>' --word-where '<where>' --word-utc <UTC>
-#                                        (feature 007, F13: on mode=primary only, with LANES_LANE
-#                                         and LANES_SESSION, the release of the holder's LANDING
-#                                         past Rule 6's 30 minutes, on Brett's word; T425)
 #   lanes-edit.sh [--no-sweep]         add-row            "<full | row |>"
-#   lanes-edit.sh [--no-sweep]         start-record       <lane> <STARTED|RESUMED>
-#                                        { --add-row "<full | row |>"
-#                                        | [--append-cell "<anchor>" "<text to append>" "<why>"]...
-#                                          --state "<STATE> · <one line>" }
-#                                        --log lane:<lane> → "<payload>"
-#                                        (feature 007: lane-start's row, cell, state and log writes
-#                                         as ONE write, one commit and push; <lane> is the row's own
-#                                         spelling, and LANES_LANE=<lane> and
-#                                         LANES_SESSION=<transcript uuid> are required)
 #   lanes-edit.sh                      commit             "<message>"         # commit a hand edit; with
 #                                         nothing staged, publish the stranded
 #                                         register and handoff commits (#194)
@@ -217,11 +203,7 @@
 #   `lanes/log/<new>.md` and gains a `RENAMED` line; the handoff the row names
 #   is renamed to the same date with `lane-<new>` and gains a Rule 3 stamp,
 #   with the row's handoff column following; and `lanes/aliases.tsv` gains
-#   `<old>	<new>	<UTC>`. ON PRIMARY (feature 007, T422; Q13(a)) the handoff's
-#   move and stamp are a second act, a git commit in the lane's checkout made
-#   after the register has committed the other three (the arm says how). A
-#   rerun finds the register already renamed, writes no register line, and
-#   makes only that act (`rl_rerun`; Y:3449–3451); one that fails is owed.
+#   `<old>	<new>	<UTC>`.
 #
 #   THE ALIAS TABLE IS WHAT MAKES THE OLD NAME KEEP WORKING (clause (e)).
 #   `canon_lane` — Amendment 15's resolver, which every `<lane>` argument and
@@ -488,22 +470,7 @@
 #      primary, with nothing printed (R22: never "no row"; 69 on primary);
 #      `handoff-path` and `write-handoff`, a register that could not be read
 #      (R22: never 8), and `write-handoff`'s target under a repository that
-#      git could not read (R22: never "no repository"); and, feature 007's
-#      pending record (F10), each with nothing sent: a host with neither
-#      `sha256sum` nor `shasum` to make a write's digest (`wr_begin`), and a
-#      `register-pending/` directory that cannot be made, or a claim in it
-#      that cannot be written whole (`wr_claim_take`, ERR-42); and its primary
-#      branch's (T415), each with nothing sent by it: an attempt's directory
-#      under `register-writes/`, or a file the parent writes there, that
-#      cannot be made, and a `call` line the pending record cannot take
-#      before its commit call (`pw_attempt_dir`, `pw_commit`); and feature
-#      007's `rename-lane` on primary (T422), in a rerun's handoff act whose
-#      `<from>` is gone and whose `<to>` is not named for its lane: a read of
-#      origin's history of the register, for the row's handoff cell when the
-#      rename was rendered, that failed or was not made (`rl_cell_at_rename`;
-#      LANES_NO_GIT=1 is one), with nothing moved or stamped (lane
-#      openRepoTools-3, #165 6827722997, the 7(d) point; Amendment 7(d)).
-#      The act's code is said in one WARNING, never the run's (`pw_rl_move`)
+#      git could not read (R22: never "no repository")
 #   2  refusal: bad arguments, the object is held, an unknown alias, —
 #      Amendment 15 — a register holding
 #      two rows whose lane names differ only by case, which every writer and
@@ -586,146 +553,6 @@
 #      generation other than the base's; and the client's checks on
 #      `LANES_ACT` and `LANES_EXPECT` (`act_checks`) that the primary branch
 #      makes before its first snapshot.
-#      AND FEATURE 007'S PENDING RECORD (F10; the `wr_` functions, which the
-#      primary branch calls), each before any commit call, with nothing sent:
-#      a `LANES_WRITE_ID` that is neither a lower-case UUID nor `new`, or a
-#      `LANES_WRITE_GENERATION` that is not one; a `LANES_WRITE_ID` with no
-#      generation that no pending record here holds; a pending record of
-#      another register generation, at any age, until `LANES_WRITE_ID=new`; a
-#      pending record that cannot be read as one; and three cases the design
-#      leaves open, refused rather than guessed (`wr_id_plan`, `wr_id_settle`).
-#      AND FEATURE 007'S INTERNAL FLAG (T413; F22, Y:5078), with nothing
-#      sent, three faults under a flag that is honoured: an attempt directory
-#      whose `snapshot` gives no `clock=` in whole seconds, written with no
-#      leading zero, to date the attempt by, or whose scratch tree has no
-#      `lanes/LANES.md` (both `reg_scratch_fault`), and a pathspec that
-#      differs from HEAD in the attempt's scratch tree before the verb has
-#      edited it, an internal error and never a capture (`reg_scratch_dirty`).
-#      A value that is not honoured is never a 2: it is ignored.
-#      AND FEATURE 007'S SEAM (T414; Y:5060, Y:5097; `cp_seam`), in an
-#      attempt's child under the flag, each an internal error refused before
-#      `ready`, so that reach sends nothing: a staged path outside the write's
-#      pathspecs (with `LOG_RENAMED_FROM`) or outside the register's render
-#      set; a status other than A, M or D; a second register write in one
-#      run, after the first's `committed`; no `seam.fifo`, or one that cannot
-#      be opened on fd 5, or no real stdout and stderr on fds 3 and 4; a file
-#      of the attempt's directory that cannot be written, or a `ready` there
-#      already; and `commit`'s publish act, which T420 keeps out of the
-#      attempt loop (ERR-06; R16). Likewise: a staged set that git cannot
-#      list, or lists in a form the seam cannot read, or lists with no path
-#      the seam could read (REV-W9a M1); a blob id that is not 40 hex
-#      digits; and a case-only rename, or `rename-lane`'s move of the log
-#      (`LOG_RENAMED_TO`, T422), that is not one D line and one A line.
-#      AND FEATURE 007'S `claim` AND `release` (T421; FR-031; Y:3349–3354,
-#      Y:5146–5152), in an attempt's child under the flag, each an internal
-#      error with nothing sent: CLAIM-LOST's rescan or its line reached there
-#      (`claim_lost_unreachable`), which only 1b's re-run after a refused push
-#      reaches; and either verb's steps after its write, its GitHub comment
-#      among them, reached with no `committed <seq>` from the seam
-#      (`reg_tail_committed`).
-#      AND FEATURE 007'S PRIMARY BRANCH (T415; FR-018; Y:2459, Y:5014,
-#      Y:5603–5605; the contract's §3.2 and §3.3), the parent's, each with
-#      nothing written: a write that names no lane, or whose lane's own
-#      checkout is not there to read (`pw_checkout`; D12: no clone); an unset,
-#      empty or out-of-class LANES_LANE (`pw_lane_given`); LANES_NO_GIT=1,
-#      since on primary the write is its commit (`pw_no_git_refuse`); a hand
-#      edit of a rendered file pending in that checkout (`pw_hand_edit_refuse`);
-#      a listing of that checkout's pending edits that git cannot make, named
-#      with git's code (`pw_hand_edit_refuse`, by `cs_pending_of --rc`; lane
-#      openRepoTools-3, #165 6813027223, batch g Q114); no author identity
-#      there (`pw_author_read`); each of these seven but for
-#      `request-handoff`, whose refusal there is 64 (below, `pw_pre_rc`), though
-#      a lane name out of class keeps files mode's 2 for it too; an act whose
-#      generation is
-#      not the snapshot's, or whose base is past it (`pw_act_at_snapshot`); a
-#      snapshot's refusal (LR007 `generation` or `another-write`, a refused
-#      configuration), relayed; the commit's refusal, LR005 with its token and
-#      any `held-by=` line, LR007, LR009 or LR010, relayed after the deciding
-#      attempt's output; and a 64 from either call, which this file never
-#      sends: an internal error. The verb's own refusal in an attempt's child,
-#      before `ready`, is the run's end with that child's code and output.
-#      AND FEATURE 007'S `rename-lane` ON PRIMARY (T422; Q13(a); Y:5092;
-#      R18), each with nothing sent: in an attempt's child, before the seam,
-#      a handoff the row names that is not under `handoffs/` in the lane's
-#      checkout, has a cache, bytecode or environment part in its path, or
-#      has a pending change there, or that checkout's listing failed, named
-#      with git's code (`rl_move_refuse_checks`, by `cs_pending_of --rc`;
-#      lane openRepoTools-3, #165 6814531692, batch h Q124), a
-#      lane checkout that is not there (`rl_handoff_repo`), and a write that
-#      returned with no `committed <seq>` (`rl_after_committed`); and in the
-#      handoff act its parent runs after COMMIT (`rl_move_act`), with the
-#      rename already in the register: a move file it cannot read or trust,
-#      S3's refusals in the lane's checkout, and a handoff there that is a
-#      link, not a regular file, untracked, or whose new path is taken, or,
-#      in a rerun's act whose `<from>` is gone, a `<to>` there that is not a
-#      regular file, a link to one included (lane openRepoTools-3, #165
-#      6814837872, Q127). The act's code is said in one WARNING, never the
-#      run's (`pw_rl_move`), a rerun's act included: the move is then owed,
-#      or, where `<to>` is there, the WARNING says so and puts the act's
-#      refusal first (lane openRepoTools-3, #165 6827722997, Q127 Q-b).
-#      And a rerun's child whose snapshot gives no seq, or one where
-#      the row's handoff cell has a cache, bytecode or environment part in
-#      either path (`rl_rerun`).
-#      AND FEATURE 007'S D10 ON PRIMARY (T420; FR-026; R16; Y:5820), outside
-#      the attempt loop: `commit` over a hand edit of the register (its carry
-#      form) or of any other file the register renders in its checkout, or
-#      that checkout's listing failed, named with git's code (by
-#      `cs_pending_of --rc`; lane openRepoTools-3, #165 6814531692, batch h
-#      Q123), refused before S3 with nothing written
-#      (`commit_hand_edit_refuse`; spec:171–173); and
-#      `commit`'s publish act over a queued commit that changes a path under
-#      the register's directory other than `lanes/repos.tsv` and
-#      `lanes/log/README.md` (Brett's two-file allow-list), a divergence; one
-#      that writes either of those two beside any other path; one that is
-#      neither a handoff write nor a write of those two alone; or a path with
-#      a `.`, `..` or `.git` component, refused before any push, and the
-#      commits kept on HEAD (`cp_publish_fence`); and,
-#      at `commit_publish`'s push, the branch-wide push: a commit it would
-#      send that changes a path outside `handoffs/`, or, other than the
-#      write's own commit, one under it that is not an added or modified
-#      regular file, or is bytecode or a tool cache; in the write's own
-#      commit, bytecode or a tool cache other than as a deletion; a path with
-#      a `.`, `..` or `.git` component; a merge or
-#      root commit among them, a range it cannot read, or no origin branch,
-#      refused before any push is made, the write's commit kept
-#      on HEAD (`cp_primary_push_check`).
-#      AND FEATURE 007'S `start-record` (T427), each with nothing written: its
-#      usage; every refusal of the writes it makes as one (`add-row`'s,
-#      `append-session-id`'s of the text it appends, `set-row-state`'s and
-#      `log`'s); a row or a `--log` object that names another lane than its
-#      first word; a `LANES_LANE` that is not that word, byte for byte; a
-#      first word that is not the row's own spelling, byte for byte, an
-#      alias's new name included; an `--add-row` for a name `canon_lane`
-#      answers any lane for, a row under any case or a former name, naming
-#      it; under `LANES_ROUTE_WRITES=1` those two are refused before anything
-#      is cloned where W's own copy answers a lane and its fetch confirms
-#      it; every refusal the arm makes of an `--add-row` call's own words
-#      before it reads anything (its second word, its options and their
-#      counts, its `--log`, its row) is refused before anything is cloned
-#      too, in the arm's own words and in its order; and a
-#      `LANES_SESSION` that is not a transcript uuid. A cell append whose
-#      anchor does not hold is no refusal: it is left out and said, and the
-#      write goes on.
-#      AND FEATURE 007'S APPEND-LINE CLASSIFIER (T424): on primary only,
-#      `append-line` refuses with 2, before the lock and with nothing written,
-#      a text that the one classifier, `lanes-index register classify`, reads
-#      as one of four: a hand-typed `LANDING EXPIRED`, a take that names no
-#      repository, a take with no readable UTC, or a `LANDING` whose lane
-#      cannot be read. That classifier's own 2, a refused configuration, is
-#      relayed as 2.
-#      AND FEATURE 007'S RELEASE OF A STALE LANDING (T425; F13; Y:5114,
-#      Y:5140), `append-line --landing-expired`, with nothing written: before
-#      the lock, any mode but primary, a newline in any argument, the form's
-#      usage, Brett's word, its place or its UTC missing, a `--word-utc` that
-#      is not a UTC, and `LANES_LANE` or `LANES_SESSION` unset or malformed;
-#      on each attempt's snapshot, no open LANDING of the holder for that PR
-#      and repository, or one with no readable UTC or 30 minutes old or less,
-#      then managed-owner vocabulary in the line it composes (Y:5115); four
-#      internal errors: Rule 6's primary program not set in a primary
-#      process, the snapshot's register unreadable to awk, an open LANDING
-#      with no repository to copy, and a seam that returns with no register
-#      seq; and the commit's LR005 `expired-none`, `expired-closed` or
-#      `expired-young`, relayed, and told apart by its token alone.
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -735,28 +562,10 @@
 #      contract because its four callers sit in front of a launch as those do. IT WAS IN NO TABLE AT ALL until this round (F-X16), while
 #      being the code the contract gives every one of those reads.
 #      Amendment 23's `lane-checkout` and `refresh-workspace` spend it too.
-#      So does feature 007's `act-begin` (T410). And feature 007's primary
-#      branch (T415) refuses `request-handoff` with it, never 2, with nothing
-#      sent, for each refusal the primary branch adds before its claim: its
-#      missing lane, by the arm's own usage line (`pw_checkout`); and, by
-#      `pw_pre_rc`, its lane's missing checkout (`pw_checkout`), an unset,
-#      empty or out-of-class LANES_LANE (`pw_lane_given`), LANES_NO_GIT=1
-#      (`pw_no_git_refuse`), a pending hand edit of a rendered file in that
-#      checkout (`pw_hand_edit_refuse`), a listing of that checkout's pending
-#      edits that git cannot make (`pw_hand_edit_refuse`, batch g Q114), and
-#      no author identity there
-#      (`pw_author_read`) (Q35; lane openRepoTools-3, #165 6807881675, batch c
-#      Q67); and, in an attempt's child, its write returned to the arm without
-#      `committed`, before any of its tail (`rh_after_committed`, T423; batch c
-#      Q75). Its callers read its 2 as "still bound". A lane name out of class
-#      keeps files mode's 2, the act's checks keep Y:5643's 2, and the
-#      register's refusals keep the contract's 2 (register-cli.md:334).
+#      So does feature 007's `act-begin` (T410).
 #
 #  66  EX_NOINPUT — AMENDMENT 16(e)'s ALIAS TABLE COULD NOT BE READ, and
-#      `canon-lane` spends it, and so do `handoff-path`, `lane-checkout`
-#      and, under `LANES_ROUTE_WRITES=1`, the router of every writer,
-#      `start-record`'s included, each relaying `canon_lane`'s 66
-#      (lane 3, #165 6808141050, batch c Q70). `lanes/aliases.tsv` is what
+#      `canon-lane` is the one verb that spends it. `lanes/aliases.tsv` is what
 #      makes a renamed lane's OLD name resolve, so a table nobody can read is
 #      not an estate with no renames: a former name would read as a lane nobody
 #      has, and `lane-start` would append a SECOND row for one that has been
@@ -780,12 +589,8 @@
 #      exists, before any routing, clone, fetch or lock, and exit 69 on two
 #      answers: 78, `lanes-index`'s refusal of `mode=primary` while the
 #      renderer's git half is not installed, whose text they repeat (agreement
-#      test 14); and `primary` itself for a form that writes nothing, a dry
-#      run, which has no primary path yet (`pw_checkout`); every other
-#      write runs the primary branch (T415), but `commit`, which T420
-#      exempts from it and which never exits 69 on `primary` (2 over a hand
-#      edit of any rendered file, its carry form included, and its publish
-#      act outside the loop, R16). Never files mode instead.
+#      test 14); and `primary` itself, for which this file has no SQL write
+#      path yet (phase 2's T415 replaces that arm). Never files mode instead.
 #      Every other failure of the question — a configuration `lanes-index`
 #      refuses, a `lanes-index` too old to know `mode`, none to run, a crash,
 #      no answer within 2 s — runs the verb in files mode with one warning,
@@ -820,52 +625,7 @@
 #      AND `canon-lane --walk` (feature 007, T411; FR-035) exits 69 where its
 #      walk's read of the register, or an alias hop, answers 69, and prints no
 #      walk; off primary that failed read is 1 (see 1).
-#      AND A REGISTER READ THAT COULD NOT BE MADE (feature 007, T401; FR-036):
-#      `register-text` and `register-grep`, the two verbs the
-#      lifecycle scripts' own reads move behind, spend it in every mode: the
-#      file could not be read, `git grep` on `origin/<branch>` ended other than
-#      0 or 1 (a ref that does not resolve, a repository or a config of it
-#      that git cannot read, such as a bad `grep.threads`: the register's
-#      failure, never the caller's 2), or no workspace repository was found;
-#      on primary, the read door could not give a path's image or the render
-#      set's paths (lane 5's `reg_image` and `reg_paths`: a missing
-#      `lanes/LANES.md`, two logs that differ only by case, a failed second
-#      read), or for `register-grep` the head moved in each of three runs,
-#      which is never answered from the files or git instead.
-#      `register-grep` asks first whether its ERE compiles where nothing but
-#      the pattern can fail: a malformed one is the caller's 2, before any of
-#      these (lane 3's (97)). Nothing is printed on stdout, never a
-#      partial answer. It is not 1, which is `register-grep`'s "no match" and
-#      which `lane-worktrees` reads as an answer, and it is never 8: a read that
-#      could not be made is not "none" (R22). So `lane-worktrees` deletes
-#      nothing on it (Y:4926).
-#      AND FEATURE 007'S PRIMARY BRANCH (T415; Y:2603, Y:2612–2614; the
-#      contract's §2.7), each with nothing written: a snapshot that fails, or
-#      that answers in a form this file cannot read (not `format=1`, a key
-#      twice or missing, not `switch=primary` with `marker=present`), and the
-#      commit's definitive refusal under `psql`'s exit 3 (LR002, LR003, LR004
-#      after its retry, any other SQLSTATE), its `ERROR:` line relayed. A
-#      connect failure at the commit is never 69: it is in doubt. Each prints
-#      the write's rerun: by its id and generation where it has one, or the
-#      command as given, saying that nothing was sent, where its first
-#      snapshot minted none (open point 38).
-#      AND ON PRIMARY, `request-handoff`'S WAIT WHOSE LAST POLL COULD NOT READ
-#      THE REGISTER (T423; lane openRepoTools-3, #165 6770688147, T423 Q6):
-#      here the request IS written, in the register at the seq it names, and
-#      whether the lane is still bound is not known, so the wait does not end
-#      2's "still bound". Nothing on stdout. Files mode keeps its 2.
-#      AND FEATURE 007'S APPEND-LINE CLASSIFIER (T424): on primary only,
-#      `append-line` also exits 69, before the lock and with nothing written,
-#      where the one classifier, `lanes-index register classify`, gives no
-#      answer this file can read, so that it cannot say whether the text is
-#      one of the four it refuses (see 2): no `lanes-index` to run or no
-#      place to put the question, an exit other than 0 and 2 (the 64 of a
-#      `lanes-index` that has no `classify`, a crash, a signal, its 2 s
-#      timer), or an exit 0 without exactly one line of five tab-separated
-#      fields (contract §2.7, "No other code"; §2.8). It never writes the text
-#      unclassified.
-#   3  PUSHED, NOT CONFIRMED: <sha> (Amendment 23 S4, its one cause in files
-#      mode). The write
+#   3  PUSHED, NOT CONFIRMED: <sha> (Amendment 23 S4, its one cause). The write
 #      committed and pushed — or its push timed out, and a hung push often
 #      lands — and the read-back could not confirm the commit on origin: the
 #      fetch failed or timed out, or origin does not hold it. Never reported
@@ -876,34 +636,6 @@
 #      by content either way: published, there is nothing to do; not, every
 #      write refuses until the publish act sends it or an archive (S6.3)
 #      takes it.
-#      ON PRIMARY (FEATURE 007; D8; FR-028; T417), A REGISTER WRITE IN DOUBT:
-#      may not be written; run the printed `LANES_WRITE_ID` rerun, which writes it once or finds it.
-#      "cannot confirm whether register write <id> committed; nothing else was
-#      written": a commit call of the write may have committed (its pending
-#      record holds a `call` line, this run's or one a record taken over
-#      carried in), and F3's lookup, `lanes-index journal --write-id <id> …`,
-#      could not settle it: no try within its window took the head row's lock,
-#      the lookup was refused as too early (LR011), or its answer settles
-#      nothing (any other code, a crash). The message gives the lookup and the
-#      rerun, `LANES_WRITE_ID=<id> LANES_WRITE_GENERATION=<generation>
-#      LANES_LANE=<lane> LANES_SESSION=<the value the digest took>
-#      lanes-edit.sh <the same arguments>` (ERR-38), and the pending record is
-#      kept, so the rerun settles the write and never writes it twice.
-#      ON PRIMARY, AN IDENTICAL WRITE'S OWNER STILL LIVE AT D7's DEADLINE
-#      (Y:5216–5218; T417): this run sent nothing, that write's outcome is
-#      not known, and its record and claims are left as they are. With a
-#      pending record: "an identical write is still running in pid <p>
-#      (write <id>, started <utc>)", with its lookup where the record holds a
-#      `call` line, and its printed rerun (ERR-38). With none yet (open point
-#      42): "an identical write is being started in pid <p> on
-#      <host>/<container> (claimed <utc>)", with the effect check,
-#      `history <lane> --since <utc>` or `register-row <lane>`.
-#      And where that owner cannot be tested here (DEC-25: the claim names no
-#      pid or cannot be read, its pid lives with no start time, or it is from
-#      another host or container, Y:5220), "an identical write holds the claim
-#      <state>/register-pending/<d>.take.<k>, whose owner cannot be tested
-#      here", with the pid, host and container a claim from another host or
-#      container names, and the UTC after which a run may take it.
 #   4  the mutex could not be taken within 60s — or, Amendment 23 S1, a lane
 #      checkout's creation lock within the clone's budget and a minute
 #   5  an edit moved more than one line and was refused — or, Amendment 15, a
@@ -943,9 +675,7 @@
 #      commit is named OFF HEAD, with `reflog -5`. Every later write from that
 #      checkout refuses under S3 until the lane publishes or archives it
 #   7  ANOTHER ACT GOT THERE FIRST, and this one wrote nothing. `claim`:
-#      CLAIM-LOST, another lane's claim landed on main first; never on
-#      primary (feature 007, T421; FR-031), where the later claim is the
-#      register's refusal, 2, with nothing written (Y:3349–3354).
+#      CLAIM-LOST, another lane's claim landed on main first.
 #      `set-lane-state`: the lifecycle fence did not match — the state, the
 #      generation or the operation id moved under this process — so a stale
 #      finalizer cannot overwrite a newer owner (openRepoTools#91).
@@ -977,9 +707,6 @@
 #      `--force` over a dead lane's hold). NEVER coerced to 7: that code
 #      means a RIVAL's claim landed first, and this is the same lane the
 #      takeover was granted over, alive again rather than beaten to main.
-#      Never on primary (feature 007, T421; FR-031): 1b's re-run, which makes
-#      this check, is never made there, and each attempt runs `claim`'s own
-#      checks on its snapshot instead (Y:5080).
 #  10  THE RECORD IS THERE AND COULD NOT BE READ, which is the other half of 8
 #      and never 8 itself (Copilot round 6 on openRepoTools#97). `lane-state`
 #      spends it for a lifecycle snapshot that EXISTS at the control root and
@@ -1003,38 +730,6 @@
 #      control root, or a directory above it, that this process cannot search
 #      — or a link on the way it cannot follow — leaves stat as silent as a
 #      name that is gone, and the message says so rather than "is there".
-#  75  EX_TEMPFAIL — FEATURE 007'S SEAM (T414; Y:5005–5006, Y:5013): an
-#      attempt's child, under LANES_REGISTER_SCRATCH, stopped at the seam and
-#      ran nothing after it, and its buffered output was not replayed. Its
-#      parent sent `abandon`, or its parent is gone, or the seam's cap passed
-#      with no answer (twice D + 30 s, 120 s at D7's 30 s; the variable
-#      LANES_REGISTER_SEAM_CAP_S sets it for tests), or the parent's line
-#      was neither `committed <seq>` nor `abandon` (a `committed` whose seq
-#      is not the attempt's snapshot `n=` plus 1 is neither, as is a line
-#      longer than 28 bytes), or `seam.out` could not be written as `tail`.
-#      `seam.out` then reads `none`, unless it could not be written at all,
-#      and but for `abandon` one line on the real stderr says "attempt <k> of
-#      write <id> stopped waiting at the seam (<why>); nothing after the seam
-#      ran". Of an attempt's processes, only the child at the seam exits 75
-#      this way; the parent's own 75s are below (review REV-W9a, N2). The
-#      parent, the primary write path (T415), acts on `seam.out`, never on
-#      the child's code (Y:5007): `none` sends the run to a replay, and that
-#      code is never passed on. So does a run that takes over a record whose
-#      `tail` is `sent` (T418; Y:5342): its `call=` line's directory's
-#      `seam.out` saying exactly `none` sends it to a replay, once.
-#      AND FEATURE 007'S PRIMARY BRANCH (T415; D7; Y:2632–2641), the parent's:
-#      "register busy: <k> attempts in <D> s, each beaten by another write;
-#      nothing was written; a retry in seconds is safe", where every attempt
-#      lost its turn by D7's deadline, 30 s from the first attempt's start
-#      (LANES_REGISTER_DEADLINE_S sets it for tests), with the write's rerun.
-#      Likewise an attempt whose child is still short of `ready` twice D +
-#      30 s after its start (LANES_REGISTER_READY_CAP_S sets it for tests),
-#      or 1 s before a kept child's seam cap where that comes first: every
-#      kept child gets `abandon`, the child and every process under it get
-#      TERM, then KILL 1 s later where TERM did not end them, its output is
-#      not shown, and nothing was sent by that attempt.
-#      Where a commit call of the write may have committed, that 75 comes
-#      only after F3's lookup answered "absent" with the lock held (T417).
 #
 # --no-sweep is accepted and changes nothing. It named the default of the
 #   capture that came in on 2026-09-09 after 0d84d34/a1f2438 swept another
@@ -1136,15 +831,6 @@
 #                      log at (default 15). The test seam, and only that
 #   LANES_IN_CONTAINER 1|0                  force the container probe (test seam)
 #   LANES_NO_GIT=1     edit only, no commit/push (used by the test harness)
-#   LANES_REGISTER_SCRATCH  INTERNAL — feature 007's attempt directory, set
-#                      only by this file's primary write path on the child it
-#                      runs for one attempt (T413). Copied, then unset, at file
-#                      scope, so nothing this process starts inherits it. It is
-#                      honoured only for a directory under
-#                      <state>/register-writes/ that this uid owns with mode
-#                      0700 and whose `parent.pid` names this process's parent;
-#                      any other value is ignored, and the run goes on as any
-#                      write. Never set it by hand.
 #   THE LOCKS (Amendment 23 S2, design decision 14). <LANES_DIR>/.lanes-edit.lock
 #                      is the CHECKOUT's — that checkout's writers. Under
 #                      LANES_ROUTE_WRITES=1, <W>-lanes/.lane-state.lock is the
@@ -1188,8 +874,7 @@
 #   LANES_INDEX=off    no `lanes-index sync` after a write, and `--index` reads
 #                      the sources (Amendment 14). It never turns a read ON:
 #                      only a typed `--index` does. It never skips a writer's
-#                      `lanes-index mode` question, nor, on primary, the
-#                      renderer's fork after a write commits (feature 007)
+#                      `lanes-index mode` question (feature 007)
 #
 # Dependencies: bash, git, coreutils. No sed/awk substitution on the payload —
 # every edit is computed with bash string operations, so `/`, `&`, `\` and `|`
@@ -1607,40 +1292,6 @@ lanes_binding_value_ok() {   # <value>
   return 0
 }
 
-# THE STATE DIRECTORY OF FEATURE 007'S WRITE PATH, `lanes-index`'s own (007 T412;
-# Y:5171 "`<state>` is `lanes-index`'s state directory"; contract §7, Q5). Its
-# `state_dir()` (`lanes-index:173-175`) is `$XDG_STATE_HOME`, else
-# `$HOME/.local/state`, joined to `openRepoTools` as Python's `os.path.join`
-# joins: no second slash where the base ends in one, the password entry's home
-# where `HOME` is unset, and the root where it is set and empty. This is the
-# same answer in bash, so the pending records, their claims, the done marks and
-# the attempt directories are where `lanes-index status` looks, with no Python
-# start for each write. A hygiene test holds the two to one answer; lane
-# openRepoTools-1 adds its `lanes-index` side (Q5). The citations are keyed
-# with the rest of F10, after `utc_now`.
-#
-# IT IS DEFINED HERE, ABOVE THE RESOLVER, because the resolver checks an
-# attempt's `<state>/register-writes/` at file scope (T413), and a function
-# defined below its first call is a call to nothing (review m3).
-wr_state_dir() {
-  local wsd_base wsd_home
-  wsd_base="${XDG_STATE_HOME:-}"
-  if [ -z "$wsd_base" ]; then
-    if [ -n "${HOME:-}" ]; then wsd_home="$HOME"
-    elif [ -n "${HOME+set}" ]; then wsd_home=/
-    else wsd_home=~
-    fi
-    case "$wsd_home" in
-      */) wsd_base="${wsd_home}.local/state" ;;
-      *) wsd_base="$wsd_home/.local/state" ;;
-    esac
-  fi
-  case "$wsd_base" in
-    */) printf '%sopenRepoTools\n' "$wsd_base" ;;
-    *) printf '%s/openRepoTools\n' "$wsd_base" ;;
-  esac
-}
-
 # The register is no longer the whole of its own worktree: since Amendment 5
 # it is one file, `lanes/LANES.md`, inside the workspace repository. So every
 # git call needs the checkout ROOT and a pathspec RELATIVE to it. Amendment
@@ -1687,18 +1338,8 @@ LANES_ROUTED="${LANES__CHECKOUT_LANE:-}"   # the lane, in the re-run process onl
 # carried (`reg_mode_ask`; lane 5's answer 11, #165 6746507353). Empty: not
 # asked. Consumers test `= primary` only. Never exported: `LANES__MODE` is the
 # carry. `REG_ASK` is set by the write guard's arm at the dispatcher.
-# `REG_PW` is T415's marker that this process entered the register's attempt
-# loop: 0 here, whatever the environment says, and never read from it. It is
-# never exported either: a `REG_PW` that came in exported is unset first,
-# since an assignment alone keeps the export, and the arm's 1 would then
-# reach the attempt's child (review REV415c, N4). It is set to 1 only by the
-# primary arm, immediately before `pw_run`.
-# The guard after that arm tests it and nothing else (lane openRepoTools-3,
-# #165 6774499606, A1).
 REG_MODE=""
 REG_ASK=0
-unset REG_PW
-REG_PW=0
 if [ -n "${LANES__MODE:-}" ] &&
    { [ "${LANES__PID:-}" = "$$" ] || [ "${LANES__REPLAY_PID:-}" = "$$" ]; }; then
   case "$LANES__MODE" in index|primary|files) REG_MODE="$LANES__MODE" ;; esac
@@ -1743,195 +1384,6 @@ if [ -n "${LANES__REPLAY_PID:-}" ] && [ "${LANES__REPLAY_PID:-}" = "$$" ]; then
   CP_CLAIM_READS_FILE="${LANES__CLAIM_READS_FILE:-}"
 fi
 unset LANES__REPLAY_PID LANES__ATTEMPT LANES__CLAIM_FROM LANES__CLAIM_DEAD LANES__CLAIM_READS LANES__CLAIM_URL LANES__CARRY_COPIES LANES__CLAIM_READS_FILE
-# FEATURE 007, T413 — THE INTERNAL FLAG, `LANES_REGISTER_SCRATCH=<attempt dir>`
-# (the design's F22, Y:5032–5044; lane openRepoTools-4's block, T413). The
-# primary write path (T415) runs each attempt's verb as a CHILD of this file:
-# the original command line, on the scratch tree `lanes-index register
-# snapshot --tree` built at the snapshot's seq, with this variable naming the
-# attempt's directory, `<state>/register-writes/<d>/<run>/<k>/` (contract
-# §3.3; `contracts/pending-record.md` §1). It is taken HERE, at file scope and
-# above the resolver below, because it chooses what the resolver resolves.
-#
-# COPIED, THEN UNSET, AT ONCE (Y:5034), so no `git`, `gh` or `tmux` this
-# process starts inherits it, and a stray export finds no live directory.
-# HONOURED ONLY for a directory under `<state>/register-writes/`
-# (`wr_state_dir`, above), owned by this uid, with mode 0700 in its permission
-# bits, whose `parent.pid` names this process's parent, `$PPID`. That file is
-# one line, `<pid>` TAB `<start token>`, the parent's `$$` and its
-# `pid_start_of` token, and field 1 is read (lane openRepoTools-3's ruling,
-# #165 6755005268, item 2).
-#
-# ANY OTHER VALUE IS NOT HONOURED, AND IS IGNORED: it is unset like any other,
-# and the run goes on as any write and asks the mode (Y:5034; YT:6869–6873;
-# the same ruling, item 1). A stray export is then nothing, and never blocks a
-# prompt through `guard`'s 2. Exit 2, nothing sent, is kept for a fault under
-# a flag that IS honoured: a `snapshot` with no whole-seconds `clock=`, or one
-# with a leading zero, here (item 3; REV-W9c N1), a scratch tree with no
-# `lanes/LANES.md`, here too (REV-W9c N2), and a dirty scratch tree
-# (`reg_scratch_dirty`, Y:5078).
-#
-# FIELD 2 IS NOT COMPARED with `pid_start_of "$PPID"`, which the ruling leaves
-# optional. Lane 5's `pid_start_of` (T502) is defined far below this file
-# scope, so here it would always answer 127, which T412's `wr_claim_live`
-# counts as live ("untested"): the comparison could never refuse a reused pid.
-#
-# Under the flag (`REG_SCRATCH`, the directory as `pwd -P` spells it, and
-# empty without the flag):
-#   * the resolver's inputs are the scratch tree's: `LANES_REPO=<dir>/tree`,
-#     with `LANES_DIR` and `LANES_FILE` unset, so the resolver derives both
-#     (Y:5039) and `LOCK` is the scratch tree's (Y:5044);
-#   * `REG_MODE` is `primary` (Y:5121; R45), set by assignment here, so the
-#     writers' question returns on a set answer and starts no `lanes-index`,
-#     and T425's and T426's one line reads it in the child;
-#   * ONE CLOCK (D13, Y:528–534): the snapshot's `clock=`, the database's time
-#     in whole epoch seconds, read here once from `<dir>/snapshot`, is what
-#     `now_epoch` and `utc_now` answer, so the lines the verb composes and the
-#     durations it decides by (`older_than_minutes`, `older_than_threshold`)
-#     are on one clock. An honoured directory with no such clock is 2. The host's
-#     clock stays where it decides no register state: `age_of` in a listing,
-#     the listing's partition, `fetch-age`, `request-handoff`'s wait, and the
-#     pending record's own stamps (`wr_host_utc`). Where an age is printed
-#     beside a decision, `claim --force`'s refusal, every line of `who_object`,
-#     which `claim`'s refusal prints in the child, and `who_landing`'s LANDING
-#     line, `age_of` is passed `now_epoch`, so its words agree with the decision
-#     and one printed block reads one clock (ruling item 5; lane
-#     openRepoTools-3's ruling, #165 6767463594, delta question 5);
-#   * a line `migrate-state-cells` writes is dated in whole seconds, as
-#     `log_lines`' primary CHECK reads one (Y:1217–1219): a minute-only time
-#     it copies from the register, an entry's own lead or its row's `started`
-#     cell, gets `:00` at its site below (lane openRepoTools-3's ruling, #165
-#     6834224496, question 2);
-#   * the routing re-exec, S3 (`checkout_sync`) and `log_sync`'s fetch are
-#     skipped, `gh_reads` is cached in the run's directory, and
-#     `sidecar_lock_dir` answers the path the parent wrote into `<dir>/lock`,
-#     each at its own site below.
-REG_SCRATCH=""; REG_SCRATCH_CLOCK=""; REG_SCRATCH_UTC=""; REG_SCRATCH_RUN=""
-# A REPLAY (T418; Y:5316–5326): 1 where the honoured directory holds the
-# `replay` mark its parent writes beside the committing call's `preimages/`.
-# The child then answers `lane_state_preimage` from those and reads none
-# afresh, and `guard_type` types into no pane. 0 otherwise, whatever the
-# environment says.
-REG_REPLAY=0
-# T504's store variable (`sql`, `files` or `mirror`; empty reads as files),
-# defined here so that `set -u` holds before T504 lands (lane openRepoTools-3,
-# #165 6774499606, T423 (2): whichever of T414 and T504 lands first defines
-# it). In a child the seam's `committed` step is the only place that sets it,
-# to `sql`.
-REG_STORE=""
-# A FAULT UNDER AN HONOURED FLAG. `die` is defined below the resolver, so it is
-# said here in `die`'s own form: one line on stderr, the code under
-# `LANES_DEBUG`, exit 2.
-reg_scratch_fault() {   # <the attempt directory> <what is wrong with it>
-  printf 'lanes-edit: %s\n' "refusing to run as the child of the attempt whose directory is $(printf '%q' "$1"): its ${2}. LANES_REGISTER_SCRATCH named it, and it is this attempt's own directory, so this is an internal error of the write path, never a person's to mend (T413; D13). Nothing was sent." >&2
-  [ -n "${LANES_DEBUG:-}" ] && printf 'lanes-edit: (exit %s)\n' 2 >&2
-  exit 2
-}
-# The low nine permission bits of a directory are 0700: GNU `stat -c %a`, else
-# BSD `stat -f %Lp`. A set-group-id bit, which a directory made under one keeps
-# through `chmod 700`, is not a permission and does not refuse it.
-reg_scratch_mode_700() {   # <dir>
-  local rsm_m
-  rsm_m="$(stat -c %a -- "$1" 2>/dev/null || stat -f %Lp -- "$1" 2>/dev/null || :)"
-  case "$rsm_m" in 700|[0-7]700) return 0 ;; esac
-  return 1
-}
-reg_scratch_take() {
-  local rst_v="" rst_d="" rst_b="" rst_l="" rst_p="" rst_c="" rst_u="" rst_r="" rst_t
-  rst_t=$'\t'
-  rst_v="${LANES_REGISTER_SCRATCH-}"
-  unset LANES_REGISTER_SCRATCH
-  [ -n "$rst_v" ] || return 0
-  # Y:5034's four conditions, and a directory that is there at all. A value
-  # that fails one is not the flag: it is already unset, and nothing is said.
-  rst_d="$(CDPATH='' cd -P -- "$rst_v" 2>/dev/null && pwd -P)" || return 0
-  rst_b="$(CDPATH='' cd -P -- "$(wr_state_dir)/register-writes" 2>/dev/null && pwd -P)" || return 0
-  rst_b="${rst_b%/}"
-  case "$rst_d" in
-    "$rst_b"/?*) : ;;
-    *) return 0 ;;
-  esac
-  [ -O "$rst_d" ] || return 0
-  reg_scratch_mode_700 "$rst_d" || return 0
-  if [ -f "$rst_d/parent.pid" ] && [ -r "$rst_d/parent.pid" ]; then
-    { IFS= read -r rst_l || :; } 2>/dev/null < "$rst_d/parent.pid"
-  fi
-  rst_p="${rst_l%%"$rst_t"*}"
-  if [ -z "$rst_p" ] || [ "$rst_p" != "$PPID" ]; then
-    return 0
-  fi
-  # HONOURED FROM HERE ON. THE CLOCK: the first `clock=` of the snapshot's
-  # stdout, saved verbatim by the parent (contract §3.2: "clock=<epoch s>  the
-  # database clock, in whole seconds"), as this file's UTC stamp. None, or one
-  # that is not whole seconds, is a fault, 2 (ruling item 3). So is one with a
-  # leading zero, though `lanes-index` prints none: `$(( ))` reads `0100` as
-  # octal, 64, where GNU `date -d @0100` writes 100 seconds, so `now_epoch` and
-  # `utc_now` would be two clocks, and a leading-zero clock with an 8 or a 9
-  # in it aborts the arithmetic with "value too great for base" (REV-W9c N1).
-  # A lone `0` is whole seconds, and both read it alike.
-  rst_l=""
-  if [ -f "$rst_d/snapshot" ] && [ -r "$rst_d/snapshot" ]; then
-    while IFS= read -r rst_l || [ -n "$rst_l" ]; do
-      case "$rst_l" in clock=*) rst_c="${rst_l#clock=}"; break ;; esac
-      rst_l=""
-    done 2>/dev/null < "$rst_d/snapshot"
-  fi
-  case "$rst_c" in
-    ''|*[!0123456789]*) reg_scratch_fault "$rst_d" "snapshot gives no clock= in whole seconds (it reads $(printf '%q' "$rst_c")), and that clock is the one this attempt's lines and durations are read on" ;;
-    0?*) reg_scratch_fault "$rst_d" "snapshot's clock=${rst_c} has a leading zero, which this shell's arithmetic reads as octal and GNU date as decimal, so this attempt's lines and durations would not be read on one clock" ;;
-  esac
-  [ "${#rst_c}" -le 18 ] ||
-    reg_scratch_fault "$rst_d" "snapshot's clock=${rst_c} is too long to be a time"
-  rst_u="$(date -u -d "@$rst_c" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
-           date -u -j -r "$rst_c" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || :)"
-  case "$rst_u" in
-    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
-    *) reg_scratch_fault "$rst_d" "snapshot's clock=${rst_c} is a time this host's date cannot write as a UTC" ;;
-  esac
-  # THE SCRATCH TREE'S REGISTER. `LANES_REPO` is `<dir>/tree` below, so the
-  # resolver's `LANES_FILE` is `<dir>/tree/lanes/LANES.md`, which `register
-  # snapshot --tree` writes from SQL before the parent starts this child
-  # (contract §3.2). Without it the workspace guard would answer 1, "registry
-  # not found", with a person's words ("re-run it … or pull that checkout")
-  # about a `workspace.yaml` that has no part in it. Under a flag that is
-  # honoured that is a fault of the write path, 2, nothing sent (ruling items
-  # 1 and 7; REV-W9c N2).
-  [ -f "$rst_d/tree/lanes/LANES.md" ] ||
-    reg_scratch_fault "$rst_d" "tree has no lanes/LANES.md, the register this verb edits, which lanes-index register snapshot --tree writes there before the child is started"
-  # THE RUN'S DIRECTORY, `<d>/<run>/`, which every attempt of this run shares:
-  # where `gh_reads` is cached, only where it too is under `register-writes/`,
-  # this uid's and 0700. Otherwise nothing is cached there.
-  rst_r="${rst_d%/*}"
-  case "$rst_r" in
-    "$rst_b"/?*)
-      if [ -d "$rst_r" ] && [ ! -L "$rst_r" ] && [ -O "$rst_r" ] && reg_scratch_mode_700 "$rst_r"; then
-        REG_SCRATCH_RUN="$rst_r"
-      fi ;;
-  esac
-  REG_SCRATCH="$rst_d"; REG_SCRATCH_CLOCK="$rst_c"; REG_SCRATCH_UTC="$rst_u"
-  [ ! -f "$rst_d/replay" ] || REG_REPLAY=1
-  REG_MODE=primary
-  LANES_REPO="$rst_d/tree"
-  unset LANES_DIR LANES_FILE
-  return 0
-}
-reg_scratch_take
-# FEATURE 007, T422 — `rename-lane`'s HANDOFF ACT ON PRIMARY (Q13(a); R18).
-# After COMMIT a primary run's parent runs this file again, OUTSIDE the flag,
-# in the lane's checkout `<c>`, with `LANES__RL_MOVE` naming the `rl-move`
-# file its child wrote and `LANES__RL_MOVE_PID` its own pid
-# (`pw_rl_move`). HONOURED ONLY where that pid is `$PPID`, so a process this
-# one starts never takes it, and never under the flag. They stay exported:
-# S4's replay `exec` keeps this pid and its parent, so the replay is the act
-# again. Honoured, the mode is the parent's answer, `primary`, by assignment,
-# and the dispatcher asks none (`REG_ASK`); any other value is unset.
-RL_MOVE=""
-if [ -z "$REG_SCRATCH" ] && [ -n "${LANES__RL_MOVE:-}" ] && [ -n "${LANES__RL_MOVE_PID:-}" ] &&
-   [ "$LANES__RL_MOVE_PID" = "$PPID" ]; then
-  RL_MOVE="$LANES__RL_MOVE"
-  REG_MODE=primary
-else
-  unset LANES__RL_MOVE LANES__RL_MOVE_PID
-fi
 # THE ROUTING IS OPT-IN UNTIL SLICE 1B (the review of opensoft/openRepoTools#282,
 # MUST 2). Before slice 1b a lane checkout was only as fresh as its own last
 # write, and the old push loop rebased only after a rejected push, so a
@@ -2243,22 +1695,7 @@ release_lock() {
 # WITHOUT THE OPT-IN it is the checkout's own lock, `$LOCK`, as it was before
 # Amendment 23: the sidecar verbs keep their `acquire_lock`, and the follow-up
 # takes `$LOCK` where its caller does not hold it already.
-#
-# UNDER FEATURE 007's INTERNAL FLAG (T413; F-B1, R19) `$LOCK` is the scratch
-# tree's, which serialises nothing on this host, so the tail's sidecar acts
-# take the lock the parent names in the attempt directory's `lock` file: the
-# first line, an absolute path, the workstation's sidecar lock as the parent's
-# own `sidecar_lock_dir` answered it. With no such line there is no lock to
-# take, and the answer is 1, as with no W.
 sidecar_lock_dir() {
-  if [ -n "$REG_SCRATCH" ]; then
-    sld_l=""
-    if [ -f "$REG_SCRATCH/lock" ] && [ -r "$REG_SCRATCH/lock" ]; then
-      { IFS= read -r sld_l || :; } 2>/dev/null < "$REG_SCRATCH/lock"
-    fi
-    case "$sld_l" in /?*) printf '%s\n' "$sld_l"; return 0 ;; esac
-    return 1
-  fi
   if [ "$LANES_ROUTE_ON" != 1 ]; then printf '%s\n' "$LOCK"; return 0; fi
   [ -n "$LANES_WS_REAL" ] || return 1
   printf '%s\n' "$LANES_WS_REAL-lanes/.lane-state.lock"
@@ -2315,28 +1752,6 @@ RL_ACTIVE=0; RL_SNAP=""; RL_HEAD_BEFORE=""
 RL_LOG_OLD=""; RL_LOG_NEW=""; RL_H_OLD=""; RL_H_NEW=""
 RL_ALIAS=""; RL_ALIAS_EXISTED=0; RL_REG=""
 RL_PATHS_FOR_UNDO=()
-# FEATURE 007, T422 — THE HANDOFF ACT'S UNDO (`rl_move_act`), armed from its
-# move to its commit, the rename's own rule in small: a commit that exists is
-# not undone; otherwise the handoff is put back where and as it was, from the
-# copy taken before the move, and both paths are reset in the index. Assigned
-# here, before the trap, so nothing inherited arms it.
-RL_MA_ARMED=0; RL_MA_HEAD=""; RL_MA_FROM=""; RL_MA_TO=""; RL_MA_PATHS=()
-rl_move_undo() {
-  [ "$RL_MA_ARMED" = 1 ] || return 0
-  RL_MA_ARMED=0
-  rmu_head="$(git -C "$LANES_REPO" rev-parse -q --verify HEAD 2>/dev/null || :)"
-  if [ -n "$RL_MA_HEAD" ] && [ -n "$rmu_head" ] && [ "$rmu_head" != "$RL_MA_HEAD" ]; then
-    note "the handoff's move and stamp are COMMITTED as $rmu_head and are not rolled back; what follows is about getting that commit to origin."
-    return 0
-  fi
-  if [ -n "$RL_MA_FROM" ] && [ "$RL_MA_FROM" != "$RL_MA_TO" ] && [ -f "$RL_MA_TO" ]; then rm -f -- "$RL_MA_TO"; fi
-  if [ -n "$RL_SNAP" ] && [ -f "$RL_SNAP/handoff" ]; then cat -- "$RL_SNAP/handoff" > "${RL_MA_FROM:-$RL_MA_TO}"; fi
-  if [ "$NO_GIT" != 1 ] && [ "${#RL_MA_PATHS[@]}" -gt 0 ]; then
-    git -C "$LANES_REPO" reset -q HEAD -- "${RL_MA_PATHS[@]}" 2>/dev/null || :
-  fi
-  note "the handoff's move and stamp were rolled back: ${RL_MA_FROM:-$RL_MA_TO} is as it was, and nothing was committed."
-  return 0
-}
 rename_undo() {
   [ "$RL_ACTIVE" = 1 ] || return 0
   RL_ACTIVE=0
@@ -2400,9 +1815,8 @@ rename_undo() {
 # remove is set above, before the trap: `RL_*`, `LANES_IDX_DIR`,
 # `LANES_WT_IDX_DIR`, `LOCK` and `LOCK_HELD`. `rmq_dir`, the mode question's
 # answer files (T409), is assigned only in `reg_mode_query`, so it starts empty
-# here too. `alc_dir`, the classifier's question files (T424), is assigned
-# only in `append_line_primary_refusals`, so it starts empty here too.
-TMPD=""; pbh_tmp=""; rl_htmp=""; SE_CACHE_FILE=""; rmq_dir=""; alc_dir=""
+# here too.
+TMPD=""; pbh_tmp=""; rl_htmp=""; SE_CACHE_FILE=""; rmq_dir=""
 # `write-handoff`'s ONE LINE ON STDOUT, `<file><TAB><sha256>`, printed by
 # `cleanup` once this process has written the handoff — committed or not, so a
 # refusal after the bytes (S3's for `--prepend` and `--whole`, a push not
@@ -2420,16 +1834,10 @@ create_heartbeat_stop() {
 }
 cleanup() {   # [exit]: `exit` on the EXIT trap's path only, never INT's or TERM's
   cln_end=""
-  # FEATURE 007: each child still live at its seam gets `abandon` first, so a
-  # Ctrl-C stops it at once (`pw_abandon_live`; review REV-W9a, N1). Tested
-  # by name, since `cleanup` also runs for a process that died before it was
-  # defined.
-  if declare -F pw_abandon_live >/dev/null; then pw_abandon_live; fi
   if [ -n "${HANDOFF_OUT:-}" ]; then printf '%s\n' "$HANDOFF_OUT"; HANDOFF_OUT=""; fi
   [ -z "${pbh_tmp:-}" ] || rm -f -- "$pbh_tmp"
   [ -z "${rl_htmp:-}" ] || rm -f -- "$rl_htmp"   # rename-lane's stamp before its replace (#158)
   rename_undo
-  rl_move_undo                                     # feature 007, T422: the handoff act's
   sidecar_release                                  # Amendment 23: released before the
   create_heartbeat_stop                            # checkout lock, the reverse of its order
   [ -z "$CREATE_LOCK" ] || mutex_release "$CREATE_LOCK"
@@ -2464,11 +1872,6 @@ cleanup() {   # [exit]: `exit` on the EXIT trap's path only, never INT's or TERM
   # (T409): `reg_mode_query` empties `rmq_dir` once it has removed them itself,
   # so this removes only the directory this run's `mktemp` made, by its name.
   [ -n "${rmq_dir:-}" ] && [ -d "${rmq_dir:-}" ] && [ ! -L "${rmq_dir:-}" ] && rm -rf -- "$rmq_dir"
-  # THE CLASSIFIER'S QUESTION FILES, where a signal stopped the call (T424):
-  # `append_line_primary_refusals` empties `alc_dir` once it has removed them
-  # itself, so this removes only the directory this run's `mktemp` made, by
-  # its name.
-  [ -n "${alc_dir:-}" ] && [ -d "${alc_dir:-}" ] && [ ! -L "${alc_dir:-}" ] && rm -rf -- "$alc_dir"
   # `claim`'s whole reads (706) cross a re-run's `exec`, which runs no EXIT
   # trap, and go when the last run of the claim ends, however it ends.
   [ -z "${CP_CLAIM_READS_FILE:-}" ] || rm -f -- "$CP_CLAIM_READS_FILE"
@@ -2495,7 +1898,7 @@ cleanup() {   # [exit]: `exit` on the EXIT trap's path only, never INT's or TERM
 cleanup_for_exec() {
   [ -z "${pbh_tmp:-}" ] || rm -f -- "$pbh_tmp"
   [ -z "${rl_htmp:-}" ] || rm -f -- "$rl_htmp"
-  pbh_tmp=""; rl_htmp=""; RL_ACTIVE=0; RL_MA_ARMED=0; HANDOFF_OUT=""
+  pbh_tmp=""; rl_htmp=""; RL_ACTIVE=0; HANDOFF_OUT=""
   sidecar_release
   create_heartbeat_stop
   [ -z "$CREATE_LOCK" ] || mutex_release "$CREATE_LOCK"
@@ -3098,488 +2501,6 @@ delete_lines() {   # <line numbers, one per line, any order>
   note "$dl_n row(s) removed from $LANES_FILE"
 }
 
-# FEATURE 007, T424 — `append-line`'s FOUR REFUSALS ON PRIMARY, DECIDED BY THE
-# ONE CLASSIFIER (design S6, Y:3396–3405; Y:5115–5116; lane 3's ruling, #165
-# 6747761107; contract §3.5, R04). `append-line` calls this only where
-# `REG_MODE` is `primary`, T409's one answer (in an attempt's child, T413's),
-# beside its newline and managed-vocabulary refusals and before the lock, so a
-# refusal leaves the checkout as the command found it. Files mode and index
-# mode never call it, and start no `lanes-index` for it.
-#
-# The text goes, as the one line `append_text_line` would write, to
-# `lanes-index register classify` on stdin, found by `lanes_index_bin`, and
-# one line comes back: <kind> TAB <slot_role> TAB <repo_key> TAB <utc_ts> TAB
-# <lane>, `-` for none. This file reads those fields and classifies nothing
-# itself: a bash copy would be the second classifier Y:6247–6249 warns of. It
-# refuses with 2, nothing written:
-#   - a `<kind>` of `LANDING EXPIRED`: on primary only `append-line
-#     --landing-expired` writes that kind, copying the holder's `LANDING` for
-#     F13's check, so one typed by hand is refused and the form is named
-#     (Y:5115);
-#   - a take, `<slot_role>` `take`, whose `<repo_key>` is `-`: it would look
-#     like a hold to readers and order nothing (Y:3396–3400);
-#   - a take whose `<utc_ts>` is `-`: it could never be stale, so no
-#     `LANDING EXPIRED` could release it (Y:5116, Y:3401–3405);
-#   - a `LANDING` whose `<lane>` is `-`: it would hold `main` with nothing able
-#     to close it (lane 3's ruling, #165 6747761107).
-# A close, and a line of no kind, are free text here, as (B) leaves them
-# (Y:3399–3400).
-#
-# THE CLASSIFIER FAILING IS NEVER A PASS. Its own 2, a refused configuration,
-# is relayed as 2. Anything else that is not one answer this file can read
-# exits 69, nothing written (`append_line_classify_failed`): no `lanes-index`
-# to run, or no place to put the question; an exit other than 0 and 2 (64,
-# which a `lanes-index` with no `classify` gives, a crash, a signal, its
-# timer's 124 or 137); or an exit 0 without exactly one LF-ended line of five
-# non-empty tab-separated fields of printable ASCII, whose `<slot_role>` is
-# `take`, `close` or `-` and whose `<utc_ts>` is `-` or whole seconds
-# (contract §2.7, "No other code … as 69 for a failed read"; §2.8). Its stdout
-# and stderr go to files, as the mode question's do, so a stand-in that leaves
-# a child behind holds no pipe open here; a signal that stops the call leaves
-# their directory to `cleanup`, which removes it while `alc_dir` holds it. Its
-# timer is the mode question's, `timeout -k 1 2` where `timeout` is installed,
-# and the call runs unbounded where it is not, as that one does (lane 3's
-# ruling, #165 6754806910; contract §2.4's `mode` row).
-append_line_primary_refusals() {   # <text>
-  alc_why=""; alc_rc=0; alc_out=""; alc_odd=0; alc_said=""; alc_dir=""; alc_timer=bare
-  alc_bin="$(lanes_index_bin)"
-  if [ -z "$alc_bin" ]; then
-    alc_why="could not be run: there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH"
-  else
-    alc_dir="$(mktemp -d "${TMPDIR:-/tmp}/lanes-edit-classify.XXXXXX" 2>/dev/null || printf '')"
-    if [ -z "$alc_dir" ]; then
-      alc_why="could not be asked: no temporary directory could be made under ${TMPDIR:-/tmp} to hold its answer"
-    elif ! printf '%s\n' "$1" >"$alc_dir/in" 2>/dev/null; then
-      alc_why="could not be asked: the text could not be written to $alc_dir/in"
-    else
-      # IN A SUBSHELL THAT ENDS IN `exit`, ITS OWN STDERR DROPPED (lane 3's
-      # ruling, #165 6755027994): a call that a signal ends, the timer's KILL
-      # or another, is waited for in there, so bash's job notice ("Killed")
-      # goes nowhere and this shell reads the plain 137. The `exit` is what
-      # makes bash fork: a lone command in `( … )`, with or without a `;`, is
-      # exec'd in place by bash 5, and the notice comes back. The call's own
-      # stderr keeps its file.
-      if command -v timeout >/dev/null 2>&1; then
-        alc_timer=timed
-        ( timeout -k 1 2 "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err"; exit "$?" ) 2>/dev/null || alc_rc=$?
-      else
-        ( "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err"; exit "$?" ) 2>/dev/null || alc_rc=$?
-      fi
-      # WHAT IT SAID, AS ONE LINE, as the mode question reads it.
-      alc_said="$(head -c 1000 -- "$alc_dir/err" 2>/dev/null | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
-      while [ "${alc_said% }" != "$alc_said" ]; do alc_said="${alc_said% }"; done
-      # Every byte a tab, a line feed or printable ASCII, counted before the
-      # answer is read, since bash drops a NUL from it; and read only where
-      # every byte is one of those, so that bash never meets a NUL here and
-      # prints no "ignored null byte" warning before the 69 below.
-      alc_odd="$(LC_ALL=C tr -d '\t\n -~' <"$alc_dir/out" 2>/dev/null | wc -c | tr -d ' ')"
-      if [ "$alc_odd" = 0 ]; then
-        alc_out="$(cat -- "$alc_dir/out" 2>/dev/null; printf .)"; alc_out="${alc_out%.}"
-      fi
-    fi
-    if [ -n "$alc_dir" ]; then
-      rm -f -- "$alc_dir/in" "$alc_dir/out" "$alc_dir/err"
-      if rmdir -- "$alc_dir" 2>/dev/null; then alc_dir=""; fi
-    fi
-  fi
-  [ -z "$alc_why" ] || append_line_classify_failed "$alc_why"
-  if [ "$alc_rc" = 2 ]; then
-    [ -n "$alc_said" ] || alc_said="lanes-index printed no text"
-    die "on primary, append-line asks lanes-index register classify whether its text is one of the four it refuses, and lanes-index refused (exit 2): $alc_said. Nothing was written, and the lock was not taken." 2
-  fi
-  # 124 AND 137 SAY WHAT THEY CAN MEAN, as the mode question's do (T409).
-  # Under the timer, a 124 is its stop, and a 137 is its KILL a second after a
-  # stop that was ignored, or a kill that was not the timer's. Where the call
-  # ran bare, with no `timeout`, no timer ran: a 124 is the call's own code and
-  # takes the plain line below, "exited 124 (…)", and a 137 is a signal's
-  # (lane 3, #165 6767463594, item 1). Every one exits 69, nothing written.
-  case "${alc_rc}:${alc_timer}" in
-    124:timed) append_line_classify_failed "did not answer within 2 s, and was stopped (exit 124)" ;;
-    137:timed) append_line_classify_failed "was killed (exit 137): by its 2 s timer after it ignored the stop, or by a signal" ;;
-    137:bare) append_line_classify_failed "was killed by a signal (exit 137)" ;;
-  esac
-  [ "$alc_rc" = 0 ] || append_line_classify_failed "exited $alc_rc${alc_said:+ ($alc_said)}"
-  [ "$alc_odd" = 0 ] ||
-    append_line_classify_failed "exited 0 with an answer holding a byte that is not printable ASCII, a tab or a line feed"
-  # ONE LINE OF FIVE FIELDS: cut at the first four tabs, then put back
-  # together, which gives the line again only where it held exactly four.
-  alc_tab="$(printf '\t')"; alc_lf="$(printf '\nx')"; alc_lf="${alc_lf%x}"
-  alc_line="${alc_out%"$alc_lf"}"
-  alc_kind="${alc_line%%"$alc_tab"*}"; alc_r="${alc_line#*"$alc_tab"}"
-  alc_role="${alc_r%%"$alc_tab"*}"; alc_r="${alc_r#*"$alc_tab"}"
-  alc_repo="${alc_r%%"$alc_tab"*}"; alc_r="${alc_r#*"$alc_tab"}"
-  alc_utc="${alc_r%%"$alc_tab"*}"; alc_lane="${alc_r#*"$alc_tab"}"
-  alc_ok=1
-  [ "$alc_line$alc_lf" = "$alc_out" ] || alc_ok=0
-  case "$alc_line" in *"$alc_lf"*) alc_ok=0 ;; esac
-  case "$alc_lane" in *"$alc_tab"*) alc_ok=0 ;; esac
-  [ "$alc_kind$alc_tab$alc_role$alc_tab$alc_repo$alc_tab$alc_utc$alc_tab$alc_lane" = "$alc_line" ] || alc_ok=0
-  [ -n "$alc_kind" ] && [ -n "$alc_repo" ] && [ -n "$alc_utc" ] && [ -n "$alc_lane" ] || alc_ok=0
-  case "$alc_role" in take|close|-) : ;; *) alc_ok=0 ;; esac
-  alc_secs="${alc_utc#-}"
-  if [ "$alc_utc" != - ]; then
-    case "$alc_secs" in ""|*[!0-9]*) alc_ok=0 ;; esac
-  fi
-  if [ "$alc_ok" != 1 ]; then
-    alc_show="${alc_out:0:200}"
-    alc_show="${alc_show//$alc_tab/<TAB>}"; alc_show="${alc_show//$alc_lf/<LF>}"
-    append_line_classify_failed "exited 0 without exactly one line of five tab-separated fields, its <slot_role> take, close or - and its <utc_ts> - or whole seconds (contract §3.5); it printed '${alc_show}'"
-  fi
-  if [ "$alc_kind" = "LANDING EXPIRED" ]; then
-    die "on primary, a LANDING EXPIRED line is written only by \`append-line --landing-expired <holder> --pr <n> --repo <owner/repo> --word '<quote>' --word-where '<where>' --word-utc <UTC>\`, which copies the holder's open LANDING for the commit's check (F13); typed by hand, it would release a LANDING that nothing judged stale. lanes-index register classify reads this text as LANDING EXPIRED: '$1'. Nothing was written, and the lock was not taken." 2
-  fi
-  alc_no=""
-  if [ "$alc_role" = take ]; then
-    [ "$alc_repo" != - ] ||
-      alc_no="$alc_no it names no repository, as 'into <owner/repo> main', so it would look like a hold to readers and order nothing;"
-    [ "$alc_utc" != - ] ||
-      alc_no="$alc_no it carries no UTC that reads as a time, as YYYY-MM-DDTHH:MMZ, so Rule 6's thirty minutes, measured from it, could never run out and no LANDING EXPIRED could release it;"
-  fi
-  if [ "$alc_kind" = LANDING ] && [ "$alc_lane" = - ]; then
-    alc_no="$alc_no it names no lane, as 'lane <name>', so it would hold main with nothing able to close it, since a LANDED closes its own lane's LANDING;"
-  fi
-  [ -z "$alc_no" ] ||
-    die "on primary, append-line refuses this ${alc_kind} line, as lanes-index register classify reads it:${alc_no%;}. Nothing was written, and the lock was not taken. The text: '$1'" 2
-  return 0
-}
-
-# THE CLASSIFIER GAVE NO ANSWER THIS FILE CAN READ (T424, above): 69, nothing
-# written, never the text unclassified.
-append_line_classify_failed() {   # <why>
-  die "on primary, append-line asks lanes-index register classify whether its text is one of the four it refuses, and the classifier $1. Without its answer the text is not written: nothing was written, and the lock was not taken. Install the lanes-index that ships with this lanes-edit.sh, or run the text through lanes-index register classify by hand to see why." 69
-}
-
-# FEATURE 007, T425 — `append-line --landing-expired`, THE RELEASE OF A STALE
-# `LANDING` ON BRETT'S WORD (F13; FR-032; Y:5099–5142; adopted by Brett on
-# 2026-11-08, #165 6721583757):
-#
-#   LANES_LANE=<writer> LANES_SESSION=<uuid> lanes-edit.sh append-line \
-#     --landing-expired <holder> --pr <n> --repo <owner/repo> \
-#     --word '<quote>' --word-where '<where>' --word-utc <UTC>
-#
-# D18 keeps `append-line` the one verb, so this form of it composes the line,
-# and nothing else writes the kind on primary: T424 refuses one typed by hand.
-# The arm hands the form here before anything of its own runs, so the form's
-# line never meets that refusal.
-#
-# WHERE IT RUNS. On primary the parent never reaches an arm: the writers' door
-# runs `pw_run` (T415), and this arm runs in each attempt's child (T413), on
-# the scratch tree at the snapshot's seq, with `REG_MODE` `primary` and the
-# snapshot's clock. Off primary it runs in the main shell and refuses.
-#
-# REFUSED WITH 2 BEFORE THE LOCK, NOTHING WRITTEN (Y:5114, Y:5140), as the
-# newline refusal is, so on primary the child ends before `ready` and nothing
-# is sent: any mode but primary, the mode question's fall to files mode
-# included (F8); a newline or carriage return in any argument; the form's
-# own usage, a `<holder>` that is not a lane name, a `--pr` that is not a
-# number, a `--repo` outside the characters Rule 6 reads in `into <repo>
-# main`, an unknown option, one given twice or with no value; `--word`,
-# `--word-where` or `--word-utc` missing or empty; a `--word-utc` that is not
-# a UTC; `LANES_LANE` unset or not a lane name; and `LANES_SESSION` unset, or
-# not the transcript UUID a session field must be (Amendment 7(b), as
-# `write_event` holds it).
-#
-# REFUSED WITH 2 ON EACH ATTEMPT'S SNAPSHOT, before `ready`, nothing sent
-# (Y:5114): no open LANDING of the holder for that PR and repository, one
-# with no UTC that reads as a time, or one 30 minutes old or less by the
-# snapshot's clock; then managed-owner vocabulary anywhere in the line it
-# composes, as plain `append-line` refuses its whole text (Y:5115; lane 3,
-# #165 6770688147, T425 Q4). A LANDED committed after the snapshot fails the
-# commit's head check (LR001), and the next attempt finds no open LANDING.
-LE_HOLDER=""; LE_PR=""; LE_REPO=""; LE_WORD=""; LE_WHERE=""; LE_WUTC=""
-LE_L=""; LE_P=""; LE_R=""; LE_U=""; LE_M=""
-# THE FIND (Y:5112): `RULE6_AWK` as primary reads it, `RULE6_EXPIRED_AWK`
-# included (R45's one line), run between two pieces of its own. FIRST, a rule
-# that keeps every LANDING line by its number, since the program's own
-# LANDING rule ends in `next`. LAST, an END after the program's own, which
-# prints, tagged `OPEN`, every key still `LANDING` whose PR is `--pr` and
-# whose repository is `--repo`, both as the program keys them (the PR as
-# written, the repository through `canon` and case-blind): its lane, its PR,
-# the newest post's own `into` token, that post's UTC and its line number.
-# The pairing is the program's, so this finds what `who_landing` would list on
-# primary and pairs nothing a second way. Its inputs come through `ENVIRON`,
-# never `-v` (the alias table is many lines; see `who_landing`).
-LE_FIND_PRE='
-/^LANDING — / { LE_RAW[NR] = $0 }
-'
-LE_FIND_END='
-END {
-  tp = ENVIRON["LANES_LE_PR"]; tr = tolower(canon(ENVIRON["LANES_LE_REPO"]))
-  for (k in ST) {
-    if (ST[k] != "LANDING" || P[k] != tp || tolower(R[k]) != tr) continue
-    rr = ""
-    if (match(LE_RAW[O[k]], /into [A-Za-z0-9\/._-]+ main/)) rr = substr(LE_RAW[O[k]], RSTART + 5, RLENGTH - 10)
-    printf "OPEN%c%s%c%s%c%s%c%s%c%d\n", 31, L[k], 31, P[k], 31, rr, 31, U[k], 31, O[k]
-  }
-}'
-# A COMMIT SUBJECT'S TEXT, CUT AT 72 BYTES WHERE A UTF-8 CHARACTER ENDS
-# (T425; lane 3, #165 6870386695, on lane 5's #165 6870369209). `append-line`
-# names its text in the subject, and `${text:0:72}` cut it by bytes under a
-# POSIX locale, where the cut could end inside a character and `register
-# commit` then refused the message as not UTF-8, and by characters under a
-# UTF-8 one, so the subject hung on the caller's locale. This prints the
-# longest prefix of at most 72 bytes of its argument that ends where a UTF-8
-# character ends, counted in bytes under `LC_ALL=C`, so any locale and bash 3.2
-# give the same bytes and both modes commit the same subject. Its own cut, not
-# another task's (lane 3: S007-52 gains no edge to S007-37). The body is a
-# subshell, so the caller's locale is untouched once it returns, by
-# construction rather than by how a shell restores a `local LC_ALL`.
-#
-# THE LAST CHARACTER of the first 72 bytes starts at the last byte that is not
-# a continuation byte (10xxxxxx), looked for at most three bytes back. Its lead
-# says how many bytes it takes: 110xxxxx two, 1110xxxx three, 11110xxx four,
-# any other byte one. Cut short, it is dropped whole; whole, it is kept, and
-# continuation bytes after it are dropped. Nothing loops, and at most three
-# bytes beyond the 72 go. TEXT THAT IS NOT UTF-8 is not mended: a stray
-# continuation byte or a truncated lead in the last four bytes goes by the same
-# rule, four continuation bytes in a row are kept as they are, and a fault
-# further in stays, so `register commit` refuses it, as it refuses the line.
-# Both callers refuse a newline first, so `$( … )` takes none from the end.
-utf8_prefix_72() (   # <text> ; prints it cut at 72 bytes where a UTF-8 character ends
-  LC_ALL=C
-  u8p_cut="${1-}"; u8p_cut="${u8p_cut:0:72}"; u8p_t="$u8p_cut"; u8p_k=0
-  while [ "$u8p_k" -lt 3 ]; do
-    case "$u8p_t" in
-      *[$'\200'-$'\277']) u8p_t="${u8p_t%?}"; u8p_k=$((u8p_k + 1)) ;;
-      *) break ;;
-    esac
-  done
-  # `u8p_t` ends with the last character's lead, which has `u8p_k` continuation
-  # bytes after it in the cut; `u8p_n` is how many bytes that lead takes, and
-  # 0 where there is no lead to judge, so the cut is kept as it is.
-  case "$u8p_t" in
-    ''|*[$'\200'-$'\277']) u8p_n=0 ;;
-    *[$'\300'-$'\337']) u8p_n=2 ;;
-    *[$'\340'-$'\357']) u8p_n=3 ;;
-    *[$'\360'-$'\367']) u8p_n=4 ;;
-    *) u8p_n=1 ;;
-  esac
-  if [ "$u8p_n" -eq 0 ]; then
-    printf '%s' "$u8p_cut"
-  elif [ $((u8p_k + 1)) -lt "$u8p_n" ]; then
-    printf '%s' "${u8p_cut:0:$((${#u8p_t} - 1))}"
-  else
-    printf '%s' "${u8p_cut:0:$((${#u8p_t} - 1 + u8p_n))}"
-  fi
-)
-append_line_landing_expired_usage() {   # <what is wrong>
-  die "usage: LANES_LANE=<writer> LANES_SESSION=<uuid> $SELF append-line --landing-expired <holder> --pr <n> --repo <owner/repo> --word '<quote>' --word-where '<where>' --word-utc <UTC>: $1. Nothing was written, and the lock was not taken." 2
-}
-append_line_landing_expired() {   # <holder> --pr <n> --repo <r> --word <q> --word-where <w> --word-utc <u>
-  local le_a="" le_o="" le_seen=" " le_rows="" le_rc=0 le_pass="" le_ch="" le_t="" le_a1="" le_a2="" le_a3="" le_a4="" le_a5=""
-  local le_l="" le_p="" le_r="" le_u="" le_n=-1 le_age=0 le_line="" lane_tag="" le_left="" le_row="" le_open=""
-  if [ "$REG_MODE" != primary ]; then
-    die "append-line --landing-expired: the release of a stale LANDING exists only on mode=primary, where the register's own check (F13) judges it when it is committed; this register's mode is ${REG_MODE:-files}; nothing was written. Off primary a LANDING past Rule 6's thirty minutes is listed as STALE, and only its own lane's LANDED closes it." 2
-  fi
-  for le_a in ${1+"$@"}; do
-    if [ "${le_a//[$'\n\r']/}" != "$le_a" ]; then
-      die "append-line --landing-expired composes ONE line, and an argument carries a newline or a carriage return: the line would be several. Nothing was written, and the lock was not taken. Spell the break '; ' and re-run." 2
-    fi
-  done
-  LE_HOLDER="${1-}"
-  case "$LE_HOLDER" in
-    "" | --*) append_line_landing_expired_usage "the holder, the lane whose LANDING is released, comes first" ;;
-    *[!A-Za-z0-9._-]* | .* | -*) append_line_landing_expired_usage "'$LE_HOLDER' is not a lane name (letters, digits, . _ -, not opening with . or -)" ;;
-  esac
-  shift
-  while [ $# -gt 0 ]; do
-    le_o="$1"
-    case "$le_o" in
-      --pr|--repo|--word|--word-where|--word-utc) : ;;
-      *) append_line_landing_expired_usage "'$le_o' is not one of its options" ;;
-    esac
-    case "$le_seen" in *" $le_o "*) append_line_landing_expired_usage "$le_o is given twice" ;; esac
-    le_seen="$le_seen$le_o "
-    [ $# -ge 2 ] || append_line_landing_expired_usage "$le_o has no value"
-    case "$le_o" in
-      --pr) LE_PR="$2" ;;
-      --repo) LE_REPO="$2" ;;
-      --word) LE_WORD="$2" ;;
-      --word-where) LE_WHERE="$2" ;;
-      --word-utc) LE_WUTC="$2" ;;
-    esac
-    shift 2
-  done
-  case "$LE_PR" in
-    "" | *[!0-9]*) append_line_landing_expired_usage "--pr is the LANDING's PR number, digits only, as 'PR #<n>' carries it" ;;
-  esac
-  case "$LE_REPO" in
-    "" | *[!A-Za-z0-9/._-]*) append_line_landing_expired_usage "--repo is the LANDING's repository, as 'into <owner/repo> main' spells it (letters, digits, / . _ -)" ;;
-  esac
-  if [ -z "$LE_WORD" ] || [ -z "$LE_WHERE" ] || [ -z "$LE_WUTC" ]; then
-    die "append-line --landing-expired releases a LANDING only on Brett's word, and the line carries it: --word (his words, quoted), --word-where (where he gave it) and --word-utc (when) are each required and not empty. Nothing was written, and the lock was not taken." 2
-  fi
-  case "$LE_WUTC" in
-    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]Z | \
-    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) le_a="$(epoch_of "$LE_WUTC")" ;;
-    *) le_a="" ;;
-  esac
-  [ -n "$le_a" ] ||
-    die "append-line --landing-expired: --word-utc '$LE_WUTC' is not a UTC, as YYYY-MM-DDTHH:MMZ or YYYY-MM-DDTHH:MM:SSZ: it is the time of Brett's word, which the line records. Nothing was written, and the lock was not taken." 2
-  if [ -z "${LANES_LANE:-}" ]; then
-    die "append-line --landing-expired is written by the lane that runs it, which the line names first: set LANES_LANE=<writer>. Nothing was written, and the lock was not taken." 2
-  fi
-  check_lane_name "$LANES_LANE"
-  if [ -z "${LANES_SESSION:-}" ] || ! valid_uuid "$LANES_SESSION"; then
-    die "append-line --landing-expired names the session that writes it, and a session field is the transcript UUID and only that (Amendment 7(b)): LANES_SESSION is '${LANES_SESSION:-<unset>}'. Set LANES_SESSION=\"\$CLAUDE_CODE_SESSION_ID\". Nothing was written, and the lock was not taken." 2
-  fi
-  lane_tag="$(canon_lane "$LANES_LANE")" || exit 2
-  check_lane_name "$lane_tag"
-  acquire_lock; checkout_sync append-line "$lane_tag" write "$LANES_PATH"   # Amendment 23 S3
-  # ---- AT THE SNAPSHOT (Y:5112–5114), as the verbs' other pre-checks are on
-  # primary, so each attempt's child asks again of its own seq (Y:5080).
-  # COPIED, NOT TYPED: the holder's open LANDING for that PR and repository,
-  # found as primary pairs it, and its newest post's lane, PR, repository
-  # token and UTC copied byte for byte, so the line's `for_lane` and
-  # `repo_key` are the LANDING's and a renamed holder still matches.
-  [ "$RULE6_PRIMARY" = 1 ] ||
-    die "append-line --landing-expired: Rule 6's primary program is not set in this process though its mode is primary, so the LANDING cannot be found as primary pairs it: an internal error. Nothing was written." 2
-  le_rows="$(LANES_RULE6_ALIASES="$(rule6_aliases)" LANES_LE_PR="$LE_PR" LANES_LE_REPO="$LE_REPO" \
-    awk "$LE_FIND_PRE$RULE6_AWK$LE_FIND_END" "$LANES_FILE")" || le_rc=$?
-  [ "$le_rc" = 0 ] ||
-    die "append-line --landing-expired: the register at this attempt's snapshot, $LANES_FILE, could not be read for Rule 6's lines (awk exited $le_rc): an internal error. Nothing was written." 2
-  # THE HOLDER: its own spelling first, byte for byte; then a spelling
-  # `canon_lane` resolves to the same lane (Amendment 16(e)), as for a LANDING
-  # posted under a name the lane had before a rename. Of several, the newest
-  # post, which Rule 6 dates the hold by.
-  # THE ROWS ARE SPLIT BY PARAMETER EXPANSION, at each newline and then at
-  # each US, never read through a here-document, as T415's
-  # `pw_hand_edit_refuse` and T412's `wr_call_fields` split theirs (review
-  # REV-W9a M1, REV-W10a M1). Bash 3.2 writes a here-document to a temp file
-  # in /tmp, and where none can be made, as in a full /tmp, this loop never
-  # ran: an open LANDING the snapshot held was refused as "holds no open
-  # LANDING", closed but with the wrong words (lane 4's MERGES-B2 note). A row
-  # is `OPEN` and five fields more, the last the rest of the row, as `read`
-  # split it; any other row was passed over, and still is.
-  # ONLY THE `OPEN` ROWS ARE SPLIT, KEPT FIRST BY ONE awk OVER A PIPE.
-  # `le_rows` holds Rule 6's own END row for every LANDING key in the whole
-  # register before the few `OPEN` rows, and the split above copies the rest
-  # of the value at each row: on bash 3.2.57, 500 rows took 8.4 s and 2000
-  # took 83.7 s (lane 4's W11-T425 report, gap 1). The filter is linear, and
-  # a command substitution over a pipe needs no temp file, so a full /tmp
-  # changes nothing. A filter that fails refuses with its own words, never as
-  # "holds no open LANDING". It keeps every row that opens `OPEN` and a US,
-  # short ones included, which the split still passes over; empty rows go, as
-  # the split skipped them. IFS and noglob are left as they are, since the
-  # walk calls `canon_lane`.
-  le_rc=0
-  le_open="$(printf '%s\n' "$le_rows" | awk 'BEGIN { o = sprintf("OPEN%c", 31) } index($0, o) == 1')" || le_rc=$?
-  [ "$le_rc" = 0 ] ||
-    die "append-line --landing-expired: the open LANDING rows of the register at this attempt's snapshot could not be kept apart from Rule 6's other rows (awk exited $le_rc): an internal error. Nothing was written." 2
-  for le_pass in exact canon; do
-    if [ "$le_pass" = canon ]; then
-      le_ch="$(canon_lane "$LE_HOLDER" 2>/dev/null)" || le_ch=""
-      [ -n "$le_ch" ] || break
-    fi
-    le_left="$le_open"
-    while [ -n "$le_left" ]; do
-      le_row="${le_left%%"$WR_NL"*}"
-      case "$le_left" in
-        *"$WR_NL"*) le_left="${le_left#*"$WR_NL"}" ;;
-        *) le_left="" ;;
-      esac
-      case "$le_row" in
-        "OPEN$US"*"$US"*"$US"*"$US"*"$US"*) : ;;
-        *) continue ;;
-      esac
-      le_row="${le_row#*"$US"}"
-      le_a1="${le_row%%"$US"*}"; le_row="${le_row#*"$US"}"
-      le_a2="${le_row%%"$US"*}"; le_row="${le_row#*"$US"}"
-      le_a3="${le_row%%"$US"*}"; le_row="${le_row#*"$US"}"
-      le_a4="${le_row%%"$US"*}"; le_a5="${le_row#*"$US"}"
-      if [ "$le_pass" = exact ]; then
-        [ "$le_a1" = "$LE_HOLDER" ] || continue
-      else
-        [ "$(canon_lane "$le_a1" 2>/dev/null)" = "$le_ch" ] || continue
-      fi
-      [ "$le_a5" -gt "$le_n" ] || continue
-      le_l="$le_a1"; le_p="$le_a2"; le_r="$le_a3"; le_u="$le_a4"; le_n="$le_a5"
-    done
-    [ -z "$le_l" ] || break
-  done
-  [ -n "$le_l" ] ||
-    die "append-line --landing-expired: the register at this attempt's snapshot holds no open LANDING of lane $LE_HOLDER for PR #$LE_PR into $LE_REPO main, as Rule 6 pairs it on primary: its LANDED or a LANDING EXPIRED closed it, it was never posted, or it names the lane or the repository another way than these arguments and the alias tables read. There is nothing to release. Nothing was written." 2
-  [ -n "$le_r" ] ||
-    die "append-line --landing-expired: lane ${le_l}'s open LANDING of PR #${le_p} (line $le_n of the register at this attempt's snapshot) gave no repository to copy: an internal error. Nothing was written." 2
-  # ITS AGE: the snapshot's clock, which `utc_now` stamps the line with (D13),
-  # less the LANDING's UTC. Not `older_than_minutes`, and not
-  # `LANES_LANDING_MINUTES`: F13's check fixes the window at 30.
-  case "$le_u" in ?*) le_t="$(epoch_of "$le_u")" ;; *) le_t="" ;; esac
-  [ -n "$le_t" ] ||
-    die "append-line --landing-expired: lane ${le_l}'s LANDING of PR #${le_p} into ${le_r} main carries no UTC that reads as a time${le_u:+ ('$le_u')}, so Rule 6's thirty minutes cannot be counted from it and it cannot be judged stale. Nothing was written." 2
-  le_age=$(( $(now_epoch) - le_t ))
-  if [ "$le_age" -le 1800 ]; then
-    if [ "$le_age" -lt 0 ]; then le_t="dated $(( -le_age / 60 )) min after"; else le_t="$(( le_age / 60 )) min old by"; fi
-    die "append-line --landing-expired: lane ${le_l}'s LANDING of PR #${le_p} into ${le_r} main, posted at ${le_u}, is ${le_t} the register's clock ($(utc_now)), so it is not past Rule 6's 30 minutes and is not released. Nothing was written." 2
-  fi
-  LE_M=$(( (le_age - 1800) / 60 ))
-  LE_L="$le_l"; LE_P="$le_p"; LE_R="$le_r"; LE_U="$le_u"
-  # THE LINE (Y:5104): the writer first, so the classifier, `lane_from_text`
-  # and the commit message all name the writer; `<UTC>`, its first UTC, is
-  # `utc_now`, the snapshot's clock on primary (D13); `for lane <holder>` and
-  # the LANDING's fields as copied; Brett's quote last, so nothing inside it
-  # is ever a reader's first match.
-  le_line="LANDING EXPIRED — lane ${lane_tag}, session ${LANES_SESSION}@${WS}, $(utc_now), for lane ${LE_L}: PR #${LE_P} into ${LE_R} main, its LANDING of ${LE_U}, ${LE_M} min past Rule 6's 30; on Brett's word (${LE_WHERE}, ${LE_WUTC}): \"${LE_WORD}\""
-  # NO MARKER BY THE BACK DOOR, as plain `append-line` tests its whole text
-  # (Y:5115; lane 3, #165 6770688147, T425 Q4; REV425 NIT-1): the composed
-  # line, whole, since the writer's name, the workspace and the fields copied
-  # from the LANDING are in it beside the word and its place. Tested before
-  # the scratch tree is written, so nothing is.
-  if managed_projection_hint "$le_line"; then
-    die "append-line --landing-expired: the line it composed carries managed-owner vocabulary ('managed owner', 'managed binding', 'mode=managed' or 'managed:') in the word, its place, a lane's name, the workspace or a field copied from the LANDING, and only the managed ledger's own writer writes it into the register. Nothing was written." 2
-  fi
-  append_text_line "$le_line"
-  commit_publish "LANES(${lane_tag}@$WS): append line — $(utf8_prefix_72 "$le_line")"
-  # ---- AFTER THE SEAM (Y:5119): only then is the seq known, as `claim`'s
-  # `register seq <n>` is (Q19(A)), and output here streams live. The seam
-  # returns only on `committed <s>`, which sets `REGISTER_SEQ`; a return
-  # without one sent nothing.
-  [ -n "$REGISTER_SEQ" ] ||
-    die "append-line --landing-expired: the write's seam returned with no register seq, so its line was not sent: an internal error. Nothing was written." 2
-  printf "register seq %s: released lane %s's LANDING of %s (PR #%s into %s main), %s min past Rule 6's 30\n" \
-    "$REGISTER_SEQ" "$LE_L" "$LE_U" "$LE_P" "$LE_R" "$LE_M"
-}
-
-# THE COMMIT'S LR005 FOR THIS FORM, TOLD BY ITS TOKEN ALONE (Y:5119; Y:1464,
-# Y:1559; contract §2.6, "a caller that branches reads the token, never the
-# message"). On primary the register's own check (F13, lane 1's) judges the
-# line at the commit, and refuses it with LR005 and one of three tokens. The
-# parent's end relays the `ERROR:` and `DETAIL:` lines verbatim (T415,
-# `pw_decide`), and this adds which of F13's three conditions the register
-# found. The token is LR005's own: the `DETAIL:  ` line right after the
-# `ERROR:  LR005:` line of the commit's stderr (register-cli.md [P]'s lines 1
-# and 2), cut at its first white space, as `pw_snapshot` reads LR007's. A
-# DETAIL anywhere else, or another error's, gives no token (lane
-# openRepoTools-3, #165 6813027223, batch g (118): "(110) governs LR005's
-# token too"). Since the form copied the LANDING's fields from the file at the
-# snapshot, each is also a finding for D18's agreement tests: the file and the
-# database disagree. It prints nothing for any other run or any other token,
-# and the code stays 2 whatever it prints.
-landing_expired_refusal_text() {   # <the commit's stderr file>
-  local lr_l="" lr_p="" lr_t=""
-  [ "$WR_VERB" = append-line ] && [ "${WR_ARGS[0]-}" = --landing-expired ] || return 0
-  [ -f "$1" ] && [ -r "$1" ] || return 0
-  while IFS= read -r lr_l || [ -n "$lr_l" ]; do
-    case "$lr_l" in
-      'DETAIL:  '*)
-        case "$lr_p" in
-          'ERROR:  LR005:'*) lr_t="${lr_l#DETAIL:  }"; break ;;
-        esac ;;
-    esac
-    lr_p="$lr_l"; lr_l=""
-  done < "$1"
-  lr_t="${lr_t%%[[:space:]]*}"
-  case "$lr_t" in
-    expired-none)
-      printf '%s' ": LR005 expired-none, the register found no open LANDING of that holder for that PR whose repo_key is the line's, though this form found one in the register's file at its snapshot and copied it: the LANDING is keyed another way, each writer by its own repos.tsv, or the file's pairing found a different newest take. That is a finding for D18's agreement tests" ;;
-    expired-closed)
-      printf '%s' ": LR005 expired-closed, the register counts a close of that LANDING, matched as main_slots matches one, that the file's pairing at the snapshot missed, such as a LANDED under an overlapping key. That is a finding for D18's agreement tests" ;;
-    expired-young)
-      printf '%s' ": LR005 expired-young, the register found that LANDING 30 minutes old or less by its clock, or could not read its UTC, though this form found it past Rule 6's 30 at the snapshot: the form and the commit dated different posts. That is a finding for D18's agreement tests" ;;
-  esac
-  return 0
-}
-
 # $2 is the file to append to, defaulting to the register. Amendment 7's
 # per-lane object logs are appended with exactly the same proof — one line
 # more, not one existing byte different.
@@ -3730,29 +2651,10 @@ cs_refuse() {   # <what> <why> [<recovery line>…]
   die "refusing to $csr_what in $LANES_REPO: $csr_why. Nothing was written." 2
 }
 # The pathspecs among <pathspec>… that differ from HEAD, staged or not. Exact
-# and in the C locale, because they are compared as strings. With
-# `--no-renames` first, a rename among them is listed as both its paths, not
-# its new path alone (review REV415c, N3); without it, as before.
-# With `--rc` first, before `--no-renames`, it returns git's own exit status,
-# so a caller can tell a listing git could not make from an empty one; without
-# it, 0, as before, and a failed listing prints nothing. Lane 3's rule: "each
-# primary refusal before the seam that looks for a pending change with
-# `cs_pending_of` passes `--rc`", since a read that failed is never "no hand
-# edit" there (Amendment 7(d); lane openRepoTools-3, #165 6813027223, batch g
-# Q114, and #165 6814531692, batch h Q123 and Q124). The three callers that
-# pass it: `pw_hand_edit_refuse` (T415), `commit_hand_edit_refuse` (T420) and
-# `rl_move_refuse_checks` (T422). The others pass none, by Q114:
-# `cs_own_pending`, `checkout_sync`'s two and the `commit` arm's carry test,
-# which run in files mode's S3, in T413's scratch tree, or, on primary, right
-# after `commit_hand_edit_refuse`.
-cs_pending_of() {   # [--rc] [--no-renames] <pathspec>…
-  local cpo_r="" cpo_s=0 cpo_rc=0
-  if [ "${1-}" = --rc ]; then cpo_s=1; shift; fi
-  if [ "${1-}" = --no-renames ]; then cpo_r="--no-renames"; shift; fi
+# and in the C locale, because they are compared as strings.
+cs_pending_of() {   # <pathspec>…
   [ "$#" -gt 0 ] || return 0
-  LC_ALL=C git -C "$LANES_REPO" -c "$CP_EXACT" -c core.quotePath=false diff ${cpo_r:+"$cpo_r"} --name-only HEAD -- "$@" 2>/dev/null || cpo_rc=$?
-  [ "$cpo_s" = 1 ] || cpo_rc=0
-  return "$cpo_rc"
+  LC_ALL=C git -C "$LANES_REPO" -c "$CP_EXACT" -c core.quotePath=false diff --name-only HEAD -- "$@" 2>/dev/null || :
 }
 # A PENDING HAND EDIT OF THE REGISTER REFUSES EVERY WRITER BUT `commit` (S3
 # step 4, ratified choice 9). A lane's session and its subagents share this
@@ -3764,30 +2666,6 @@ cs_refuse_register() {   # <what> <lane>
     "whoever made it commits it: LANES_LANE=${2:-<lane>} $SELF commit \"<what the edit is>\"" \
     "then re-run this write"
 }
-# FEATURE 007, T413 — UNDER THE INTERNAL FLAG A DIRTY PATHSPEC IS AN INTERNAL
-# ERROR (Y:5078). The attempt's scratch tree is built fresh at the snapshot,
-# one commit holding the register at its seq, so a path that differs from
-# HEAD before the verb has edited it is a fault of the write path, never a
-# person's hand edit: refused with 2, nothing sent, never captured or
-# committed, and no recovery is printed, since there is nothing to recover.
-# THE LIST IS SPLIT BY PARAMETER EXPANSION, at each newline, never through a
-# here-document, as `pw_hand_edit_refuse`'s and the seam's are (review REV-W9a
-# M1's class): bash 3.2 writes a here-document to a temp file in /tmp, and
-# where none can be made, as in a full /tmp, the loop never ran, so this 2
-# named no path and bash printed its own error first. Now a full /tmp changes
-# nothing here: the same paths are named, with the same 2.
-reg_scratch_dirty() {   # <what> <the paths, one a line>
-  rsdy_s="$2"; rsdy_l=""
-  while [ -n "$rsdy_s" ]; do
-    rsdy_p="${rsdy_s%%"$WR_NL"*}"
-    case "$rsdy_s" in
-      *"$WR_NL"*) rsdy_s="${rsdy_s#*"$WR_NL"}" ;;
-      *) rsdy_s="" ;;
-    esac
-    [ -z "$rsdy_p" ] || rsdy_l="$rsdy_l $rsdy_p"
-  done
-  die "refusing to $1 in $LANES_REPO, the attempt's scratch tree under LANES_REGISTER_SCRATCH: an internal error, since these paths differ from its HEAD before the write has edited any:${rsdy_l}. That tree is built fresh from the register at the snapshot, so this is a fault in the write path, never a hand edit to capture or commit (T413; Y:5078). Nothing was sent." 2
-}
 # S3 STEP 4 FOR THE PATHS A WRITE LEARNS ONLY IN ITS SCAN (the sweeps,
 # `rename-lane`), asked again right before the first byte; and for the paths a
 # write knows up front, from `checkout_sync` itself.
@@ -3797,7 +2675,6 @@ cs_own_pending() {   # <what> <lane> <pathspec>…
   [ "$#" -gt 0 ] || return 0
   cop_hits="$(cs_pending_of "$@")"
   [ -n "$cop_hits" ] || return 0
-  [ -z "$REG_SCRATCH" ] || reg_scratch_dirty "$cop_what" "$cop_hits"
   cop_reg=0; cop_other=""
   while IFS= read -r cop_p; do
     [ -n "$cop_p" ] || continue
@@ -3926,29 +2803,22 @@ reg_marker_read() {   # <repo> <tip; empty: the working tree>
 # files that are now only the mirror. So it reads the marker on the tip its
 # own S3 fetch returned (`checkout_sync`, after step 1), and the publish act
 # reads it again before it pushes (`cp_publish_act`). Where it is there, 69
-# with the requirement's text, and nothing written. THE GATE is `REG_ASK=1`,
-# which the write guard's arm at the dispatcher sets for its verbs, `commit`'s
-# publish act included; and ONLY OFF PRIMARY: where T409's question answered
-# `files` (no configuration, or a question that failed) or `index`. On
-# primary the marker is always on origin, and the write path is SQL's. Every
-# other run passes the gate unchecked: `write-handoff`, whose S3 runs inside
-# `$( )`, has `REG_ASK` 0, and an attempt's child as T413 makes it has
-# `REG_ASK` 0 and `REG_MODE` `primary` (lane 3, #165 6754806910 and
-# 6767463594). THE TIP is resolved as `have_remote_ref` resolves it, with no
-# `^{commit}`: no ref, or a ref whose value git cannot parse, is no readable
-# origin branch (the refusal says so), and a ref whose commit git cannot read
-# goes to the read, which answers 2. THE READ is `ls-tree`, which
-# tells an absent marker (0, nothing printed) from a tree git cannot read
-# (not 0), where `cat-file -e` is 128 for both; a read that fails refuses
-# (2), since it proves nothing. Under `LANES_NO_GIT=1`, or where there is no
-# origin branch to read, it is F17's other half: `$LANES_DIR/STORE` in the
-# working tree. Where the marker is absent it prints nothing and changes
-# nothing.
+# with the requirement's text, and nothing written. ONLY OFF PRIMARY: where
+# T409's question answered `files` (no configuration, or a question that
+# failed) or `index`. On primary the marker is always on origin, and the
+# write path is SQL's. An empty `REG_MODE` was never asked, and is not
+# checked: `write-handoff`, whose S3 runs inside `$( )`, and an attempt's
+# child under `LANES_REGISTER_SCRATCH`. THE READ is `ls-tree`, which tells an
+# absent marker (0, nothing printed) from a tree git cannot read (not 0),
+# where `cat-file -e` is 128 for both; a read that fails refuses (2), since
+# it proves nothing. Under `LANES_NO_GIT=1`, or where there is no origin
+# branch to read, it is F17's other half: `$LANES_DIR/STORE` in the working
+# tree. Where the marker is absent it prints nothing and changes nothing.
 cs_marker_refuse() {   # <what> <the tip: a revision; empty: no origin branch> <whose tip it is>
-  case "$REG_ASK:$REG_MODE" in 1:files|1:index) : ;; *) return 0 ;; esac   # the gate: the write guard's verbs (REG_ASK=1) off primary, never write-handoff (lane 3, #165 6754806910, 6767463594)
+  case "$REG_ASK:$REG_MODE" in 1:files|1:index) : ;; *) return 0 ;; esac   # the write guard's 14 verbs only, never write-handoff (lane 3, #165 6754806910)
   csm_tip=""
-  if [ "$NO_GIT" != 1 ] && [ -n "$2" ]; then   # have_remote_ref's form: a ref naming a commit git cannot read resolves, and the read answers 2 (lane 3, #165 6767463594)
-    csm_tip="$(git -C "$LANES_REPO" rev-parse -q --verify "$2" 2>/dev/null || :)"
+  if [ "$NO_GIT" != 1 ] && [ -n "$2" ]; then
+    csm_tip="$(git -C "$LANES_REPO" rev-parse -q --verify "$2^{commit}" 2>/dev/null || :)"
   fi
   csm_rc=0; reg_marker_read "$LANES_REPO" "$csm_tip" || csm_rc=$?
   [ "$csm_rc" != 1 ] || return 0
@@ -3956,7 +2826,7 @@ cs_marker_refuse() {   # <what> <the tip: a revision; empty: no origin branch> <
     cs_refuse "$1" "git could not read the tree of origin/$LANES_BRANCH at ${csm_tip:0:12}, $3, to look for lanes/STORE, the marker of an estate whose register is SQL, so whether this workstation may write the files is unknown (feature 007, FR-004)"
   if [ -z "$csm_tip" ]; then
     if [ "$NO_GIT" = 1 ]; then csm_where="$LANES_DIR/STORE is in the working tree (LANES_NO_GIT=1)"
-    else csm_where="$LANES_DIR/STORE is in the working tree, and there is no readable origin/$LANES_BRANCH here to read instead"
+    else csm_where="$LANES_DIR/STORE is in the working tree, and there is no origin/$LANES_BRANCH here to read instead"
     fi
   else
     csm_where="lanes/STORE is on origin/$LANES_BRANCH at ${csm_tip:0:12}, $3"
@@ -3970,18 +2840,6 @@ checkout_sync() {   # <what> <lane> <write|carry|publish> [<pathspec it commits>
   CS_NO_ORIGIN_BRANCH=0; CS_CARRY_DIFF=""; CS_CARRY_BASE=""
   CS_LANE="$cs_lane"
   [ "$NO_GIT" = 1 ] && { cs_marker_refuse "$cs_what" "" ""; return 0; }   # feature 007, T419
-  # FEATURE 007, T413 — S3 IS SKIPPED WHOLE UNDER THE INTERNAL FLAG (Y:5040,
-  # Y:5078; the plan's F-B4 and F-B5). The scratch tree is the register at the
-  # snapshot's seq and has no origin to fetch from, so there is no fetch, no
-  # `cs_recheck` and no step 7, and 0 is answered. One assertion stays: the
-  # register, or a path this write commits, that differs from HEAD before the
-  # edit is an internal error, 2 (`reg_scratch_dirty`).
-  if [ -n "$REG_SCRATCH" ]; then
-    cs_hits="$(cs_pending_of "$LANES_PATH" ${1+"$@"})"
-    [ -z "$cs_hits" ] || reg_scratch_dirty "$cs_what" "$cs_hits"
-    LOG_SYNC_FETCH=yes
-    return 0
-  fi
   cs_c="$LANES_REPO"
   cs_trk="refs/remotes/origin/$LANES_BRANCH"; cs_br="refs/heads/$LANES_BRANCH"
   cs_gd="$(git -C "$cs_c" rev-parse --absolute-git-dir 2>/dev/null)" ||
@@ -4391,358 +3249,6 @@ BRT_EOF
   printf 'Nothing was staged or committed. Unstage or delete those paths, then re-run.'
 }
 
-# FEATURE 007, T420 — "ON PRIMARY, OUTSIDE THE FLAG" (D10; FR-026; R16): T409's
-# mode question answered `primary` (`REG_MODE`, carried across the routing's
-# and S4's `exec`), and this process is not an attempt's child under T413's
-# honoured flag, whose writes stop at T414's seam. Where it is true, D10's
-# refusals apply: `commit` over a hand edit of a rendered file, its carry form
-# included (the dispatcher's `commit` arm), the publish act's fence narrowed
-# to `handoffs/` and Brett's two git files (`cp_publish_fence`), and the
-# backstop at `commit_publish`'s push, narrowed to `handoffs/`. 0 true, 1 not.
-cp_on_primary() {
-  [ "$REG_MODE" = primary ] && [ -z "$REG_SCRATCH" ]
-}
-# `commit` OVER A HAND EDIT ON PRIMARY (T420; D10; FR-026; R16; Y:2459–2464;
-# F16, Y:5820: "`lanes-edit.sh commit` on primary | refused with 2 (D10)").
-# SR:171–173 GOVERNS (lane openRepoTools-3, #165 6770820384, T420 S2): its
-# scenario "A hand edit through `commit`" says that `commit` over a hand edit
-# of a file under `lanes/` refuses and nothing is written, and FR-026's "the
-# carry form" only restates it. So the files read are the register
-# (`$LANES_PATH`, the hand edit `commit`'s carry form exists to carry) and
-# every other file the register renders, the render set T415's
-# `pw_hand_edit_refuse` reads (`cp_seam_render_path`), each differing from
-# HEAD in the checkout this write goes through, staged or not. On primary
-# none is ever committed, carried or pushed. `lanes/repos.tsv` and
-# `lanes/log/README.md` are not rendered (Y:5049), and neither are
-# `lanes/STORE` and the handoffs, so a pending edit of those is not refused
-# here. Refused with 2 under the lock, before S3, so nothing is fetched, set
-# aside or written, and each edit stays where it is; `die`'s exit releases the
-# lock. The recovery is the one that works on primary, as
-# `pw_hand_edit_refuse` gives it, with the checkout and each path quoted for a
-# shell: read the edit, restore the file, make the change through its verb.
-# Its restore is `git restore --source=HEAD --staged --worktree`, not
-# `checkout HEAD --`, which fails for a staged new file that HEAD lacks
-# (REV420b N3). The restore deletes such a file, so reading it stays first.
-# THE LIST IS SPLIT BY PARAMETER EXPANSION, at each newline, never through a
-# here-document, as T415's `pw_hand_edit_refuse` and T414's seam split theirs
-# (review REV-W9a M1): bash 3.2 writes a here-document to a temp file, and
-# where none can be made, as in a full /tmp, the loop never ran, so `commit`
-# went on as though no hand edit were pending. Now a full /tmp changes
-# nothing here: the edit is refused as above (lane 4's MERGES-B2 report).
-# A LISTING GIT CANNOT MAKE IS NO ANSWER (lane openRepoTools-3, #165
-# 6814531692, batch h Q123, by batch g Q114's own reason):
-# `cs_pending_of --rc` returns git's status, and where it is not 0, as with
-# no repository there, an unborn HEAD or a corrupt index, `commit` refuses
-# with 2, its own D10 code, before S3, so nothing is written. The refusal
-# names the read, with the checkout and the register's path quoted by
-# `printf '%q'`, as `pw_hand_edit_refuse` quotes its checkout, and git's
-# code. Until then a failed listing read as "no hand edit", and `commit` went
-# on (Amendment 7(d)).
-commit_hand_edit_refuse() {
-  local ch_hits="" ch_p="" ch_l="" ch_q="" ch_c="" ch_rc=0 ch_rq=""
-  ch_hits="$(cs_pending_of --rc "$LANES_PATH" lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)" || ch_rc=$?
-  if [ "$ch_rc" != 0 ]; then
-    ch_c="$(printf '%q' "$LANES_REPO")"
-    ch_rq="$(printf '%q' "$LANES_PATH")"
-    die "refusing \`commit\` on primary (feature 007): git could not list the uncommitted edits in $LANES_REPO: \`git -C $ch_c diff --name-only HEAD -- $ch_rq lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive\` exited $ch_rc. So whether that checkout holds a hand edit of the register or of a file it renders is not known, and a read that failed is never 'no hand edit' (Amendment 7(d)). Fix the read, then run \`commit\` again. Nothing was written." 2
-  fi
-  while [ -n "$ch_hits" ]; do
-    ch_p="${ch_hits%%"$WR_NL"*}"
-    case "$ch_hits" in
-      *"$WR_NL"*) ch_hits="${ch_hits#*"$WR_NL"}" ;;
-      *) ch_hits="" ;;
-    esac
-    [ -n "$ch_p" ] || continue
-    [ "$ch_p" = "$LANES_PATH" ] || cp_seam_render_path "$ch_p" || continue
-    ch_l="$ch_l $ch_p"
-    ch_q="$ch_q $(printf '%q' "$ch_p")"
-  done
-  [ -n "$ch_l" ] || return 0
-  ch_c="$(printf '%q' "$LANES_REPO")"
-  note "RECOVERY, in $LANES_REPO:"
-  note "  read it:      git -C $ch_c diff HEAD --$ch_q"
-  note "  restore it:   git -C $ch_c restore --source=HEAD --staged --worktree --$ch_q"
-  note "  then make the change through its verb (set-row-state, replace-in-row, append-line, log …), which writes it through the register"
-  die "refusing \`commit\` on primary (feature 007): $LANES_REPO holds an uncommitted edit of$ch_l, a hand edit of what the register renders, and on primary the register is the database and those files are its rendering, so a hand edit of them is never committed, carried or pushed (D10; FR-026; spec:171–173; R16). On primary \`commit\` runs only as the publish act, for queued handoff commits and a person's commits of lanes/repos.tsv or lanes/log/README.md, with every rendered file clean. Nothing was written." 2
-}
-# THE BACKSTOP AT `commit_publish`'S PUSH ON PRIMARY (T420; D10's branch-wide
-# push; spec:183–185; FR-026; R16 (d)). At 1b no write but the publish act can
-# push a queued commit (S3's step 5 refuses every other mode over one), so this
-# push sends the write's own commit; and on primary verbs stop at T414's seam
-# and `commit` over a hand edit is refused, so the one commit still meant to
-# reach it is `rename-lane`'s handoff move (T422), made outside the flag with
-# staged paths under `handoffs/`. Step 5 runs before the write's commit, so a
-# commit made on top after it meets the tip pinned here, which `write-handoff`
-# reaches once T504 gives it its mode (lane openRepoTools-3, #165 6770820384,
-# T420 S1). This holds that as a check, not a count: the commits the push
-# would send, those on the branch that origin's tip lacks (`rev-list
-# <origin>..<tip>`, each read against its parent with `--no-renames`, so a move
-# out of `lanes/` shows the path it leaves), change only paths under
-# `handoffs/`; or the push refuses with 2 before it is made. IT STAYS
-# HANDOFFS-ONLY (tasks:1238; lane openRepoTools-3, #165 6770820384): Brett's
-# two-file allow-list names the publish act, not this push, and SR:169's
-# branch-wide push refusal stands unamended, so `lanes/repos.tsv` and
-# `lanes/log/README.md` refuse here as every path outside `handoffs/` does. A
-# commit of those two alone caught in this push's window refuses 2 here, and
-# `commit`'s publish act sends it afterwards, each commit then allowed on its
-# own; BUT NOT BESIDE A MOVE (REV420b S2): where this write's own commit holds
-# a D, a T, a symlink or a gitlink under `handoffs/` (T422's move, `own` in the
-# read), the publish act refuses that commit with 2, so the refusal does not
-# offer it and gives S6.3's archive instead. SO TOO WHERE THIS WRITE'S OWN
-# COMMIT HOLDS A BYTECODE OR TOOL-CACHE PATH OTHER THAN AS A DELETION (`byte`
-# in the read), an added, a modified and a type-changed one alike: the act's
-# fence refuses each as this backstop does, so it passes in no act (#162),
-# and the refusal gives the archive with no offer (lane openRepoTools-3, #165
-# 6780753157, Q31 and Q45; #165 6808141050, batch c Q51). Every other path
-# this backstop refuses keeps the offer as before, `lanes/repos.tsv` and an
-# ordinary bad path included.
-# Whether such a move can be
-# published at all is put to lane openRepoTools-3 (REV420b S2), and nothing
-# more is built for it here. Under `handoffs/`, THE WRITE'S OWN COMMIT (`$1`)
-# passes any change, a deletion, a type change, a symlink or a gitlink
-# included, since T422's move deletes there; but a bytecode or tool-cache
-# path there passes only as a deletion, #162's cleanup, which is all
-# `bytecode_in_pathspec` lets through, so this backstop never passes what #162
-# refuses (lane openRepoTools-3, #165 6778890211, T420 new 1). EVERY OTHER
-# COMMIT keeps the fence's rule, each path an added or modified regular file
-# that is not bytecode or a tool cache (REV420 N1; REV420b N2). The read is
-# `-z`, and a
-# `.`, `..` or `.git` path component refuses in any commit (`cp_primary_read`;
-# REV420 N2, N5). A merge or root commit among them, a read that fails, a
-# commit `diff-tree` skips, or no origin branch to read
-# refuses too, since each proves nothing. The write's commit is then local and
-# kept on HEAD, and named, with the publish act where it can send the queue,
-# and S6.3's archive. CP_PRIMARY_TIP is the tip read here, and the push sends
-# exactly it, so a commit another writer makes on top between the read and
-# the push stays local, unread and unsent.
-CP_PRIMARY_TIP=""
-cp_primary_push_check() {   # <this write's commit> <its subject>
-  local pb_trk="refs/remotes/origin/$LANES_BRANCH" pb_br="refs/heads/$LANES_BRANCH" \
-        pb_base="" pb_tip="" pb_revs="" pb_odd="" pb_pairs="" pb_n=0 pb_bad="" pb_rc=0 \
-        pb_rows="" pb_own="" pb_byte="" pb_why="" pb_until="" pb_lane="${LANES_LANE:-${CS_LANE:-}}"
-  CP_PRIMARY_TIP=""
-  if [ "$CS_NO_ORIGIN_BRANCH" = 1 ]; then
-    die "refusing to push on primary (feature 007): origin has no branch $LANES_BRANCH, so this push would publish the whole branch, and on primary this push sends only handoff changes onto origin's tip (D10; FR-026; R16 (d)). Nothing was pushed; this write's commit is local and kept on HEAD: $1 $2" 2
-  fi
-  pb_base="$(git --no-replace-objects -C "$LANES_REPO" rev-parse -q --verify "$pb_trk^{commit}")" || pb_rc=$?
-  pb_tip="$(git --no-replace-objects -C "$LANES_REPO" rev-parse -q --verify "$pb_br^{commit}")" || pb_rc=$?
-  if [ "$pb_rc" = 0 ] && [ -n "$pb_base" ] && [ -n "$pb_tip" ]; then
-    pb_revs="$(git --no-replace-objects -C "$LANES_REPO" rev-list --parents "$pb_base..$pb_tip")" || pb_rc=$?
-  else
-    pb_rc=1
-  fi
-  pb_odd="$(printf '%s\n' "$pb_revs" | awk 'NF > 0 && NF != 2 { printf "  %s %s\n", substr($1, 1, 12), (NF > 2 ? "is a merge commit" : "is a root commit") }')" || pb_rc=$?
-  pb_pairs="$(printf '%s\n' "$pb_revs" | awk 'NF == 2')" || pb_rc=$?
-  # `diff-tree --stdin` SKIPS A COMMIT IT CANNOT READ and still exits 0, so
-  # every commit handed to it must come back as a header, as in the fence.
-  if [ -n "$pb_pairs" ]; then
-    pb_n="$(printf '%s\n' "$pb_pairs" | awk 'END { print NR }')" || pb_rc=$?
-    pb_rows="$(printf '%s\n' "$pb_pairs" | cp_primary_read push "$pb_n" "$1")" || pb_rc=$?
-    pb_bad="$(printf '%s\n' "$pb_rows" | sed -n -e 's/^bad//p')" || pb_rc=$?
-    pb_own="$(printf '%s\n' "$pb_rows" | sed -n -e 's/^own//p')" || pb_rc=$?
-    pb_byte="$(printf '%s\n' "$pb_rows" | sed -n -e 's/^byte//p')" || pb_rc=$?
-  fi
-  [ "$pb_rc" = 0 ] ||
-    die "refusing to push on primary (feature 007): git could not read, or this helper could not classify, the commits on $pb_br that refs/remotes/origin/$LANES_BRANCH lacks, so whether each changes only paths under handoffs/ is unknown (D10; FR-026; R16 (d)). Nothing was pushed; this write's commit is local and kept on HEAD: $1 $2" 2
-  if [ -n "$pb_odd$pb_bad$pb_byte" ]; then
-    note "of the commits this push would send to origin/$LANES_BRANCH, these are not changes it sends on primary (a merge or root commit; a path outside handoffs/, lanes/repos.tsv and lanes/log/README.md included; a path with a \`.\`, \`..\` or \`.git\` component; or, in a commit other than this write's own, a change under handoffs/ that is not an added or modified regular file, or is bytecode or a tool cache; or, in this write's own commit, bytecode or a tool cache other than as a deletion):"
-    [ -z "$pb_odd" ] || printf '%s\n' "$pb_odd" >&2
-    [ -z "$pb_bad" ] || printf '%s\n' "$pb_bad" >&2
-    [ -z "$pb_byte" ] || printf '%s\n' "$pb_byte" >&2
-    note "look at them: git -C $LANES_REPO log --stat refs/remotes/origin/$LANES_BRANCH..$pb_br"
-    if [ -n "$pb_own$pb_byte" ]; then
-      # A bytecode or tool-cache path in the write's own commit, other than
-      # as a deletion, takes this arm too (#165 6780753157, Q31 and Q45; #165
-      # 6808141050, batch c Q51): it passes in no act.
-      pb_why=""
-      [ -z "$pb_own" ] || pb_why="changes these under handoffs/ other than as an added or modified regular file (a deletion, a move's or bytecode's, a type change, a symlink or a gitlink), which only this push sends"
-      [ -z "$pb_byte" ] || pb_why="${pb_why:+$pb_why, or }holds a bytecode or tool-cache path other than as a deletion, which passes in no act (#162), listed above"
-      note "this write's own commit $pb_why: \`commit\`'s publish act refuses such a change with 2 in any queue, so it cannot send this one. Archive the queue and drop it instead:"
-      [ -z "$pb_own" ] || printf '%s\n' "$pb_own" >&2
-      pb_until="archived and dropped"
-    else
-      note "\`commit\`'s publish act sends a queue whose every commit is a handoff write or a write of lanes/repos.tsv or lanes/log/README.md alone, this write's commit with it, and refuses with 2, sending nothing, over any other queue. Run it first: ${pb_lane:+LANES_LANE=$pb_lane }$SELF commit \"publish the queue\". Where it refuses:"
-      pb_until="published or archived and dropped"
-    fi
-    cp_recovery_steps
-    die "refusing to push on primary (feature 007): this push sends only commits whose every path is under handoffs/, an added or modified regular file and no bytecode outside this write's own commit, and in it bytecode or a tool cache only as a deletion, #162's cleanup, and never lanes/repos.tsv or lanes/log/README.md, which \`commit\`'s publish act sends (D10's branch-wide push; spec:169; spec:183–185; FR-026; R16 (d); lane openRepoTools-3, #165 6770820384). Nothing was pushed; this write's commit is local and kept on HEAD, and every write that makes a git commit from this checkout refuses over it (S3's unpushed row) until it is $pb_until, as above: $1 $2" 2
-  fi
-  CP_PRIMARY_TIP="$pb_tip"
-}
-
-# FEATURE 007, T420 — THE TWO READS ON PRIMARY OF WHAT A PUSH WOULD SEND, WITH
-# `-z` (lane openRepoTools-3, #165 6770820384: REV420 N1, N2 and N5). The
-# publish act's fence (`fence`) and the backstop at `commit_publish`'s push
-# (`push`) share it, and only on primary; off primary the fence's read is
-# #194's, as it was. stdin: the `<commit> <parent>` pairs of the range, one a
-# line, merges and roots already set aside. `diff-tree --stdin --raw -z
-# --no-renames` reads each against its parent, so a path comes as git stores
-# it, never C-quoted (a path with a tab, a newline, a `"` or a `\` came quoted,
-# and so was read as outside `lanes/`: N2), and a move is the D and the A it
-# is. The fields are read in bash, `read -d ''`, since an awk's NUL record
-# separator is not portable. stdout: one line for each change that does not
-# pass, `<class>  <commit, 12> <status> <mode> <path, quoted for a shell>`,
-# class `div`, `mix` or `bad`, and in `push` an `own` line for each change
-# that passes as the write's own alone, and a `byte` line (refused like `bad`)
-# for a bytecode or tool-cache path in the write's own commit other than as a
-# deletion, which no act sends (#162; Q31, Q45; batch c Q51). Non-zero where
-# git fails, where a
-# commit handed to it never came back as a header, or where the stream does
-# not parse.
-#
-# IN BOTH READS a path with a `.`, `..` or `.git` component (`.git` in any
-# case) is `bad`: git's own checkout never writes through one, and an origin
-# that took one would wedge every checkout's fast-forward (N5).
-#
-# THE FENCE (`fence`), path by path, then commit by commit:
-#   * `lanes/repos.tsv` and `lanes/log/README.md`, Brett's two git files, pass
-#     as an added or modified regular file, and are `bad` as any other change
-#     (#194's rule, a move read as a D and an A).
-#   * Any other path under the register's directory (`lanes/`, as
-#     `$LANES_PREFIX` derives it, its log directory, the register and the alias
-#     table) is a divergence, `div`.
-#   * A path under `handoffs/` passes as an added or modified regular file that
-#     is not bytecode (#194, #162), and is `bad` as any other change.
-#   * Any other path is `bad`.
-#   * TO THE LETTER OF BRETT'S WORD: Brett Heap chose the option "Allow those
-#     two files" in a dialog in lane openRepoTools-3's session (answered by
-#     13:55:34Z, 2026-11-10), whose description read "The publish act lets a
-#     commit that touches only lanes/repos.tsv or lanes/log/README.md through
-#     on primary." So a commit that changes either file may change nothing
-#     else but the two (lane openRepoTools-3, #165 6770820384): in a commit
-#     holding either beside any other path, every change that would pass is
-#     `mix`, and the publish act refuses it with 2.
-# THE BACKSTOP (`push`): a path under `handoffs/` passes, as any change in the
-# write's own commit (`$3`) but bytecode or a tool cache, which passes there
-# only as a deletion, #162's cleanup (lane openRepoTools-3, #165 6778890211,
-# T420 new 1), and as an added or modified regular file that is
-# not bytecode or a tool cache in every other, as in the fence (REV420b N2);
-# every other path, the two git files included, is `bad`. A change the
-# write's own commit alone may make, one under `handoffs/` that is not an
-# added or modified regular file (T422's move), passes as `own`, printed so
-# the backstop's refusal can tell that the publish act would refuse it
-# (REV420b S2).
-cp_primary_read() {   # fence|push <how many commits> [<the write's own commit>]
-  local cpr_ps=""
-  git --no-replace-objects -C "$LANES_REPO" diff-tree --stdin --always -r --no-renames --raw -z --ignore-submodules=none |
-    cp_primary_classify "$@"
-  cpr_ps="${PIPESTATUS[*]}"
-  [ "$cpr_ps" = "0 0" ]
-}
-cp_primary_classify() {   # fence|push <how many commits> [<the write's own commit>]
-  local cq_role="$1" cq_want="$2" cq_own="${3:-}" cq_t="" cq_p="" cq_q="" cq_c="" cq_seen=0 \
-        cq_st="" cq_mode="" cq_k="" cq_rows="" cq_git=0 cq_other=0 cq_lanes=0 cq_byte=0 cq_am=0 \
-        cq_reg="${LANES_PREFIX:+${LANES_PREFIX%/}/}" cq_logp="${LANES_LOG_PREFIX:+${LANES_LOG_PREFIX%/}/}"
-  while IFS= read -r -d '' cq_t; do
-    case "$cq_t" in
-      :*)
-        # A RAW RECORD, `:<mode> <mode> <blob> <blob> <status>`, and its one
-        # path in the next field (`--no-renames`: never two).
-        [ -n "$cq_c" ] || return 3
-        IFS= read -r -d '' cq_p || return 3
-        cq_st="${cq_t##* }"; cq_mode="${cq_t#:* }"; cq_mode="${cq_mode%% *}"
-        cq_am=0
-        case "$cq_st" in A|M) case "$cq_mode" in 100644|100755) cq_am=1 ;; esac ;; esac
-        if [ "$cq_p" = lanes/repos.tsv ] || [ "$cq_p" = lanes/log/README.md ]; then cq_git=1; else cq_other=1; fi
-        cq_k=ok; cq_byte=0
-        case "/$cq_p/" in
-          */./*|*/../*|*/.[gG][iI][tT]/*) cq_k=comp ;;
-        esac
-        # Bytecode and tool caches (#194, #162), read before the role split so
-        # the backstop holds a commit other than the write's own to the
-        # fence's test too (REV420b N2), and the write's own to #162's: there
-        # such a path passes only as a deletion (T420 new 1).
-        case "$cq_p" in *.pyc|*.pyo) cq_byte=1 ;; esac
-        case "/$cq_p/" in
-          */__pycache__/*|*/.pytest_cache/*|*/.mypy_cache/*|*/.ruff_cache/*|*/node_modules/*|*/.venv/*|*/venv/*|*/site-packages/*) cq_byte=1 ;;
-        esac
-        if [ "$cq_k" = ok ] && [ "$cq_role" = push ]; then
-          case "$cq_p" in
-            handoffs/*)
-              if [ "$cq_c" = "$cq_own" ]; then
-                if [ "$cq_byte" = 1 ] && [ "$cq_st" != D ]; then
-                  # Any status but D is `byte`, an added, a modified and a
-                  # type-changed one alike: refused here, and refused by the
-                  # act's fence too, so the refusal withholds the publish
-                  # act's offer (#165 6780753157, Q31 and Q45; #165
-                  # 6808141050, batch c Q51).
-                  cq_k=byte
-                else
-                  [ "$cq_am" = 1 ] || cq_k=own
-                fi
-              else
-                [ "$cq_am" = 1 ] && [ "$cq_byte" = 0 ] || cq_k=bad
-              fi ;;
-            *) cq_k=bad ;;
-          esac
-        elif [ "$cq_k" = ok ]; then
-          cq_lanes=0
-          case "$cq_p" in lanes/*) cq_lanes=1 ;; esac
-          [ -z "$cq_reg" ] || case "$cq_p" in "$cq_reg"*) cq_lanes=1 ;; esac
-          [ -z "$cq_logp" ] || case "$cq_p" in "$cq_logp"*) cq_lanes=1 ;; esac
-          [ "$cq_p" != "${LANES_PATH:-}" ] || cq_lanes=1
-          [ "$cq_p" != "${LANES_ALIASES_PATH:-}" ] || cq_lanes=1
-          if [ "$cq_p" = lanes/repos.tsv ] || [ "$cq_p" = lanes/log/README.md ]; then
-            [ "$cq_am" = 1 ] || cq_k=bad
-          elif [ "$cq_lanes" = 1 ]; then
-            cq_k=div
-          else
-            case "$cq_p" in
-              handoffs/*) [ "$cq_am" = 1 ] && [ "$cq_byte" = 0 ] || cq_k=bad ;;
-              *) cq_k=bad ;;
-            esac
-          fi
-        fi
-        printf -v cq_q '%q' "$cq_p"
-        cq_rows="$cq_rows$cq_k $cq_st $cq_mode $cq_q
-"
-        ;;
-      *)
-        # A COMMIT'S HEADER, its id alone: the commit before it is complete.
-        case "$cq_t" in ''|*[!0-9a-f]*) return 3 ;; esac
-        [ "${#cq_t}" = 40 ] || [ "${#cq_t}" = 64 ] || return 3
-        cp_primary_rows
-        cq_c="$cq_t"; cq_seen=$((cq_seen + 1)); cq_rows=""; cq_git=0; cq_other=0
-        ;;
-    esac
-  done
-  [ -z "$cq_t" ] || return 3
-  cp_primary_rows
-  [ "$cq_seen" = "$cq_want" ] || return 3
-}
-# One commit's lines, read from `cp_primary_classify`'s locals: what passes is
-# not printed, except as `mix` in a fence commit that holds a git file beside
-# any other path, and as `own` in the backstop; a component is printed `bad`,
-# with its reason. THE ROWS ARE SPLIT BY PARAMETER EXPANSION, at each newline,
-# never through a here-document, as `commit_hand_edit_refuse`'s list is
-# (review REV-W9a M1's pattern): these printed rows are all that the fence and
-# the backstop learn of each commit's paths, and `cp_primary_classify` does
-# not read this function's status, so where bash 3.2 could make no temp file
-# for a here-document, as in a full /tmp, no row was printed and both passed
-# what they refuse (lane 4's MERGES-B2 report). Each row is one line, its path
-# quoted by `%q`; the split reads a copy, and leaves `cq_rows` as it was.
-cp_primary_rows() {
-  local cw_r="$cq_rows" cw_l="" cw_k=""
-  [ -n "$cq_rows" ] || return 0
-  while [ -n "$cw_r" ]; do
-    cw_l="${cw_r%%"$WR_NL"*}"
-    case "$cw_r" in
-      *"$WR_NL"*) cw_r="${cw_r#*"$WR_NL"}" ;;
-      *) cw_r="" ;;
-    esac
-    [ -n "$cw_l" ] || continue
-    cw_k="${cw_l%% *}"; cw_l="${cw_l#* }"
-    if [ "$cw_k" = ok ]; then
-      [ "$cq_role" = fence ] && [ "$cq_git" = 1 ] && [ "$cq_other" = 1 ] || continue
-      cw_k=mix
-    fi
-    if [ "$cw_k" = comp ]; then
-      cw_k=bad; cw_l="$cw_l   (a \".\", \"..\" or \".git\" path component)"
-    fi
-    printf '%s  %s %s\n' "$cw_k" "${cq_c:0:12}" "$cw_l"
-  done
-}
-
 # #194, AS #214's ADVERSARIAL CHECK HARDENED IT — WHAT `commit` MAY PUBLISH
 # WITH NOTHING STAGED, read from the objects the push will send and nothing
 # else. Three ordinary checkout states got a deletion past the first fence,
@@ -4782,41 +3288,8 @@ cp_primary_rows() {
 # it read, and the publish pushes exactly that commit (`<sha>:refs/heads/<b>`).
 # A commit another lane makes in this shared checkout between the read and the
 # push stays local.
-#
-# FEATURE 007, T420 — ON PRIMARY THE FENCE IS NARROWED TO `handoffs/` AND TWO
-# GIT FILES (D10; FR-026; spec:169–181; lane openRepoTools-3's R16; Brett
-# Heap's two-file allow-list). On primary the register is the database. Under
-# the register's directory origin holds its rendering (the register, each
-# lane's log, the alias table and the archive), which only `lanes-index
-# render` writes, from the database; `STORE`, the deploy key's alone (D23);
-# and git files a person commits, `repos.tsv` and `log/README.md` (Q18(A);
-# Y:258–260, Y:5048–5050). The publish act, which R16 keeps, sends on primary
-# only handoff writes, each path an added or modified regular file under
-# `handoffs/`, and commits of those two git files alone, each added or
-# modified as a regular file. Brett Heap chose the option "Allow those two
-# files", whose description read "The publish act lets a commit that touches
-# only lanes/repos.tsv or lanes/log/README.md through on primary." (#165
-# 6769217709), and lane openRepoTools-3 holds the build to its letter (#165
-# 6770820384): a commit that changes either file may change nothing else but
-# the two, so one that writes either beside a handoff, or beside any other
-# path, refuses with 2, and its two halves pass as two commits. A queued
-# change to any other path under the register's directory (`lanes/`, as
-# `$LANES_PREFIX` derives it, its log directory, the register and the alias
-# table), of any status, is a DIVERGENCE, never published (spec:169): it
-# refuses with 2 and its own words, and S6.3's archive (Y:5820, F16: "the
-# publish act refuses a `lanes/` commit on primary"). Its words call no path
-# the rendering that is not one (lane openRepoTools-3, #165 6769061039, T420
-# item 1). A deletion, a type change or a move of either git file refuses as
-# a handoff's does (#194): read with `--no-renames`, a move is a D and an A,
-# and a D never passes. On primary the read is `cp_primary_read`'s, with
-# `-z`, and a `.`, `..` or `.git` path component refuses too (REV420 N2, N5).
-# Any other change refuses as above, in primary's words. "On primary" is
-# T409's answer, outside T413's flag (`cp_on_primary`); off it, every path,
-# text and code here is #194's, as it was.
 cp_publish_fence() {
   cpf_ref="refs/heads/$LANES_BRANCH"
-  cpf_prim=0; cpf_div=""; cpf_mix=""
-  if cp_on_primary; then cpf_prim=1; fi
   cpf_head="$(git -C "$LANES_REPO" symbolic-ref -q HEAD 2>/dev/null || :)"
   [ "$cpf_head" = "$cpf_ref" ] || die "refusing to publish: HEAD is ${cpf_head:-detached}, not $cpf_ref, and the push sends $cpf_ref while every read of the queue starts at HEAD, so what would be published is not what HEAD shows, and nothing was pushed (#194). Whoever moved this shared checkout off $LANES_BRANCH puts it back; never reset or check out over their work." 2
   cpf_rc=0
@@ -4828,77 +3301,34 @@ cp_publish_fence() {
   # `diff-tree --stdin` SKIPS A COMMIT IT CANNOT READ and still exits 0, and
   # prints no header for an empty diff unless told `--always`: so every commit
   # handed to it must come back as a header, or the read refuses.
-  cpf_raw=""; cpf_n=0; cpf_bad=""
+  cpf_raw=""; cpf_n=0
   if [ -n "$cpf_pairs" ]; then
     cpf_n="$(printf '%s\n' "$cpf_pairs" | awk 'END { print NR }')" || cpf_rc=$?
-    if [ "$cpf_prim" = 1 ]; then
-      cpf_bad="$(printf '%s\n' "$cpf_pairs" | cp_primary_read fence "$cpf_n")" || cpf_rc=$?
-    else
-      cpf_raw="$(printf '%s\n' "$cpf_pairs" | git --no-replace-objects -C "$LANES_REPO" -c core.quotePath=false diff-tree --stdin --always -r --no-renames --raw --ignore-submodules=none)" || cpf_rc=$?
-    fi
+    cpf_raw="$(printf '%s\n' "$cpf_pairs" | git --no-replace-objects -C "$LANES_REPO" -c core.quotePath=false diff-tree --stdin --always -r --no-renames --raw --ignore-submodules=none)" || cpf_rc=$?
   fi
-  if [ "$cpf_prim" = 1 ]; then
-    cpf_div="$(printf '%s\n' "$cpf_bad" | sed -n -e 's/^div//p')" || cpf_rc=$?
-    cpf_mix="$(printf '%s\n' "$cpf_bad" | sed -n -e 's/^mix//p')" || cpf_rc=$?
-    cpf_bad="$(printf '%s\n' "$cpf_bad" | sed -n -e 's/^bad//p')" || cpf_rc=$?
-  else
-    cpf_reg="${LANES_PREFIX:+${LANES_PREFIX%/}/}"; cpf_logp="${LANES_LOG_PREFIX:+${LANES_LOG_PREFIX%/}/}"
-    cpf_bad="$(printf '%s\n' "$cpf_raw" | awk -F '\t' -v want="$cpf_n" -v reg="$cpf_reg" -v logp="$cpf_logp" \
-        -v reg_path="$LANES_PATH" -v alias_path="$LANES_ALIASES_PATH" '
-      function inside(p) {
-        return (reg != "" && index(p, reg) == 1) || (logp != "" && index(p, logp) == 1) ||
-               index(p, "handoffs/") == 1 || p == reg_path || p == alias_path
-      }
-      function bytecode(p,   n, part, i) {
-        if (p ~ /\.py[co]$/) return 1
-        n = split(p, part, "/")
-        for (i = 1; i <= n; i++)
-          if (part[i] == "__pycache__" || part[i] == ".pytest_cache" || part[i] == ".mypy_cache" ||
-              part[i] == ".ruff_cache" || part[i] == "node_modules" || part[i] == ".venv" ||
-              part[i] == "venv" || part[i] == "site-packages") return 1
-        return 0
-      }
-      NF == 0 { next }
-      NF == 1 && $1 ~ /^[0-9a-f]+$/ { c = substr($1, 1, 12); seen++; next }
-      { split($1, f, " "); st = f[5]; mode = f[2]
-        if (!(NF == 2 && (st == "A" || st == "M") && (mode == "100644" || mode == "100755") && inside($2) && !bytecode($2)))
-          printf "  %s %s %s %s\n", c, st, mode, $2 }
-      END { if (seen != want) exit 3 }')" || cpf_rc=$?
-  fi
+  cpf_reg="${LANES_PREFIX:+${LANES_PREFIX%/}/}"; cpf_logp="${LANES_LOG_PREFIX:+${LANES_LOG_PREFIX%/}/}"
+  cpf_bad="$(printf '%s\n' "$cpf_raw" | awk -F '\t' -v want="$cpf_n" -v reg="$cpf_reg" -v logp="$cpf_logp" \
+      -v reg_path="$LANES_PATH" -v alias_path="$LANES_ALIASES_PATH" '
+    function inside(p) {
+      return (reg != "" && index(p, reg) == 1) || (logp != "" && index(p, logp) == 1) ||
+             index(p, "handoffs/") == 1 || p == reg_path || p == alias_path
+    }
+    function bytecode(p,   n, part, i) {
+      if (p ~ /\.py[co]$/) return 1
+      n = split(p, part, "/")
+      for (i = 1; i <= n; i++)
+        if (part[i] == "__pycache__" || part[i] == ".pytest_cache" || part[i] == ".mypy_cache" ||
+            part[i] == ".ruff_cache" || part[i] == "node_modules" || part[i] == ".venv" ||
+            part[i] == "venv" || part[i] == "site-packages") return 1
+      return 0
+    }
+    NF == 0 { next }
+    NF == 1 && $1 ~ /^[0-9a-f]+$/ { c = substr($1, 1, 12); seen++; next }
+    { split($1, f, " "); st = f[5]; mode = f[2]
+      if (!(NF == 2 && (st == "A" || st == "M") && (mode == "100644" || mode == "100755") && inside($2) && !bytecode($2)))
+        printf "  %s %s %s %s\n", c, st, mode, $2 }
+    END { if (seen != want) exit 3 }')" || cpf_rc=$?
   [ "$cpf_rc" = 0 ] || die "git could not read, or this helper could not classify, the local commits on $cpf_ref ahead of refs/remotes/origin/$LANES_BRANCH, so whether they are \`commit\`'s to publish is unknown; nothing was pushed (#194)" 2
-  if [ -n "$cpf_div" ]; then
-    note "of the local commits on $cpf_ref ahead of origin/$LANES_BRANCH, these change a path under the register's directory, ${LANES_PREFIX:-lanes/}, other than lanes/repos.tsv and lanes/log/README.md, and on primary the publish act sends none of them: the register's rendering (the register, each lane's log, the alias table and the archive) is written only from the database, STORE is the deploy key's alone (D23), and any other path there is refused with them:"
-    printf '%s\n' "$cpf_div" >&2
-    if [ -n "$cpf_odd$cpf_bad$cpf_mix" ]; then
-      note "and these are not publishable there either (a merge or root commit; a change that is not an added or modified regular file under handoffs/ or at lanes/repos.tsv or lanes/log/README.md; a path with a \`.\`, \`..\` or \`.git\` component; or a change in a commit that writes one of those two files beside another path):"
-      [ -z "$cpf_odd" ] || printf '%s\n' "$cpf_odd" >&2
-      [ -z "$cpf_bad" ] || printf '%s\n' "$cpf_bad" >&2
-      [ -z "$cpf_mix" ] || printf '%s\n' "$cpf_mix" >&2
-    fi
-    cp_recovery_steps
-    die "refusing to publish: on primary (feature 007) a local commit that changes a path under the register's directory other than lanes/repos.tsv and lanes/log/README.md is a divergence, and is never published: \`commit\`'s publish act sends only handoff writes and those two files there (D10; FR-026; R16; spec:169, as Brett's two-file allow-list amends it). Nothing was pushed, and the commits stay on HEAD; every write that makes a git commit from this checkout refuses over them (S3's unpushed row) until they are archived and dropped, as above." 2
-  fi
-  # A COMMIT THAT WRITES EITHER GIT FILE BESIDE ANY OTHER PATH (T420; Brett's
-  # word to its letter, lane openRepoTools-3, #165 6770820384): each of its
-  # changes that would pass alone is listed, and the other paths with their
-  # own lists.
-  if [ -n "$cpf_mix" ]; then
-    note "of the local commits on $cpf_ref ahead of origin/$LANES_BRANCH, these write lanes/repos.tsv or lanes/log/README.md beside another path, and on primary a commit that writes either of those two may change nothing else but the two:"
-    printf '%s\n' "$cpf_mix" >&2
-    if [ -n "$cpf_odd$cpf_bad" ]; then
-      note "and these are not publishable there either (a merge or root commit; a change that is not an added or modified regular file under handoffs/ or at lanes/repos.tsv or lanes/log/README.md; or a path with a \`.\`, \`..\` or \`.git\` component):"
-      [ -z "$cpf_odd" ] || printf '%s\n' "$cpf_odd" >&2
-      [ -z "$cpf_bad" ] || printf '%s\n' "$cpf_bad" >&2
-    fi
-    cp_recovery_steps
-    die "refusing to publish: on primary (feature 007) \`commit\`'s publish act sends a commit that writes lanes/repos.tsv or lanes/log/README.md only where it changes nothing else but those two (D10; FR-026; R16; spec:169, as Brett's two-file allow-list amends it, to its letter: lane openRepoTools-3, #165 6770820384). Nothing was pushed, and the commits stay on HEAD; every write that makes a git commit from this checkout refuses over them (S3's unpushed row) until they are archived and dropped, as above. Then make again, each in a commit of its own, the write of those two files and each other change that is still wanted." 2
-  fi
-  if [ -n "$cpf_odd$cpf_bad" ] && [ "$cpf_prim" = 1 ]; then
-    note "of the local commits on $cpf_ref ahead of origin/$LANES_BRANCH, these are not changes the publish act sends on primary (a merge or root commit; a change that is not an added or modified regular file under handoffs/ or at lanes/repos.tsv or lanes/log/README.md; or a path with a \`.\`, \`..\` or \`.git\` component):"
-    [ -z "$cpf_odd" ] || printf '%s\n' "$cpf_odd" >&2
-    [ -z "$cpf_bad" ] || printf '%s\n' "$cpf_bad" >&2
-    die "refusing to publish: on primary (feature 007) \`commit\`'s publish act sends only handoff writes and a person's lanes/repos.tsv and lanes/log/README.md, each an added or modified regular file under handoffs/ or at one of those two paths (D10; FR-026; R16; spec:169's two-file allow-list; #194), so nothing was pushed. Anything else, whoever queued it publishes it; never reset it away. Read them: git -C $LANES_REPO log --stat refs/remotes/origin/$LANES_BRANCH..$cpf_ref" 2
-  fi
   if [ -n "$cpf_odd$cpf_bad" ]; then
     note "of the local commits on $cpf_ref ahead of origin/$LANES_BRANCH, these are not register or handoff writes (a merge or root commit, or a change that is not an added or modified regular file under ${LANES_PREFIX:-the register directory} or handoffs/):"
     [ -z "$cpf_odd" ] || printf '%s\n' "$cpf_odd" >&2
@@ -5019,14 +3449,6 @@ commit_publish() {
     [ -z "$cp_byte" ] || die "$(bytecode_refusal_text "$cp_byte")" 2
     git -C "$LANES_REPO" -c "$CP_EXACT" add -- ${cp_add[@]+"${cp_add[@]}"} || die "git add failed" 6
   fi
-  # FEATURE 007, T414 — UNDER THE INTERNAL FLAG THE PUBLISH HALF IS THE SEAM
-  # (D4; Y:5054–5062). Everything above, the content checks and the `git add`,
-  # stays (Y:5056); everything below, the commit, the push and the replay, is
-  # never reached by an attempt's child (`cp_seam`, below the function).
-  if [ -n "$REG_SCRATCH" ]; then
-    cp_seam
-    return $?
-  fi
   # NOTHING STAGED IS NOTHING TO PUSH — FOR EVERY WRITE BUT THE PUBLISH ACT.
   # A repeated `set-row-state` whose line is already there stays the no-op it
   # always was and reaches no network. S3 refuses every write over an
@@ -5078,14 +3500,6 @@ EOF
 
   # ---- 2. THE PUSH: the branch as S3 left it plus this one commit, no pull.
   cp_spec="refs/heads/$LANES_BRANCH:refs/heads/$LANES_BRANCH"
-  # FEATURE 007, T420 — THE BACKSTOP ON PRIMARY (spec:183–185; FR-026; R16
-  # (d)): outside the flag, the push sends only commits whose every path is
-  # under `handoffs/`, and exactly the tip that was read
-  # (`cp_primary_push_check`).
-  if cp_on_primary; then
-    cp_primary_push_check "$cp_sha" "$msg"
-    cp_spec="$CP_PRIMARY_TIP:refs/heads/$LANES_BRANCH"
-  fi
   cp_u=""
   [ "$CS_NO_ORIGIN_BRANCH" = 1 ] && cp_u="-u"
   cp_prc=0
@@ -5180,447 +3594,6 @@ EOF
     die "the push of $cp_sha was refused with origin/$LANES_BRANCH unmoved, so this is no lost race and a replay would meet the same refusal; the commit is local and kept on HEAD: $cp_sha $msg" 6
   fi
   cp_replay "$cp_sha" "$msg"
-}
-
-# ================================================= FEATURE 007: THE SEAM ====
-#
-# `commit_publish`'s PRIMARY BRANCH (T414; D4; FR-019; Y:4998–5013 and
-# Y:5054–5097; lane openRepoTools-4's plan, §2.2 and §3.6). On primary each
-# attempt runs the verb as a CHILD of this file under `LANES_REGISTER_SCRATCH`
-# (T413), on a scratch tree at the snapshot's seq. The child stops HERE, after
-# the verb's edit and its `git add`, and hands the change set to its parent,
-# whose one `lanes-index register commit` call decides it (T415). In order:
-#
-#   1. A second register write in one run exits 2 (Y:5097, F21): one run, one
-#      journal entry. `REGISTER_SEQ`, set on `committed`, is tested before the
-#      index is read, so any later reach, a no-op included, exits 2, whatever
-#      its edit left staged (lane openRepoTools-3, #165 6755641373, and
-#      6767463594 item 2).
-#   2. Nothing staged is no change: 0 with no handshake, as files mode's no-op
-#      (Y:5059). The index is compared with HEAD whole, so a staged path that
-#      no pathspec names is refused below, never taken for nothing.
-#   3. Every staged path is one of this write's pathspecs or
-#      `LOG_RENAMED_FROM`, and in Q18(A)'s render set, or 2 naming it with
-#      nothing sent (Y:5060); and its status is `A`, `M` or `D`, or 2.
-#   4. The attempt's directory gets the files contract §3.3 reads:
-#      `changes.tsv`, from `git diff --cached --no-renames --raw --no-abbrev
-#      HEAD` (`--no-abbrev`, since Y:5061's form abbreviates the ids; a
-#      missing side is git's 40 zeros); `renames.tsv` where the verb renamed
-#      the lane's log (O5): `ensure_log`'s case-only rename, or `rename-lane`'s
-#      move, whose new path is `LOG_RENAMED_TO` (T422); `images/<path>` from
-#      the index for every `A` and `M`; `msg`, `$msg` as files mode's
-#      `git commit -m` stores it, `git stripspace`'s cleanup with no final LF
-#      (lane openRepoTools-3, #165 6859073786); and `files`, the canonical
-#      rows, whose sha256 is the `call` line's `<files>` (§3.2's one digest
-#      rule). Then `ready`, last.
-#   5. The handshake (Y:4999–5007). The parent made `seam.fifo`; it is opened
-#      read-write on fd 5 BEFORE `ready`, so the open cannot block and a line
-#      the parent writes once it sees `ready` is held in the pipe until it is
-#      read. Turns of `read -t 1 -n 1 -u 5`, one byte each in the C locale,
-#      build the line; after a turn with no byte, and at most once a second
-#      while bytes come with no newline, the parent is tested with
-#      `pid_start_of` against `parent.pid`, whose 2 is live (R49), as is a
-#      shell with no such function yet (`wr_claim_live`'s `untested`); and
-#      the cap, `wr_seam_cap_s` (Y:5001). Where either says stop, one more
-#      turn is read first (REV-W9a N3). One byte a read keeps a line whole
-#      across a timeout on bash 3.2 too, which drops a timed-out read's
-#      partial input (W7-T422's finding: `committed 8` was read as
-#      `ommitted 8`). A byte that races bash 3.2's alarm can still be lost,
-#      only the first, and the result is never a valid message, so
-#      `seam.out` is `none` and the run replays (Y:5007, Y:5342; lane
-#      openRepoTools-3's batch c, Q76). Nothing in the seam goes through a
-#      here-document or a here-string, which need a temp file on bash 3.2
-#      (REV-W9a M1).
-#   6. `committed <s>`, where `<s>` is the attempt's snapshot `n=` plus 1
-#      (REV-W9a S1; any other `<s>` is neither message, item 7): `seam.out`
-#      is `tail`, fds 1 and 2 go back to 3 and 4,
-#      the buffered `out.1` and then `out.2` are replayed, `REGISTER_SEQ` is
-#      set, `REG_STORE` is set to `sql` (T504's variable: nothing else in a
-#      child sets it, so `committed` alone opens the tail's reads to D17's
-#      path), lane 5's `reg_flush` (T505) drops the read family, and 0 is
-#      returned, so the verb's code after the seam runs once, after COMMIT
-#      (Y:5011).
-#   7. `abandon`: `seam.out` is `none`, and the child exits 75 without its
-#      tail, its buffered output discarded (Y:5013). The parent gone, the cap
-#      passed, or a line that is neither message (a `committed` whose seq is
-#      not the snapshot's `n=` plus 1, or a line longer than 28 bytes, the
-#      longest `committed <seq>`, among them): `none`, Y:5006's one line on
-#      fd 4, and 75 without the tail (`cp_seam_stop`).
-#
-# The parent's part, the loop, `mkfifo` and the child's start with its real
-# stdout and stderr on fds 3 and 4 and its own on `out.1` and `out.2`, is
-# T415's. `rename-lane`'s handoff commit is the parent's, after `committed`
-# and outside the flag (R18), so it never reaches this seam.
-#
-# THE SEQ THIS RUN'S ONE WRITE COMMITTED AT, set only by the seam on
-# `committed` and never from the environment: `claim`'s and `rename-lane`'s
-# `register seq` lines read it (Q19(A)), and a second reach is refused by it.
-REGISTER_SEQ=""
-# Q18(A)'s render set, as the schema's `journal_edits` check spells it
-# (Y:1145–1146): `lanes/LANES.md`, `lanes/aliases.tsv`, and one level of
-# `lanes/archive/<name>.md` and `lanes/log/<name>.md`, but never
-# `lanes/log/README.md`. `lanes/STORE`, `lanes/repos.tsv` and the handoffs are
-# outside it (Y:5050). 0 in it, 1 not.
-cp_seam_render_path() {   # <path, relative to the scratch tree>
-  case "${1-}" in
-    lanes/log/README.md) return 1 ;;
-    lanes/LANES.md|lanes/aliases.tsv) return 0 ;;
-    lanes/archive/*/*|lanes/log/*/*) return 1 ;;
-    lanes/archive/?*.md|lanes/log/?*.md) return 0 ;;
-  esac
-  return 1
-}
-# Forty lower-case hex digits: a blob id as `--no-abbrev` prints it.
-cp_seam_is_hex40() {   # <value>
-  case "${1-}" in ''|*[!0123456789abcdef]*) return 1 ;; esac
-  [ "${#1}" -eq 40 ]
-}
-# `seam.out`, ONCE AND UNDER NOCLOBBER (Y:5005), in a subshell so that the
-# verb's tail never runs under `set -C`. 1 where it is there already or cannot
-# be made.
-cp_seam_out() {   # tail | none
-  ( set -C; printf '%s\n' "$1" > "$REG_SCRATCH/seam.out" ) 2>/dev/null
-}
-# A FILE OF THE ATTEMPT'S DIRECTORY THAT COULD NOT BE WRITTEN, before `ready`:
-# no commit call can be made from it, so it is an internal error, 2.
-cp_seam_unwritable() {   # <what>
-  die "could not write $1 in this attempt's directory, ${REG_SCRATCH}, under LANES_REGISTER_SCRATCH, so its change set cannot be handed to its parent: an internal error. Nothing was sent." 2
-}
-# THE CHILD STOPS WAITING (Y:5006): `seam.out` is `none`, one line goes to the
-# real stderr on fd 4, and the child exits 75 with nothing after the seam run
-# and its buffered output left unreplayed. `<id>` is the snapshot's
-# `write_id=` (contract §3.2), the one place the directory names it.
-cp_seam_stop() {   # <why>
-  local css_l="" css_id=""
-  cp_seam_out none || :
-  if [ -f "$REG_SCRATCH/snapshot" ] && [ -r "$REG_SCRATCH/snapshot" ]; then
-    while IFS= read -r css_l || [ -n "$css_l" ]; do
-      case "$css_l" in write_id=*) css_id="${css_l#write_id=}"; break ;; esac
-      css_l=""
-    done 2>/dev/null < "$REG_SCRATCH/snapshot"
-  fi
-  printf 'lanes-edit: attempt %s of write %s stopped waiting at the seam (%s); nothing after the seam ran\n' \
-    "${REG_SCRATCH##*/}" "${css_id:-unknown}" "$1" 2>/dev/null >&4 || :
-  exit 75
-}
-# A LINE'S FIELDS, split at runs of spaces and tabs as `IFS=" <tab>" read`
-# splits them, into `cs_f`, `cp_seam`'s array, with its `cs_tab`: by parameter
-# expansion alone, since a here-string needs a temp file on bash 3.2 (REV-W9a
-# M1).
-cp_seam_fields() {   # <line>
-  local csf_m="${1-}" csf_a="" csf_b=""
-  cs_f=()
-  while [ -n "$csf_m" ]; do
-    case "$csf_m" in
-      " "*|"$cs_tab"*) csf_m="${csf_m#?}" ;;
-      *)
-        csf_a="${csf_m%%" "*}"; csf_b="${csf_m%%"$cs_tab"*}"
-        [ "${#csf_b}" -ge "${#csf_a}" ] || csf_a="$csf_b"
-        cs_f+=("$csf_a"); csf_m="${csf_m#"$csf_a"}" ;;
-    esac
-  done
-}
-# ONE BYTE FROM THE SEAM'S FIFO, fd 5, into `cs_c`, `cp_seam`'s, within 1 s;
-# `read`'s own code. In the C locale, so that `read -n 1` takes a byte and
-# never a character (REV-W8a N2: under a UTF-8 locale, bash 5.2 read a lone
-# lead byte and the newline after it as one character). The locale is this
-# function's alone: a `local LC_ALL` is exported to child processes where
-# LC_ALL was exported, and the parent test's `pid_start_of` runs in the
-# caller's.
-cp_seam_byte() {
-  local LC_ALL=C
-  IFS= read -r -t 1 -n 1 -u 5 cs_c
-}
-cp_seam() {
-  local cs_tab="" cs_raw="" cs_l="" cs_meta="" cs_p="" cs_q="" cs_sm="" cs_dm="" cs_b="" cs_n="" \
-        cs_st="" cs_x="" cs_i=0 cs_known=0 cs_extra="" cs_out="" cs_bad="" cs_ren="${LOG_RENAMED_FROM:-}" \
-        cs_rto="${LOG_RENAMED_TO:-}" \
-        cs_to="" cs_ton=0 cs_fromd=0 cs_tsv="" cs_rows="" cs_img="" cs_h="" cs_d="$REG_SCRATCH" \
-        cs_pl="" cs_ptok="" cs_tok="" cs_prc=0 cs_cap="" cs_t0=0 cs_msg="" cs_s="" cs_buf="" \
-        cs_c="" cs_tt=0 cs_r="" cs_rc=0 cs_nb=0 cs_why="" cs_tw=0 cs_sl="" cs_sn="" cs_cm=""
-  local cs_sts cs_ps cs_bs cs_ns cs_f
-  cs_sts=(); cs_ps=(); cs_bs=(); cs_ns=(); cs_f=()
-  cs_tab="$(printf '\t')"
-  # `commit`'S PUBLISH ACT IS AN INTERNAL ERROR HERE (ERR-06; R16). On primary
-  # only `commit`'s carry form is refused; its publish act runs outside the
-  # attempt loop, and T420 keeps it there. Were it to reach the seam, it would
-  # find nothing staged and answer 0, and `commit` would report a publish it
-  # never made; so it exits 2, and nothing is ever pushed from a scratch tree.
-  [ "$CP_PUBLISH_AHEAD" != 1 ] ||
-    die "refusing \`commit\`'s publish act in an attempt's child under LANES_REGISTER_SCRATCH: on primary that act runs outside the attempt loop (ERR-06), so this is an internal error. Nothing was sent." 2
-  # ---- 1. ONE RUN, ONE ENTRY (Y:5097), before the index is read, so that no
-  # later reach answers "nothing staged".
-  [ -z "$REGISTER_SEQ" ] ||
-    die "a second register write in one run; the first committed at seq ${REGISTER_SEQ}; nothing more was sent." 2
-  # ---- 2. NOTHING STAGED (Y:5059).
-  cs_raw="$(git -C "$LANES_REPO" -c "$CP_EXACT" -c core.quotepath=false diff --cached --no-renames --raw --no-abbrev HEAD)" ||
-    die "git could not list what this write stages in the attempt's scratch tree, ${LANES_REPO}, under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
-  if [ -z "$cs_raw" ]; then
-    note "nothing staged for ${CP_PATHS[*]} — no commit made"
-    return 0
-  fi
-  # ---- 3. THE PATHS AND THEIR STATUS (Y:5060). `core.quotepath=false` leaves
-  # a path as it is unless it holds a control character, a quote or a
-  # backslash; git then quotes it, and the quoted form is in no render set.
-  # THE LIST IS SPLIT BY PARAMETER EXPANSION, never through a here-document or
-  # a here-string (REV-W9a M1): bash 3.2 writes each of those to a temp file,
-  # and where none can be made, as in a full TMPDIR, the read never runs, so
-  # the seam would hand an empty change set to `ready`. A line is split at
-  # each newline, and its meta, which holds no tab, at runs of spaces
-  # (`cp_seam_fields`), as `IFS=' ' read` split it; five fields, or the line
-  # is refused. And a list git gave that yields no path is refused with 2,
-  # so that no `ready` is ever written for a change set the seam could not
-  # read.
-  cs_r="$cs_raw"
-  while [ -n "$cs_r" ]; do
-    cs_l="${cs_r%%"$WR_NL"*}"
-    case "$cs_r" in
-      *"$WR_NL"*) cs_r="${cs_r#*"$WR_NL"}" ;;
-      *) cs_r="" ;;
-    esac
-    [ -n "$cs_l" ] || continue
-    cs_meta="${cs_l%%"$cs_tab"*}"; cs_p="${cs_l#*"$cs_tab"}"
-    cp_seam_fields "$cs_meta"
-    case "$cs_l" in
-      :*"$cs_tab"?*) [ "${#cs_f[@]}" -eq 5 ] ;;
-      *) false ;;
-    esac || die "git listed a line this seam cannot read, $(printf '%q' "$cs_l"), in the attempt's scratch tree under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
-    cs_sts+=("${cs_f[4]}"); cs_ps+=("$cs_p"); cs_bs+=("${cs_f[2]}"); cs_ns+=("${cs_f[3]}")
-  done
-  [ "${#cs_ps[@]}" -gt 0 ] ||
-    die "git listed what this write stages in the attempt's scratch tree, ${LANES_REPO}, under LANES_REGISTER_SCRATCH, but the seam read no path from that list, so its change set would be empty: an internal error. Nothing was sent." 2
-  for cs_p in ${cs_ps[@]+"${cs_ps[@]}"}; do
-    cs_known=0
-    for cs_q in ${CP_PATHS[@]+"${CP_PATHS[@]}"} ${cs_ren:+"$cs_ren"}; do
-      if [ "$cs_p" = "$cs_q" ]; then cs_known=1; fi
-    done
-    [ "$cs_known" = 1 ] || cs_extra="$cs_extra $cs_p"
-    cp_seam_render_path "$cs_p" || cs_out="$cs_out $cs_p"
-  done
-  if [ -n "$cs_extra" ] || [ -n "$cs_out" ]; then
-    cs_x=""
-    [ -z "$cs_extra" ] || cs_x="it stages${cs_extra}, which this write's pathspecs (${CP_PATHS[*]}${cs_ren:+ and }${cs_ren}) do not name"
-    [ -z "$cs_out" ] || cs_x="${cs_x}${cs_x:+; and }it stages${cs_out}, outside the register's render set (lanes/LANES.md, lanes/log/<lane>.md but for lanes/log/README.md, lanes/aliases.tsv and lanes/archive/<name>.md)"
-    die "refusing to send this write from the attempt's scratch tree under LANES_REGISTER_SCRATCH: ${cs_x}. It is an internal error, never a commit (Y:5060). Nothing was sent." 2
-  fi
-  cs_i=0
-  while [ "$cs_i" -lt "${#cs_ps[@]}" ]; do
-    case "${cs_sts[$cs_i]}" in
-      A|M|D)
-        if ! cp_seam_is_hex40 "${cs_bs[$cs_i]}" || ! cp_seam_is_hex40 "${cs_ns[$cs_i]}"; then
-          cs_bad="$cs_bad ${cs_ps[$cs_i]} (blob ids ${cs_bs[$cs_i]} and ${cs_ns[$cs_i]})"
-        fi ;;
-      *) cs_bad="$cs_bad ${cs_ps[$cs_i]} (status ${cs_sts[$cs_i]})" ;;
-    esac
-    cs_i=$((cs_i + 1))
-  done
-  [ -z "$cs_bad" ] ||
-    die "refusing to send this write from the attempt's scratch tree under LANES_REGISTER_SCRATCH: it stages${cs_bad}, and changes.tsv carries only A, M or D with two 40-hex blob ids (contract §3.3). It is an internal error, never a commit. Nothing was sent." 2
-  # THE CASE-ONLY RENAME (Amendment 15; O5): the old path's D line and its one
-  # new spelling's A line, which `renames.tsv` pairs.
-  # AND `rename-lane`'S MOVE OF THE LOG (T422; O5, "one per rename the verb
-  # made"; Y:3446–3447; lane openRepoTools-3, #165 6834224496, question 1):
-  # where `LOG_RENAMED_TO` is set, only under the flag and only by that verb,
-  # the A line paired is that path's, and no other. So the entry carries the
-  # move as one `rename` and the new path's lines against the old path's, the
-  # `RENAMED` line's `append`, where `remove` plus `create` would send every
-  # line of the moved log again, as lines of this write (O5).
-  if [ -n "$cs_ren" ]; then
-    cs_i=0
-    while [ "$cs_i" -lt "${#cs_ps[@]}" ]; do
-      cs_p="${cs_ps[$cs_i]}"
-      if [ "$cs_p" = "$cs_ren" ]; then
-        [ "${cs_sts[$cs_i]}" != D ] || cs_fromd=1
-      elif [ -n "$cs_rto" ]; then
-        if [ "${cs_sts[$cs_i]}" = A ] && [ "$cs_p" = "$cs_rto" ]; then
-          cs_to="$cs_p"; cs_ton=$((cs_ton + 1))
-        fi
-      elif [ "${cs_sts[$cs_i]}" = A ] && [ "$(lc "$cs_p")" = "$(lc "$cs_ren")" ]; then
-        cs_to="$cs_p"; cs_ton=$((cs_ton + 1))
-      fi
-      cs_i=$((cs_i + 1))
-    done
-    if [ "$cs_fromd" != 1 ] || [ "$cs_ton" != 1 ]; then
-      [ -z "$cs_rto" ] ||
-        die "refusing to send this write's rename of ${cs_ren} to ${cs_rto} from the attempt's scratch tree under LANES_REGISTER_SCRATCH: renames.tsv pairs that path's D line with the A line of ${cs_rto} (contract §3.3, O5), and the index does not hold exactly that pair. It is an internal error, never a commit. Nothing was sent." 2
-      die "refusing to send this write's case-only rename of ${cs_ren} from the attempt's scratch tree under LANES_REGISTER_SCRATCH: renames.tsv pairs that path's D line with one A line of its new spelling (contract §3.3, O5), and the index does not hold exactly that pair. It is an internal error, never a commit. Nothing was sent." 2
-    fi
-  fi
-  # ---- 4. THE FILES, THEN `ready`. The FIFO and the real fds are asked for
-  # first, so that a child its parent did not start for the handshake writes
-  # no `ready` at all.
-  [ -p "$cs_d/seam.fifo" ] ||
-    die "refusing to wait at the seam: this attempt's directory, ${cs_d}, holds no seam.fifo, the FIFO its parent makes for the handshake (Y:4999), under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
-  if ! { : >&3; } 2>/dev/null || ! { : >&4; } 2>/dev/null; then
-    die "refusing to wait at the seam: this attempt's child has no real stdout and stderr on fds 3 and 4 (Y:4998), so nothing it buffered could be replayed, under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
-  fi
-  cs_i=0
-  while [ "$cs_i" -lt "${#cs_ps[@]}" ]; do
-    cs_p="${cs_ps[$cs_i]}"; cs_st="${cs_sts[$cs_i]}"; cs_n="${cs_ns[$cs_i]}"
-    cs_tsv="${cs_tsv}${cs_st}${cs_tab}${cs_p}${cs_tab}${cs_bs[$cs_i]}${cs_tab}${cs_n}${WR_NL}"
-    if [ "$cs_st" = D ]; then
-      cs_rows="${cs_rows}${cs_p}${cs_tab}0${cs_tab}-${WR_NL}"
-    else
-      cs_img="$cs_d/images/$cs_p"
-      mkdir -p -- "${cs_img%/*}" 2>/dev/null || cp_seam_unwritable "images/${cs_p%/*}/"
-      git -C "$LANES_REPO" cat-file blob "$cs_n" > "$cs_img" || cp_seam_unwritable "images/${cs_p}"
-      cs_h="$(wr_sha256_stdin < "$cs_img")" || cp_seam_unwritable "the sha256 of images/${cs_p}"
-      cs_rows="${cs_rows}${cs_p}${cs_tab}1${cs_tab}${cs_h}${WR_NL}"
-    fi
-    cs_i=$((cs_i + 1))
-  done
-  printf '%s' "$cs_tsv" > "$cs_d/changes.tsv" || cp_seam_unwritable changes.tsv
-  if [ -n "$cs_ren" ]; then
-    printf '%s\t%s\n' "$cs_ren" "$cs_to" > "$cs_d/renames.tsv" || cp_seam_unwritable renames.tsv
-  fi
-  # `msg` IS THE MESSAGE AS FILES MODE'S COMMIT STORES IT, cleaned once, here
-  # (T414; lane openRepoTools-3, #165 6859073786: "store the message as git's
-  # default cleanup would"; lane openRepoTools-1's evidence, 6869810000).
-  # `commit_publish` commits with `-m` and neither `--cleanup` nor an editor,
-  # so git cleans the message as `whitespace`, which is `git stripspace` with
-  # no option: white space off the end of every line, leading and trailing
-  # blank lines dropped, a run of blank lines made one, `#` lines kept, and
-  # one LF at the end; `cp_own_commit` reads it the same way. Stored raw,
-  # `archive-rows`' names, joined by `tr '\n' ' '`, ended the journal's
-  # message in a space that its files-mode twin's commit does not hold. The
-  # file keeps its convention, no final LF of its own: `$( )` drops
-  # stripspace's one. Only `lanes-index register commit` reads this file:
-  # the `call` line, the record, the lookup and the tail's match go by
-  # `files` and the write's id, and the parent never reads the message. A
-  # message empty once cleaned leaves the file empty, which `register
-  # commit` refuses with 2 before it journals, as files mode's `git commit`
-  # refuses it; no verb hands the seam one, since each opens `LANES(` or
-  # `LOG(`.
-  cs_cm="$(printf '%s\n' "$msg" | git -C "$LANES_REPO" stripspace 2>/dev/null)" ||
-    cp_seam_unwritable "msg (\`git stripspace\` failed)"
-  printf '%s' "$cs_cm" > "$cs_d/msg" || cp_seam_unwritable msg
-  # Every path is free of control characters (above), so a whole-row sort is
-  # the sort by path, bytewise, that §3.2's canonical rows take.
-  printf '%s' "$cs_rows" | LC_ALL=C sort > "$cs_d/files" || cp_seam_unwritable files
-  exec 5<>"$cs_d/seam.fifo" ||
-    die "refusing to wait at the seam: this attempt's seam.fifo, in ${cs_d}, could not be opened read-write on fd 5 (Y:4999), under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
-  ( set -C; : > "$cs_d/ready" ) 2>/dev/null ||
-    die "refusing to wait at the seam: this attempt's ready, in ${cs_d}, is there already or cannot be made, so its parent cannot be told when this change set is whole, under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
-  # ---- 5. THE HANDSHAKE (Y:4999–5007). The parent's start token is the
-  # second field of `parent.pid`'s first line, whose first field T413 checked
-  # is `$PPID`; with none, its pid alone is tested. The line is split as the
-  # change set is, with no here-string (REV-W9a M1).
-  if [ -f "$cs_d/parent.pid" ] && [ -r "$cs_d/parent.pid" ]; then
-    { IFS= read -r cs_pl || :; } 2>/dev/null < "$cs_d/parent.pid"
-  fi
-  cp_seam_fields "$cs_pl"
-  [ "${#cs_f[@]}" -lt 2 ] || cs_ptok="${cs_f[1]}"
-  cs_cap="$(wr_seam_cap_s)"
-  cs_t0="$SECONDS"
-  cs_tt="$SECONDS"
-  # ONE BYTE A READ KEEPS A LINE WHOLE ACROSS A TIMEOUT (W7-T422's finding;
-  # Y:4999–5007). Where a `read -t` times out part way through a line, bash 4
-  # and later keep the partial input in its variable, but bash 3.2 returns 1
-  # with the variable empty and the bytes it took from the FIFO lost: there,
-  # a `committed 8` cut after its `c` was read as `ommitted 8`. So each read
-  # takes one byte (`cp_seam_byte`, in the C locale, so a byte and never a
-  # character: REV-W8a N2) into `cs_c`, and `cs_buf` builds the line from
-  # every byte a read returns; a timeout ends a turn between two reads. A
-  # read that succeeds empty is the newline; `IFS=` keeps a space, which
-  # would otherwise read as that empty. A one-byte read that times out has
-  # taken nothing, but a byte it left in `cs_c` would still be kept.
-  # A BYTE THAT RACES THE ALARM on bash 3.2, returned in the instant its 1 s
-  # alarm fires, can still be lost (lane openRepoTools-3's batch c, Q76). Only
-  # the first: only a read that is blocked when the parent's line arrives can
-  # race, and that line is one write shorter than PIPE_BUF (a later byte only
-  # where a read stalls a second or more between its alarm and its return).
-  # The result is never a valid message: a cut `committed` or `abandon` is
-  # neither, and so is a valid message with the wrong seq (below), as a lost
-  # digit would leave it. So `seam.out` is `none` and the run replays
-  # (Y:5007, Y:5342).
-  # The parent and cap tests run after a turn that times out, and at most
-  # once a second while bytes come with no newline. Where either says stop,
-  # one more turn is read first (REV-W9a N3), so that a line that reached the
-  # FIFO after a turn's timeout and before the test is still taken; that turn
-  # stops at a read that times out, or 2 s on. A line longer than any
-  # message, `committed ` and 18 digits, is neither, once its 29th byte is
-  # read (REV-W8a N3).
-  while :; do
-    cs_c=""; cs_rc=0
-    cp_seam_byte || cs_rc=$?
-    if [ "$cs_rc" = 0 ] && [ -z "$cs_c" ]; then
-      cs_msg="$cs_buf"
-      break
-    fi
-    if [ -n "$cs_c" ]; then
-      cs_buf="${cs_buf}${cs_c}"; cs_nb=$((cs_nb + 1))
-      [ "$cs_nb" -le 28 ] ||
-        cp_seam_stop "its parent's message is longer than 28 bytes, the longest committed <seq>, so it is neither committed <seq> nor abandon; it begins $(printf '%q' "$cs_buf")"
-    fi
-    if [ "$cs_rc" = 0 ]; then
-      [ "$SECONDS" != "$cs_tt" ] || continue
-      [ -z "$cs_why" ] || [ $((SECONDS - cs_tw)) -lt 2 ] || cp_seam_stop "$cs_why"
-    else
-      [ -z "$cs_why" ] || cp_seam_stop "$cs_why"
-    fi
-    cs_tt="$SECONDS"
-    [ -z "$cs_why" ] || continue
-    cs_tok=""; cs_prc=0
-    cs_tok="$(pid_start_of "$PPID" 2>/dev/null)" || cs_prc=$?
-    case "$cs_prc" in
-      1) cs_why="its parent, pid ${PPID}, is gone" ;;
-      0) if [ -n "$cs_ptok" ] && [ "$cs_tok" != "$cs_ptok" ]; then
-           cs_why="its parent, pid ${PPID}, is gone, and that pid is another process now"
-         fi ;;
-    esac
-    [ -n "$cs_why" ] || [ $((SECONDS - cs_t0)) -lt "$cs_cap" ] || cs_why="the seam's cap of ${cs_cap} s passed"
-    [ -z "$cs_why" ] || cs_tw="$SECONDS"
-  done
-  case "$cs_msg" in
-    abandon)
-      cp_seam_out none || :
-      exit 75 ;;
-    "committed "*)
-      cs_s="${cs_msg#committed }"
-      wr_is_count "$cs_s" || cp_seam_stop "its parent's message is $(printf '%q' "$cs_msg"), which is neither committed <seq> nor abandon"
-      # THIS ATTEMPT'S OWN SEQ (REV-W9a S1): a commit of this change set is at
-      # the snapshot's `n=` plus 1, since `commit_write` refuses unless the
-      # head is still `n` (Y:2570) and commits at `n+1` (Y:2601); and the
-      # child a run sends `committed <s>` to took its snapshot at `s-1`, or
-      # was built `--at <s-1>`, whose `n=` is `s-1` (contract §3.2). Any other
-      # `<s>`, one with a leading zero included, is neither message: `none`,
-      # and the run replays (Y:5007, Y:5342). The reference is the snapshot,
-      # the attempt's own, and not the record's `tail=sent <s>` (Y:5293),
-      # which the child does not read.
-      cs_sn=""
-      if [ -f "$cs_d/snapshot" ] && [ -r "$cs_d/snapshot" ]; then
-        while IFS= read -r cs_sl || [ -n "$cs_sl" ]; do
-          case "$cs_sl" in n=*) cs_sn="${cs_sl#n=}"; break ;; esac
-          cs_sl=""
-        done 2>/dev/null < "$cs_d/snapshot"
-      fi
-      wr_is_count "$cs_sn" ||
-        cp_seam_stop "its parent's message is committed ${cs_s}, and this attempt's snapshot gives no n= to check that seq against, so it is neither committed <seq> of this attempt nor abandon"
-      [ "$cs_s" = "$((10#$cs_sn + 1))" ] ||
-        cp_seam_stop "its parent's message is committed ${cs_s}, and this attempt's snapshot is at n=${cs_sn}, so a commit of it is at seq $((10#$cs_sn + 1)): neither committed <seq> of this attempt nor abandon" ;;
-    *)
-      cp_seam_stop "its parent's message is $(printf '%q' "$cs_msg"), which is neither committed <seq> nor abandon" ;;
-  esac
-  cp_seam_out tail || cp_seam_stop "its seam.out could not be written as tail"
-  # ---- 6. COMMITTED (Y:5011): the real fds back, the buffered output in its
-  # order, the seq, and the read family dropped, so that the tail's reads take
-  # D17's path.
-  exec 5>&-
-  exec 1>&3 2>&4 3>&- 4>&-
-  [ ! -f "$cs_d/out.1" ] || cat -- "$cs_d/out.1"
-  [ ! -f "$cs_d/out.2" ] || cat -- "$cs_d/out.2" >&2
-  REGISTER_SEQ="$cs_s"
-  REG_STORE=sql
-  reg_flush
-  # THE RENAME IS IN THE ENTRY, as files mode's index commit leaves it: the
-  # old path is no longer a pathspec of anything after the seam, and neither
-  # half of the pair outlives the `committed` that sent it (T422).
-  if [ -n "$cs_ren" ]; then
-    CP_PATHS=(${cp_add[@]+"${cp_add[@]}"})
-    LOG_RENAMED_FROM=""
-    LOG_RENAMED_TO=""
-  fi
-  return 0
 }
 
 # THIS WRITE'S OWN COMMIT, KNOWN BY WHAT IT IS AND NOT BY READING HEAD AFTER
@@ -6128,39 +4101,17 @@ cp_archive_steps() {
 # that did both (a `STARTED` that landed and moved the snapshot) makes both
 # forks; `lanes-index` runs one sync at a time per workstation, and a second
 # that finds the lock held leaves the holder a mark naming its source.
-#
-# ON PRIMARY THE REGISTER'S NUDGE IS SUPPRESSED, AND THE INVENTORY'S STAYS
-# (feature 007, T416; FR-027; Y:2976–2979 and Y:5380, S2's nudge). There the
-# register is the database and its files are the renderer's mirror, so a
-# register `sync` would re-index the mirror into the store it came from: a
-# process whose mode is `primary` (`REG_MODE`, the writers' one answer, which
-# an attempt's child also holds) drops the register's flag here, and makes the
-# inventory's fork as before. On primary the register's nudge is replaced by
-# the renderer's fork at a write's end 0 (`pw_render_fork`), which no
-# `LANES_INDEX=off` skips. Only a push sets the register's flag (`cp_pushed`),
-# and an attempt's child never reaches one (Y:5042), so this is the rule for
-# any push a primary process makes. Any other mode, or none asked, is today's
-# nudge, unchanged.
-#
-# NEITHER FORK CARRIES AN ACT (feature 007, T416; lane openRepoTools-3's ruling
-# on question 122, #165 6814531692, by its G5): each subshell unsets
-# `LANES_ACT` and `LANES_EXPECT` before it starts `lanes-index`, in every
-# mode, since the sync outlives the act whose write it follows. This process
-# keeps both (Y:5599's check 2).
 index_nudge() {
   in_reg="${LANES_INDEX_NUDGE:-0}"; in_inv="${LANES_INDEX_NUDGE_INV:-0}"
   LANES_INDEX_NUDGE=0; LANES_INDEX_NUDGE_INV=0
-  [ "${REG_MODE:-}" != primary ] || in_reg=0
   [ "${LANES_INDEX:-}" = off ] && return 0
   in_bin="$(command -v lanes-index 2>/dev/null || :)"
   [ -n "$in_bin" ] || return 0
   if [ "$in_reg" = 1 ]; then
-    ( unset LANES_ACT LANES_EXPECT
-      "$in_bin" sync </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
+    ( "$in_bin" sync </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
   fi
   if [ "$in_inv" = 1 ]; then
-    ( unset LANES_ACT LANES_EXPECT
-      "$in_bin" sync --source inventory </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
+    ( "$in_bin" sync --source inventory </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
   fi
   return 0
 }
@@ -6170,11 +4121,10 @@ index_nudge() {
 # the rule `index_open` has always used. A test's stand-in goes where it looks
 # first, beside a COPY of this file that also has the `repos.tsv` and
 # `lane-start` this file reads from `$SCRIPT_DIR`, so nothing installed runs.
-# Prints the path, or nothing where there is none. Every `lanes-index` call
-# on the mode and SQL paths resolves through it, whichever function makes the
-# call, so this comment names none of them. `index_nudge` above keeps PATH
-# alone, for the reason its comment gives (lane 3's ruling on T409's item 8,
-# #165 6747281902).
+# Prints the path, or nothing where there is none. It resolves every
+# `lanes-index` call on the mode and SQL paths: `index_open` and the writers'
+# mode question here. `index_nudge` above keeps PATH alone, for the reason its
+# comment gives (lane 3's ruling on T409's item 8, #165 6747281902).
 lanes_index_bin() {
   if [ -x "$SCRIPT_DIR/lanes-index" ]; then
     printf '%s\n' "$SCRIPT_DIR/lanes-index"
@@ -6443,12 +4393,12 @@ reg_mode_files() {   # <why>
 # `lanes-index` call, `serve --start` on primary (T513), is no register call
 # either.
 # `lanes --decide` is decide, `reg_open`'s one flag rule (R38).
-# T504's own tree had no rows for the five arms it lacked: T401's
+# The table has no rows for the five arms its own tree lacks: T401's
 # `register-text` and `register-grep`, T410's `act-begin`, T427's
 # `start-record` and T502's `guard-bind`. Whichever of T504 and an arm's task
 # lands second adds that arm's row, and an integration merge that brings an
 # arm and this table together adds it in that merge (lane 3's ruling
-# 6782923063). T504's task text gives each arm's class: `register-text` and
+# 6782923063). B14 tasks:731-732 give each arm's class: `register-text` and
 # `register-grep` decide, `act-begin` none, `start-record` writer,
 # `guard-bind` none. Until its row is here an arm takes the `*)` row, decide.
 reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
@@ -6458,7 +4408,6 @@ reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
     append-session-id) REG_CLASS=writer ;;
     append-line) REG_CLASS=writer ;;
     add-row) REG_CLASS=writer ;;
-    start-record) REG_CLASS=writer ;;
     set-row-state) REG_CLASS=writer ;;
     migrate-state-cells) REG_CLASS=writer ;;
     retire-rows) REG_CLASS=writer ;;
@@ -6500,8 +4449,6 @@ reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
     next-free) REG_CLASS=decide ;;
     lane-objects) REG_CLASS=decide ;;
     register-row-local) REG_CLASS=decide ;;
-    register-text) REG_CLASS=decide ;;
-    register-grep) REG_CLASS=decide ;;
     retired-identity) REG_CLASS=decide ;;
     session-lane) REG_CLASS=decide ;;
     resolve-home) REG_CLASS=decide ;;
@@ -7481,3786 +5428,7 @@ table_lookup() {   # <fenced table> <lower-cased lane>
   return 0
 }
 
-# NOW, AS A UTC STAMP AND AS EPOCH SECONDS: the host's clock, except under
-# feature 007's internal flag, where both answer the attempt's snapshot clock,
-# read once when the flag was taken (`reg_scratch_take`): ONE CLOCK for the
-# lines a verb composes and the durations it decides by (D13, Y:528–534;
-# T413). `older_than_minutes` and `older_than_threshold` read `now_epoch`.
-utc_now() {
-  if [ -n "$REG_SCRATCH" ]; then printf '%s\n' "$REG_SCRATCH_UTC"; return 0; fi
-  date -u +%Y-%m-%dT%H:%M:%SZ
-}
-now_epoch() {
-  if [ -n "$REG_SCRATCH" ]; then printf '%s\n' "$REG_SCRATCH_CLOCK"; return 0; fi
-  date -u +%s
-}
-
-# ----------------------------------- F10: THE WRITE ID AND THE PENDING RECORD
-#
-# 007 T412 (FR-021; Y:5169-5224, Y:2466-2502; contract §3.2 and §4). The
-# formats of the record, its claims and the done mark, and the texts below, are
-# lane openRepoTools-4's `contracts/pending-record.md` (R34).
-#
-# THE CITATIONS. `Y:<n>` is line `<n>` of the add-sql-register change's
-# `design.md` at spec commit `a6497d00`; `FR-<n>` is feature 007's `spec.md`;
-# "the contract" is its `contracts/register-cli.md`; `R<nn>` is lane
-# openRepoTools-3's ruling of that number (#165 6726556972); and `T<nnn>` is
-# a task of feature 007's `tasks.md`.
-#
-# INERT UNTIL T415: nothing in this file calls these yet. T415's primary branch
-# calls them once per writer process, in this order:
-#
-#   wr_begin                      the digest and the run's identity
-#   wr_claim_take <deadline>      the claim chain, BEFORE the first snapshot
-#   wr_id_plan                    the record read; the first snapshot's flags
-#   (the first snapshot)          register snapshot "${WR_SNAP_ARGS[@]}" ...
-#   wr_id_settle <stdout file>    the id and the generation; the record written
-#   wr_record_add_call ...        a `call=` line, before each commit call
-#   wr_record_drop_call <dir>     a call an answer shows did not commit
-#   wr_claim_release              a new write's 69 at its first snapshot
-#   wr_record_remove              the outcome known: the record and its claims
-#
-# NOT HERE: the 3 for an owner still live at D7's deadline (Y:5218) is T417's,
-# with the exit-3 rule (review M8). The `tail` key's values and their writer
-# are T418's, in the primary branch's "THE TAIL, ONCE"; T418 also adds the
-# done mark's writer and reader (`wr_done_write`, `wr_done_read`) and the owed
-# texts (`wr_owed_text`) here ("The tail, once", Y:5289).
-WR_NL="$(printf '\nx')"; WR_NL="${WR_NL%x}"; WR_CR="$(printf '\r')"
-WR_STATE=""; WR_D=""; WR_LANE=""; WR_SESSION=""; WR_VERB=""; WR_CMDLINE=""
-WR_ARGS=()
-WR_PLAN=""; WR_SNAP_ARGS=()
-WR_ID=""; WR_GEN=""; WR_DATABASE=""; WR_CREATED_UTC=""; WR_UPDATED_UTC=""
-WR_ATTEMPTS=0; WR_CALLS=""; WR_TAIL=""; WR_TOOK_TAIL=""
-WR_CLAIM=""; WR_CLAIM_K=-1; WR_CLAIM_PID=""; WR_CLAIM_START=""
-WR_CLAIM_HOST=""; WR_CLAIM_CONTAINER=""; WR_CLAIM_UTC=""
-WR_HERE_HOST=""; WR_HERE_CONTAINER=""
-WR_HIGHEST_K=-1; WR_HIGHEST_FILE=""
-WR_C_PID=""; WR_C_START=""; WR_C_HOST=""; WR_C_CONTAINER=""; WR_C_UTC=""
-WR_OWNER_FILE=""; WR_OWNER_PID=""; WR_OWNER_START=""; WR_OWNER_HOST=""
-WR_OWNER_CONTAINER=""; WR_OWNER_UTC=""; WR_OWNER_WHY=""; WR_OWNER_TAKE_AFTER=""
-WR_LIVE_WHY=""; WR_LIVE_UNTIL=""
-WR_REC_FORMAT=""; WR_REC_WRITE_ID=""; WR_REC_GENERATION=""; WR_REC_DATABASE=""
-WR_REC_LANE=""; WR_REC_SESSION=""; WR_REC_VERB=""; WR_REC_ARGS_SHA256=""
-WR_REC_CMDLINE=""; WR_REC_CREATED_UTC=""; WR_REC_UPDATED_UTC=""; WR_REC_PID=""
-WR_REC_PID_START=""; WR_REC_HOST=""; WR_REC_CONTAINER=""; WR_REC_ATTEMPTS=""
-WR_REC_CALLS=""; WR_REC_TAIL=""
-WR_CF_BASE=""; WR_CF_CLOCK=""; WR_CF_NOT_AFTER=""; WR_CF_FILES=""; WR_CF_DIR=""
-
-# A LOWER-CASE UUID, as `lanes-index` prints a write id and a generation
-# (contract §4: "printed as a lowercase UUID"). The digits are spelled out, not
-# ranged, so no locale's collation can widen `[a-f]`.
-wr_is_uuid() {   # <value>
-  local h='[0123456789abcdef]'
-  case "${1-}" in
-    $h$h$h$h$h$h$h$h-$h$h$h$h-$h$h$h$h-$h$h$h$h-$h$h$h$h$h$h$h$h$h$h$h$h) return 0 ;;
-  esac
-  return 1
-}
-
-# 64 lower-case hex digits: a sha256, as `<d>` and a `call=` line's `<files>`.
-wr_is_hex64() {   # <value>
-  case "${1-}" in ''|*[!0123456789abcdef]*) return 1 ;; esac
-  [ "${#1}" -eq 64 ]
-}
-
-# Whole decimal digits, few enough for the shell's arithmetic.
-wr_is_count() {   # <value>
-  case "${1-}" in ''|*[!0123456789]*) return 1 ;; esac
-  [ "${#1}" -le 18 ]
-}
-
-# A UTC as this file writes one, `YYYY-MM-DDTHH:MM:SSZ`. It is checked before
-# `epoch_of` reads it, since GNU `date -d ''` answers today's midnight, not
-# nothing.
-wr_is_utc() {   # <value>
-  local d='[0123456789]'
-  case "${1-}" in
-    ${d}${d}${d}${d}-${d}${d}-${d}${d}T${d}${d}:${d}${d}:${d}${d}Z) return 0 ;;
-  esac
-  return 1
-}
-
-# One `key=value` value: no line feed and no carriage return, either of which
-# would end its line early and make the rest a line of its own.
-wr_value_ok() {   # <value>
-  case "${1-}" in *"$WR_NL"*|*"$WR_CR"*) return 1 ;; esac
-  return 0
-}
-
-# The sha256 of stdin, in lower-case hex. `shasum -a 256` is macOS's spelling
-# and `sha256sum` GNU's, as `lane_handoff_digest` asks them. 1 where neither is
-# here or the answer is not a sha256.
-wr_sha256_stdin() {
-  local ws_h=""
-  if command -v sha256sum >/dev/null 2>&1; then
-    ws_h="$(sha256sum 2>/dev/null | awk '{print $1; exit}')"
-  elif command -v shasum >/dev/null 2>&1; then
-    ws_h="$(shasum -a 256 2>/dev/null | awk '{print $1; exit}')"
-  else
-    return 1
-  fi
-  wr_is_hex64 "$ws_h" || return 1
-  printf '%s\n' "$ws_h"
-}
-
-# THE DIGEST, `<d>` (Y:5171): the sha256 of `lanes-pending/1`, then a NUL before
-# each of the lane, the session, the verb and every argument in order, with no
-# NUL after the last. It names the record's file, and it is the journal's
-# `args_sha256`, which every register call of the write passes; `lanes-index`
-# never recomputes it (contract §4).
-wr_digest() {   # <lane> <session> <verb> [<arg>...]
-  { printf 'lanes-pending/1'; printf '\0%s' "$@"; } | wr_sha256_stdin
-}
-
-# THE HOST'S CLOCK, as UTC. Never `utc_now`, which under T413's flag answers the
-# snapshot's database clock in the child: `updated_utc` is always this host's,
-# since a takeover ages the record's newest `call=` clock by it, on this host
-# (open point 36, taken under R26; contract §3.4).
-wr_host_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-
-# A record's and a done mark's maximum age, 15 minutes (Y:5183, Y:5207).
-# `LANES_REGISTER_PENDING_MAX_AGE_S` sets it for tests, read and printed in base
-# 10 as `wr_seam_cap_s` is, so `08` is 8 s in every compare and every message
-# that names it (#165 6770820384, T415's 4).
-wr_max_age_s() {
-  if wr_is_count "${LANES_REGISTER_PENDING_MAX_AGE_S:-}"; then
-    printf '%s\n' "$((10#$LANES_REGISTER_PENDING_MAX_AGE_S))"
-  else
-    printf '900\n'
-  fi
-}
-
-# THE SEAM'S CAP, 2 x (D + 30 s), 120 s at D7's 30 s (Y:5001), where D is D7's
-# deadline: 30 s, or `LANES_REGISTER_DEADLINE_S` for tests (Y:2632-2644), as
-# T415's `pw_deadline_s` reads it, the one reader of D (T415's merge of T412).
-# DEC-25 keeps this one cap: it is also how
-# long a claim that cannot be tested here counts as live, another host's among
-# them (Y:5220) (lane openRepoTools-3, #165 6774499606, T415 (1)).
-# `LANES_REGISTER_SEAM_CAP_S` sets the cap itself, for tests (Y:5001). Each is
-# read in base 10, so a leading zero is neither octal nor an arithmetic error
-# in `wr_claim_capped`'s `$(( ))`: `08` is 8 s (#165 6770820384, T415's 4). A
-# value that is not a count of at most 18 digits (`wr_is_count`) is not read,
-# so twice D + 30 stays inside the shell's arithmetic.
-wr_seam_cap_s() {
-  local sc_d=30
-  if wr_is_count "${LANES_REGISTER_SEAM_CAP_S:-}"; then
-    printf '%s\n' "$((10#$LANES_REGISTER_SEAM_CAP_S))"
-    return 0
-  fi
-  sc_d="$(pw_deadline_s)"
-  printf '%s\n' "$(( 2 * (sc_d + 30) ))"
-}
-
-# A 0700 directory this uid owns, made where it is missing (Y:5172, Y:5180: "in
-# a 0700 directory"). 1 where it cannot be made, is not a directory, or is not
-# this uid's.
-#
-# `<state>` ITSELF IS ONLY MADE WHERE IT IS MISSING, NEVER CHMODDED: it is
-# `lanes-index`'s own directory, which `lanes-index` makes 0700 and never
-# chmods (`lanes-index:1492`), and the contract says only that every directory
-# is "made where it is missing, under `umask 077`, and must be a directory this
-# uid owns" (§1). Made here, under umask 077, it is 0700 already. The
-# directories under it, `register-*/` and the attempt directories, are made
-# 0700 or set to it (review REV-W10a N1).
-wr_dir_0700() {   # <dir>
-  ( umask 077 && mkdir -p -- "$1" ) 2>/dev/null || return 1
-  [ -d "$1" ] && [ -O "$1" ] || return 1
-  [ "$1" != "$WR_STATE" ] || return 0
-  chmod 700 -- "$1" 2>/dev/null
-}
-
-# WHICH HOST AND CONTAINER THIS RUN IS ON, by the same probes the writer stamps
-# its lines with, and through the same fence. A value that fails the fence is
-# left empty, and an empty one never matches: a claim is judged by its pid only
-# where both sides name the same host and the same container.
-wr_here() {
-  WR_HERE_HOST="$(lanes_host_pair | cut -f1)"
-  WR_HERE_CONTAINER="$(lanes_container_pair | cut -f1)"
-  lanes_binding_value_ok "$WR_HERE_HOST" || WR_HERE_HOST=""
-  lanes_binding_value_ok "$WR_HERE_CONTAINER" || WR_HERE_CONTAINER=""
-  return 0
-}
-
-# THE RUN'S F10 IDENTITY, made once, before its claim (Y:5171; contract §4): the
-# state directory, the digest `<d>` and what goes into it, and the record's
-# `cmdline`.
-#
-# The digest is over the words AS THEY ARRIVED (`ORIG_ARGV`), less the global
-# flags the parser at the top of this file takes before the verb, which are
-# neither the verb nor its arguments (Y:2476). The lane and the session are
-# `LANES_LANE` and `LANES_SESSION` as given, empty where unset (Y:5171).
-# `cmdline` keeps every word, each shell-quoted.
-#
-# LANES_WRITE_ID and LANES_WRITE_GENERATION are checked for shape here, before
-# any call: an id is a lower-case UUID or `new`, and a generation a lower-case
-# UUID. Another shape is refused with 2, nothing sent. A host with no sha256
-# is refused with 1.
-wr_begin() {
-  local wb_w wb_k wb_flags wb_v wb_q
-  WR_STATE="$(wr_state_dir)"
-  WR_LANE="${LANES_LANE:-}"; WR_SESSION="${LANES_SESSION:-}"
-  WR_VERB=""; WR_ARGS=(); wb_k=0; wb_flags=1
-  WR_CMDLINE="lanes-edit.sh"
-  for wb_w in ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"}; do
-    wb_q="$(printf '%q' "$wb_w")"
-    WR_CMDLINE="$WR_CMDLINE $wb_q"
-    if [ "$wb_flags" = 1 ]; then
-      case "$wb_w" in --no-sweep|--sweep|--no-github) continue ;; esac
-      wb_flags=0; WR_VERB="$wb_w"
-      continue
-    fi
-    WR_ARGS[$wb_k]="$wb_w"; wb_k=$((wb_k + 1))
-  done
-  WR_D="$(wr_digest "$WR_LANE" "$WR_SESSION" "$WR_VERB" ${WR_ARGS[@]+"${WR_ARGS[@]}"})" || WR_D=""
-  wr_is_hex64 "$WR_D" || die "this write's digest, which its pending record and every register call of it are keyed by, could not be computed: this host has neither sha256sum nor shasum. Nothing was sent" 1
-  wb_v="${LANES_WRITE_ID:-}"
-  case "$wb_v" in
-    ''|new) : ;;
-    *)
-      wb_q="$(printf '%q' "$wb_v")"
-      wr_is_uuid "$wb_v" || die "LANES_WRITE_ID is $wb_q, which is neither a write id (a lower-case UUID, as a printed rerun gives it) nor new. Nothing was sent" 2
-      ;;
-  esac
-  wb_v="${LANES_WRITE_GENERATION:-}"
-  if [ -n "$wb_v" ] && ! wr_is_uuid "$wb_v"; then
-    wb_q="$(printf '%q' "$wb_v")"
-    die "LANES_WRITE_GENERATION is $wb_q, which is not a register generation (a lower-case UUID, as a printed rerun gives it). Nothing was sent" 2
-  fi
-  return 0
-}
-
-# THE PENDING RECORDS' DIRECTORY, `<state>/register-pending/` (Y:5171), 0700.
-# It prints the path, and answers 1 where the directory cannot be made.
-wr_pending_dir() {
-  wr_dir_0700 "$WR_STATE" || return 1
-  wr_dir_0700 "$WR_STATE/register-pending" || return 1
-  printf '%s\n' "$WR_STATE/register-pending"
-}
-
-# A CLAIM, `<d>.take.<k>` (Y:5184): five `key=value` lines, `pid`, `pid_start`,
-# `host`, `container` and `utc`. Its values go into WR_C_*. 0 when it names a
-# pid; 1 when it cannot be read or names none. Since ERR-42 a claim is made
-# whole, so a run never sees its maker's half-written body; a claim with no pid
-# is a crash's, a failed disk's or another tool's (DEC-25).
-wr_claim_read() {   # <claim file>
-  local cr_l=""
-  WR_C_PID=""; WR_C_START=""; WR_C_HOST=""; WR_C_CONTAINER=""; WR_C_UTC=""
-  [ -f "$1" ] && [ -r "$1" ] || return 1
-  while IFS= read -r cr_l || [ -n "$cr_l" ]; do
-    case "$cr_l" in
-      pid=*) WR_C_PID="${cr_l#pid=}" ;;
-      pid_start=*) WR_C_START="${cr_l#pid_start=}" ;;
-      host=*) WR_C_HOST="${cr_l#host=}" ;;
-      container=*) WR_C_CONTAINER="${cr_l#container=}" ;;
-      utc=*) WR_C_UTC="${cr_l#utc=}" ;;
-    esac
-    cr_l=""
-  done < "$1" 2>/dev/null
-  wr_is_count "$WR_C_PID"
-}
-
-# THE HIGHEST CLAIM on `<d>` in `<dir>`: WR_HIGHEST_K, -1 where there is none,
-# and WR_HIGHEST_FILE. Only a name this file makes counts: `.take.` and a
-# number with no leading zero. A name that is there counts even where it is a
-# dangling symbolic link, as `wr_claim_live` counts it and as `ln` finds the
-# name taken: one passed over here made `wr_claim_take` create that same name
-# again and again, with no sleep and past its deadline (review REV-W10a S1).
-# Such a claim names no pid, so it is live for the seam's cap only (DEC-25).
-wr_claim_highest() {   # <dir>
-  local ch_f ch_k
-  WR_HIGHEST_K=-1; WR_HIGHEST_FILE=""
-  for ch_f in "$1/$WR_D".take.*; do
-    [ -e "$ch_f" ] || [ -L "$ch_f" ] || continue
-    ch_k="${ch_f##*.take.}"
-    case "$ch_k" in ''|*[!0123456789]*|0?*) continue ;; esac
-    [ "${#ch_k}" -le 9 ] || continue
-    if [ "$ch_k" -gt "$WR_HIGHEST_K" ]; then
-      WR_HIGHEST_K="$ch_k"; WR_HIGHEST_FILE="$ch_f"
-    fi
-  done
-  return 0
-}
-
-# The record's `updated_utc` as epoch seconds, empty where there is no record or
-# no readable stamp in it.
-wr_record_updated_epoch() {   # <record file>
-  local ru_l="" ru_u=""
-  [ -f "$1" ] && [ -r "$1" ] || return 0
-  while IFS= read -r ru_l || [ -n "$ru_l" ]; do
-    case "$ru_l" in updated_utc=*) ru_u="${ru_l#updated_utc=}" ;; esac
-    ru_l=""
-  done < "$1" 2>/dev/null
-  wr_is_utc "$ru_u" || return 0
-  epoch_of "$ru_u"
-}
-
-# A file's mtime, in epoch seconds, as `fetch-age` reads `FETCH_HEAD`'s: GNU
-# `stat -c %Y`, else BSD `stat -f %m`. Empty where neither answers.
-wr_file_mtime() {   # <file>
-  local fm_t
-  fm_t="$(stat -c %Y -- "$1" 2>/dev/null || stat -f %m -- "$1" 2>/dev/null || :)"
-  wr_is_count "$fm_t" || fm_t=""
-  printf '%s' "$fm_t"
-}
-
-# Epoch seconds as this file's UTC stamp: GNU `date -d @<s>`, else BSD
-# `date -j -r <s>`. Empty where neither answers.
-wr_utc_of_epoch() {   # <epoch seconds>
-  wr_is_count "${1-}" || return 0
-  date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
-    date -u -j -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || :
-}
-
-# A CLAIM WHOSE OWNER CANNOT BE TESTED HERE is live for the seam's cap,
-# 2 x (D + 30 s), 120 s at D7's 30 s (`wr_seam_cap_s`; Y:5001), and dead after
-# it: Y:5220 for a claim from another host or container, "since its pid cannot
-# be tested here", and DEC-25 for the two of this host that cannot be tested
-# either. The cap runs from the later of
-# `<from>`, the claim's own time, and the record's `updated_utc`; where neither
-# can be read, from the claim file's mtime; where even that cannot be read, the
-# claim is live. WR_LIVE_WHY is `<why>`, and WR_LIVE_UNTIL the epoch second from
-# which a run may take the claim. 0 live, 1 dead.
-wr_claim_capped() {   # <why> <from, epoch seconds, or empty> <record file> <claim file>
-  local cp_from cp_b
-  WR_LIVE_WHY="${1-}"; WR_LIVE_UNTIL=""
-  cp_from="${2-}"
-  cp_b="$(wr_record_updated_epoch "$3")"
-  if [ -n "$cp_b" ] && { [ -z "$cp_from" ] || [ "$cp_b" -gt "$cp_from" ]; }; then cp_from="$cp_b"; fi
-  [ -n "$cp_from" ] || cp_from="$(wr_file_mtime "$4")"
-  [ -n "$cp_from" ] || return 0
-  WR_LIVE_UNTIL=$(( cp_from + $(wr_seam_cap_s) ))
-  [ "$(date -u +%s)" -lt "$WR_LIVE_UNTIL" ]
-}
-
-# IS THE CLAIM'S OWNER LIVE? 0 live, 1 dead or its pid reused (Y:5185, Y:5220;
-# DEC-25; contract §4.3). WR_LIVE_WHY says why it is live, for T417's 3:
-#
-#   pid           here: `pid_start_of` answered 0 with the claim's own token
-#   start-unread  here: `pid_start_of` answered 2, a start that cannot be read,
-#                 which is live with no bound (R49)
-#   untested      here: any other answer, the 127 of a host where
-#                 `pid_start_of` is not yet defined among them, also unbounded
-#   other-host    from another host or container, or where either side's host
-#                 or container is not known (Y:5220)
-#   no-pid        it names no pid, or cannot be read (DEC-25)
-#   no-start      here: its pid lives, and the claim recorded no start token, so
-#                 a reused pid cannot be told (DEC-25)
-#
-# The last three are live only for the seam's cap (`wr_claim_capped`), with
-# WR_LIVE_UNTIL set; `other-host` and `no-start` from the later of the claim's
-# `utc` and the record's `updated_utc`, and `no-pid` from the later of the
-# claim file's mtime and `updated_utc`. Exit 1 of `pid_start_of`, and another
-# token than the claim's, are dead. A claim that has gone is dead, since only
-# its owner removes it; and one naming this run's own pid, which this run did
-# not make, is a dead run's, since the pid is this run's now.
-wr_claim_live() {   # <claim file>
-  local cl_rec cl_a cl_tok cl_rc
-  WR_LIVE_WHY=""; WR_LIVE_UNTIL=""
-  cl_rec="${1%.take.*}"
-  if ! wr_claim_read "$1"; then
-    [ -e "$1" ] || [ -L "$1" ] || return 1
-    wr_claim_capped no-pid "$(wr_file_mtime "$1")" "$cl_rec" "$1"
-    return $?
-  fi
-  cl_a=""
-  wr_is_utc "$WR_C_UTC" && cl_a="$(epoch_of "$WR_C_UTC")"
-  wr_here
-  if [ -z "$WR_C_HOST" ] || [ -z "$WR_C_CONTAINER" ] || [ -z "$WR_HERE_HOST" ] || [ -z "$WR_HERE_CONTAINER" ] ||
-     [ "$WR_C_HOST" != "$WR_HERE_HOST" ] || [ "$WR_C_CONTAINER" != "$WR_HERE_CONTAINER" ]; then
-    wr_claim_capped other-host "$cl_a" "$cl_rec" "$1"
-    return $?
-  fi
-  [ "$WR_C_PID" = "$$" ] && [ "$1" != "$WR_CLAIM" ] && return 1
-  cl_tok="$(pid_start_of "$WR_C_PID" 2>/dev/null)"; cl_rc=$?
-  case "$cl_rc" in
-    0)
-      if [ -z "$WR_C_START" ]; then
-        wr_claim_capped no-start "$cl_a" "$cl_rec" "$1"
-        return $?
-      fi
-      [ "$cl_tok" = "$WR_C_START" ] || return 1
-      WR_LIVE_WHY=pid
-      return 0
-      ;;
-    1) return 1 ;;
-    2) WR_LIVE_WHY=start-unread; return 0 ;;
-  esac
-  WR_LIVE_WHY=untested
-  return 0
-}
-
-# A CLAIM MADE WHOLE (Y:5184, as ERR-42 reads it). Its body is written to a
-# temporary file beside it, `.<d>.claim.XXXXXX`, and read back, and the file is
-# then linked to `<d>.take.<k>` with `ln`. The link fails where the name exists,
-# as noclobber's create does, so only one run's create of a name succeeds
-# (Y:5188), and no run ever meets the name with less than the whole body. The
-# temporary file is removed whether the link succeeds or fails. Its name begins
-# with a dot, so no reader takes it for a record or a claim: a record is read by
-# its exact name, `<d>`, and a claim only as `<d>.take.<k>`. 0600, as the record
-# is.
-#
-# 0 made; 1 the name is taken; 2 the body could not be written whole, or the
-# link failed with the name still free, for which the caller exits 1 (ERR-42),
-# never waiting on a claim of its own.
-wr_claim_create() {   # <path>
-  local cc_tmp cc_rc
-  cc_tmp="$(mktemp "${1%/*}/.$WR_D.claim.XXXXXX" 2>/dev/null)" || cc_tmp=""
-  [ -n "$cc_tmp" ] || return 2
-  if ! printf 'pid=%s\npid_start=%s\nhost=%s\ncontainer=%s\nutc=%s\n' \
-         "$WR_CLAIM_PID" "$WR_CLAIM_START" "$WR_CLAIM_HOST" "$WR_CLAIM_CONTAINER" "$WR_CLAIM_UTC" \
-         > "$cc_tmp" 2>/dev/null ||
-     ! wr_claim_read "$cc_tmp" || [ "$WR_C_PID" != "$WR_CLAIM_PID" ] || [ "$WR_C_UTC" != "$WR_CLAIM_UTC" ]; then
-    rm -f -- "$cc_tmp" 2>/dev/null
-    return 2
-  fi
-  if ln -- "$cc_tmp" "$1" 2>/dev/null; then
-    cc_rc=0
-  elif [ -e "$1" ] || [ -L "$1" ]; then
-    cc_rc=1
-  else
-    cc_rc=2
-  fi
-  rm -f -- "$cc_tmp" 2>/dev/null
-  return "$cc_rc"
-}
-
-# THE CLAIM CHAIN (Y:5184-5191, Y:5219-5220), taken before the first snapshot
-# by every run: a new write, a plain rerun, and a run under LANES_WRITE_ID,
-# since two live runs must never share an id. The owner is the run in the
-# HIGHEST-numbered claim:
-#
-#   - no claim: this run creates `<d>.take.0` (Y:5186);
-#   - the highest claim's owner live (`wr_claim_live`): this run waits, reading
-#     the claims again each second, until it ends, its claim's cap runs out
-#     (DEC-25), or `<deadline>` passes;
-#   - its owner dead or its pid reused: `<d>.take.<k+1>` (Y:5187);
-#   - a create that finds the name taken lists the claims again (Y:5188).
-#
-# A claim with no record beside it is a record being made, and its owner is
-# waited for the same way (Y:5189). Only the run whose create succeeded owns
-# the record, so two runs that read one dead pid together cannot both take it
-# over (Y:5191).
-#
-# 0 with WR_CLAIM its own claim. 2 where `<deadline>`, epoch seconds on this
-# host's clock (D7's, the caller's), passed while the highest claim's owner
-# lived. WR_OWNER_* then name it for the caller's exit 3 (T417; Y:5218, and
-# open point 42's text for a claim with no record beside it): its file, its
-# five values, WR_OWNER_WHY (`wr_claim_live`'s WR_LIVE_WHY) and, for a claim
-# live only for the seam's cap, WR_OWNER_TAKE_AFTER, the UTC from which a run
-# may take it; the form that names those two is T417's. Exits 1, with nothing
-# sent, where the directory cannot be made or this run's own claim cannot be
-# written whole (ERR-42).
-wr_claim_take() {   # <deadline, epoch seconds>
-  local ct_dir ct_k ct_new ct_rc
-  ct_dir="$(wr_pending_dir)" || die "this write's pending record cannot be kept: $WR_STATE/register-pending is not a 0700 directory of this user's, and cannot be made one. Nothing was sent" 1
-  wr_here
-  WR_CLAIM=""; WR_CLAIM_K=-1
-  WR_OWNER_FILE=""; WR_OWNER_PID=""; WR_OWNER_START=""; WR_OWNER_HOST=""
-  WR_OWNER_CONTAINER=""; WR_OWNER_UTC=""; WR_OWNER_WHY=""; WR_OWNER_TAKE_AFTER=""
-  WR_CLAIM_PID="$$"
-  WR_CLAIM_START="$(pid_start_of "$$" 2>/dev/null)" || WR_CLAIM_START=""
-  wr_value_ok "$WR_CLAIM_START" || WR_CLAIM_START=""
-  WR_CLAIM_HOST="$WR_HERE_HOST"; WR_CLAIM_CONTAINER="$WR_HERE_CONTAINER"
-  while : ; do
-    wr_claim_highest "$ct_dir"
-    if [ "$WR_HIGHEST_K" -ge 0 ]; then
-      if wr_claim_live "$WR_HIGHEST_FILE"; then
-        if [ "$(date -u +%s)" -ge "${1:-0}" ]; then
-          WR_OWNER_FILE="$WR_HIGHEST_FILE"; WR_OWNER_PID="$WR_C_PID"
-          WR_OWNER_START="$WR_C_START"; WR_OWNER_HOST="$WR_C_HOST"
-          WR_OWNER_CONTAINER="$WR_C_CONTAINER"; WR_OWNER_UTC="$WR_C_UTC"
-          WR_OWNER_WHY="$WR_LIVE_WHY"
-          [ -n "$WR_LIVE_UNTIL" ] && WR_OWNER_TAKE_AFTER="$(wr_utc_of_epoch "$WR_LIVE_UNTIL")"
-          return 2
-        fi
-        sleep 1
-        continue
-      fi
-      ct_k=$((WR_HIGHEST_K + 1))
-    else
-      ct_k=0
-    fi
-    ct_new="$ct_dir/$WR_D.take.$ct_k"
-    WR_CLAIM_UTC="$(wr_host_utc)"
-    wr_claim_create "$ct_new"; ct_rc=$?
-    case "$ct_rc" in
-      0) WR_CLAIM="$ct_new"; WR_CLAIM_K="$ct_k"; return 0 ;;
-      1) continue ;;
-    esac
-    die "this run's claim on its pending record, $ct_new, could not be written whole (a full disk, a quota, or a directory that refuses links), so this run cannot own the record. Nothing was sent" 1
-  done
-}
-
-# 0 while this run's own claim is still the highest, so that it still owns the
-# record (Y:5185); 1 once a higher claim exists or its own is gone. Only the
-# owner writes the record (Y:5190).
-wr_claim_owns() {
-  [ -n "$WR_CLAIM" ] && [ -f "$WR_CLAIM" ] || return 1
-  wr_claim_highest "${WR_CLAIM%/*}"
-  [ "$WR_HIGHEST_K" = "$WR_CLAIM_K" ]
-}
-
-# THIS RUN'S OWN CLAIM, REMOVED, where it leaves no record: a new write whose
-# first snapshot ended 69 (FR-021; open point 38), and a refusal below. The
-# record, where there is one, and every other claim stay.
-wr_claim_release() {
-  [ -n "$WR_CLAIM" ] || return 0
-  rm -f -- "$WR_CLAIM" 2>/dev/null || return 1
-  WR_CLAIM=""; WR_CLAIM_K=-1
-  return 0
-}
-
-# A RECORD'S `tail` (Y:5179): `sent <s> <utc>` or `done <s> <rc> <utc>`, one
-# space between fields, `<s>` and `<rc>` counts and `<utc>` this file's UTC
-# form naming a real time, which `epoch_of` reads, as `updated_utc` must
-# (review REV-W8b, N1); no other value is one. `owed` belongs to a done mark
-# only (Y:5181) (lane openRepoTools-3, #165 6780753157, Q34). The fields are
-# split by parameter expansion, never through a here-string: bash 3.2 writes
-# one to a temp file in /tmp, and where none can be made, as in a full /tmp,
-# every field was empty, so a whole record read as one that cannot be read
-# (review REV-W10a, M1's pattern). The value is still rebuilt from its fields
-# and compared, so one space between fields is all this takes.
-wr_is_tail() {   # <value>
-  local it_s="" it_r="" it_u=""
-  case "${1-}" in
-    'sent '*)
-      it_s="${1#sent }"; it_u="${it_s#* }"; it_s="${it_s%% *}"
-      [ "$1" = "sent $it_s $it_u" ] && wr_is_count "$it_s" && wr_is_utc "$it_u" || return 1 ;;
-    'done '*)
-      it_s="${1#done }"; it_r="${it_s#* }"; it_s="${it_s%% *}"
-      it_u="${it_r#* }"; it_r="${it_r%% *}"
-      [ "$1" = "done $it_s $it_r $it_u" ] && wr_is_count "$it_s" && wr_is_count "$it_r" && wr_is_utc "$it_u" || return 1 ;;
-    *) return 1 ;;
-  esac
-  [ -n "$(epoch_of "$it_u")" ]
-}
-
-# A `call=` LINE'S FIVE FIELDS (Y:5173; contract §3.2): the first four split off
-# at single spaces, and the rest is `<dir>`, which may hold spaces. They go into
-# WR_CF_BASE, WR_CF_CLOCK, WR_CF_NOT_AFTER, WR_CF_FILES and WR_CF_DIR. 1, with
-# all five empty, where the line has fewer than five fields.
-#
-# BY PARAMETER EXPANSION, NEVER `read` FROM A HERE-STRING, and so are the loops
-# below over the record's lines: bash before 5.1 writes a here-string or a
-# here-document to a temp file, and where none can be made, as in a full
-# TMPDIR, such a loop never ran. A `call=` line was then written, kept, dropped
-# or read as though the record held none, and the call was sent with its doubt
-# lost (review REV-W10a M1). T414's `cp_seam` and T415's `pw_hand_edit_refuse`
-# split the same way.
-wr_call_fields() {   # <line>
-  local cf_r="${1-}"
-  WR_CF_BASE=""; WR_CF_CLOCK=""; WR_CF_NOT_AFTER=""; WR_CF_FILES=""; WR_CF_DIR=""
-  case "$cf_r" in *' '*' '*' '*' '*) : ;; *) return 1 ;; esac
-  WR_CF_BASE="${cf_r%% *}"; cf_r="${cf_r#* }"
-  WR_CF_CLOCK="${cf_r%% *}"; cf_r="${cf_r#* }"
-  WR_CF_NOT_AFTER="${cf_r%% *}"; cf_r="${cf_r#* }"
-  WR_CF_FILES="${cf_r%% *}"; WR_CF_DIR="${cf_r#* }"
-  return 0
-}
-
-# THE RECORD READ (Y:5172) into WR_REC_*: 0 when it is whole, 1 when there is no
-# record, 2 when there is one and it cannot be read as one, which names nothing
-# a run can rely on.
-#
-# Whole is: `format=1`; a write id and a generation, each a lower-case UUID;
-# `args_sha256` equal to its own file's name, `<d>`; `created_utc` and
-# `updated_utc` in this file's UTC form; every `call=` line
-# `<base> <clock> <not_after> <files> <dir>`, three counts, a sha256 and a
-# directory; and a `tail=` line, where there is one, one of Y:5179's two forms
-# (`wr_is_tail`): any other `tail`, an empty one included, is a record that
-# cannot be read, so it is T412's 2 with the record kept (lane
-# openRepoTools-3, #165 6780753157, Q34). So is a record with two `tail=`
-# lines, of which no run can tell the one that holds (review REV-W8b, N1). A
-# key it does not know is passed over.
-wr_record_read() {   # <record file>
-  local rr_l="" rr_r="" rr_t=0
-  WR_REC_FORMAT=""; WR_REC_WRITE_ID=""; WR_REC_GENERATION=""; WR_REC_DATABASE=""
-  WR_REC_LANE=""; WR_REC_SESSION=""; WR_REC_VERB=""; WR_REC_ARGS_SHA256=""
-  WR_REC_CMDLINE=""; WR_REC_CREATED_UTC=""; WR_REC_UPDATED_UTC=""; WR_REC_PID=""
-  WR_REC_PID_START=""; WR_REC_HOST=""; WR_REC_CONTAINER=""; WR_REC_ATTEMPTS=""
-  WR_REC_CALLS=""; WR_REC_TAIL=""
-  [ -e "$1" ] || [ -L "$1" ] || return 1
-  [ -f "$1" ] && [ -r "$1" ] || return 2
-  while IFS= read -r rr_l || [ -n "$rr_l" ]; do
-    case "$rr_l" in
-      format=*) WR_REC_FORMAT="${rr_l#format=}" ;;
-      write_id=*) WR_REC_WRITE_ID="${rr_l#write_id=}" ;;
-      generation=*) WR_REC_GENERATION="${rr_l#generation=}" ;;
-      database=*) WR_REC_DATABASE="${rr_l#database=}" ;;
-      lane=*) WR_REC_LANE="${rr_l#lane=}" ;;
-      session=*) WR_REC_SESSION="${rr_l#session=}" ;;
-      verb=*) WR_REC_VERB="${rr_l#verb=}" ;;
-      args_sha256=*) WR_REC_ARGS_SHA256="${rr_l#args_sha256=}" ;;
-      cmdline=*) WR_REC_CMDLINE="${rr_l#cmdline=}" ;;
-      created_utc=*) WR_REC_CREATED_UTC="${rr_l#created_utc=}" ;;
-      updated_utc=*) WR_REC_UPDATED_UTC="${rr_l#updated_utc=}" ;;
-      pid=*) WR_REC_PID="${rr_l#pid=}" ;;
-      pid_start=*) WR_REC_PID_START="${rr_l#pid_start=}" ;;
-      host=*) WR_REC_HOST="${rr_l#host=}" ;;
-      container=*) WR_REC_CONTAINER="${rr_l#container=}" ;;
-      attempts=*) WR_REC_ATTEMPTS="${rr_l#attempts=}" ;;
-      call=*) WR_REC_CALLS="${WR_REC_CALLS}${WR_REC_CALLS:+$WR_NL}${rr_l#call=}" ;;
-      tail=*) WR_REC_TAIL="${rr_l#tail=}"; rr_t=$((rr_t + 1)) ;;
-    esac
-    rr_l=""
-  done < "$1" 2>/dev/null
-  [ "$WR_REC_FORMAT" = 1 ] || return 2
-  wr_is_uuid "$WR_REC_WRITE_ID" && wr_is_uuid "$WR_REC_GENERATION" || return 2
-  [ "$WR_REC_ARGS_SHA256" = "${1##*/}" ] || return 2
-  wr_is_utc "$WR_REC_CREATED_UTC" && wr_is_utc "$WR_REC_UPDATED_UTC" || return 2
-  [ -n "$(epoch_of "$WR_REC_UPDATED_UTC")" ] || return 2
-  [ "$rr_t" -le 1 ] || return 2
-  [ "$rr_t" = 0 ] || wr_is_tail "$WR_REC_TAIL" || return 2
-  rr_r="$WR_REC_CALLS"
-  while [ -n "$rr_r" ]; do
-    rr_l="${rr_r%%"$WR_NL"*}"
-    case "$rr_r" in
-      *"$WR_NL"*) rr_r="${rr_r#*"$WR_NL"}" ;;
-      *) rr_r="" ;;
-    esac
-    [ -n "$rr_l" ] || continue
-    wr_call_fields "$rr_l" || return 2
-    wr_is_count "$WR_CF_BASE" && wr_is_count "$WR_CF_CLOCK" && wr_is_count "$WR_CF_NOT_AFTER" || return 2
-    wr_is_hex64 "$WR_CF_FILES" && [ -n "$WR_CF_DIR" ] || return 2
-  done
-  return 0
-}
-
-# THE AGE (Y:5207): 0 where the record read last was updated more than
-# `wr_max_age_s` seconds ago, by this host's clock, as `updated_utc` is.
-wr_record_aged() {
-  local ra_t
-  ra_t="$(epoch_of "$WR_REC_UPDATED_UTC")"
-  [ -n "$ra_t" ] || return 1
-  [ "$(( $(date -u +%s) - ra_t ))" -gt "$(wr_max_age_s)" ]
-}
-
-# THE DONE MARKS' AGE (Y:5183): any run that writes a record or a mark first
-# removes the marks in `<state>/register-done/` older than the record's maximum
-# age, by their `utc`. Only marks go by age: no record is ever purged (T412). A
-# name that is not a write id, and a mark whose `utc` cannot be read, are left.
-wr_done_purge() {
-  local dp_dir dp_f dp_l dp_u dp_t dp_now dp_max
-  dp_dir="$WR_STATE/register-done"
-  [ -d "$dp_dir" ] || return 0
-  dp_now="$(date -u +%s)"; dp_max="$(wr_max_age_s)"
-  for dp_f in "$dp_dir"/*; do
-    [ -f "$dp_f" ] || continue
-    wr_is_uuid "${dp_f##*/}" || continue
-    dp_u=""; dp_l=""
-    while IFS= read -r dp_l || [ -n "$dp_l" ]; do
-      case "$dp_l" in utc=*) dp_u="${dp_l#utc=}" ;; esac
-      dp_l=""
-    done < "$dp_f" 2>/dev/null
-    wr_is_utc "$dp_u" || continue
-    dp_t="$(epoch_of "$dp_u")"
-    [ -n "$dp_t" ] || continue
-    [ "$(( dp_now - dp_t ))" -gt "$dp_max" ] && rm -f -- "$dp_f" 2>/dev/null
-  done
-  return 0
-}
-
-# THE DONE MARK WRITTEN (T418; Y:5180–5183; `contracts/pending-record.md` §6):
-# when a run removes a record on 0, it first writes `<state>/register-done/
-# <write_id>`, mode 0600 in a 0700 directory, by temporary file and `mv`, one
-# `key=value` a line: `write_id`, `seq`, `tail` (the record's `done` or `sent`
-# value, or `owed <utc>` where the tail was named as owed), the record's
-# `pid`, `host` and `container`, and `utc`, this host's clock. The marks past
-# their age go first (Y:5183). 1, with nothing written, where a value would
-# break its line or the file cannot be written.
-wr_done_write() {   # <seq> <tail value> <pid> <host> <container>
-  local dw_dir dw_tmp dw_now dw_v
-  wr_is_uuid "$WR_ID" && wr_is_count "${1-}" || return 1
-  for dw_v in "${2-}" "${3-}" "${4-}" "${5-}"; do wr_value_ok "$dw_v" || return 1; done
-  dw_dir="$WR_STATE/register-done"
-  wr_dir_0700 "$WR_STATE" && wr_dir_0700 "$dw_dir" || return 1
-  wr_done_purge
-  dw_now="$(wr_host_utc)"
-  dw_tmp="$(mktemp "$dw_dir/.$WR_ID.XXXXXX" 2>/dev/null)" || dw_tmp=""
-  [ -n "$dw_tmp" ] || return 1
-  if ! printf 'write_id=%s\nseq=%s\ntail=%s\npid=%s\nhost=%s\ncontainer=%s\nutc=%s\n' \
-         "$WR_ID" "$1" "$2" "${3-}" "${4-}" "${5-}" "$dw_now" > "$dw_tmp" 2>/dev/null ||
-     ! mv -f -- "$dw_tmp" "$dw_dir/$WR_ID" 2>/dev/null; then
-    rm -f -- "$dw_tmp" 2>/dev/null
-    return 1
-  fi
-  return 0
-}
-
-# THE DONE MARK READ (T418): `<state>/register-done/<id>` into WR_DONE_*. 0
-# where it is there, names that write id, and holds a `tail` of `sent`, `done`
-# or `owed`; 1 otherwise, which a run reads as no mark.
-WR_DONE_SEQ=""; WR_DONE_TAIL=""; WR_DONE_PID=""; WR_DONE_HOST=""; WR_DONE_CONTAINER=""; WR_DONE_UTC=""
-wr_done_read() {   # <write id>
-  local dr_f dr_l="" dr_w=""
-  WR_DONE_SEQ=""; WR_DONE_TAIL=""; WR_DONE_PID=""; WR_DONE_HOST=""; WR_DONE_CONTAINER=""; WR_DONE_UTC=""
-  wr_is_uuid "${1-}" || return 1
-  dr_f="$WR_STATE/register-done/$1"
-  [ -f "$dr_f" ] && [ -r "$dr_f" ] || return 1
-  while IFS= read -r dr_l || [ -n "$dr_l" ]; do
-    case "$dr_l" in
-      write_id=*) dr_w="${dr_l#write_id=}" ;;
-      seq=*) WR_DONE_SEQ="${dr_l#seq=}" ;;
-      tail=*) WR_DONE_TAIL="${dr_l#tail=}" ;;
-      pid=*) WR_DONE_PID="${dr_l#pid=}" ;;
-      host=*) WR_DONE_HOST="${dr_l#host=}" ;;
-      container=*) WR_DONE_CONTAINER="${dr_l#container=}" ;;
-      utc=*) WR_DONE_UTC="${dr_l#utc=}" ;;
-    esac
-    dr_l=""
-  done < "$dr_f" 2>/dev/null
-  [ "$dr_w" = "$1" ] || return 1
-  case "$WR_DONE_TAIL" in 'sent '*|'done '*|'owed '*) return 0 ;; esac
-  return 1
-}
-
-# THE RECORD WRITTEN (Y:5172): by its owner only, by a temporary file and `mv`,
-# mode 0600 in the 0700 `register-pending/`, one `key=value` a line in Y's
-# order, `call=` lines and `tail` last. `updated_utc` is rewritten from this
-# host's clock on every write, a `call=` line's included (T412; open point 36).
-# The done marks past their age go first (Y:5183). 1, with nothing written,
-# where this run no longer owns the record, a value would break its line, or
-# the file cannot be written; and where the record this run took over holds
-# `tail` (WR_TOOK_TAIL): a takeover rewrites nothing in such a record, since
-# its `pid` is the run that wrote `tail` (Y:5179, Y:5342; lane
-# openRepoTools-3, #165 6774499606, T412 (1)). So no `call=` line is added to
-# it, and no call is sent for it. The one exception empties WR_TOOK_TAIL
-# first: a `sent` whose child's `seam.out` says `none`, whose `tail` the run
-# removes before its replay (`pw_took_sent_none`; Y:5342's second sentence;
-# #165 6838365309).
-wr_record_write() {
-  local rw_dir rw_now rw_tmp rw_body rw_v rw_l rw_r
-  [ -z "$WR_TOOK_TAIL" ] || return 1
-  wr_claim_owns || return 1
-  wr_done_purge
-  rw_dir="$(wr_pending_dir)" || return 1
-  rw_now="$(wr_host_utc)"
-  for rw_v in "$WR_ID" "$WR_GEN" "$WR_DATABASE" "$WR_LANE" "$WR_SESSION" "$WR_VERB" \
-              "$WR_CMDLINE" "$WR_CREATED_UTC" "$WR_CLAIM_START" "$WR_TAIL"; do
-    wr_value_ok "$rw_v" || return 1
-  done
-  wr_is_count "$WR_ATTEMPTS" || return 1
-  rw_body="$(printf 'format=1\nwrite_id=%s\ngeneration=%s\ndatabase=%s\nlane=%s\nsession=%s\nverb=%s\nargs_sha256=%s\ncmdline=%s\ncreated_utc=%s\nupdated_utc=%s\npid=%s\npid_start=%s\nhost=%s\ncontainer=%s\nattempts=%s' \
-    "$WR_ID" "$WR_GEN" "$WR_DATABASE" "$WR_LANE" "$WR_SESSION" "$WR_VERB" "$WR_D" \
-    "$WR_CMDLINE" "$WR_CREATED_UTC" "$rw_now" "$WR_CLAIM_PID" "$WR_CLAIM_START" \
-    "$WR_CLAIM_HOST" "$WR_CLAIM_CONTAINER" "$WR_ATTEMPTS")"
-  rw_r="$WR_CALLS"
-  while [ -n "$rw_r" ]; do
-    rw_l="${rw_r%%"$WR_NL"*}"
-    case "$rw_r" in
-      *"$WR_NL"*) rw_r="${rw_r#*"$WR_NL"}" ;;
-      *) rw_r="" ;;
-    esac
-    [ -n "$rw_l" ] || continue
-    rw_body="$rw_body${WR_NL}call=$rw_l"
-  done
-  [ -n "$WR_TAIL" ] && rw_body="$rw_body${WR_NL}tail=$WR_TAIL"
-  rw_tmp="$(mktemp "$rw_dir/.$WR_D.XXXXXX" 2>/dev/null)" || rw_tmp=""
-  [ -n "$rw_tmp" ] || return 1
-  if ! printf '%s\n' "$rw_body" > "$rw_tmp" 2>/dev/null ||
-     ! mv -f -- "$rw_tmp" "$rw_dir/$WR_D" 2>/dev/null; then
-    rm -f -- "$rw_tmp" 2>/dev/null
-    return 1
-  fi
-  WR_UPDATED_UTC="$rw_now"
-  return 0
-}
-
-# A `call=` LINE (Y:5173-5174): `<base> <clock> <not_after> <files> <dir>`, the
-# call's base seq `n`, the snapshot's database clock, its `not_after`, the
-# sha256 of the `files` it sends, and its attempt directory. Written to the
-# record, by temporary file and `mv`, BEFORE the call is sent: the caller sends
-# it only on 0. 1, with the record and WR_CALLS as they were, on a malformed
-# field or a write that failed.
-wr_record_add_call() {   # <base> <clock> <not_after> <files> <dir>
-  local ac_was
-  wr_is_count "${1-}" && wr_is_count "${2-}" && wr_is_count "${3-}" || return 1
-  wr_is_hex64 "${4-}" && [ -n "${5-}" ] && wr_value_ok "$5" || return 1
-  ac_was="$WR_CALLS"
-  WR_CALLS="${WR_CALLS}${WR_CALLS:+$WR_NL}$1 $2 $3 $4 $5"
-  wr_record_write && return 0
-  WR_CALLS="$ac_was"
-  return 1
-}
-
-# A `call=` LINE DROPPED, the one naming `<dir>`, where an answer shows that call
-# did not commit: a lost turn, a refusal, or LR008 (Y:5175). The caller decides
-# which answers those are (T415). 1, with the record and WR_CALLS as they were,
-# where the write failed.
-wr_record_drop_call() {   # <dir>
-  local dc_was dc_new dc_l dc_r
-  dc_was="$WR_CALLS"; dc_new=""; dc_r="$WR_CALLS"
-  while [ -n "$dc_r" ]; do
-    dc_l="${dc_r%%"$WR_NL"*}"
-    case "$dc_r" in
-      *"$WR_NL"*) dc_r="${dc_r#*"$WR_NL"}" ;;
-      *) dc_r="" ;;
-    esac
-    [ -n "$dc_l" ] || continue
-    wr_call_fields "$dc_l" && [ "$WR_CF_DIR" = "${1-}" ] && continue
-    dc_new="${dc_new}${dc_new:+$WR_NL}$dc_l"
-  done
-  WR_CALLS="$dc_new"
-  wr_record_write && return 0
-  WR_CALLS="$dc_was"
-  return 1
-}
-
-# THE RECORD REMOVED, the outcome known (Y:5193-5198): the record, then the
-# claims beside it, by its owner only. A claim numbered above the owner's own is
-# left: no run takes one while the owner lives (Y:5185; R49). A dangling
-# symbolic link among the claims is removed with them, since
-# `wr_claim_highest` counts it (review REV-W10a S1). On 0 the caller writes the
-# done mark first (T418).
-wr_record_remove() {
-  local rm_dir rm_f rm_k
-  wr_claim_owns || return 1
-  rm_dir="${WR_CLAIM%/*}"
-  rm -f -- "$rm_dir/$WR_D" 2>/dev/null || return 1
-  for rm_f in "$rm_dir/$WR_D".take.*; do
-    [ -e "$rm_f" ] || [ -L "$rm_f" ] || continue
-    rm_k="${rm_f##*.take.}"
-    case "$rm_k" in ''|*[!0123456789]*|0?*) continue ;; esac
-    [ "${#rm_k}" -le 9 ] || continue
-    [ "$rm_k" -le "$WR_CLAIM_K" ] || continue
-    rm -f -- "$rm_f" 2>/dev/null
-  done
-  WR_CLAIM=""; WR_CLAIM_K=-1
-  return 0
-}
-
-# THE RECORD TAKEN OVER (Y:5206): its id, generation, `call=` lines, `tail`,
-# `attempts`, `created_utc` and `database` become this run's. Its `pid`,
-# `pid_start`, `host` and `container` become this run's claim's when it is next
-# written (Y:5185) -- but only where it holds no `tail`. A record that holds
-# `tail` is never rewritten (Y:5342; lane openRepoTools-3, #165 6774499606,
-# T412 (1)): WR_TOOK_TAIL keeps its value, `wr_record_write` writes nothing
-# while it does, and the record stays as found, its `pid`, `host` and
-# `container` those of the run that wrote `tail` (Y:5179), for T418's done
-# mark. Only its removal (`wr_record_remove`) is left to this run, but for
-# Y:5342's second sentence: a `sent` whose child's `seam.out` says `none`
-# loses its `tail`, and the run replays (`pw_took_sent_none`; lane
-# openRepoTools-3, #165 6838365309).
-wr_record_take_over() {
-  WR_ID="$WR_REC_WRITE_ID"; WR_GEN="$WR_REC_GENERATION"
-  WR_CALLS="$WR_REC_CALLS"; WR_TAIL="$WR_REC_TAIL"; WR_TOOK_TAIL="$WR_REC_TAIL"
-  WR_CREATED_UTC="$WR_REC_CREATED_UTC"; WR_DATABASE="$WR_REC_DATABASE"
-  WR_ATTEMPTS="$WR_REC_ATTEMPTS"
-  wr_is_count "$WR_ATTEMPTS" || WR_ATTEMPTS=0
-  return 0
-}
-
-# THE PRINTED RERUN (Y:5200): `LANES_WRITE_ID=<id> LANES_WRITE_GENERATION=<g>
-# LANES_LANE=<lane> LANES_SESSION=<uuid> lanes-edit.sh <the same arguments>`.
-# The lane and the session are the ones this run's digest took, so the rerun's
-# digest, and so its `args_sha256`, are this run's.
-wr_rerun_text() {   # <id> <generation>
-  printf 'LANES_WRITE_ID=%s LANES_WRITE_GENERATION=%s LANES_LANE=%s LANES_SESSION=%s %s\n' \
-    "${1-}" "${2-}" "$(printf '%q' "$WR_LANE")" "$(printf '%q' "$WR_SESSION")" "$WR_CMDLINE"
-}
-
-# THE SAME COMMAND WITH `LANES_WRITE_ID=new` (Y:5213, Y:5215), which mints a new
-# id and replaces a record of another generation.
-wr_rerun_new_text() {
-  printf 'LANES_WRITE_ID=new LANES_LANE=%s LANES_SESSION=%s %s\n' \
-    "$(printf '%q' "$WR_LANE")" "$(printf '%q' "$WR_SESSION")" "$WR_CMDLINE"
-}
-
-# THE LOOKUP OF THE RECORD READ LAST (contract §3.4), at its largest `not_after`,
-# or, where it holds no `call=` line, the sentence that none of its commit calls
-# can have committed (Y:5176: a line is exactly a call that may have).
-wr_lookup_text() {
-  local lt_l lt_r lt_max=""
-  lt_r="$WR_REC_CALLS"
-  while [ -n "$lt_r" ]; do
-    lt_l="${lt_r%%"$WR_NL"*}"
-    case "$lt_r" in
-      *"$WR_NL"*) lt_r="${lt_r#*"$WR_NL"}" ;;
-      *) lt_r="" ;;
-    esac
-    wr_call_fields "$lt_l" && wr_is_count "$WR_CF_NOT_AFTER" || continue
-    if [ -z "$lt_max" ] || [ "$WR_CF_NOT_AFTER" -gt "$lt_max" ]; then lt_max="$WR_CF_NOT_AFTER"; fi
-  done
-  if [ -z "$lt_max" ]; then
-    printf 'It holds no call line, so none of its commit calls can have committed.\n'
-    return 0
-  fi
-  printf 'It may be in the register; look it up: lanes-index journal --write-id %s --not-after %s --generation %s --lane %s --verb %s --args-sha256 %s\n' \
-    "$WR_REC_WRITE_ID" "$lt_max" "$WR_REC_GENERATION" "$(printf '%q' "$WR_REC_LANE")" \
-    "$(printf '%q' "$WR_REC_VERB")" "$WR_REC_ARGS_SHA256"
-}
-
-# THE STEPS THAT MAY BE OWED, `<owed>` (T418; Y:5331, Y:5214): the verb's row
-# of F14's table (Y:5144–5154), in words, with the command that does each step
-# by hand. The verb's arguments are this run's (`WR_ARGS`), which the record's
-# digest also took, and its lane the write's (`PW_LANE`, else `LANES_LANE`). A
-# verb whose arm has no side effect outside the register after its seam owes
-# nothing, and says so.
-wr_owed_text() {   # <verb>
-  local ow_v="${1-}" ow_l="${PW_LANE:-${WR_LANE:-<lane>}}" ow_e="" ow_o="" ow_n="" ow_od="" ow_ls="" ow_a="" ow_k=0 ow_skip=0 ow_to=""
-  ow_e="${WR_ARGS[0]-}"; ow_o="${WR_ARGS[0]-<object>}"
-  case "$ow_v" in
-    log)
-      case "$ow_e" in
-        STARTED|RESUMED) ow_to=RUNNING ;;
-        ENDED|RETIRED) ow_to=CLOSED ;;
-        *) printf 'none (lanes-edit.sh log %s makes none outside the register)\n' "${ow_e:-<verb>}"; return 0 ;;
-      esac
-      printf "lane %s's lifecycle snapshot, its lane-state.yaml, following the %s line to %s, which a legacy lane's write makes after its commit (lane_state_follow): read it with lanes-edit.sh lane-reconcile %s, and where it has not moved, lanes-edit.sh set-lane-state %s %s --expect <the state it reads>\n" \
-        "$ow_l" "$ow_e" "$ow_to" "$ow_l" "$ow_l" "$ow_to" ;;
-    claim|release)
-      printf "the GitHub comment that %s posts on %s, unless --no-github or LANES_NO_GITHUB=1 was given (gh_comment): post it by hand with gh issue comment <number> --repo <owner/repo>, or gh pr comment for a pull request\n" \
-        "$ow_v" "$ow_o" ;;
-    request-handoff)
-      printf "the typing of its request into lane %s's bound pane, which is never made after the fact, since that pane may hold another session by now: the request travels in the register, and is read at that session's next prompt; and the wait for the release: read lanes-edit.sh binding %s\n" \
-        "$ow_l" "$ow_l" ;;
-    rename-lane)
-      # The handoff's move and stamp are owed with the writer verb that makes
-      # them, `lanes-edit.sh rename-lane <old> <new>` run again, never
-      # `lane-rename`, whose arm reads that verb's 2 as "already landed" and
-      # ends 0 (REV422c S3; lane openRepoTools-3, #165 6780753157, Q44 with
-      # Q42). It is printed with `LANES_LANE=<new>`, as step (2) of T422's
-      # hand steps prints its `commit`, because on primary `pw_run` refuses 2
-      # before its claim where LANES_LANE is unset (`pw_lane_given`), so the
-      # command as printed must carry the writer's lane to make the move
-      # (REV-W8b S1; REV422c S2, "the hand steps work as printed"). The lane
-      # the rerun writes is its `<old>` argument, which W resolves to `<new>`
-      # (`pw_checkout`); LANES_LANE names the writer and keys its claim
-      # (Y:5171).
-      for ow_a in ${WR_ARGS[@]+"${WR_ARGS[@]}"}; do
-        if [ "$ow_skip" = 1 ]; then ow_skip=0; continue; fi
-        case "$ow_a" in
-          --why) ow_skip=1 ;;
-          --*) : ;;
-          *) ow_k=$((ow_k + 1)); [ "$ow_k" != 1 ] || ow_od="$ow_a"; [ "$ow_k" != 2 ] || ow_n="$ow_a" ;;
-        esac
-      done
-      ow_od="${ow_od:-<old>}"; ow_n="${ow_n:-<new>}"
-      printf "lane %s's lifecycle directory moved to its new name (lane_state_rename): read it with lanes-edit.sh lane-reconcile %s; the RENAMED comment on each object the lane holds, unless --no-github was given: gh issue comment <number> --repo <owner/repo>, or gh pr comment, on each; and its handoff's move and RENAMED stamp in its checkout: run LANES_LANE=%s lanes-edit.sh rename-lane %s %s again\n" \
-        "$ow_n" "$ow_n" "$ow_n" "$ow_od" "$ow_n" ;;
-    retire-rows)
-      for ow_a in ${WR_ARGS[@]+"${WR_ARGS[@]}"}; do
-        if [ "$ow_skip" = 1 ]; then ow_skip=0; continue; fi
-        case "$ow_a" in
-          --reason|--writer) ow_skip=1 ;;
-          --*) : ;;
-          *) ow_ls="${ow_ls}${ow_ls:+ }$ow_a" ;;
-        esac
-      done
-      printf "each retired lane's lifecycle snapshot following its RETIRED line to CLOSED (lane_state_follow), for %s: read each with lanes-edit.sh lane-reconcile <lane>, and where one has not moved, lanes-edit.sh set-lane-state <lane> CLOSED --expect <the state it reads>\n" \
-        "${ow_ls:-<lanes>}" ;;
-    set-row-state|replace-in-row|append-session-id|append-line|add-row|archive-rows|migrate-state-cells)
-      printf 'none (lanes-edit.sh %s makes none outside the register)\n' "$ow_v" ;;
-    *)
-      printf 'those of lanes-edit.sh %s\n' "${ow_v:-<verb>}" ;;
-  esac
-}
-
-# A RECORD OF ANOTHER GENERATION, REFUSED (Y:5209-5215, Y:2487-2491), with 2 and
-# nothing sent, at any age, until `LANES_WRITE_ID=new`. The record is left as it
-# is. `<g'>` is the register's generation where the run knows it, which is where
-# its first snapshot answered 0 (the over-age path, `wr_id_settle`); where the
-# refusal is that snapshot's LR007 `generation`, §3.2 prints no `generation=`,
-# and the text says "another generation". `<owed>` is the record's verb's row of
-# F14's table, T418's `wr_owed_text`. Where the record's `tail` is `sent` or
-# `done`, the text says they may have run, or ran, at its UTC (Y:5214). The
-# effect check's `<lane>` is the lane the write is made for, `write_lane_of`'s,
-# PW_LANE, which the record's digest fixes with its arguments, not the
-# writer's `LANES_LANE` (lane openRepoTools-3, #165 6808937880, batch e Q106;
-# design:5257): every caller runs after `pw_checkout` has set it. The rerun keeps
-# the writer's `LANES_LANE` (`wr_rerun_new_text`), which its digest takes.
-wr_text_other_generation() {   # [<g'>] [<owed>]
-  local og_now og_owed og_tail og_utc og_steps
-  if [ -n "${1-}" ]; then og_now="generation ${1}"; else og_now="another generation"; fi
-  og_owed="${2-}"
-  [ -n "$og_owed" ] || og_owed="$(wr_owed_text "$WR_REC_VERB")"
-  og_tail="${WR_REC_TAIL%% *}"; og_utc="${WR_REC_TAIL##* }"
-  case "$og_tail" in
-    sent) og_steps="its after-COMMIT steps may have run at ${og_utc}: ${og_owed}. Do by hand any that did not run." ;;
-    done) og_steps="its after-COMMIT steps ran at ${og_utc}." ;;
-    *) og_steps="its after-COMMIT steps may be owed: ${og_owed}. Do by hand any that did not run." ;;
-  esac
-  printf '%s\n' "a pending record of this command, write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, is here, and this register is ${og_now}. That write may already be in it: an import carries every write the mirror held (D22), and a restored database holds every write up to its backup. Nothing was sent. Look for its effect in the register as it stands: lanes-edit.sh history ${PW_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${PW_LANE} for a row. If it is there, ${og_steps} If it is not there, run the same command with LANES_WRITE_ID=new, which mints a new id and replaces this record: $(wr_rerun_new_text)"
-}
-
-# A REFUSAL OF THIS LIBRARY'S OWN, with 2: this run's claim goes first, since
-# it sent nothing and leaves no record of its own.
-wr_refuse() {   # <message>
-  wr_claim_release
-  die "${1-}" 2
-}
-
-wr_refuse_other_generation() {   # [<g'>] [<owed>]
-  wr_refuse "$(wr_text_other_generation "${1-}" "${2-}")"
-}
-
-# THE FIRST SNAPSHOT'S IDENTITY (Y:2468-2473; contract §3.2 and §4), decided by
-# the owner after its claim, from LANES_WRITE_ID, LANES_WRITE_GENERATION and the
-# record at `<d>`. It sets WR_SNAP_ARGS to the identity flags of the first
-# snapshot, and WR_PLAN to what the run is doing:
-#
-#   new     no id yet: `--write-id new`, and the id is the one the snapshot
-#           mints; the record is written after it (Y:5192)
-#   reuse   a plain rerun takes the record over within its age, with its id,
-#           its generation and its `call=` lines, and says so (Y:5206); a 2
-#           with LR007 `generation` at this snapshot is a record of another
-#           generation, which the caller refuses by `wr_refuse_other_generation`
-#   aged    a plain rerun past the record's age: `--write-id new`, and the
-#           generation the snapshot answers decides (`wr_id_settle`; Y:5207)
-#   env     LANES_WRITE_ID's id, with LANES_WRITE_GENERATION, or with the
-#           generation of the record that holds that id (the contract's O4,
-#           ratified by R08); such a record is taken over at any age
-#   fresh   LANES_WRITE_ID=new over a record: `--write-id new`, and the
-#           record's generation decides (`wr_id_settle`; Y:5213, Y:5215)
-#
-# It refuses with 2, sending nothing:
-#   - LANES_WRITE_ID without LANES_WRITE_GENERATION, where no record here holds
-#     that id, naming the printed rerun's form (Y:5200), so `lanes-index`'s 64
-#     for an id with no generation is never reached from here;
-#   - a record that cannot be read as one, naming its path (pending-record.md
-#     G8), and then, in lane 3's words, how a person settles it: read it; leave
-#     one whose `format=` is not 1 to the lanes-edit.sh that wrote it; past the
-#     record's age, `wr_max_age_s`, look for its effect, move the file out of
-#     register-pending/ and run again (lane openRepoTools-3, #165 6813027223,
-#     batch g Q116). Its `<lane>` is PW_LANE, the lane the write is made for,
-#     which `pw_checkout` sets before this runs, as `wr_text_other_generation`
-#     names it; its `<verb>` is this run's own, WR_VERB, since the record
-#     cannot be read for one;
-#   - two cases Y does not settle, each refused rather than guessed: an id whose
-#     record names another generation than LANES_WRITE_GENERATION, and an id
-#     whose digest's record holds another write.
-wr_id_plan() {
-  local ip_e ip_g ip_f ip_rc ip_n
-  ip_e="${LANES_WRITE_ID:-}"; ip_g="${LANES_WRITE_GENERATION:-}"
-  ip_f="$WR_STATE/register-pending/$WR_D"
-  WR_ID=""; WR_GEN=""; WR_CALLS=""; WR_TAIL=""; WR_TOOK_TAIL=""; WR_ATTEMPTS=0
-  WR_CREATED_UTC=""; WR_DATABASE=""
-  wr_record_read "$ip_f"; ip_rc=$?
-  if [ "$ip_rc" = 2 ]; then
-    wr_refuse "the pending record of this command, $ip_f, is there and cannot be read as one, so whether a write of it is in doubt is not known. Nothing was sent, and no run of this command gets past it, \`LANES_WRITE_ID=new\` included, until a person settles it. Read it: cat $(printf '%q' "$ip_f"). Where its \`format=\` is not 1, another lanes-edit.sh wrote it: run the command with that one, and leave the file. Otherwise, once the file is more than $(wr_max_age_s) s old by its own time, no commit call of it can still commit; look for its effect in the register as it stands, \`lanes-edit.sh history ${PW_LANE} --since <its created_utc, or earlier where that cannot be read>\` for a log line, or \`lanes-edit.sh register-row ${PW_LANE}\` for a row; then move the file out of register-pending/ and run the command again. If the effect is there, do by hand any of its after-COMMIT steps that did not run: those of \`lanes-edit.sh ${WR_VERB}\`."
-  fi
-  case "$ip_e" in
-    '')
-      if [ "$ip_rc" = 1 ]; then
-        WR_PLAN=new
-      elif wr_record_aged; then
-        WR_PLAN=aged
-      else
-        wr_record_take_over
-        ip_n=0
-        [ -n "$WR_CALLS" ] && ip_n="$(printf '%s\n' "$WR_CALLS" | awk 'END { print NR }')"
-        note "reusing write $WR_ID of register generation $WR_GEN, from the pending record of this command made at $WR_REC_CREATED_UTC and last updated at $WR_REC_UPDATED_UTC; this run takes it over, with its $ip_n call line(s)"
-        WR_PLAN=reuse
-      fi
-      ;;
-    new)
-      if [ "$ip_rc" = 1 ]; then WR_PLAN=new; else WR_PLAN=fresh; fi
-      ;;
-    *)
-      if [ "$ip_rc" = 0 ] && [ "$WR_REC_WRITE_ID" = "$ip_e" ]; then
-        if [ -n "$ip_g" ] && [ "$ip_g" != "$WR_REC_GENERATION" ]; then
-          wr_refuse "LANES_WRITE_ID=$ip_e and LANES_WRITE_GENERATION=$ip_g, but the pending record of this command that holds write $ip_e names register generation $WR_REC_GENERATION, so which generation the write was made against is not known. Nothing was sent"
-        fi
-        wr_record_take_over
-      elif [ -z "$ip_g" ]; then
-        wr_refuse "LANES_WRITE_ID=$ip_e is set and LANES_WRITE_GENERATION is not, and no pending record of this command here holds write $ip_e, so the register generation it was made against is not known. Nothing was sent. Run the rerun as it was printed, with both: $(wr_rerun_text "$ip_e" '<generation>')"
-      elif [ "$ip_rc" = 0 ]; then
-        wr_refuse "LANES_WRITE_ID=$ip_e names write $ip_e, and the pending record of this command holds another, write $WR_REC_WRITE_ID made at $WR_REC_CREATED_UTC against register generation ${WR_REC_GENERATION}; this run does not replace it. Nothing was sent. $(wr_lookup_text)"
-      else
-        WR_ID="$ip_e"; WR_GEN="$ip_g"
-      fi
-      WR_PLAN=env
-      ;;
-  esac
-  case "$WR_PLAN" in
-    new|aged|fresh)
-      WR_SNAP_ARGS=(--write-id new --lane "$WR_LANE" --verb "$WR_VERB" --args-sha256 "$WR_D") ;;
-    *)
-      WR_SNAP_ARGS=(--write-id "$WR_ID" --generation "$WR_GEN" --lane "$WR_LANE" --verb "$WR_VERB" --args-sha256 "$WR_D") ;;
-  esac
-  return 0
-}
-
-# AFTER THE FIRST SNAPSHOT ANSWERED 0 (contract §3.2): its stdout, in a file,
-# gives the generation and the write id, minted or echoed, so the record is
-# written now, after that snapshot and before any commit call (Y:5192) -- unless
-# the snapshot found the write in the register (`found=`), or the record taken
-# over holds `tail` (WR_TOOK_TAIL), which is not rewritten here (Y:5342; lane
-# openRepoTools-3, #165 6774499606, T412 (1)). Both are the tail's case (T418),
-# and write no record here.
-#
-#   new     the minted id; the record is new
-#   reuse, env
-#           the echoed id and generation must be this run's own
-#   aged    the record's generation is not the register's: refused with 2, at
-#           any age (Y:5207-5209). It is: the run warns, prints the lookup, and
-#           writes anew under the minted id, replacing the record (Y:5207)
-#   fresh   the record's generation is not the register's: replaced, under
-#           the minted id (Y:5213, Y:5215). It is: refused with 2, since Y
-#           gives `LANES_WRITE_ID=new` only a record of another generation to
-#           replace; a plain rerun takes the record over, or writes anew once it
-#           is past its age
-# Each of these two refusals ends the run's directory first, `<d>/<run>/`
-# (`pw_run_dir_done`), as `pw_snapshot`'s refusal of a record of another
-# generation does: the first snapshot comes after `pw_run_dir`, so a refusal
-# here left that directory until a later run's `pw_runs_purge` (review
-# REV-W10a, N3). The check stays here, after that directory is made, since it
-# needs the generation this snapshot answers, which is written into it.
-#
-# 1 where the answer cannot be read (`format=` not 1, or no UUID where one is
-# owed), which the caller treats as a failed read, 69 (contract §2.8), or where
-# the record could not be written.
-wr_id_settle() {   # <the first snapshot's stdout, in a file>
-  local is_l="" is_fmt="" is_gen="" is_wid="" is_found=""
-  [ -f "${1-}" ] && [ -r "$1" ] || return 1
-  while IFS= read -r is_l || [ -n "$is_l" ]; do
-    case "$is_l" in
-      format=*) is_fmt="${is_l#format=}" ;;
-      generation=*) is_gen="${is_l#generation=}" ;;
-      write_id=*) is_wid="${is_l#write_id=}" ;;
-      found=*) is_found="${is_l#found=}" ;;
-    esac
-    is_l=""
-  done < "$1" 2>/dev/null
-  [ "$is_fmt" = 1 ] || return 1
-  wr_is_uuid "$is_gen" && wr_is_uuid "$is_wid" || return 1
-  case "$WR_PLAN" in
-    new)
-      WR_ID="$is_wid"; WR_GEN="$is_gen"; WR_CREATED_UTC="$(wr_host_utc)"
-      ;;
-    reuse|env)
-      [ "$is_wid" = "$WR_ID" ] && [ "$is_gen" = "$WR_GEN" ] || return 1
-      [ -n "$WR_CREATED_UTC" ] || WR_CREATED_UTC="$(wr_host_utc)"
-      ;;
-    aged)
-      if [ "$WR_REC_GENERATION" != "$is_gen" ]; then
-        pw_run_dir_done
-        wr_refuse_other_generation "$is_gen"
-      fi
-      note "WARNING: the pending record of this command, write $WR_REC_WRITE_ID made at $WR_REC_CREATED_UTC against register generation $WR_REC_GENERATION, was last updated at $WR_REC_UPDATED_UTC, more than $(wr_max_age_s) s ago, so this run does not reuse its id: it writes anew, as write $is_wid, and replaces that record. $(wr_lookup_text)"
-      WR_ID="$is_wid"; WR_GEN="$is_gen"; WR_CREATED_UTC="$(wr_host_utc)"
-      ;;
-    fresh)
-      if [ "$WR_REC_GENERATION" = "$is_gen" ]; then
-        pw_run_dir_done
-        wr_refuse "LANES_WRITE_ID=new, and the pending record of this command, write $WR_REC_WRITE_ID made at ${WR_REC_CREATED_UTC}, is of this register's generation, $is_gen. LANES_WRITE_ID=new replaces only a record of another generation, so this run neither replaces it nor writes anew. Nothing was sent. $(wr_lookup_text) Run the command without LANES_WRITE_ID to take that record over, or once it is $(wr_max_age_s) s past its last update, at ${WR_REC_UPDATED_UTC}, to write anew"
-      fi
-      WR_ID="$is_wid"; WR_GEN="$is_gen"; WR_CREATED_UTC="$(wr_host_utc)"
-      ;;
-    *) return 1 ;;
-  esac
-  [ -n "$is_found" ] && return 0
-  [ -z "$WR_TOOK_TAIL" ] || return 0
-  wr_record_write
-}
-
-# ------------------------------------------------ F: THE PRIMARY BRANCH (T415)
-#
-# 007 T415 (FR-018; Y:4981–5030, Y:2504–2646; the contract's §3.2 and §3.3).
-# Where the writers' mode question answers `primary`, a write verb runs HERE,
-# once per writer process, and never in files mode: S1's attempt loop, until
-# D7's deadline. Each attempt takes one `lanes-index register snapshot`, which
-# builds a scratch tree at its seq; runs the verb as a CHILD of this file on
-# that tree, under T413's internal flag; stops it at T414's seam; and makes one
-# `lanes-index register commit`, whose answer decides the attempt (Y:5008).
-#
-# THE PARENT'S STEPS, in order (lane openRepoTools-4's plan, §3.7; T415's line):
-#   (a) before the first attempt: the lane's checkout `<c>` (`pw_checkout`,
-#       R17), the writer's own lane (`pw_lane_given`), LANES_NO_GIT=1
-#       (`pw_no_git_refuse`), a pending hand edit in
-#       `<c>` (`pw_hand_edit_refuse`), the client's act checks 1–4
-#       (`act_checks`, T410), the author (`pw_author_read`), the write id, the
-#       claim and the record's plan (T412's `wr_` functions), and the run's
-#       directory (`pw_run_dir`);
-#   (b) each attempt: its directory and `parent.pid` (`pw_attempt_dir`), the
-#       snapshot (`pw_snapshot`), the act's checks at it (`pw_act_at_snapshot`),
-#       the files `register commit` reads (`pw_attempt_files`), and the child
-#       (`pw_child_start`, `pw_child_wait`), stopped, with every process under
-#       it, where it never reaches `ready` or a kept child's seam cap is 1 s
-#       away (`pw_child_hung_end`, `pw_child_tree`, `pw_pid_start`);
-#   (c) the commit call and the decision on its answer (`pw_commit`,
-#       `pw_decide`), and at every end 0 that learns the write is in the
-#       register (`committed`, a snapshot's `found=`, the commit's `already`),
-#       the renderer's fork, once a run (`pw_render_fork`, T416);
-#   (d) a 69 at the first snapshot (`pw_first_69`);
-#   (e) D7's deadline and the run's end (`pw_run`, `pw_end`).
-#
-# HERE TOO (T417): F3's lookup, which every end but 0 waits for while the
-# pending record holds a `call` line, its outcomes and its exit 3
-# (`pw_lookup_clock`, `pw_lookup`, `pw_doubt_end` and `pw_lookup_3`, under
-# "THE IN-DOUBT RULE" below); and the exit 3 for an identical write's owner
-# still live at D7's deadline (`pw_owner_live_end`), or for a claim that
-# cannot be tested here (`pw_owner_untested_end`).
-#
-# HERE TOO (T418): the tail, once, for a write this run learns is in the
-# register, by `committed`, `already`, a snapshot's `found=` or the lookup's
-# `found`, under "THE TAIL, ONCE" below: the kept child by its change set
-# (`pw_tail`, `pw_tail_child`, `pw_committed`), the replay at `s−1`
-# (`pw_replay_tail`), the record's `tail` key and the done mark
-# (`pw_tail_found`, `pw_tail_close`), a takeover's `sent` whose child said
-# `none` (`pw_took_sent_none`), the owed and no-record texts
-# (`pw_tail_owed`, `pw_no_record_end`, T412's `wr_owed_text`); and the one
-# site where the renderer's fork goes (`pw_learned`).
-#
-# NOT HERE: `commit` on primary, which T420 exempts from the loop at the
-# dispatcher (R16): its carry form is refused with 2 and its publish act runs
-# outside it.
-PW_LANE=""; PW_C=""; PW_AUTHOR=""; PW_D_S=30; PW_T0=0; PW_RUN=""; PW_RUN_DIR=""
-PW_LOCK=""; PW_REC_OURS=0; PW_PURGED=0; PW_RENDERED=0
-PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=0
-PW_CAP_S=120; PW_CHILD_T0=0; PW_READY_T=0; PW_SEAM_CAP_S=120; PW_KEPT_END=""; PW_KEPT_K=""
-PW_S_GEN=""; PW_S_WID=""; PW_S_FOUND=""; PW_S_N=""; PW_S_CLOCK=""; PW_S_NOT_AFTER=""
-PW_L_CLOCK=""; PW_L_END=""; PW_LK_CLK=(); PW_LK=""; PW_LK_SEQ=""; PW_LK_TOKEN=""; PW_LK_N=""
-PW_LK_WHY=""; PW_LK_OUT=""; PW_LK_ERR=""
-PW_START="-"; PW_KILLED=0; PW_CHILD_START="-"
-
-# D7's deadline in whole seconds: 30, or `LANES_REGISTER_DEADLINE_S` for tests
-# (Y:2632–2641), read in base 10, so a leading zero is neither octal nor an
-# arithmetic error: `08` is 8 s (review REV415, S2). It is honoured only as a
-# positive whole number: 1 to 18 ASCII digits (`wr_is_count`) whose value,
-# read in base 10, is above 0. Any other value, `0` and `000` included, is
-# ignored and 30 kept, as T304 reads it (tasks:1636's rule; lane
-# openRepoTools-3, #165 6807881675, batch c Q73).
-pw_deadline_s() {
-  if wr_is_count "${LANES_REGISTER_DEADLINE_S:-}" && [ "$((10#$LANES_REGISTER_DEADLINE_S))" -gt 0 ]; then
-    printf '%s\n' "$((10#$LANES_REGISTER_DEADLINE_S))"
-  else
-    printf '30\n'
-  fi
-}
-
-# THE BOUND ON A CHILD THAT HAS NOT REACHED `ready` (lane openRepoTools-3, #165
-# 6770820384, T415's question 3; #165 6774499606, T415 (1)): twice D + 30 s
-# from the child's start, 120 s at D7's 30 s, the default of Y:5001's cap. Its
-# own test setting is `LANES_REGISTER_READY_CAP_S`, read in base 10.
-# `LANES_REGISTER_SEAM_CAP_S`, the seam's cap, never sets it, so a test that
-# ages a claim out with a short seam cap does not also bound its own write's
-# child (review REV415b, S2). Its caller has PW_D_S.
-pw_child_cap_s() {
-  if wr_is_count "${LANES_REGISTER_READY_CAP_S:-}"; then
-    printf '%s\n' "$((10#$LANES_REGISTER_READY_CAP_S))"
-  else
-    printf '%s\n' "$((2 * (PW_D_S + 30)))"
-  fi
-}
-
-# NO LANE, NO WRITE: `write_lane_of`'s 2, a write that names no lane here.
-pw_no_lane() {
-  die "no lane, no write: \`$cmd\` names no lane here, so on primary there is no lane checkout to read its author and its pending hand edits from, and a write never falls back to the workspace checkout. Name the lane it is for — LANES_LANE=<lane> $SELF $cmd … — and run it again. Nothing was sent." 2
-}
-
-# THE LANE'S CHECKOUT, `<c>` (R17; FR-018). The lane is the one the routing
-# attributes the write to (`write_lane_of`), and `<c>` is that lane's checkout,
-# from its name alone (`lane_checkout_path`): no `lane_checkout_enter`, no clone
-# and no S3. On primary the verb runs on a scratch tree the register builds, and
-# `<c>` is read only for a pending hand edit, the author, and the `repos.tsv`
-# its `origin/main` gives the snapshot (Y:5048–5050). A checkout that is not
-# there would need a clone, which is D12's fetch, so the write refuses with 2,
-# or 64 for `request-handoff` (`pw_pre_rc`).
-#
-# `write_lane_of`'s 1, on a verb that asks the mode, is one of two forms (its
-# own comment), and neither ends 69 (lane openRepoTools-3, #165 6769061039,
-# T415's question 3; review REV415, S1):
-#   - A DRY RUN: `request-handoff <lane> … --dry-run`, and `archive-rows` and
-#     `migrate-state-cells` without `--yes`. It is a read of the register at
-#     its head (Y:3002), so it runs through the loop as ONE attempt whose child
-#     ends before `ready`, with no commit call (Y:5016; PW_DRY); its lane is
-#     the one its real form takes: `request-handoff`'s first argument, the
-#     others' LANES_LANE.
-#   - A WRITING VERB MISSING ITS LANE ARGUMENT, or with an option where it
-#     goes. Its arm refuses that in files mode as its first act, with its own
-#     usage words; on primary it is refused here, before anything is read or
-#     sent, with the code that arm gives: 64 for `request-handoff`, 2 for every
-#     other verb that asks the mode.
-PW_DRY=0
-# THE CODE OF A REFUSAL BEFORE THE CLAIM (lane openRepoTools-3, #165
-# 6780753157, Q35): 2, or 64 for `request-handoff`, which refuses 64, never 2,
-# for each refusal the primary branch adds before its claim: its missing lane
-# (the arm's own 64, in `pw_checkout`), LANES_NO_GIT=1, `pw_lane_given`'s
-# refusal, a missing `<c>`, a pending hand edit in `<c>` or a listing of it git
-# cannot make (`pw_hand_edit_refuse`; batch g Q114) and no author identity
-# there (`pw_author_read`)
-# (lane openRepoTools-3, #165 6807881675, batch c Q67), so that it never
-# refuses 2 there but for its binding. Its callers read its 2 as "still bound"
-# (`lane`:1253, `lane-start`:2875). A lane name out of class keeps files
-# mode's 2 (`check_lane_name`).
-pw_pre_rc() {
-  if [ "$cmd" = request-handoff ]; then printf '64\n'; else printf '2\n'; fi
-}
-pw_checkout() {   # <the verb's arguments>
-  local pc_rc=0 pc_l=""
-  pc_l="$(write_lane_of "$cmd" ${1+"$@"})" || pc_rc=$?
-  case "$pc_rc" in
-    0) : ;;
-    2) pw_no_lane ;;
-    *)
-      case "$cmd" in
-        request-handoff)
-          [ -n "${1-}" ] ||
-            die "usage: request-handoff <lane> [--wait <s>] [--session <uuid>] [--force \"<why>\"] [--dry-run]: it names no lane. Nothing was sent." 64
-          PW_DRY=1; pc_l="$1" ;;
-        archive-rows|migrate-state-cells)
-          PW_DRY=1; pc_l="${LANES_LANE:-}"
-          [ -n "$pc_l" ] || pw_no_lane ;;
-        *)
-          die "usage: \`$cmd\` as given has no lane argument, or an option where its lane argument goes, so this write names no lane; its arm refuses it with this code in files mode, and on primary it is refused before anything is read or sent. Nothing was sent. Give \`$cmd\` its arguments in full." 2 ;;
-      esac ;;
-  esac
-  check_lane_name "$pc_l"
-  PW_LANE="$(canon_lane "$pc_l")" || exit $?
-  check_lane_name "$PW_LANE"
-  PW_C="$(lane_checkout_path "$PW_LANE")" || die "$(lanes_workspace_why)" 1
-  [ -d "$PW_C" ] ||
-    die "lane ${PW_LANE}'s own register checkout, $PW_C/, is not here, and on primary a write makes no clone to make it, since a clone is a fetch (D12): the verb runs on a scratch tree the register builds, and reads only its author, its pending hand edits and its repos.tsv from that checkout. Make the checkout first — $SELF lane-checkout $PW_LANE --create — then run \`$cmd\` again. Nothing was sent." "$(pw_pre_rc)"
-  return 0
-}
-
-# THE WRITER'S OWN LANE, `LANES_LANE` (lane openRepoTools-3, #165 6769061039,
-# T415's question 4; tasks:1145). Every register call of the write carries it as
-# `--lane`, as given, and it is the digest's lane, which keys the claim and the
-# pending record (Y:5171; contract §3.6, "the writer's own lane, which is in the
-# class"). Passing the write's lane instead would split `--lane` from the
-# digest's, which a takeover's lookup sends. So where it is unset, empty or
-# outside `check_lane_name`'s class, the run refuses 2 before its claim, naming
-# the command with it, or 64 for `request-handoff` (`pw_pre_rc`; lane
-# openRepoTools-3, #165 6780753157, Q35). Nothing is sent.
-pw_lane_given() {
-  local pl_w="" pl_cmd="lanes-edit.sh" pl_why=""
-  case "${LANES_LANE-}" in
-    "" | *[!A-Za-z0-9._-]* | .* | -*) : ;;
-    *) return 0 ;;
-  esac
-  for pl_w in ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"}; do pl_cmd="$pl_cmd $(printf '%q' "$pl_w")"; done
-  if [ -z "${LANES_LANE+x}" ]; then
-    pl_why="LANES_LANE is not set"
-  elif [ -z "$LANES_LANE" ]; then
-    pl_why="LANES_LANE is empty"
-  else
-    pl_why="LANES_LANE is $(printf '%q' "$LANES_LANE"), which is not a lane name (letters, digits, . _ -, not opening with . or -)"
-  fi
-  die "refusing to write on primary: ${pl_why}. Every register call of a write carries the writer's own lane, LANES_LANE as given, and it keys the write's claim and pending record (Y:5171), so a write without one is refused before its claim. Nothing was sent. Run it again with your own lane: LANES_LANE=<lane> ${pl_cmd}" "$(pw_pre_rc)"
-}
-
-# `LANES_NO_GIT=1` ON PRIMARY (lane openRepoTools-3, #165 6770688147, T421's
-# question 2 and T423's question 3; T415's line at B12b). The flag means "edit
-# only, no commit/push" (ENVIRONMENT, above), and on primary the write IS its
-# commit: the child's `commit_publish` returns 0 before the seam, so the run
-# would end 0 with nothing written. So it refuses 2 here, beside
-# `pw_lane_given`, before its claim and its first snapshot, naming the flag.
-# Nothing is sent. `request-handoff`'s refusal is 64, as for its missing lane
-# (`pw_pre_rc`): its callers read its 2 as "still bound" (`lane`:1253,
-# `lane-start`:2875) (lane 3, #165 6774499606, T415 (4); review REV415b, NIT
-# 6; #165 6780753157, Q35). A dry run meets it too, since a dry run takes the write's
-# whole path and refuses wherever the real write would (lane 3, #165
-# 6770820384, T415's question 2). `commit` never reaches the loop (T420), so it
-# is unchanged; T421's and T423's guards, and T422's `rl_after_committed`,
-# stay as backstops.
-pw_no_git_refuse() {
-  local pg_w="" pg_cmd="lanes-edit.sh" pg_rc=2
-  [ "$NO_GIT" = 1 ] || return 0
-  pg_rc="$(pw_pre_rc)"
-  for pg_w in ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"}; do pg_cmd="$pg_cmd $(printf '%q' "$pg_w")"; done
-  die "refusing to write on primary: LANES_NO_GIT=1 is set, which means edit only, with no commit and no push. On primary a write is its commit to the register, so under it this run would end 0 having written nothing. Nothing was sent. Unset it and run the command again: env -u LANES_NO_GIT ${pg_cmd}" "$pg_rc"
-}
-
-# A PENDING HAND EDIT IN `<c>` (Y:2459–2464; Amendment 23's S3 step 4). The verb
-# runs on a scratch tree, so the lane's checkout is the one place a hand edit of
-# a rendered file can be seen, and on primary it is never carried or committed:
-# the write refuses with 2, or 64 for `request-handoff` (`pw_pre_rc`; batch c
-# Q67), naming each file and the recovery that works on primary, before
-# anything is sent. The render set is the seam's (`cp_seam_render_path`);
-# `lanes/STORE`, `repos.tsv` and the handoffs are not in it. The recovery's
-# two commands quote the checkout and each path with `printf '%q'`, so each
-# can be pasted as it is (review REV415, N4). THE ONE RECOVERY COMMAND, the
-# restore, is printed in backticks, and the read line has no backticked `git`
-# command, so the refusal names the file and one recovery command (lane 4's
-# call, from the test plan's TP:764–769: "names the file holding the hand
-# edit and one recovery command"). Its
-# restore is `git restore --source=HEAD --staged --worktree`, as T420's
-# `commit_hand_edit_refuse` gives it, not `checkout HEAD --`, which fails for a
-# staged new file that HEAD lacks (lane 3, #165 6774499606, T420 5(a); review
-# REV420b, N3). The restore deletes such a file, so reading it stays first.
-# The files are listed with `--no-renames`, so a `git mv` of a rendered file
-# names both its paths, and one restore undoes it; without it, rename
-# detection named the new path alone, and the old one's deletion was left for
-# a second refusal (review REV415c, N3).
-# THE LIST IS SPLIT BY PARAMETER EXPANSION, at each newline, never through a
-# here-document, as the seam's is (T414, review REV-W9a M1): bash 3.2 writes a
-# here-document to a temp file, and where none can be made, as in a full
-# TMPDIR, the loop never ran, so the write went on as though no hand edit were
-# pending. Now a full TMPDIR changes nothing here: the edit is refused as
-# above (lane 4's W9-T415 report, §6).
-# A LISTING GIT CANNOT MAKE IS NO ANSWER: `cs_pending_of --rc` returns git's
-# status, and where it is not 0 the write refuses the same way, 2, or 64 for
-# `request-handoff` (`pw_pre_rc`), naming the read and its code, before
-# anything is sent. Until then a failed listing read as "no hand edit", and the
-# write went on (Amendment 7(d); lane openRepoTools-3, #165 6813027223, batch g
-# Q114, as `pw_author_read`, git's other read of `<c>`, refuses).
-pw_hand_edit_refuse() {
-  local ph_hits="" ph_p="" ph_l="" ph_q="" ph_c="" ph_rc=0
-  ph_hits="$(LANES_REPO="$PW_C" cs_pending_of --rc --no-renames lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)" || ph_rc=$?
-  if [ "$ph_rc" != 0 ]; then
-    ph_c="$(printf '%q' "$PW_C")"
-    die "refusing to write on primary: git could not list the uncommitted edits in lane ${PW_LANE}'s checkout, $PW_C: \`git -C $ph_c diff --no-renames --name-only HEAD -- lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive\` exited $ph_rc. So whether that checkout holds a hand edit of a file the register renders is not known, and a read that failed is never 'no hand edit' (Amendment 7(d)). Fix the read, then run \`$cmd\` again. Nothing was sent." "$(pw_pre_rc)"
-  fi
-  while [ -n "$ph_hits" ]; do
-    ph_p="${ph_hits%%"$WR_NL"*}"
-    case "$ph_hits" in
-      *"$WR_NL"*) ph_hits="${ph_hits#*"$WR_NL"}" ;;
-      *) ph_hits="" ;;
-    esac
-    [ -n "$ph_p" ] || continue
-    cp_seam_render_path "$ph_p" || continue
-    ph_l="$ph_l $ph_p"
-    ph_q="$ph_q $(printf '%q' "$ph_p")"
-  done
-  [ -n "$ph_l" ] || return 0
-  ph_c="$(printf '%q' "$PW_C")"
-  note "RECOVERY, in $PW_C:"
-  note "  read it:      git -C $ph_c diff HEAD --$ph_q"
-  note "  restore it:   \`git -C $ph_c restore --source=HEAD --staged --worktree --$ph_q\`"
-  note "  then make the change through its verb, and run this write again"
-  die "refusing to write on primary: lane ${PW_LANE}'s checkout, $PW_C, holds an uncommitted edit of$ph_l, which the register renders. On primary the register is the database and that file is its rendering, so a hand edit there is never committed, carried or swept into a write (Y:2459). Nothing was sent." "$(pw_pre_rc)"
-}
-
-# THE AUTHOR (Y:5379; D15): `<c>`'s identity, as `git -C <c> var
-# GIT_AUTHOR_IDENT` gives it, less its date: `Name <email>`, for the attempt's
-# `author` file. Where git gives none, the write refuses with 2, or 64 for
-# `request-handoff` (`pw_pre_rc`; lane openRepoTools-3, #165 6807881675, batch
-# c Q67), before the first snapshot, as a files-mode commit there would fail.
-pw_author_read() {
-  local pa_i=""
-  pa_i="$(git -C "$PW_C" var GIT_AUTHOR_IDENT 2>/dev/null)" || pa_i=""
-  PW_AUTHOR=""
-  case "$pa_i" in *'>'*) PW_AUTHOR="${pa_i%>*}>" ;; esac
-  case "$PW_AUTHOR" in ?*' <'*'>') : ;; *) PW_AUTHOR="" ;; esac
-  wr_value_ok "$PW_AUTHOR" || PW_AUTHOR=""
-  [ -n "$PW_AUTHOR" ] ||
-    die "refusing to write on primary: git gives no author identity in lane ${PW_LANE}'s checkout, $PW_C (\`git -C $PW_C var GIT_AUTHOR_IDENT\` answered none), and the register's journal records each write's author (D15), as a commit there would need one. Set user.name and user.email for that checkout, then run \`$cmd\` again. Nothing was sent." "$(pw_pre_rc)"
-  return 0
-}
-
-# THE RUN'S DIRECTORY, `<state>/register-writes/<d>/<run>/` (T413; contract
-# §3.3): `<run>` is 32 lower-case hex from 16 random bytes, minted now, so every
-# attempt's directory is known before the first snapshot, which mints a new
-# write's id. `register-writes/`, `<d>/` and `<d>/<run>/` are made with mode
-# 0700 (lane openRepoTools-3, #165 6755005268). Also the path each attempt's
-# `lock` names: this process's own sidecar lock, which the child's tail takes
-# for its sidecar acts (Y:5044; F-B1). This run's claim is released on a
-# failure here, since nothing was sent.
-pw_run_dir() {
-  local pr_w="$WR_STATE/register-writes"
-  PW_RUN="$(act_mint_id)" || PW_RUN=""
-  if [ -z "$PW_RUN" ] || ! wr_dir_0700 "$WR_STATE" || ! wr_dir_0700 "$pr_w" ||
-     ! wr_dir_0700 "$pr_w/$WR_D" || ! wr_dir_0700 "$pr_w/$WR_D/$PW_RUN"; then
-    # A RECORD TAKEN OVER WITH `call` LINES is in doubt from this run's start
-    # (Y:5199; T417), so even this end waits for F3's lookup (`pw_end`).
-    if [ -n "$WR_CALLS" ]; then
-      PW_RUN_DIR=""
-      pw_end 1 "this write's attempt directories cannot be kept: $pr_w/$WR_D/${PW_RUN:-<run>} is not a 0700 directory of this user's and cannot be made one, or no run nonce could be read from /dev/urandom. Nothing was sent by this run"
-    fi
-    wr_claim_release
-    die "this write's attempt directories cannot be kept: $pr_w/$WR_D/${PW_RUN:-<run>} is not a 0700 directory of this user's and cannot be made one, or no run nonce could be read from /dev/urandom. Nothing was sent" 1
-  fi
-  PW_RUN_DIR="$pr_w/$WR_D/$PW_RUN"
-  PW_LOCK="$(sidecar_lock_dir 2>/dev/null)" || PW_LOCK=""
-  case "$PW_LOCK" in /*|'') : ;; *) PW_LOCK="$PWD/$PW_LOCK" ;; esac
-  return 0
-}
-
-# A `call` LINE'S FIELDS (Y:5172; the record's `<base> <clock> <not_after>
-# <files> <dir>`), into PW_CF_B, PW_CF_C, PW_CF_N, PW_CF_F and PW_CF_D, split
-# as `IFS=' ' read -r` splits them: a run of spaces between two fields, none
-# kept at either end, and the rest of the line in the last. It splits by
-# parameter expansion, never through a here-string: bash 3.2 writes one to a
-# temp file in /tmp, whatever TMPDIR names (bash 5.1 and later still do, past
-# a pipe's size), and where none can be made, as in a full /tmp, the read never
-# ran, every field was empty, and nothing checked it (review REV-W10a, M1).
-# T417's and T418's loops over `call` lines split them at each newline the
-# same way, as T414's seam and T415's `pw_abandon_kept` split theirs.
-PW_CF_B=""; PW_CF_C=""; PW_CF_N=""; PW_CF_F=""; PW_CF_D=""
-pw_call_fields() {   # <one call line, without `call=`>
-  local cf_x="${1-}"
-  cf_x="${cf_x#"${cf_x%%[! ]*}"}"; PW_CF_B="${cf_x%% *}"; cf_x="${cf_x#"$PW_CF_B"}"
-  cf_x="${cf_x#"${cf_x%%[! ]*}"}"; PW_CF_C="${cf_x%% *}"; cf_x="${cf_x#"$PW_CF_C"}"
-  cf_x="${cf_x#"${cf_x%%[! ]*}"}"; PW_CF_N="${cf_x%% *}"; cf_x="${cf_x#"$PW_CF_N"}"
-  cf_x="${cf_x#"${cf_x%%[! ]*}"}"; PW_CF_F="${cf_x%% *}"; cf_x="${cf_x#"$PW_CF_F"}"
-  cf_x="${cf_x#"${cf_x%%[! ]*}"}"; PW_CF_D="${cf_x%"${cf_x##*[! ]}"}"
-}
-
-# AN IDENTICAL WRITE'S OWNER STILL LIVE AT D7's DEADLINE (T417; Y:5216–5218;
-# T412's `wr_claim_take` returned 2, with WR_OWNER_* naming the highest claim).
-# This run sent nothing, and that write's outcome is not known, so it exits 3
-# and leaves the record and the claims as they are. Three forms:
-#   - a claim whose owner cannot be tested here (DEC-25): `no-pid`,
-#     `no-start` or `other-host`, live only for the seam's cap, which D7's
-#     deadline beat: `pw_owner_untested_end`;
-#   - a pending record beside the claim: Y:5218's text, with its write id and
-#     its printed rerun, whose `LANES_SESSION` is the value the digest took
-#     (ERR-38), and its lookup only where the record holds a `call` line
-#     (batch e Q107). A record there that cannot be read names no id,
-#     and the text says so;
-#   - no record beside it (open point 42, taken under R26; the plan's §11.4):
-#     a record being made, so no write id is known. The text names the claim
-#     and gives Y's own effect check (Y:5211–5213): a plain rerun could write
-#     anew where the other run ended 0 (Y:5182), and its done mark rests on a
-#     pid with no start time (Y:5181). A run that was itself under
-#     `LANES_WRITE_ID` prints its own id again with its generation instead of
-#     the plain command.
-# A claim from another host or container (`other-host`, Y:5220) takes the
-# first form, with its pid, host and container, whatever lies beside it: its
-# pid cannot be tested here (lane 3, #165 6769061039, T417 item 2). So every
-# pid the second and third forms print is this host's.
-pw_owner_live_end() {
-  local po_rec="" po_rc=0 po_p="" po_utc="" po_look="" po_re="" po_then="" po_k="" po_l="" po_n="" po_max="" po_last=""
-  case "$WR_OWNER_WHY" in no-pid|no-start|other-host) pw_owner_untested_end ;; esac
-  po_p="${WR_OWNER_PID:-<unknown>}"; po_utc="${WR_OWNER_UTC:-<unknown>}"
-  po_rec="$WR_STATE/register-pending/$WR_D"
-  wr_record_read "$po_rec"; po_rc=$?
-  if [ "$po_rc" = 0 ]; then
-    # By parameter expansion, never a here-string (`pw_call_fields`), so a
-    # full /tmp cannot drop the lookup a `call` line asks for.
-    po_k="$WR_REC_CALLS"
-    while [ -n "$po_k" ]; do
-      po_l="${po_k%%"$WR_NL"*}"
-      case "$po_k" in
-        *"$WR_NL"*) po_k="${po_k#*"$WR_NL"}" ;;
-        *) po_k="" ;;
-      esac
-      [ -n "$po_l" ] || continue
-      pw_call_fields "$po_l"; po_n="$PW_CF_N"
-      if [ -z "$po_max" ] || [ "$po_n" -gt "$po_max" ]; then po_max="$po_n"; fi
-    done
-    po_re="$(wr_rerun_text "$WR_REC_WRITE_ID" "$WR_REC_GENERATION")"
-    # With no `call` line the lookup has no `<n>` for its `--not-after` (§3.4;
-    # LR011), and the live owner may yet write one, so the text names the
-    # rerun alone (lane openRepoTools-3, #165 6808937880, batch e Q107; B15
-    # Y:5264).
-    po_then="run ${po_re}"
-    if [ -n "$po_max" ]; then
-      po_look="lanes-index journal --write-id $WR_REC_WRITE_ID --not-after $po_max --generation $WR_REC_GENERATION --lane $(printf '%q' "$WR_REC_LANE") --verb $(printf '%q' "$WR_REC_VERB") --args-sha256 $WR_REC_ARGS_SHA256"
-      po_then="look it up (${po_look}), or ${po_then}"
-    fi
-    die "an identical write is still running in pid ${po_p} (write ${WR_REC_WRITE_ID}, started ${po_utc}); this run sent nothing, and that write's outcome is not known. Once pid ${po_p} has ended, ${po_then}, which finds it or writes it once." 3
-  fi
-  if [ "$po_rc" = 2 ]; then
-    die "an identical write is still running in pid ${po_p} (started ${po_utc}), and its pending record, ${po_rec}, cannot be read as one, so its write id is not known here; this run sent nothing, and that write's outcome is not known. Once pid ${po_p} has ended, lanes-index status lists the pending records." 3
-  fi
-  if wr_is_uuid "${LANES_WRITE_ID:-}"; then
-    po_last="If it is not, run it again by its own write id: $(wr_rerun_text "$LANES_WRITE_ID" "${LANES_WRITE_GENERATION:-<generation>}")"
-  else
-    po_last="If it is not, run the same command again; it takes over that write's record if one was left, or writes anew."
-  fi
-  die "an identical write is being started in pid ${po_p} on ${WR_OWNER_HOST:-<unknown>}/${WR_OWNER_CONTAINER:-<unknown>} (claimed ${po_utc}); its record is not yet written, so its write id is not yet known; this run sent nothing. Once pid ${po_p} has ended, look for its effect in the register: lanes-edit.sh history ${PW_LANE} --since ${po_utc} for a log line, or lanes-edit.sh register-row ${PW_LANE} for a row. If it is there, that write was made: do not run this command again. ${po_last}" 3
-}
-
-# AN UNTESTED CLAIM AT D7's DEADLINE (T417; DEC-25, #165 6750702819): the
-# highest claim names no pid or cannot be read (`no-pid`); its pid lives and
-# it recorded no start time, so a reused pid cannot be told (`no-start`); or
-# it is from another host or container, or from one either side cannot name,
-# so its pid cannot be tested here at all (`other-host`, Y:5220; lane 3, #165
-# 6769061039, T417 item 2), and the text names its pid, host and container.
-# It counts as live for the seam's cap from DEC-25's anchor, and D7's deadline
-# came first. The run exits 3 in a form of its own, naming the claim file and
-# the UTC after which a run may take it (WR_OWNER_TAKE_AFTER, the cap's end),
-# and saying that it sent nothing; the rerun is the one it would print at any
-# other end before its first snapshot.
-pw_owner_untested_end() {
-  local pu_why="" pu_re="" pu_f="$WR_OWNER_FILE"
-  case "$WR_OWNER_WHY" in
-    no-start)
-      pu_why="its pid, ${WR_OWNER_PID:-<unknown>}, lives, and the claim recorded no start time, so a reused pid cannot be told" ;;
-    other-host)
-      pu_why="it was made by pid ${WR_OWNER_PID:-<unknown>} on ${WR_OWNER_HOST:-<unknown>}/${WR_OWNER_CONTAINER:-<unknown>}, and this run is on ${WR_HERE_HOST:-<unknown>}/${WR_HERE_CONTAINER:-<unknown>}: a pid of another host or container, or of one not named, cannot be tested here (Y:5220)" ;;
-    *)
-      pu_why="it names no pid, or cannot be read" ;;
-  esac
-  if wr_is_uuid "${LANES_WRITE_ID:-}"; then
-    pu_re="$(wr_rerun_text "$LANES_WRITE_ID" "${LANES_WRITE_GENERATION:-<generation>}")"
-  else
-    pu_re="$(pw_given_text)"
-  fi
-  die "an identical write holds the claim ${pu_f}, whose owner cannot be tested here: ${pu_why}. It counts as live for the seam's cap (DEC-25), and this run's deadline of ${PW_D_S} s passed first; this run sent nothing. A run may take that claim after ${WR_OWNER_TAKE_AFTER:-<unknown>}: run it again then. ${pu_re}" 3
-}
-
-# THE COMMAND AS IT WAS GIVEN, for a rerun where the run had no write id (open
-# point 38; spec:318): `LANES_WRITE_ID=new` again where it was given, with the
-# lane and the session the digest took (ERR-38).
-pw_given_text() {
-  if [ "${LANES_WRITE_ID:-}" = new ]; then
-    wr_rerun_new_text
-  else
-    printf 'LANES_LANE=%s LANES_SESSION=%s %s\n' \
-      "$(printf '%q' "$WR_LANE")" "$(printf '%q' "$WR_SESSION")" "$WR_CMDLINE"
-  fi
-}
-
-# ---- (b) ONE ATTEMPT.
-#
-# THE RECORD'S `attempts` counts each attempt the write has made, across the
-# runs that took its record over (pending-record.md; Y:5172; review REV415,
-# N1); it is written with the record's next write, at the first snapshot or
-# the attempt's `call` line.
-#
-# ITS DIRECTORY, `<d>/<run>/<k>/` (T413), mode 0700, and in it, before the
-# child starts: `parent.pid`, one line, `<pid>` TAB `<start token>`, this
-# process's `$$` and its `pid_start_of` token (empty where lane 5's T502 is not
-# here), by temporary file and `mv` (#165 6755005268, item 2); `seam.fifo`, the
-# FIFO the seam opens on fd 5 (Y:4999); and `lock`, where this process has a
-# sidecar lock. A file that cannot be written ends the run with 1, nothing sent.
-pw_attempt_dir() {
-  local pd_t=""
-  PW_K=$((PW_K + 1))
-  WR_ATTEMPTS=$((10#$WR_ATTEMPTS + 1))
-  PW_DIR="$PW_RUN_DIR/$PW_K"
-  wr_dir_0700 "$PW_DIR" ||
-    pw_end 1 "attempt ${PW_K}'s directory, $PW_DIR, is not a 0700 directory of this user's and cannot be made one. Nothing was sent by it"
-  pd_t="$(mktemp "$PW_DIR/.parent.pid.XXXXXX" 2>/dev/null)" || pd_t=""
-  if [ -z "$pd_t" ] || ! printf '%s\t%s\n' "$$" "$WR_CLAIM_START" > "$pd_t" 2>/dev/null ||
-     ! mv -f -- "$pd_t" "$PW_DIR/parent.pid" 2>/dev/null; then
-    [ -z "$pd_t" ] || rm -f -- "$pd_t" 2>/dev/null
-    pw_end 1 "attempt ${PW_K}'s parent.pid, in $PW_DIR, could not be written. Nothing was sent by it"
-  fi
-  mkfifo -m 600 "$PW_DIR/seam.fifo" 2>/dev/null ||
-    pw_end 1 "attempt ${PW_K}'s seam.fifo, in $PW_DIR, could not be made. Nothing was sent by it"
-  if [ -n "$PW_LOCK" ]; then
-    printf '%s\n' "$PW_LOCK" > "$PW_DIR/lock" 2>/dev/null ||
-      pw_end 1 "attempt ${PW_K}'s lock file, in $PW_DIR, could not be written. Nothing was sent by it"
-  fi
-  return 0
-}
-
-# THE SNAPSHOT'S ANSWER, read by key (contract §3.2: "Group B parses by key,
-# never by position"), through `cat -v`, so a NUL or a carriage return cannot
-# vanish from a value. Readable is: `format=1` (§2.8), each key once, a
-# lower-case UUID for `generation=` and `write_id=`, whole seconds for `n=`,
-# `clock=` and `not_after=`, and, where `found=` is absent, `switch=primary`
-# with `marker=present`, which a snapshot that answers 0 must then read (§3.2's
-# check 4). A `found=` answer ends at §3.2's check 2, before the switch is
-# checked, so its `switch=` and `marker=` are not read: "a write that is in the
-# journal is never told 69 because a rollback has since moved the switch"
-# (Y:4996; Y:2518; lane openRepoTools-4's review REV415, M1). 1 otherwise: a
-# failed read, 69.
-pw_snap_read() {   # <the snapshot's stdout, in a file>
-  local sr_out="" sr_line="" sr_key="" sr_val="" sr_seen=" " sr_fmt="" sr_sw="" sr_mk=""
-  PW_S_GEN=""; PW_S_WID=""; PW_S_FOUND=""; PW_S_N=""; PW_S_CLOCK=""; PW_S_NOT_AFTER=""
-  sr_out="$(cat -v -- "$1" 2>/dev/null; printf .)"; sr_out="${sr_out%.}"
-  while [ -n "$sr_out" ]; do
-    sr_line="${sr_out%%"$WR_NL"*}"
-    if [ "$sr_line" = "$sr_out" ]; then sr_out=""; else sr_out="${sr_out#*"$WR_NL"}"; fi
-    sr_key="${sr_line%%=*}"; sr_val="${sr_line#*=}"
-    [ "$sr_key" != "$sr_line" ] || continue
-    case "$sr_key" in
-      format|generation|write_id|found|switch|marker|n|clock|not_after)
-        case "$sr_seen" in *" $sr_key "*) return 1 ;; esac
-        sr_seen="$sr_seen$sr_key " ;;
-      *) continue ;;
-    esac
-    case "$sr_key" in
-      format) sr_fmt="$sr_val" ;;
-      generation) PW_S_GEN="$sr_val" ;;
-      write_id) PW_S_WID="$sr_val" ;;
-      found) PW_S_FOUND="$sr_val" ;;
-      switch) sr_sw="$sr_val" ;;
-      marker) sr_mk="$sr_val" ;;
-      n) PW_S_N="$sr_val" ;;
-      clock) PW_S_CLOCK="$sr_val" ;;
-      not_after) PW_S_NOT_AFTER="$sr_val" ;;
-    esac
-  done
-  [ "$sr_fmt" = 1 ] || return 1
-  [ -n "$PW_S_FOUND" ] || [ "$sr_sw $sr_mk" = "primary present" ] || return 1
-  wr_is_uuid "$PW_S_GEN" && wr_is_uuid "$PW_S_WID" || return 1
-  wr_is_count "$PW_S_N" && wr_is_count "$PW_S_CLOCK" && wr_is_count "$PW_S_NOT_AFTER" || return 1
-  [ -z "$PW_S_FOUND" ] || wr_is_count "$PW_S_FOUND" || return 1
-  return 0
-}
-
-# THE SNAPSHOT (S1's step 1; contract §3.2): `lanes-index register snapshot`
-# with the write's identity, `--tree <dir>/tree` and `--checkout <c>`. The
-# first takes T412's flags (`--write-id new` on a new write, which mints its
-# id); every later one the id's five. Its stdout IS the attempt's `snapshot`
-# file, verbatim, which `register commit` reads and the child dates its lines
-# by (T413). The one call form of lane 3's 6755641373, point 2, so a signal's
-# notice never reaches this process's stderr. Its exits (§3.2, §2.7):
-#   0    read here (`pw_snap_read`); one it cannot read is a failed read, 69;
-#   2    a refusal: the run's generation (LR007 `generation`), an id that
-#        belongs to another write (LR007 `another-write`), or a refused
-#        configuration. On the first snapshot of a record taken over, LR007
-#        `generation` is that record's other generation (T412's
-#        `wr_refuse_other_generation`; Y:5209): a plain rerun's (`reuse`) or
-#        a `LANES_WRITE_ID` run's with that record's id (`env`), which is
-#        where PW_REC_OURS is 1 before it (`pw_run`). A by-id run with no
-#        record has none to name, and keeps the relay (lane openRepoTools-3,
-#        #165 6813027223, batch g Q115; pending-record.md:225 and :286 at
-#        bd871f57);
-#   64   usage: never sent by this file, so an internal error, 2 (CO-5);
-#   69, and any other end: the register gave this write no snapshot, 69.
-# On a refusal or a failed read, what `lanes-index` said on stderr is passed
-# on first, verbatim. Then the first snapshot settles the write's id and writes
-# its record (T412's `wr_id_settle`; Y:5192), and a later one must echo this
-# write's id and generation. A run that took over a record holding `tail`
-# goes to the done mark where its first snapshot finds the write (`pw_tail`),
-# and refuses 2 where it answers 0 without `found=` (`pw_took_tail_refuse`).
-pw_snapshot() {
-  local ps_bin="" ps_rc=0 ps_l="" ps_det="" ps_end="" ps_p=""
-  local -a ps_a
-  if [ "$PW_FIRST_DONE" = 0 ]; then
-    ps_a=(${WR_SNAP_ARGS[@]+"${WR_SNAP_ARGS[@]}"})
-  else
-    ps_a=(--write-id "$WR_ID" --generation "$WR_GEN" --lane "$WR_LANE" --verb "$WR_VERB" --args-sha256 "$WR_D")
-  fi
-  ps_bin="$(lanes_index_bin)"
-  [ -n "$ps_bin" ] ||
-    pw_snap_end 69 "there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH to read the register with"
-  ( "$ps_bin" register snapshot "${ps_a[@]}" --tree "$PW_DIR/tree" --checkout "$PW_C" \
-      </dev/null >"$PW_DIR/snapshot" 2>"$PW_DIR/snapshot.err"; exit "$?" ) 2>/dev/null || ps_rc=$?
-  ps_end="$SECONDS"
-  if [ "$ps_rc" != 0 ]; then
-    [ ! -s "$PW_DIR/snapshot.err" ] || cat -- "$PW_DIR/snapshot.err" >&2
-    # The token is LR007's own: the `DETAIL:` line right after the
-    # `ERROR:  LR007:` line (register-cli.md [P]'s lines 1 and 2, and [B′]
-    # for the snapshot's two refusals), cut at its first white space, as
-    # `pw_lookup` reads it (T417 d7c57af). Never another error's DETAIL
-    # elsewhere on stderr: a DETAIL anywhere else settles nothing, and gives
-    # no token (lane openRepoTools-3, #165 6809964029, batch f (110); review
-    # REV-W9b, N3's twin).
-    while IFS= read -r ps_l || [ -n "$ps_l" ]; do
-      case "$ps_l" in
-        'DETAIL:  '*)
-          case "$ps_p" in
-            'ERROR:  LR007:'*) ps_det="${ps_l#DETAIL:  }"; break ;;
-          esac ;;
-      esac
-      ps_p="$ps_l"; ps_l=""
-    done < "$PW_DIR/snapshot.err" 2>/dev/null
-    ps_det="${ps_det%%[[:space:]]*}"
-  fi
-  case "$ps_rc" in
-    0)
-      pw_snap_read "$PW_DIR/snapshot" ||
-        pw_snap_end 69 "\`lanes-index register snapshot\` exited 0 with an answer this lanes-edit.sh cannot read (not format=1, a key twice or missing, or not switch=primary with marker=present), which is a failed read" ;;
-    2)
-      if [ "$PW_FIRST_DONE" = 0 ] && [ "$PW_REC_OURS" = 1 ] && [ "$ps_det" = generation ]; then
-        pw_run_dir_done
-        wr_refuse_other_generation
-      fi
-      pw_snap_end 2 "\`lanes-index register snapshot\` refused this write (exit 2${ps_det:+, $ps_det}), above" ;;
-    64)
-      pw_snap_end 2 "\`lanes-index register snapshot\` exited 64, a usage error this lanes-edit.sh never sends: an internal error" ;;
-    *)
-      pw_snap_end 69 "\`lanes-index register snapshot\` exited ${ps_rc} (its own words, where it gave any, are above)" ;;
-  esac
-  # THE LAST SNAPSHOT'S CLOCK, for F3's lookup (T417; Y:5236; contract §3.4):
-  # the database clock of the last snapshot whose answer was read, and the
-  # `SECONDS` its call ended at, so that `--clock-age` counts from the call's
-  # end, not its start.
-  PW_L_CLOCK="$PW_S_CLOCK"; PW_L_END="$ps_end"
-  if [ "$PW_FIRST_DONE" = 0 ]; then
-    # A `found=` snapshot writes no record here, so it does not purge; the tail's
-    # `tail=sent` write does, once (`pw_tail_child`, REV418b NIT-2).
-    [ -n "$PW_S_FOUND" ] || pw_runs_purge
-    if ! wr_id_settle "$PW_DIR/snapshot"; then
-      case "$WR_PLAN" in
-        reuse|env)
-          if [ "$PW_S_WID" != "$WR_ID" ] || [ "$PW_S_GEN" != "$WR_GEN" ]; then
-            pw_snap_end 69 "\`lanes-index register snapshot\` answered write ${PW_S_WID} of generation ${PW_S_GEN} where this write is ${WR_ID} of ${WR_GEN}, which is a failed read"
-          fi ;;
-      esac
-      pw_end 1 "this write's pending record, $WR_STATE/register-pending/$WR_D, could not be written after its first snapshot, so no commit call can be made for it. Nothing was sent"
-    fi
-    PW_FIRST_DONE=1
-    [ -n "$PW_S_FOUND" ] || [ -z "$WR_TOOK_TAIL" ] || pw_took_tail_refuse
-    [ -n "$PW_S_FOUND" ] || PW_REC_OURS=1
-  elif [ "$PW_S_WID" != "$WR_ID" ] || [ "$PW_S_GEN" != "$WR_GEN" ]; then
-    pw_snap_end 69 "\`lanes-index register snapshot\` answered write ${PW_S_WID} of generation ${PW_S_GEN} where this write is ${WR_ID} of ${WR_GEN}, which is a failed read"
-  fi
-  [ -z "$PW_S_FOUND" ] || pw_tail "$PW_S_FOUND" "attempt ${PW_K}'s snapshot found it" "$PW_DIR/snapshot"
-  return 0
-}
-
-# A SNAPSHOT THAT REFUSED OR FAILED ENDS THE RUN (Y:5017–5023): with its code,
-# or after F3's lookup where a `call` line is held (`pw_end`). A 69 at the
-# first snapshot is `pw_first_69`'s.
-pw_snap_end() {   # <2 | 69> <why>
-  if [ "$1" = 2 ]; then
-    pw_end 2 "attempt ${PW_K}'s snapshot: $2. Nothing was sent by this run"
-  fi
-  [ "$PW_FIRST_DONE" = 1 ] || pw_first_69 "$2"
-  pw_end 69 "the register gave this write no snapshot at attempt ${PW_K}'s snapshot: $2. Nothing was written by this run. $(pw_rerun_line)"
-}
-
-# ---- (d) A 69 AT THE FIRST SNAPSHOT (open point 38, taken under R26; spec:318
-# and :338; lane openRepoTools-4's plan, §11.2). What the note says depends on
-# whether the run had a write id:
-#   - A RUN THAT PASSED `--write-id new` (WR_PLAN new, aged or fresh), given
-#     no `LANES_WRITE_ID` id and taking over no record: the mint is at that
-#     snapshot, and the record comes only after it (Y:5192), so no id was
-#     minted and no record of this run was written. The note says that nothing
-#     was sent, and the rerun is the command as it was given: no
-#     `LANES_WRITE_ID` or `LANES_WRITE_GENERATION`, or `LANES_WRITE_ID=new`
-#     again where it was given, since the record it is to replace is still
-#     there (`pw_given_text`).
-#   - A RUN THAT HAD AN ID (WR_PLAN env or reuse: `LANES_WRITE_ID`, as by an
-#     earlier printed rerun, or a record taken over) prints it again with its
-#     generation, `LANES_WRITE_ID=<id> LANES_WRITE_GENERATION=<g> …`, which
-#     settles the write with or without the record (Y:5219, Y:5222). A plain
-#     rerun there could mint a new id and make a committed write twice.
-# THE CLAIM: this 69 removes the run's own claim file, `<d>.take.<k>`, taken
-# before the snapshot (T412), so no claim is left with no record and a dead
-# owner (`pw_end`'s `pw_record_done`). A record of this write's own with no
-# `call` line goes with it (Y:5196); one that holds a `call` line is in doubt
-# from the run's start, and waits for F3's lookup (Y:5017–5023).
-pw_first_69() {   # <why>
-  if [ "$WR_PLAN" = env ] || [ "$WR_PLAN" = reuse ]; then
-    pw_end 69 "the register gave this write no snapshot at this write's first snapshot: $1. This run sent nothing for write $WR_ID of register generation $WR_GEN, and that says nothing of whether an earlier run committed it. Run it again by its write id, which settles the write with or without its record and never writes it twice: $(wr_rerun_text "$WR_ID" "$WR_GEN")"
-  fi
-  pw_end 69 "the register gave this write no snapshot at this write's first snapshot: $1. No write id was minted and no pending record of this run was written: nothing was sent. Run it again as it was given: $(pw_given_text)"
-}
-
-# THE RERUN A 69 OR A 75 PRINTS (spec:318; open point 38): the write's id with
-# its generation where the run has one, which settles the write with or
-# without its record (Y:5219, Y:5222); otherwise the command as it was given,
-# after saying that nothing was sent.
-pw_rerun_line() {
-  if wr_is_uuid "$WR_ID" && wr_is_uuid "$WR_GEN"; then
-    printf 'To run it again, by its write id: %s\n' "$(wr_rerun_text "$WR_ID" "$WR_GEN")"
-  else
-    printf 'No write id was minted, and nothing was sent. To run it again, as it was given: %s\n' "$(pw_given_text)"
-  fi
-}
-
-# THE ACT'S CHECKS AT EACH SNAPSHOT (Y:5603–5605), after the run's generation,
-# the write id and the switch, which the snapshot made: the act's generation is
-# the switch's, and its base is not past `n`. Each 2, nothing sent. The
-# commit's LR007 and LR004 for an act are then backstops.
-pw_act_at_snapshot() {
-  [ -n "$ACT_LINES" ] || return 0
-  if [ "$ACT_GEN" != "$PW_S_GEN" ]; then
-    pw_end 2 "LANES_ACT's base, seq ${ACT_BASE}, was read in register generation ${ACT_GEN}, and attempt ${PW_K}'s snapshot reads generation ${PW_S_GEN}: the register was re-imported or restored after the act began, so the act's reads are not this register's. Run the act again from its start. Nothing was sent"
-  fi
-  if [ "$ACT_BASE" -gt "$PW_S_N" ]; then
-    pw_end 2 "LANES_ACT's base is seq ${ACT_BASE}, and attempt ${PW_K}'s snapshot reads the head at seq ${PW_S_N}, before it: that base was not read from this register as it stands. Run the act again from its start. Nothing was sent"
-  fi
-  return 0
-}
-
-# THE FILES THE PARENT WRITES FOR `register commit` (contract §3.3), beside
-# `snapshot`: `not_after`, the snapshot's `not_after=`; `author`, `Name
-# <email>`; and, only where `LANES_ACT` is set, `act`: `LANES_ACT`'s three
-# parts verbatim and one `expect=` per `LANES_EXPECT` scope in the order given,
-# none dropped or merged (T410's `ACT_LINES`; #165 6755641373, point 4). Both
-# variables stay in the environment, unchanged, for `register commit`, which
-# checks them again (Y:5597).
-pw_attempt_files() {
-  { printf '%s\n' "$PW_S_NOT_AFTER" > "$PW_DIR/not_after" &&
-    printf '%s\n' "$PW_AUTHOR" > "$PW_DIR/author" &&
-    { [ -z "$ACT_LINES" ] || printf '%s\n' "$ACT_LINES" > "$PW_DIR/act"; }; } 2>/dev/null ||
-    pw_end 1 "attempt ${PW_K}'s not_after, author or act file, in $PW_DIR, could not be written. Nothing was sent by it"
-  return 0
-}
-
-# THE CHILD (Y:4997–4998): this file again, `"${BASH:-bash}" "$RESOLVED"`, with
-# the original command line, under the internal flag, started from THIS shell
-# with `&`: no `timeout`, `setsid`, `$( )` or subshell between, so its `$PPID`
-# is this process, the pid `parent.pid` names (#165 6755005268, item 2). Its
-# real stdout and stderr are kept on fds 3 and 4 BEFORE its own move to the
-# attempt's `out.1` and `out.2`, since redirections apply left to right (lane
-# 3, #165 6755641373, T414's question 2). An asynchronous command's stdin is
-# /dev/null. Its start, in `SECONDS`, starts its bound (`pw_child_wait`).
-# ITS PROCESS START IS READ AT ONCE, right after `$!` (`pw_pid_start`, into
-# PW_CHILD_START; review REV-W8a, N1), while that pid can only be the child:
-# read later, after a kept child's `wait` or a listing, it could be a
-# stranger's that reused the pid of a child that had ended.
-pw_child_start() {
-  PW_CHILD_T0="$SECONDS"
-  LANES_REGISTER_SCRATCH="$PW_DIR" "${BASH:-bash}" "$RESOLVED" ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"} \
-    3>&1 4>&2 1>"$PW_DIR/out.1" 2>"$PW_DIR/out.2" &
-  PW_CHILD=$!
-  pw_pid_start "$PW_CHILD"
-  PW_CHILD_START="$PW_START"
-}
-
-# THE CHILD REACHES `ready`, or ends first. 0 at `ready`, where it waits on fd
-# 5; 1 where it ended before it, with its code in PW_RC and PW_CHILD cleared.
-# A child still short of `ready` more than PW_CAP_S seconds after its start is
-# stopped, and the run ends (`pw_child_hung_end`). `SECONDS` has a one-second
-# grain, so the test is "more than": never before the bound, at most 1 s after.
-# AND THE WAIT ENDS FIRST WHERE A KEPT CHILD'S SEAM CAP IS 1 s AWAY (lane
-# openRepoTools-3, #165 6774499606, T415 (3); Y:5004: "A live parent never
-# meets the cap"; review REV415b, NIT 3): at PW_KEPT_END - 1 (`pw_keep`), where
-# that comes before the bound, the run ends the same way, and every kept child
-# gets `abandon` before its cap can pass. PW_READY_T is `SECONDS` as read just
-# before the last look that found no `ready`, so it is never after the child's
-# own seam wait starts, and its cap never ends before PW_READY_T + its cap.
-pw_child_wait() {
-  local cw_now=""
-  PW_RC=0; PW_READY_T="$PW_CHILD_T0"
-  while cw_now="$SECONDS"; [ ! -e "$PW_DIR/ready" ]; do
-    PW_READY_T="$cw_now"
-    if ! kill -0 "$PW_CHILD" 2>/dev/null; then
-      [ ! -e "$PW_DIR/ready" ] || return 0
-      wait "$PW_CHILD" || PW_RC=$?
-      PW_CHILD=""
-      return 1
-    fi
-    if [ -n "$PW_KEPT_END" ] && [ "$SECONDS" -ge $((PW_KEPT_END - 1)) ]; then
-      pw_child_hung_end kept || return 1
-    fi
-    if [ $((SECONDS - PW_CHILD_T0)) -gt "$PW_CAP_S" ]; then
-      [ ! -e "$PW_DIR/ready" ] || return 0
-      pw_child_hung_end bound || return 1
-    fi
-    sleep 0.05 2>/dev/null || sleep 1
-  done
-  return 0
-}
-
-# EVERY PROCESS UNDER THE CHILD (lane openRepoTools-3, #165 6774499606, T415
-# (2); review REV415b, S1): its children by `pgrep -P`, then theirs, a
-# generation at a time, one pid a line. The child shares this process's group
-# and `setsid` is barred (#165 6755005268), so a command it runs in the
-# foreground, a `git`, a `lanes-index` read or a lock wait, would outlive a
-# KILL of the child alone and keep the caller's stdout and stderr open on its
-# fds 3 and 4. Empty where it has none or `pgrep` is missing; `pgrep` runs in a
-# `$( )` of this shell, so it is never under the child itself.
-pw_child_tree() {
-  local ct_gen="$PW_CHILD" ct_next="" ct_all="" ct_d=0
-  while [ -n "$ct_gen" ] && [ "$ct_d" -lt 64 ]; do
-    ct_next="$(pgrep -P "$ct_gen" 2>/dev/null)" || ct_next=""
-    case "$ct_next" in *[!0-9$WR_NL]*) ct_next="" ;; esac
-    [ -n "$ct_next" ] || break
-    ct_all="${ct_all}${ct_all:+$WR_NL}${ct_next}"
-    ct_gen="${ct_next//$WR_NL/,}"
-    ct_d=$((ct_d + 1))
-  done
-  [ -z "$ct_all" ] || printf '%s\n' "$ct_all"
-}
-
-# DOES ANY OF THEM STILL RUN? (review REV415c, S1): `kill -0` on each pid, the
-# child first. A pid reused meanwhile only holds the wait to its 20 turns.
-pw_pids_run() {   # <pid>...
-  local pr_p=""
-  for pr_p in "$@"; do
-    if kill -0 "$pr_p" 2>/dev/null; then return 0; fi
-  done
-  return 1
-}
-
-# A PROCESS'S START, TO TELL ITS PID FROM A REUSE (review REV415c, N1), in
-# PW_START. Where this host has a `/proc`, field 22 of `/proc/<pid>/stat`, its
-# start in clock ticks since boot, cut after the LAST `) ` as `pid_alive` cuts
-# it, since a comm may hold spaces and brackets. Where it has none (macOS),
-# `ps -o lstart= -p <pid>`, its start to the second, its words joined by `_`.
-# `-` where neither answers, as for a process that has gone. Lane 5's
-# `pid_start_of` (T502) is not in this tree.
-pw_pid_start() {   # <pid>
-  local pp_p="$1" pp_l="" pp_r=""
-  PW_START="-"
-  case "$pp_p" in ''|*[!0-9]*) return 0 ;; esac
-  if [ -r /proc/self/stat ]; then
-    { IFS= read -r pp_l < "/proc/$pp_p/stat"; } 2>/dev/null || pp_l=""
-    pp_r="${pp_l##*) }"
-    if [ -z "$pp_l" ] || [ "$pp_r" = "$pp_l" ]; then return 0; fi
-    # shellcheck disable=SC2086
-    set -- $pp_r
-    [ "$#" -ge 20 ] || return 0
-    case "${20}" in ''|*[!0-9]*) return 0 ;; esac
-    PW_START="${20}"
-  else
-    pp_l="$(ps -o lstart= -p "$pp_p" 2>/dev/null)" || pp_l=""
-    # shellcheck disable=SC2086
-    set -- $pp_l
-    [ "$#" -gt 0 ] || return 0
-    pp_l="$*"
-    PW_START="${pp_l// /_}"
-  fi
-  return 0
-}
-
-# IS <pid> STILL THE PROCESS WHOSE START WAS <start>? (review REV415c, N1): 1
-# where it has gone, its start is now another, or <start> is `-`.
-pw_pid_same() {   # <pid> <start>
-  [ "$2" != - ] || return 1
-  kill -0 "$1" 2>/dev/null || return 1
-  pw_pid_start "$1"
-  [ "$PW_START" = "$2" ]
-}
-
-# IS THE CHILD STILL RUNNING AS ITSELF? (review REV415c, N1): by its start
-# where that was read before the TERM; else by `kill -0` alone, as before, so
-# a host that can read no start still ends a child that outlives its TERM,
-# and the `wait` after it cannot hang.
-pw_child_left() {   # <the child's start, or ->
-  if [ "$1" = - ]; then
-    kill -0 "$PW_CHILD" 2>/dev/null
-  else
-    pw_pid_same "$PW_CHILD" "$1"
-  fi
-}
-
-# KILL TO EACH ONE STILL RUNNING AS ITSELF (review REV415c, N1). <list> is
-# `<pid> <start>` pairs; a pid whose start is now another, or was `-`, is left
-# alone. PW_KILLED counts the KILLs sent.
-pw_pids_kill() {   # <list>
-  PW_KILLED=0
-  # shellcheck disable=SC2086
-  set -- $1
-  while [ "$#" -ge 2 ]; do
-    if pw_pid_same "$1" "$2"; then
-      kill -KILL "$1" 2>/dev/null || :
-      PW_KILLED=$((PW_KILLED + 1))
-    fi
-    shift 2
-  done
-  return 0
-}
-
-# A CHILD THAT NEVER REACHES `ready` (lane openRepoTools-3, #165 6770820384,
-# T415's question 3; T415's line at B12b; review REV415, N3): past its bound,
-# PW_CAP_S seconds from its start (Y:5001), or 1 s before a kept child's seam
-# cap where that comes first (#165 6774499606, T415 (3)). Every kept child gets
-# `abandon` FIRST, so none meets its cap while the child below is stopped
-# (Y:5026). Then the processes under the child are listed (`pw_child_tree`),
-# the child gets TERM, and they get it with the child. The wait after it lasts
-# while the child OR any of them still runs, up to 20 turns of 0.05 s, so each
-# has the same 1 s to clean up after its TERM, though the child itself, whose
-# trap runs `cleanup` once its foreground command dies, usually ends at once
-# (review REV415c, S1). Whatever is left then gets KILL, the child listed
-# again first (#165 6774499606, T415 (2)), and the end names TERM, or TERM
-# then KILL, for the child and for them apart. Each pid's start is read with
-# it (`pw_pid_start`), and KILL goes only to a pid whose start is still the
-# one read, so a pid reused meanwhile by another process never gets it; a
-# process whose start could not be read gets TERM alone, and the child, where
-# its start could not be read, is tested by `kill -0` as before (review
-# REV415c, N1). The second listing is taken only while the child still runs
-# as itself, so a pid it has left is never walked.
-# WHAT THE LISTINGS CANNOT SEE (review REV415c, N2): a process forked after
-# the first listing whose parent then dies is moved to init, or to a
-# subreaper, and the second listing walks only from the child, so it escapes
-# both and gets no signal. The window is milliseconds. One the child starts
-# after its TERM is found by the second listing only, and gets KILL alone.
-# The child is reaped and none of its output is replayed. The run
-# ends as at D7's deadline: 75, nothing sent by that attempt, naming the
-# attempt and why it was stopped, with the write's rerun. Where the pending
-# record holds a `call` line, F3's lookup comes first (`pw_end`,
-# `pw_doubt_end`; Y:5020, Y:5024). No commit call was made for this attempt,
-# since the parent makes one only at `ready`; a child that reached `ready` just
-# before its TERM ends by it at the seam all the same.
-# A CHILD THAT ENDED ON ITS OWN between the wait's `kill -0` and the TERM, so
-# that the TERM finds no such process, is not stopped: its code is taken with
-# `wait`, PW_CHILD is cleared, and 1 sends the run to `pw_child_end`, its own
-# end (Y:5016; review REV415b, NIT 5). Nothing is signalled then. So is a
-# child whose start, read at its launch (`pw_child_start`), is no longer its
-# pid's, tested before the listing and the TERM (review REV-W8a, N1): it has
-# ended, and its pid may be another process's now, which gets nothing.
-pw_child_hung_end() {   # bound | kept
-  local ch_n=0 ch_how="TERM" ch_w="" ch_b="" ch_tree="" ch_p="" ch_t=0 ch_kids="" \
-        ch_cs="$PW_CHILD_START" ch_ps=""
-  local ch_kk="$PW_KEPT_K"
-  ch_t=$((SECONDS - PW_CHILD_T0))
-  pw_abandon_kept
-  if [ "$ch_cs" != - ] && ! pw_pid_same "$PW_CHILD" "$ch_cs"; then
-    PW_RC=0
-    wait "$PW_CHILD" 2>/dev/null || PW_RC=$?
-    PW_CHILD=""
-    return 1
-  fi
-  ch_tree="$(pw_child_tree)"
-  for ch_p in $ch_tree; do
-    pw_pid_start "$ch_p"
-    ch_ps="${ch_ps} ${ch_p} ${PW_START}"
-  done
-  # THE STOP, FROM ITS FIRST `kill -TERM` TO ITS LAST `wait`, IS ONE GROUP
-  # WITH STDERR ON /dev/null (lane openRepoTools-3, #165 6755027994: "A
-  # refusal's stderr is its own text (§2.6). A job notice from bash before it
-  # is noise"; its batch c (68), #165 6808141050). Bash prints a job notice for
-  # a child a signal ended ("Killed" after a KILL, which no trap can take;
-  # "Terminated" where the shell does not trap TERM) on the shell's own stderr,
-  # not the `wait`'s, wherever a forked command runs between that death and
-  # the `wait`: `sleep 0.05` in the wait loop, and `pw_pids_kill`'s
-  # `ps -o lstart=` on a host with no /proc, which is macOS, whose /bin/bash
-  # is 3.2. A group's redirection holds in the shell itself for the group's
-  # whole span, so no such notice reaches the caller before the end's 75 text.
-  # The early `return 1` inside it is unchanged.
-  {
-    if ! kill -TERM "$PW_CHILD" 2>/dev/null; then
-      PW_RC=0
-      wait "$PW_CHILD" 2>/dev/null || PW_RC=$?
-      PW_CHILD=""
-      return 1
-    fi
-    for ch_p in $ch_tree; do kill -TERM "$ch_p" 2>/dev/null || :; done
-    # shellcheck disable=SC2086
-    while [ "$ch_n" -lt 20 ] && pw_pids_run "$PW_CHILD" $ch_tree; do
-      if sleep 0.05 2>/dev/null; then ch_n=$((ch_n + 1)); else sleep 1; ch_n=20; fi
-    done
-    if pw_child_left "$ch_cs"; then
-      for ch_p in $(pw_child_tree); do
-        pw_pid_start "$ch_p"
-        ch_ps="${ch_ps} ${ch_p} ${PW_START}"
-      done
-      kill -KILL "$PW_CHILD" 2>/dev/null || :
-      ch_how="TERM, then KILL 1 s later"
-    fi
-    pw_pids_kill "$ch_ps"
-    wait "$PW_CHILD" 2>/dev/null || :
-  } 2>/dev/null
-  PW_CHILD=""
-  if [ "$PW_KILLED" -gt 0 ]; then
-    ch_kids=", and every process it had started got TERM, then KILL 1 s later where TERM had not ended it"
-  elif [ -n "$ch_ps" ]; then
-    ch_kids=", and every process it had started got TERM"
-  fi
-  [ -n "$WR_CALLS" ] || ch_w=", and nothing was written"
-  if [ "$1" = kept ]; then
-    pw_end 75 "attempt ${PW_K}'s child had not reached the seam ${ch_t} s after its start, and attempt ${ch_kk}'s child, kept at its seam after a commit call in doubt, was within 1 s of the seam's cap of ${PW_SEAM_CAP_S} s, so the run ended first (Y:5004): every kept child got \`abandon\`, attempt ${PW_K}'s child was stopped with ${ch_how}${ch_kids}, and its output is not shown. Nothing was sent by that attempt${ch_w}. $(pw_rerun_line)"
-  fi
-  # The bound as it was set (review REV415b, NIT 4): the test setting where it
-  # is in force, else the default's formula with this run's D.
-  if wr_is_count "${LANES_REGISTER_READY_CAP_S:-}"; then
-    ch_b="LANES_REGISTER_READY_CAP_S=${LANES_REGISTER_READY_CAP_S}"
-  else
-    ch_b="2 × (D + 30) s, D = ${PW_D_S} s"
-  fi
-  pw_end 75 "attempt ${PW_K}'s child did not reach the seam within ${PW_CAP_S} s of its start, the bound on a child short of \`ready\` (${ch_b}), so it was stopped with ${ch_how}${ch_kids}, and its output is not shown. Nothing was sent by that attempt${ch_w}. $(pw_rerun_line)"
-}
-
-# ONE MESSAGE TO A CHILD AT THE SEAM (Y:5007): the FIFO opened read-write, so
-# the open never blocks, one line shorter than PIPE_BUF, and closed. A child
-# that has ended leaves the line unread.
-pw_send() {   # <attempt dir> <message>
-  { exec 6<>"$1/seam.fifo"; } 2>/dev/null || return 1
-  printf '%s\n' "$2" >&6 2>/dev/null || :
-  exec 6>&-
-  return 0
-}
-
-# A CHILD ABANDONED (Y:5013): `abandon`, then reaped. It exits 75 without its
-# tail, and its buffered output is never replayed.
-pw_abandon_one() {   # <pid> <attempt dir>
-  pw_send "$2" abandon || :
-  wait "$1" 2>/dev/null || :
-}
-
-# THE KEPT CHILDREN, each still at its seam after a commit call in doubt
-# (Y:5014), one `<pid> <attempt dir>` a line in PW_KEPT, all abandoned: before
-# any end but 0 (Y:5026), once the outcome is known (Y:5314), and before a
-# stop at the bound (`pw_child_hung_end`). The list is split at each newline
-# by parameter expansion, as `pw_abandon_live` splits it, never through a
-# here-document: bash 3.2 writes one to a temp file, and where none can be
-# made, as in a full TMPDIR, the loop never ran, so no kept child got
-# `abandon` or was reaped: each stopped only at a parent test after the run
-# had ended, or at its cap, with Y:5006's stop line on fd 4 (lane 4's W9-T415
-# report, §6).
-pw_abandon_kept() {
-  local pa_k="$PW_KEPT" pa_l="" pa_p="" pa_d=""
-  while [ -n "$pa_k" ]; do
-    pa_l="${pa_k%%"$WR_NL"*}"
-    case "$pa_k" in
-      *"$WR_NL"*) pa_k="${pa_k#*"$WR_NL"}" ;;
-      *) pa_k="" ;;
-    esac
-    [ -n "$pa_l" ] || continue
-    pa_p="${pa_l%% *}"; pa_d="${pa_l#* }"
-    pw_abandon_one "$pa_p" "$pa_d"
-  done
-  PW_KEPT=""; PW_KEPT_END=""; PW_KEPT_K=""
-}
-
-# EVERY KEPT CHILD, AND THE ATTEMPT'S OWN, GET `abandon` before any end but 0
-# (Y:5026).
-pw_abandon_all() {
-  pw_abandon_kept
-  if [ -n "$PW_CHILD" ]; then
-    pw_abandon_one "$PW_CHILD" "$PW_DIR"
-    PW_CHILD=""
-  fi
-}
-
-# A PARENT STOPPED BY A SIGNAL TELLS ITS CHILDREN (review REV-W9a, N1). An `&`
-# child of a non-interactive shell ignores INT from its start, and bash cannot
-# trap it there, so a Ctrl-C never reached the child at its seam: it waited for
-# its next parent test, 1 s or more, then wrote its stop line after the
-# prompt. So `cleanup`, which the INT and TERM traps run and the EXIT trap runs
-# (a HUP, which no trap here takes, still runs EXIT), calls this: each child
-# still live, the attempt's own and the kept ones, gets `abandon` (`pw_send`),
-# and stops at once with `seam.out` `none` and 75, its tail not run. Nothing
-# is sent where no child is live (`kill -0`), nothing is waited for, so a trap
-# never blocks, and the kept list is split with no here-document, which bash
-# 3.2 would need a temp file for. Both are then emptied, so the EXIT trap's
-# second `cleanup` sends nothing again. In an attempt's child, which is this
-# file too, both are empty. On every end but a signal's both are empty already
-# (`pw_abandon_all`, and the reaps after `committed`).
-pw_abandon_live() {
-  local al_k="${PW_KEPT:-}" al_l="" al_p=""
-  if [ -n "${PW_CHILD:-}" ] && [ -n "${PW_DIR:-}" ] && kill -0 "$PW_CHILD" 2>/dev/null; then
-    pw_send "$PW_DIR" abandon || :
-  fi
-  while [ -n "$al_k" ]; do
-    al_l="${al_k%%"$WR_NL"*}"
-    case "$al_k" in
-      *"$WR_NL"*) al_k="${al_k#*"$WR_NL"}" ;;
-      *) al_k="" ;;
-    esac
-    [ -n "$al_l" ] || continue
-    al_p="${al_l%% *}"
-    kill -0 "$al_p" 2>/dev/null || continue
-    pw_send "${al_l#* }" abandon || :
-  done
-  # Once: the INT and TERM traps run `cleanup`, and the EXIT trap runs it again.
-  PW_CHILD=""; PW_KEPT=""
-  return 0
-}
-
-# THE OUTCOME KNOWN, the record goes with this run's claims (Y:5193–5198), or
-# only this run's claim where the record is not this write's own. The record
-# removed, the attempt directories its `call` lines name go with it
-# (`pw_call_dirs_remove`).
-pw_record_done() {
-  if [ "$PW_REC_OURS" = 1 ] && wr_record_remove; then
-    pw_call_dirs_remove
-  else
-    wr_claim_release
-  fi
-}
-
-# ---- THE ATTEMPT DIRECTORIES (Y:5177, Y:5183; lane openRepoTools-3, #165
-# 6769061039, T415's question 5). At its end, once every child has ended, the
-# run removes its own `<d>/<run>/` (`pw_run_dir_done`), except that an attempt
-# directory a kept `call` line names keeps `snapshot`, `files` and
-# `preimages`, which a rerun that takes the record over reads (Y:5177).
-# Whoever removes a record removes the attempt directories its `call` lines
-# name (`pw_call_dirs_remove`). A run that writes a record first removes each
-# `<run>/` under `register-writes/` that is older than the record's maximum age
-# and that no record's `call` line names (`pw_runs_purge`), as the done marks
-# are purged (Y:5183), once per run: at its first snapshot, or, where that
-# answered `found=` and wrote no record, before the `tail=sent` write of its
-# tail (`pw_tail_child`; lane openRepoTools-3, #165 6774499606, T418 item 3:
-# REV418b NIT-2); that also takes a run killed before its own end could
-# remove it. A refusal inside T412's functions after `pw_run_dir`,
-# `wr_id_settle`'s two, ends it first (review REV-W10a, N3). Only a 0700
-# directory of this uid, at its place under `<state>/register-writes/`, is ever
-# removed (`pw_wdir_ok`).
-
-# A `<d>/<run>/` (run) or `<d>/<run>/<k>/` (attempt) under this run's
-# `<state>/register-writes/`: `<d>` 64 lower hex, `<run>` 32, `<k>` digits;
-# each level a directory, not a link, of this uid; the directory itself 0700.
-pw_wdir_ok() {   # <dir> <run | attempt>
-  local wo_w="$WR_STATE/register-writes" wo_rel="" wo_d="" wo_r="" wo_k=0
-  case "${1-}" in "$wo_w/"?*) : ;; *) return 1 ;; esac
-  wo_rel="${1#"$wo_w/"}"
-  case "${2-}:$wo_rel" in
-    run:*/*/*|attempt:*/*/*/*|*/) return 1 ;;
-    run:?*/?*) wo_d="${wo_rel%/*}"; wo_r="${wo_rel#*/}" ;;
-    attempt:?*/?*/?*) wo_d="${wo_rel%%/*}"; wo_r="${wo_rel#*/}"; wo_k="${wo_r#*/}"; wo_r="${wo_r%/*}" ;;
-    *) return 1 ;;
-  esac
-  wr_is_hex64 "$wo_d" || return 1
-  case "$wo_r" in *[!0123456789abcdef]*) return 1 ;; esac
-  [ "${#wo_r}" -eq 32 ] || return 1
-  case "$wo_k" in ''|*[!0123456789]*) return 1 ;; esac
-  [ ! -L "$wo_w" ] && [ ! -L "$wo_w/$wo_d" ] && [ ! -L "$wo_w/$wo_d/$wo_r" ] || return 1
-  [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && reg_scratch_mode_700 "$1"
-}
-
-# The attempt directories named by `call` lines, one a line, from WR_CALLS or
-# a record's `call=` lines: the fifth field and the rest of the line.
-#
-# Split by parameter expansion, never `read` from a here-string: bash 3.2
-# writes one to a temp file, and where none can be made, as in a full TMPDIR,
-# the loop never ran and named no directory. Then `pw_run_dir_done` removed a
-# kept attempt's `snapshot`, `files` and `preimages`, which a rerun that takes
-# the record over reads (Y:5177), and `pw_runs_purge` removed an old `<run>/`
-# that a record's `call` line names (review REV-W10a M1's pattern). The split
-# is `read`'s with IFS=' ', exactly: blanks at either end dropped, four fields
-# each ended by a run of blanks, the rest the directory. `pw_runs_purge` gives
-# it a record's lines as they are, which `wr_record_read` has not judged, so a
-# line it names a directory by is named the same as before.
-pw_calls_dirs() {   # <call lines, one a line, without `call=`>
-  local cd_l="" cd_r="${1-}" cd_i=0
-  while [ -n "$cd_r" ]; do
-    cd_l="${cd_r%%"$WR_NL"*}"
-    case "$cd_r" in
-      *"$WR_NL"*) cd_r="${cd_r#*"$WR_NL"}" ;;
-      *) cd_r="" ;;
-    esac
-    cd_i=0
-    while [ "$cd_i" -lt 4 ]; do
-      cd_l="${cd_l#"${cd_l%%[! ]*}"}"
-      case "$cd_l" in
-        *' '*) cd_l="${cd_l#*' '}" ;;
-        *) cd_l="" ;;
-      esac
-      cd_i=$((cd_i + 1))
-    done
-    cd_l="${cd_l#"${cd_l%%[! ]*}"}"
-    cd_l="${cd_l%"${cd_l##*[! ]}"}"
-    [ -z "$cd_l" ] || printf '%s\n' "$cd_l"
-  done
-}
-
-# THE RECORD REMOVED: the attempt directories its `call` lines named, this
-# run's and those of a run whose record it took over, whose `<run>/` and then
-# `<d>/` go where each is left empty.
-#
-# `pw_calls_dirs`' list is split at each newline by parameter expansion, never
-# read from a here-document: bash 3.2 writes one to a temp file, and where none
-# can be made, as in a full TMPDIR, the loop never ran, and the directories
-# were left for `pw_runs_purge` (review REV-W10a M1's pattern).
-pw_call_dirs_remove() {
-  local cr_d="" cr_r=""
-  cr_r="$(pw_calls_dirs "$WR_CALLS")"
-  while [ -n "$cr_r" ]; do
-    cr_d="${cr_r%%"$WR_NL"*}"
-    case "$cr_r" in
-      *"$WR_NL"*) cr_r="${cr_r#*"$WR_NL"}" ;;
-      *) cr_r="" ;;
-    esac
-    [ -n "$cr_d" ] || continue
-    pw_wdir_ok "$cr_d" attempt || continue
-    rm -rf -- "$cr_d" 2>/dev/null
-    if pw_wdir_ok "${cr_d%/*}" run; then
-      rmdir -- "${cr_d%/*}" 2>/dev/null && rmdir -- "${cr_d%/*/*}" 2>/dev/null
-    fi
-  done
-  return 0
-}
-
-# THE RUN'S END, every child ended: its own `<run>/` goes, but for the attempt
-# directories that the `call` lines still held name, which keep only
-# `snapshot`, `files` and `preimages` (Y:5177). WHERE NO `<run>/` WAS MADE, F3's
-# lookup (`pw_lookup`) kept its two answer files in `<d>/` itself, and they go
-# here, then `<d>/` where that leaves it empty: no remover of T415's reaches
-# them, and `<d>/` could never be removed after them (lane openRepoTools-3,
-# #165 6774499606, T418 item 3: REV418b NIT-1). Both readers of those files,
-# `pw_tail`'s `pw_entry_rows` and `pw_doubt_end`'s `cat`, have finished with
-# them by every end that comes here.
-pw_run_dir_done() {
-  local rd_kept="" rd_a="" rd_e="" rd_d="$WR_STATE/register-writes/$WR_D" rd_gone=0
-  if [ -z "$PW_RUN_DIR" ]; then
-    wr_is_hex64 "$WR_D" || return 0
-    for rd_a in "$PW_LK_OUT" "$PW_LK_ERR"; do
-      [ -n "$rd_a" ] && [ "${rd_a%/*}" = "$rd_d" ] || continue
-      rm -f -- "$rd_a" 2>/dev/null && rd_gone=1
-    done
-    [ "$rd_gone" = 0 ] || rmdir -- "$rd_d" 2>/dev/null || :
-    return 0
-  fi
-  pw_wdir_ok "$PW_RUN_DIR" run || return 0
-  rd_kept="$WR_NL$(pw_calls_dirs "$WR_CALLS")$WR_NL"
-  for rd_a in "$PW_RUN_DIR"/* "$PW_RUN_DIR"/.[!.]* "$PW_RUN_DIR"/..?*; do
-    [ -e "$rd_a" ] || [ -L "$rd_a" ] || continue
-    case "$rd_kept" in
-      *"$WR_NL$rd_a$WR_NL"*)
-        if pw_wdir_ok "$rd_a" attempt; then
-          for rd_e in "$rd_a"/* "$rd_a"/.[!.]* "$rd_a"/..?*; do
-            [ -e "$rd_e" ] || [ -L "$rd_e" ] || continue
-            case "${rd_e##*/}" in snapshot|files|preimages) continue ;; esac
-            rm -rf -- "$rd_e" 2>/dev/null
-          done
-          continue
-        fi ;;
-    esac
-    rm -rf -- "$rd_a" 2>/dev/null
-  done
-  # `<run>/`, then `<d>/`, each where left empty. A run of the same command
-  # making its own `<run>/` meanwhile loses nothing: `wr_dir_0700` makes the
-  # whole path with `mkdir -p`.
-  rmdir -- "$PW_RUN_DIR" 2>/dev/null && rmdir -- "${PW_RUN_DIR%/*}" 2>/dev/null
-  return 0
-}
-
-# THE OLD RUNS' DIRECTORIES, purged before a record is written (Y:5183's rule
-# for the marks): each `<d>/<run>/` older, by its mtime, than the record's
-# maximum age that no record's `call` line names, then its `<d>/` where left
-# empty. A record that cannot be read could name any of them, so then nothing
-# is purged. ONCE PER RUN, behind `PW_PURGED` (REV418b NIT-2): the first
-# snapshot's call purges, and the tail's call (`pw_tail_child`) is then a no-op;
-# the run's own `<run>/` and the replay's fresh run segment are never purged.
-pw_runs_purge() {
-  local pp_w="$WR_STATE/register-writes" pp_p="$WR_STATE/register-pending"
-  local pp_named="$WR_NL" pp_f="" pp_l="" pp_c="" pp_r="" pp_t="" pp_now="" pp_max=""
-  [ "$PW_PURGED" = 0 ] || return 0
-  PW_PURGED=1
-  [ -d "$pp_w" ] && [ ! -L "$pp_w" ] || return 0
-  for pp_f in "$pp_p"/*; do
-    [ -e "$pp_f" ] || continue
-    case "${pp_f##*/}" in *.take.*) continue ;; esac
-    [ -f "$pp_f" ] && [ -r "$pp_f" ] || return 0
-    pp_c=""
-    while IFS= read -r pp_l || [ -n "$pp_l" ]; do
-      case "$pp_l" in call=*) pp_c="$pp_c${pp_l#call=}$WR_NL" ;; esac
-      pp_l=""
-    done < "$pp_f"
-    pp_named="$pp_named$(pw_calls_dirs "$pp_c")$WR_NL"
-  done
-  pp_now="$(date -u +%s)"; pp_max="$(wr_max_age_s)"
-  wr_is_count "$pp_now" || return 0
-  for pp_r in "$pp_w"/*/*; do
-    [ "$pp_r" != "$PW_RUN_DIR" ] && [ "$pp_r" != "$PW_RP_RUN_DIR" ] || continue
-    pw_wdir_ok "$pp_r" run || continue
-    pp_t="$(wr_file_mtime "$pp_r")"
-    [ -n "$pp_t" ] && [ "$(( pp_now - pp_t ))" -gt "$pp_max" ] || continue
-    case "$pp_named" in *"$WR_NL$pp_r/"*) continue ;; esac
-    rm -rf -- "$pp_r" 2>/dev/null
-    rmdir -- "${pp_r%/*}" 2>/dev/null || :
-  done
-  return 0
-}
-
-# THE DECIDING ATTEMPT'S OUTPUT, REPLAYED (F14; FR-024; Y:2546–2550): its
-# stdout whole to stdout, then its stderr whole to stderr.
-pw_replay() {   # <attempt dir>
-  [ ! -f "$1/out.1" ] || cat -- "$1/out.1"
-  [ ! -f "$1/out.2" ] || cat -- "$1/out.2" >&2
-}
-
-# ---- THE RUN'S END, BUT FOR 0 (Y:5016–5026). Every kept child gets `abandon`
-# first. Where the pending record holds a `call` line, no end but 0 comes
-# before F3's lookup (`pw_doubt_end`, T417), which returns here only where the
-# lookup answered "absent" with the lock held. Then, or where no `call` line is
-# held, the record goes, with this
-# run's claims (Y:5196), or only this run's claim where the record is not this
-# write's own (a new write before its first snapshot answered, or a record of
-# another write this run did not replace); then the deciding attempt's output
-# is replayed, PW_RELAY follows it on stderr, and the run exits with the end's
-# code, saying <message> where it has one.
-pw_end() {   # <code> <message, or empty> [<attempt dir whose output is replayed>]
-  # THE ATTEMPT'S OWN CHILD goes first; the KEPT ones wait through F3's lookup,
-  # whose `found` hands the tail to the one whose change set is the entry's
-  # (Y:5309; T418), and get `abandon` at every other outcome.
-  if [ -n "$PW_CHILD" ]; then
-    pw_abandon_one "$PW_CHILD" "$PW_DIR"
-    PW_CHILD=""
-  fi
-  [ -z "$WR_CALLS" ] || pw_doubt_end "$1" "$2" "${3-}"
-  pw_abandon_kept
-  pw_record_done
-  [ -z "${3-}" ] || pw_replay "$3"
-  [ -z "$PW_RELAY" ] || printf '%s\n' "$PW_RELAY" >&2
-  pw_run_dir_done
-  [ -n "$2" ] || exit "$1"
-  die "$2" "$1"
-}
-
-# ---- THE IN-DOUBT RULE (T417; F3, D8; FR-022, FR-028; Y:5226–5287,
-# Y:2648–2748; the contract's §3.4). While the pending record holds a `call`
-# line, this run's or one a record taken over carried in (a run that takes
-# such a record is in doubt from its start, Y:5199), the run ends with no code
-# but 0 until F3's lookup has settled the write. Its non-0 ends (a refusal at
-# the commit, the verb's own code before `ready`, a snapshot that fails or
-# refuses, the deadline's 75, and any other) all reach `pw_end`, which comes
-# here. The tries, their window and their spacing are `journal`'s (lane 1's
-# T114; open point 40, taken under R26), so this file sets no timer around it.
-
-# THE CLOCK THE LOOKUP WAITS ON (Y:5236; the contract's §3.4, "Which clock a
-# run passes"; open point 36, taken under R26), into PW_LK_CLK:
-#   - a run whose snapshot answered: that last snapshot's `clock=`, and the
-#     whole seconds since its call ended, by `SECONDS`;
-#   - a run that took the record over and has no snapshot of its own: the
-#     clock of the record's NEWEST `call=` line, and the whole seconds since
-#     the record's `updated_utc` by this host's clock, never below 0. That
-#     estimate can only lag the database's clock, since the line was written
-#     after its snapshot ended, so `journal` waits and LR011 is not reached.
-#     Only where the record's `host` is this run's own: another host's clock
-#     cannot be aged here;
-#   - neither: no clock, and `journal` calls at once (Y:5236), where LR011
-#     gives 3 with the record kept.
-pw_lookup_clock() {
-  local lc_k="" lc_l="" lc_last="" lc_c="" lc_u="" lc_age=0
-  PW_LK_CLK=()
-  if wr_is_count "$PW_L_CLOCK" && wr_is_count "$PW_L_END"; then
-    PW_LK_CLK=(--clock "$PW_L_CLOCK" --clock-age "$(( SECONDS - PW_L_END ))")
-    return 0
-  fi
-  case "$WR_PLAN" in reuse|env) : ;; *) return 0 ;; esac
-  [ -n "$WR_REC_CALLS" ] && [ "$WR_REC_WRITE_ID" = "$WR_ID" ] || return 0
-  wr_here
-  [ -n "$WR_REC_HOST" ] && [ "$WR_REC_HOST" = "$WR_HERE_HOST" ] || return 0
-  # By parameter expansion, never a here-string (`pw_call_fields`), so a
-  # full /tmp cannot leave the lookup with no clock to wait on.
-  lc_k="$WR_REC_CALLS"
-  while [ -n "$lc_k" ]; do
-    lc_l="${lc_k%%"$WR_NL"*}"
-    case "$lc_k" in
-      *"$WR_NL"*) lc_k="${lc_k#*"$WR_NL"}" ;;
-      *) lc_k="" ;;
-    esac
-    [ -z "$lc_l" ] || lc_last="$lc_l"
-  done
-  pw_call_fields "$lc_last"; lc_c="$PW_CF_C"
-  wr_is_count "$lc_c" || return 0
-  wr_is_utc "$WR_REC_UPDATED_UTC" || return 0
-  lc_u="$(epoch_of "$WR_REC_UPDATED_UTC")"
-  wr_is_count "$lc_u" || return 0
-  lc_age=$(( $(date -u +%s) - lc_u ))
-  [ "$lc_age" -ge 0 ] || lc_age=0
-  PW_LK_CLK=(--clock "$lc_c" --clock-age "$lc_age")
-  return 0
-}
-
-# F3's LOOKUP (Y:5235; the contract's §3.4): `lanes-index journal --write-id
-# <id> --not-after <n> --generation <g> --lane <lane> --verb <verb>
-# --args-sha256 <h>`, with the clock pair where there is one. `<n>` is the
-# largest `not_after` of the record's `call` lines, and the lane, verb and
-# digest are the ones every commit call of the write sent, `--lane` in its
-# space form (the contract's §3.6, L1-D1). One call, in lane 3's one call form,
-# with no timer around it. Its answer goes to `lookup.<pid>.out` and `.err` in
-# the run's directory (or in `register-writes/<d>/` where that was never made),
-# and its reading to PW_LK (the contract's §3.4 exits, §2.6, §2.7):
-#   found     exit 0, `found <seq>` first (PW_LK_SEQ)
-#   absent    exit 0, `absent`: the lock was held, and the id is not this
-#             write's
-#   lr007     exit 2 with stderr's `ERROR:  LR007:` and, on the line right
-#             after it, a `DETAIL:` token `generation` or `another-write`
-#             (PW_LK_TOKEN)
-#   doubt     anything else (PW_LK_WHY): exit 3 (LR011, no try took the lock,
-#             another SQLSTATE, a refused configuration), any other 2 (Q6(c)'s
-#             included, which no primary write can precede), an exit 0 that
-#             cannot be read, a crash or a code outside the contract (CO-2,
-#             CO-3); and a lookup that cannot be made at all
-pw_lookup() {
-  local lk_bin="" lk_dir="" lk_rc=0 lk_k="" lk_l="" lk_n="" lk_7=0 lk_tok="" lk_p=""
-  PW_LK=doubt; PW_LK_SEQ=""; PW_LK_TOKEN=""; PW_LK_N=""; PW_LK_WHY=""; PW_LK_OUT=""; PW_LK_ERR=""
-  # By parameter expansion, never a here-string (`pw_call_fields`), so a
-  # full /tmp cannot leave the lookup with no `<n>` to look it up at.
-  lk_k="$WR_CALLS"
-  while [ -n "$lk_k" ]; do
-    lk_l="${lk_k%%"$WR_NL"*}"
-    case "$lk_k" in
-      *"$WR_NL"*) lk_k="${lk_k#*"$WR_NL"}" ;;
-      *) lk_k="" ;;
-    esac
-    [ -n "$lk_l" ] || continue
-    pw_call_fields "$lk_l"; lk_n="$PW_CF_N"
-    wr_is_count "$lk_n" || continue
-    if [ -z "$PW_LK_N" ] || [ "$lk_n" -gt "$PW_LK_N" ]; then PW_LK_N="$lk_n"; fi
-  done
-  if [ -z "$PW_LK_N" ]; then
-    PW_LK_WHY="the pending record's call lines give no not_after to look it up at"
-    return 0
-  fi
-  lk_bin="$(lanes_index_bin)"
-  if [ -z "$lk_bin" ]; then
-    PW_LK_WHY="there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH to look it up with"
-    return 0
-  fi
-  if [ -n "$PW_RUN_DIR" ] && [ -d "$PW_RUN_DIR" ]; then
-    lk_dir="$PW_RUN_DIR"
-  elif wr_dir_0700 "$WR_STATE/register-writes" && wr_dir_0700 "$WR_STATE/register-writes/$WR_D"; then
-    lk_dir="$WR_STATE/register-writes/$WR_D"
-  else
-    PW_LK_WHY="$WR_STATE/register-writes/$WR_D is not a 0700 directory of this user's and cannot be made one, so the lookup's answer cannot be kept"
-    return 0
-  fi
-  PW_LK_OUT="$lk_dir/lookup.$$.out"; PW_LK_ERR="$lk_dir/lookup.$$.err"
-  ( "$lk_bin" journal --write-id "$WR_ID" --not-after "$PW_LK_N" --generation "$WR_GEN" \
-      --lane "$WR_LANE" --verb "$WR_VERB" --args-sha256 "$WR_D" ${PW_LK_CLK[@]+"${PW_LK_CLK[@]}"} \
-      </dev/null >"$PW_LK_OUT" 2>"$PW_LK_ERR"; exit "$?" ) 2>/dev/null || lk_rc=$?
-  case "$lk_rc" in
-    0)
-      lk_l=""
-      { IFS= read -r lk_l || :; } < "$PW_LK_OUT" 2>/dev/null
-      case "$lk_l" in
-        "found "*)
-          if wr_is_count "${lk_l#found }"; then PW_LK=found; PW_LK_SEQ="${lk_l#found }"; return 0; fi ;;
-        absent) PW_LK=absent; return 0 ;;
-      esac
-      PW_LK_WHY="\`lanes-index journal\` exited 0 with an answer this lanes-edit.sh cannot read, which settles nothing" ;;
-    2)
-      # The token is LR007's own: the `DETAIL:` line right after the
-      # `ERROR:  LR007:` line (register-cli.md [P]'s lines 1 and 2), never
-      # another error's DETAIL elsewhere on stderr (review REV-W9b, N3).
-      while IFS= read -r lk_l || [ -n "$lk_l" ]; do
-        case "$lk_l" in
-          'ERROR:  LR007:'*) lk_7=1 ;;
-          'DETAIL:  '*)
-            case "$lk_p" in
-              'ERROR:  LR007:'*) [ -n "$lk_tok" ] || lk_tok="${lk_l#DETAIL:  }" ;;
-            esac ;;
-        esac
-        lk_p="$lk_l"; lk_l=""
-      done < "$PW_LK_ERR" 2>/dev/null
-      lk_tok="${lk_tok%%[[:space:]]*}"
-      if [ "$lk_7" = 1 ]; then
-        case "$lk_tok" in
-          generation|another-write) PW_LK=lr007; PW_LK_TOKEN="$lk_tok"; return 0 ;;
-        esac
-      fi
-      PW_LK_WHY="\`lanes-index journal\` exited 2 without the register's LR007 and its DETAIL token, generation or another-write, which settles nothing" ;;
-    3)
-      PW_LK_WHY="\`lanes-index journal\` exited 3, above: the lookup was refused as too early (LR011), no try took the head row's lock within its window, or the register refused it in another way" ;;
-    *)
-      PW_LK_WHY="\`lanes-index journal\` exited ${lk_rc}, a code outside its contract (a crash, a signal or an unknown code), which settles nothing" ;;
-  esac
-  return 0
-}
-
-# AN END WITH A `call` LINE HELD (Y:5017–5023): F3's lookup decides it. Its
-# outcomes (Y:5240–5245, Y:2730–2742):
-#   found          0: the write is in the register, and its tail is the kept
-#                  child's whose change set is the entry's, or the replay's
-#                  (`pw_tail`, T418)
-#   absent         this returns, and `pw_end` goes on with the end the run
-#                  reached: the record goes, the deciding attempt's output is
-#                  replayed, and the run exits with that attempt's code (Y:5244)
-#   LR007 `generation`
-#                  2, the record KEPT, with a plain rerun's refusal of a record
-#                  of another generation (Y:5242–5243; T412's text)
-#   LR007 `another-write`
-#                  2, the record removed: the id is another write's, so no call
-#                  of this write can commit under it (Y:5241)
-#   anything else  3, the record KEPT (`pw_lookup_3`)
-# On every outcome but the first two, `journal`'s stderr is passed on first.
-pw_doubt_end() {   # <the end's code> <its message, or empty> [<attempt dir>]
-  pw_lookup_clock
-  pw_lookup
-  case "$PW_LK" in
-    found) pw_tail "$PW_LK_SEQ" "F3's lookup found it, after this run's end with exit $1" "$PW_LK_OUT" ;;
-  esac
-  # THE KEPT CHILDREN waited through the lookup, since its `found` may be one
-  # of theirs (Y:5309; T418); any other outcome is an end but 0 (Y:5026).
-  pw_abandon_kept
-  [ "$PW_LK" != absent ] || return 0
-  [ -z "$PW_LK_ERR" ] || [ ! -s "$PW_LK_ERR" ] || cat -- "$PW_LK_ERR" >&2
-  # The run's end, every child ended and the lookup's answer passed on: its
-  # own `<run>/` goes, the lookup's two files with it, but for the attempt
-  # directories its `call` lines name, which keep `snapshot`, `files` and
-  # `preimages` while the record is kept (T415; Y:5177). The record's remover
-  # removes those too (`pw_record_done`).
-  pw_run_dir_done
-  if [ "$PW_LK" = lr007 ] && [ "$PW_LK_TOKEN" = generation ]; then
-    WR_REC_WRITE_ID="$WR_ID"; WR_REC_GENERATION="$WR_GEN"; WR_REC_CREATED_UTC="$WR_CREATED_UTC"
-    WR_REC_VERB="$WR_VERB"; WR_REC_TAIL="$WR_TAIL"
-    note "F3's lookup of write $WR_ID was refused with LR007 generation, above: this register is not the generation the write was made against. This run's end was exit $1."
-    wr_refuse_other_generation
-  fi
-  if [ "$PW_LK" = lr007 ]; then
-    pw_record_done
-    die "F3's lookup of write $WR_ID was refused with LR007 another-write, above: that id is another write's in the register's journal, with another lane, verb or arguments, so no commit call of this write can commit under it, and this write is not in the register under it. Its pending record is removed, and a plain rerun writes it anew under a new id. This run's end was exit $1" 2
-  fi
-  pw_lookup_3 "$1"
-}
-
-# EXIT 3, A WRITE IN DOUBT THAT CANNOT SETTLE (D8; Y:2661–2665; Y:5245): no try
-# within the window took the lock, the lookup was refused as too early
-# (LR011), or its answer settles nothing. The run names the write id, gives
-# the lookup and the printed rerun, whose `LANES_SESSION` is the value the
-# digest took (ERR-38), and KEEPS the record, with its `call` lines and their
-# directories, so that a rerun settles the write and runs its tail (Y:5199).
-# Only this run's own claim goes, since the record stays.
-pw_lookup_3() {   # <the end's code>
-  local l3_look="" l3_re="" l3_rec="" l3_why=""
-  l3_rec="$WR_STATE/register-pending/$WR_D"
-  l3_why="${PW_LK_WHY:-the lookup settled nothing}"
-  l3_look="lanes-index journal --write-id $WR_ID --not-after ${PW_LK_N:-<n>} --generation $WR_GEN --lane $(printf '%q' "$WR_LANE") --verb $(printf '%q' "$WR_VERB") --args-sha256 $WR_D"
-  l3_re="$(wr_rerun_text "$WR_ID" "$WR_GEN")"
-  wr_claim_release || :
-  die "cannot confirm whether register write $WR_ID committed; nothing else was written. A commit call of it may have committed, and F3's lookup could not settle it: ${l3_why}. On primary this write may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Its pending record, ${l3_rec}, is kept. This run's end was exit ${1}, which is not that write's answer while the call is in doubt. Look it up: ${l3_look}. Or run it again: ${l3_re}" 3
-}
-
-# ---- THE TAIL, ONCE (T418; S3, row 24; FR-023; Y:5289–5373; the contract's
-# §3.2 one digest rule, §3.3 `already`, §3.4 `found`). A write's after-COMMIT
-# tail runs in one child only: one stopped at the seam whose change set is the
-# entry's own (Y:5291). A run learns that its write is in the register in one
-# of four ways, and each comes here (Y:5302–5313):
-#   its commit answers `committed <s>`   that call's own child (`pw_committed`)
-#   its commit answers `already <s>`     whichever child matches: the current
-#     (LR006)                            one, or a kept one (`pw_decide`)
-#   a snapshot answers `found=`          the kept child of the call in doubt
-#                                        that committed (`pw_snapshot`)
-#   F3's lookup answers `found <s>`      the same (`pw_doubt_end`)
-# THE MATCH (Y:5300; the contract's §3.2 one digest rule): a child matches
-# where the sha256 of the `files` rows its seam wrote is the sha256 of the
-# `file=` rows the answer carries, each `<path>` TAB `<present>` TAB
-# `<sha256>`, LF-ended, without the `file=` prefix, and only where its
-# attempt's snapshot's `n=` is `<s>` − 1, the one seq its seam takes
-# (`pw_dir_seq_ok`; lane openRepoTools-3, #165 6808937880, batch e (87)).
-# An answer with no rows matches no child (`already <s>` alone, where `lanes-index`'s second read
-# failed: the contract's §3.3), and so does a kept child that is gone. Every
-# child that does not take `committed <s>` gets `abandon` once the outcome is
-# known (Y:5314). With no match, the tail is the replay's (`pw_replay_tail`).
-# Only the files a kept `call` line's directory keeps are read: its `files`
-# here, while this run's children wait at their seams (lane openRepoTools-3,
-# #165 6769061039, T415's question 5).
-PW_E_ROWS=""; PW_E_DIGEST=""; PW_E_WS=""; PW_E_WS_RAW=""; PW_E_UTC=""; PW_LEARNED=""
-
-# THE ENTRY'S CHANGE SET, from a register answer in a file: the `file=` rows
-# of a snapshot's `found=`, the commit's `already <s>` or the lookup's `found
-# <s>`, in the order given (sorted by path, bytewise: §3.2), into PW_E_ROWS,
-# each LF-ended, and their sha256 into PW_E_DIGEST; both empty where there are
-# none. WHO WROTE IT: §3.2's `found=` and §3.4's `found <s>` carry the journal
-# row's `workstation=<name>` (empty where NULL) and `utc=<epoch s>`, right
-# after the seq line (lane openRepoTools-3, #165 6770688147, T418 item 1;
-# contract draft 4.15's text, #165 6772120103, built by lane 1's T111 and
-# T114). They are read here by key, as §3.2 reads every key, into PW_E_WS_RAW,
-# PW_E_WS and PW_E_UTC: the value as the row has it (`PW_E_WS_RAW`, which is
-# only ever compared with this run's own `WS`, never printed); the same, empty
-# where `lanes_binding_value_ok` refuses it (`PW_E_WS`, the name that is
-# printed); and a `utc=` that is whole seconds, else empty (lane
-# openRepoTools-3, #165 6774499606, T418 item 5: REV418b NIT-4). §3.3's
-# `already <s>` carries neither.
-pw_entry_rows() {   # <answer file>
-  local er_l=""
-  PW_E_ROWS=""; PW_E_DIGEST=""; PW_E_WS=""; PW_E_WS_RAW=""; PW_E_UTC=""
-  while IFS= read -r er_l || [ -n "$er_l" ]; do
-    case "$er_l" in
-      file=*) PW_E_ROWS="${PW_E_ROWS}${er_l#file=}${WR_NL}" ;;
-      workstation=*) PW_E_WS_RAW="${er_l#workstation=}" ;;
-      utc=*) PW_E_UTC="${er_l#utc=}" ;;
-    esac
-    er_l=""
-  done < "$1" 2>/dev/null
-  PW_E_WS="$PW_E_WS_RAW"
-  lanes_binding_value_ok "$PW_E_WS" || PW_E_WS=""
-  wr_is_count "$PW_E_UTC" || PW_E_UTC=""
-  [ -n "$PW_E_ROWS" ] || return 0
-  PW_E_DIGEST="$(printf '%s' "$PW_E_ROWS" | wr_sha256_stdin)" || PW_E_DIGEST=""
-  return 0
-}
-
-# THE ENTRY'S CHANGE SET where this run's own call committed it (`committed
-# <s>`): that attempt's `files`, the rows its call sent.
-pw_entry_files() {   # <attempt dir>
-  local ef_l=""
-  PW_E_ROWS=""; PW_E_DIGEST=""
-  while IFS= read -r ef_l || [ -n "$ef_l" ]; do
-    [ -z "$ef_l" ] || PW_E_ROWS="${PW_E_ROWS}${ef_l}${WR_NL}"
-    ef_l=""
-  done < "$1/files" 2>/dev/null
-  [ -n "$PW_E_ROWS" ] || return 0
-  PW_E_DIGEST="$(printf '%s' "$PW_E_ROWS" | wr_sha256_stdin)" || PW_E_DIGEST=""
-  return 0
-}
-
-# A CHILD'S CHANGE SET: the sha256 of the `files` its seam wrote in its
-# attempt's directory, by the same rule. 1, with nothing printed, where there
-# is no such file.
-pw_dir_digest() {   # <attempt dir>
-  [ -f "$1/files" ] && [ -r "$1/files" ] || return 1
-  wr_sha256_stdin < "$1/files"
-}
-
-# A CHILD'S OWN SEQ: 0 where `<s>` is its attempt's snapshot's `n=` plus 1,
-# the one `committed <s>` its seam takes (`cp_seam`, item 6; REV-W9a S1), and
-# 1 otherwise, or where there is no such file. It is read as the seam reads
-# it: the first `n=` line of `<dir>/snapshot`, a count, and `<s>`, a count,
-# equal to it plus 1 as a string. So the parent never sends `committed <s>`
-# to a child that would call it neither message (lane openRepoTools-3, #165
-# 6808937880, batch e (87): "the child takes `committed <s>` only where `<s>`
-# is its own snapshot's `n=` + 1"; W9-T415's report, S1's one gap).
-pw_dir_seq_ok() {   # <attempt dir> <seq>
-  local dq_l="" dq_n=""
-  [ -f "$1/snapshot" ] && [ -r "$1/snapshot" ] || return 1
-  while IFS= read -r dq_l || [ -n "$dq_l" ]; do
-    case "$dq_l" in n=*) dq_n="${dq_l#n=}"; break ;; esac
-    dq_l=""
-  done 2>/dev/null < "$1/snapshot"
-  wr_is_count "$dq_n" && wr_is_count "${2-}" || return 1
-  [ "$2" = "$((10#$dq_n + 1))" ]
-}
-
-# THE WRITE IS IN THE REGISTER, LEARNED (lane openRepoTools-3, #165
-# 6769061039, T416's question 1): every end 0 at which this run learns it,
-# by `committed`, `already`, a snapshot's `found=` or the lookup's `found`,
-# passes here once, before any `tail=sent`. THE RENDERER'S FORK (Y:5377) is
-# called at this ONE site, as T416's `pw_render_fork`: whichever of T416 and
-# T418 lands second puts the call here, and takes it out of `pw_committed`
-# and `pw_found_end`, which T418 replaced.
-pw_learned() {   # <seq>
-  [ -z "$PW_LEARNED" ] || return 0
-  PW_LEARNED="$1"
-  pw_render_fork   # T416's, moved here at its merge with T418, as both comments ask
-  return 0
-}
-
-# `committed <s>` TO ONE CHILD AT ITS SEAM (Y:5009–5012, Y:5291–5298): the
-# record's owner first writes `tail=sent <s> <utc>` into the record; only the
-# owner can (`wr_record_write` tests the claim), so two runs on one record
-# never both send it (`contracts/pending-record.md` §9.1). A run that cannot
-# write it sends nothing, and names the tail as owed. The child then replays
-# its own buffered output and runs the verb's code after the seam once, after
-# COMMIT; this process reaps it and, where its `seam.out` says `tail`, writes
-# `tail=done <s> <rc> <utc>`, the done mark from it, removes the record and
-# exits the child's code. Where it does not, the child never read
-# `committed`: the owner removes `tail` again, and this returns 1 for the
-# replay (Y:5342), or, where the record cannot be rewritten without `tail`
-# before a replay, names the tail as owed.
-pw_tail_child() {   # <seq> <pid> <attempt dir>
-  local tc_rc=0 tc_was="$WR_TAIL"
-  pw_learned "$1"
-  # THE OLD RUNS' DIRECTORIES, before this run's `tail=sent` record write: a run
-  # that reached here from a `found=` snapshot or F3's lookup has not purged
-  # (`pw_snapshot` skips it where the snapshot found the write), and B12b's
-  # tasks:1171 purges before the first record write. A no-op where it has.
-  pw_runs_purge
-  WR_TAIL="sent $1 $(wr_host_utc)"
-  if ! wr_record_write; then
-    WR_TAIL="$tc_was"
-    pw_abandon_one "$2" "$3"
-    [ "$PW_CHILD" != "$2" ] || PW_CHILD=""
-    pw_tail_owed "$1" "this run could not write tail=sent into its pending record, $WR_STATE/register-pending/$WR_D (it no longer owns it, or the file cannot be written), and a tail is sent only after it (Y:5293), so no child was sent one"
-  fi
-  pw_send "$3" "committed $1" || :
-  wait "$2" || tc_rc=$?
-  [ "$PW_CHILD" != "$2" ] || PW_CHILD=""
-  if ! pw_seam_out_read "$3"; then
-    WR_TAIL=""
-    # A RECORD THAT CANNOT BE REWRITTEN WITHOUT `tail` before a replay: no
-    # replay, and the tail is owed, since a tail is sent only after `tail=sent`
-    # is written (Y:5293) and this child never read `committed`, so the steps
-    # did not run (Y:5329, Y:5340). The takeover's own case is lane
-    # openRepoTools-3's ruling, #165 6841366245, T418 (2); this is the same
-    # shape for this run's own child (review RC-W18b, its NIT). A replay's own
-    # child that did not take it ends owed in `pw_replay_tail`, as before.
-    # Before that owed end the `replayed` token goes over this child's
-    # `seam.out` (`pw_seam_token`), as on ruling 2's path, so that "owed" is
-    # final: the run's end strips the file from its own kept directories
-    # (`pw_run_dir_done`), but a kill between the done mark and that strip left
-    # its `none` for a later owner of a record that could not be removed, which
-    # would replay steps a person may by then have run by hand (Y:5298; lane
-    # openRepoTools-3, #165 6841844102, point 1, and #165 6842622404). Where
-    # the token cannot be written, or the directory fails `pw_wdir_ok`, the
-    # run still ends owed.
-    if ! wr_record_write && [ "$PW_REPLAYED" != 1 ]; then
-      if pw_wdir_ok "$3" attempt; then pw_seam_token "$3" || :; fi
-      pw_tail_owed "$1" "its child, in $3, did not take the message at its seam (its seam.out does not read tail), so its tail did not run; but this run could not remove tail=sent from its pending record, $WR_STATE/register-pending/$WR_D (it no longer owns it, or the file cannot be written), and a tail is sent only after tail=sent is written (Y:5293), so it was not replayed"
-    fi
-    return 1
-  fi
-  # T422's move is part of the tail (Y:5092: "the move and the stamp run as the
-  # tail"), so it runs once the child has exited and its `seam.out` is read,
-  # and BEFORE `tail=done` is written (lane 3, #165 6778890211, T422 (1)): a
-  # run that dies during the move leaves `sent`, whose row says the steps may
-  # have run and are not run again, `<owed>` (Y:5338), where `done` would say
-  # they ran (Y:5339). And it reads `<dir>/rl-move`, as the act it starts
-  # does, so it runs before anything removes `<dir>`: `pw_tail_close`, whose
-  # record removal takes the attempt directories the `call` lines name (T415),
-  # and `pw_tail_dirs_done`, which takes this run's `<run>/` and the replay's.
-  [ "$WR_VERB" != rename-lane ] || pw_rl_move "$1" "$3"   # T422: the handoff's move, after COMMIT (R18)
-  WR_TAIL="done $1 $tc_rc $(wr_host_utc)"
-  wr_record_write || :
-  pw_tail_close "$1" "$WR_TAIL"
-  pw_tail_dirs_done
-  exit "$tc_rc"
-}
-
-# THE RECORD'S OWNER, as the record states it: this run's claim where this run
-# has written the record, else the owner's as the record taken over names it
-# (Y:5172: `pid`, `host` and `container` are copies of the owner's claim).
-# Into PW_O_PID, PW_O_HOST and PW_O_CONTAINER.
-PW_O_PID=""; PW_O_HOST=""; PW_O_CONTAINER=""
-pw_rec_owner() {
-  if [ -n "$WR_UPDATED_UTC" ]; then
-    PW_O_PID="$WR_CLAIM_PID"; PW_O_HOST="$WR_CLAIM_HOST"; PW_O_CONTAINER="$WR_CLAIM_CONTAINER"
-  else
-    PW_O_PID="$WR_REC_PID"; PW_O_HOST="$WR_REC_HOST"; PW_O_CONTAINER="$WR_REC_CONTAINER"
-  fi
-}
-
-# THE RUN THAT WROTE THE `tail` VALUE (Y:5181, Y:5338–5339; lane
-# openRepoTools-3, #165 6770688147, T418 item 5): the done mark's pid, host
-# and container are the record's, and "in pid `<p>`" names the run that wrote
-# `tail`. A `sent` or `done` value carried in with the record this run took
-# over was written by that record's owner, so they are the record's as this
-# run read it (WR_REC_*), never this run's claim, which this run's own writes
-# of the record stamp on it (Y:5185): a takeover that writes the mark is not
-# that run (Y:5342). Any other value is this run's own (`done` after its
-# `sent`, or `owed`), and takes the record's owner (`pw_rec_owner`). Into
-# PW_O_PID, PW_O_HOST and PW_O_CONTAINER.
-pw_tail_writer() {
-  if [ -n "$WR_TAIL" ] && [ "$WR_TAIL" = "$WR_REC_TAIL" ] && [ "$WR_REC_WRITE_ID" = "$WR_ID" ]; then
-    PW_O_PID="$WR_REC_PID"; PW_O_HOST="$WR_REC_HOST"; PW_O_CONTAINER="$WR_REC_CONTAINER"
-  else
-    pw_rec_owner
-  fi
-}
-
-# THE OUTCOME KNOWN ON 0 (Y:5193–5194, Y:5181): where this run owns the
-# record, the done mark is written first, with `<mark>` as its `tail` and the
-# record's pid, host and container, those of the run that wrote the `tail`
-# value (`pw_tail_writer`), then the record goes with this run's claims. A mark that
-# cannot be written costs only the next run's words, never a second tail,
-# since the record that holds `tail` goes only after it. `<mark>` empty: no
-# mark is written (one is there already). Where this run does not own the
-# record, only its own claim goes.
-pw_tail_close() {   # <seq> <mark tail value, or empty>
-  if [ "$PW_REC_OURS" = 1 ] && wr_claim_owns; then
-    if [ -n "${2-}" ]; then
-      pw_tail_writer
-      wr_done_write "$1" "$2" "$PW_O_PID" "$PW_O_HOST" "$PW_O_CONTAINER" || :
-    fi
-    if wr_record_remove; then pw_call_dirs_remove; else wr_claim_release; fi
-  else
-    wr_claim_release
-  fi
-}
-
-# THE `tail` KEY FOUND (Y:5296, Y:5333–5342): in the record, or in the done mark
-# under the write id. `sent` or `done` in the record, or any value in the mark,
-# means this run runs no tail: every child gets `abandon`, a record's value
-# goes into the done mark, the record goes, and the run exits as for a tail it
-# did not run, with the table's words. 1 where neither holds a value, and
-# where this run took over a `sent` whose child's `seam.out` says `none` and
-# has removed that `tail` (`pw_took_sent_none`; Y:5342): the run then goes on
-# as for a record with no `tail` (Y:5337), to the replay. Where that child said
-# `none` and the record could not be rewritten without `tail`, the tail did
-# not run and is not replayed, since a tail is sent only after `tail=sent` is
-# written (Y:5293): it is OWED, as every other replay that cannot go on ends
-# (`pw_tail_owed`; Y:5329, Y:5340), not "may have run" (lane openRepoTools-3,
-# #165 6841366245, T418 (2)).
-pw_tail_found() {   # <seq>
-  local tf_v="" tf_w="" tf_utc="" tf_p="" tf_mark="" tf_sn=0
-  case "$WR_TAIL" in
-    'sent '*|'done '*)
-      pw_took_sent_none || tf_sn=$?
-      [ "$tf_sn" != 0 ] || return 1
-      [ "$tf_sn" != 2 ] ||
-        pw_tail_owed "$1" "its child's seam.out, in the directory of its call= line, says none, so that child never read committed and its tail did not run; but this run could not remove tail=sent from its pending record, $WR_STATE/register-pending/$WR_D (it no longer owns it, or the file cannot be written), and a tail is sent only after tail=sent is written (Y:5293), so it was not replayed"
-      tf_v="$WR_TAIL"; tf_mark="$WR_TAIL"
-      pw_tail_writer; tf_p="$PW_O_PID" ;;
-    *)
-      wr_done_read "$WR_ID" || return 1
-      tf_v="$WR_DONE_TAIL"; tf_p="$WR_DONE_PID" ;;
-  esac
-  tf_w="${tf_v%% *}"; tf_utc="${tf_v##* }"
-  pw_abandon_all
-  pw_tail_close "$1" "$tf_mark"
-  case "$tf_w" in
-    sent) pw_tail_said "$1" "its after-COMMIT steps may have run at ${tf_utc} in pid ${tf_p:-<unknown>}, and are not run again: $(pw_owed_words)" ;;
-    done) pw_tail_said "$1" "its after-COMMIT steps ran at ${tf_utc} in pid ${tf_p:-<unknown>}" ;;
-  esac
-  pw_tail_said "$1" "its after-COMMIT steps were named as owed at ${tf_utc}, and this run runs none of them; they are owed again: $(pw_owed_words)"
-}
-
-# Y:5342'S SECOND SENTENCE, AT A TAKEOVER (lane openRepoTools-3, #165
-# 6838365309, folded at tasks:1238): "Where the child's `seam.out` says
-# `none`, the child never read `committed`, so the owner removes `tail` and
-# replays." The record this run took over holds `tail=sent <s> <utc>`
-# (WR_TOOK_TAIL). Its child's `seam.out` is read in the directory of the
-# record's one `call=` line whose `<files>` is the entry's (Y:5173, Y:5317),
-# found through that line, never by a search: an attempt directory of this
-# uid under `register-writes/` (`pw_wdir_ok`), its file read as the parent
-# reads its own child's (`pw_seam_out_read`: a regular file, never a link or a
-# FIFO, 16 bytes at most), and only where the record is of this host and this
-# container (`pw_rec_here`), since tails are host-local (Y:5344). EXACTLY
-# `none`, the one line a child writes at its cap, on `abandon` or with its
-# parent gone (Y:5005–5006; `cp_seam_stop`), and after which it never writes
-# `tail` (noclobber), means that child never read `committed`. So this run,
-# the record's owner (Y:5179, Y:5190), purges the old runs' directories as
-# before any record write of its own (`pw_runs_purge`), rewrites the record
-# without `tail`, and returns 0. The replay that follows is once per run
-# (`pw_replay_tail`; Y:5310), and writes this `seam.out` as `replayed` before
-# its own `tail=sent`, so a takeover after it reads neither `none` nor `tail`
-# and does not replay again (Y:5298). Every other case returns 1 with nothing changed,
-# and the `sent` row stands (Y:5338; lane 3's ruling): a `seam.out` that says
-# `tail`, anything else, or none to read, being absent, unreadable, a link or
-# not a regular file. A takeover cannot see that child, as T415's parent sees
-# its own after `committed`, and reads such a file as `none` (tasks:1176). So
-# do a record of another host or container; an answer with no `file=` rows;
-# no `call=` line with the entry's `<files>`, or more than one, since Y:5317
-# takes one line and which of their children took `committed` is not known
-# (lane openRepoTools-3, #165 6841366245, T418 (1)). Where the child said
-# `none` and the record cannot be rewritten without `tail`, it returns 2 with
-# WR_TOOK_TAIL and WR_TAIL as they were: no replay, and `pw_tail_found` names
-# the tail as owed (T418 (2)). Before that it writes the `replayed` token over
-# that `none` (`pw_seam_token`), so that "owed" is final: a later owner of a
-# record that could not be removed reads neither `none` nor `tail`, and runs
-# no tail that a person may by then have run by hand (Y:5298; lane
-# openRepoTools-3, #165 6841844102, point 1). Where the token cannot be
-# written, the run still ends owed.
-pw_took_sent_none() {
-  local sn_k="" sn_l="" sn_d="" sn_n=0 sn_was="$WR_TOOK_TAIL"
-  case "$sn_was" in 'sent '*) : ;; *) return 1 ;; esac
-  [ "$WR_TAIL" = "$sn_was" ] && [ -n "$PW_E_DIGEST" ] || return 1
-  pw_rec_here || return 1
-  # The `call=` lines, split at each newline by parameter expansion, never
-  # through a here-string (`pw_call_fields`; review REV-W10a, M1's pattern).
-  sn_k="$WR_CALLS"
-  while [ -n "$sn_k" ]; do
-    sn_l="${sn_k%%"$WR_NL"*}"
-    case "$sn_k" in
-      *"$WR_NL"*) sn_k="${sn_k#*"$WR_NL"}" ;;
-      *) sn_k="" ;;
-    esac
-    [ -n "$sn_l" ] || continue
-    pw_call_fields "$sn_l"
-    [ "$PW_CF_F" = "$PW_E_DIGEST" ] || continue
-    sn_n=$((sn_n + 1)); sn_d="$PW_CF_D"
-  done
-  [ "$sn_n" = 1 ] && pw_wdir_ok "$sn_d" attempt || return 1
-  if pw_seam_out_read "$sn_d" || [ "$PW_SEAM_OUT" != none ]; then return 1; fi
-  pw_runs_purge
-  WR_TOOK_TAIL=""; WR_TAIL=""
-  wr_record_write && return 0
-  WR_TOOK_TAIL="$sn_was"; WR_TAIL="$sn_was"
-  pw_seam_token "$sn_d" || :
-  return 2
-}
-
-# A TAKEOVER WHOSE RECORD HOLDS `tail` AND WHOSE FIRST SNAPSHOT DOES NOT FIND
-# THE WRITE (lane openRepoTools-3, #165 6779688808, Q2). A record holds `tail`
-# only once its write committed (Y:5179), so a first snapshot of the record's
-# own generation that answers 0 with no `found=` contradicts it. Y has one
-# route to that, the restore gap, where the database carries the lost
-# database's generation (Y:1518); the other is a damaged record. The done mark
-# would say "is in the register at seq <s>", which is false, and removing the
-# record would remove the only evidence left. So the run refuses 2 at that
-# snapshot: it sends nothing and runs no tail (Y:5298), and leaves the record
-# as found, as Y:5215 does for another generation; only its own claim goes
-# (`wr_refuse`). Its text names the seq the record's `tail` says, which
-# `wr_record_read` has checked is one of Y:5179's two forms (Q34), then gives
-# Y:5211-5213's effect check and the steps that may be owed (Y:5214).
-#
-# THE EFFECT CHECK'S `<lane>` is the lane the write is made for, PW_LANE
-# (`write_lane_of`'s, set by `pw_checkout` before the claim), which the
-# record's digest fixes with its arguments, not the writer's `LANES_LANE`,
-# which is the record's `lane=`: design:5257 (spec#17 B15 `6e534355`) puts
-# that rule on the effect check itself (lane openRepoTools-3, #165 6813027223,
-# batch g Q117, with batch e Q106). The effect is the write's. The journal
-# lookup's `--lane` keeps `WR_REC_LANE` (`wr_lookup_text`,
-# `pw_owner_live_end`), and the rerun keeps the writer's `LANES_LANE`
-# (`wr_rerun_plain_text`), since the digest takes it.
-#
-# WHERE THE EFFECT IS NOT THERE, THE WAIT (lane openRepoTools-3, #165
-# 6780753157, Q46): the same command again, with no LANES_WRITE_ID, after this
-# record's `updated_utc` plus its maximum age (`wr_max_age_s`,
-# LANES_REGISTER_PENDING_MAX_AGE_S), which it prints in UTC. That rerun is
-# Y:5207's aged plan, `wr_record_aged` being read before any takeover
-# (`wr_id_plan`): it writes anew under a record of its own. A plain rerun
-# before then takes this record over and is refused here again. It never
-# offers LANES_WRITE_ID=new: that replaces only a record of another
-# generation (Y:5215), so T412's fresh plan refuses it for this one.
-#
-# With `found=` the path is `pw_tail`'s, to the done mark (`pw_tail_found`),
-# with the record's pid (`pw_tail_writer`); another generation stays T412's
-# `wr_refuse_other_generation`.
-pw_took_tail_refuse() {
-  local tr_s="" tr_w="" tr_utc="" tr_steps="" tr_max="" tr_t="" tr_at="" tr_when=""
-  tr_w="${WR_TOOK_TAIL%% *}"; tr_utc="${WR_TOOK_TAIL##* }"
-  tr_s="${WR_TOOK_TAIL#* }"; tr_s="${tr_s%% *}"
-  case "$tr_w" in
-    sent) tr_steps="its after-COMMIT steps may have run at ${tr_utc}: $(wr_owed_text "$WR_REC_VERB"). Do by hand any that did not run." ;;
-    done) tr_steps="its after-COMMIT steps ran at ${tr_utc}." ;;
-  esac
-  tr_max="$(wr_max_age_s)"; tr_t="$(epoch_of "$WR_REC_UPDATED_UTC")"
-  if wr_is_count "$tr_t"; then tr_at="$(wr_utc_of_epoch "$((tr_t + tr_max))")"; fi
-  tr_when="once this record is more than ${tr_max} s, its maximum age, past its updated_utc, ${WR_REC_UPDATED_UTC}"
-  [ -z "$tr_at" ] || tr_when="after ${tr_at}, when this record is more than ${tr_max} s, its maximum age, past its updated_utc, ${WR_REC_UPDATED_UTC}"
-  pw_run_dir_done
-  wr_refuse "the pending record of this command, $WR_STATE/register-pending/$WR_D, holds write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, and its tail, ${WR_TOOK_TAIL}, says that write committed at seq ${tr_s}; but this register does not hold it: this run's first snapshot did not find it. A register restored from a backup carries the lost database's generation until its cutover (Y:1518), and a damaged record reads the same. Nothing was sent, no after-COMMIT step was run, and the record is left as it is. Look for its effect in the register as it stands: lanes-edit.sh history ${PW_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${PW_LANE} for a row. If it is there, ${tr_steps} If it is not there, run the same command again, with no LANES_WRITE_ID, ${tr_when}: that rerun writes anew under a record of its own (Y:5207), and one before then takes this record over and is refused again: $(wr_rerun_plain_text)"
-}
-
-# THE SAME COMMAND WITH NO `LANES_WRITE_ID` (Y:5207; lane openRepoTools-3, #165
-# 6780753157, Q46), with the lane and the session this run's digest took, so
-# that it meets this record (`wr_digest`). It leads with `LANES_WRITE_ID=
-# LANES_WRITE_GENERATION=`, so that a value exported in the shell it is run
-# from is not kept in force: an empty value reads as unset (`wr_begin`,
-# `wr_id_plan`) (review REV-W8b, N2).
-wr_rerun_plain_text() {
-  printf 'LANES_WRITE_ID= LANES_WRITE_GENERATION= LANES_LANE=%s LANES_SESSION=%s %s\n' \
-    "$(printf '%q' "$WR_LANE")" "$(printf '%q' "$WR_SESSION")" "$WR_CMDLINE"
-}
-
-# THE STEPS THAT MAY BE OWED, in words: the verb's row of F14's table
-# (`wr_owed_text`).
-pw_owed_words() {
-  wr_owed_text "$WR_VERB"
-}
-
-# THE RUN'S END IN THE TAIL, every child ended (T415's rule; Y:5177; lane
-# openRepoTools-3, #165 6769061039, T415's question 5): this run's own `<run>/`
-# goes as at any end (`pw_run_dir_done`), but for the attempt directories a
-# kept `call` line names; and so does the replay's fresh run segment, which no
-# `call` line names, since a replay makes no commit call (#165 6770688147,
-# T418: "The fresh run segment and what the replay reads: confirmed").
-pw_tail_dirs_done() {
-  local td_run="$PW_RUN_DIR"
-  pw_run_dir_done
-  if [ -n "$PW_RP_RUN_DIR" ]; then
-    PW_RUN_DIR="$PW_RP_RUN_DIR"; pw_run_dir_done; PW_RUN_DIR="$td_run"
-  fi
-  return 0
-}
-
-# A RUN THAT RUNS NONE OF THE TAIL ENDS HERE (Y:5328): the write is committed
-# either way, so it prints one WARNING and exits 0. `request-handoff`, whose
-# tail's wait decides its code, exits 2 instead, with Y:5328's words. The
-# WARNING joins `<what>` to "at seq <s>" with `; `, or with `<joiner>` where
-# one is given (Y:5346–5347's ", written from").
-pw_tail_said() {   # <seq> <what of the tail> [<joiner>]
-  pw_tail_dirs_done
-  note "WARNING: register write $WR_ID is in the register at seq ${1}${3-; }${2}."
-  if [ "$WR_VERB" = request-handoff ]; then
-    die "the request is written at seq ${1}; this run did not wait for the release: read lanes-edit.sh binding ${PW_LANE:-<lane>}" 2
-  fi
-  exit 0
-}
-
-# THIS RUN HOLDS A RECORD OF THE WRITE HERE (Y:5344): it owns the record, and
-# the record is this run's own writing, or one taken over from this host and
-# this container. Tails are host-local (sidecars, the lane checkout's handoff,
-# tmux), so a record from another host or container counts as none.
-pw_rec_here() {
-  [ "$PW_REC_OURS" = 1 ] && wr_claim_owns || return 1
-  [ -z "$WR_UPDATED_UTC" ] || return 0
-  wr_here
-  [ -n "$WR_REC_HOST" ] && [ "$WR_REC_HOST" = "$WR_HERE_HOST" ] &&
-    [ -n "$WR_REC_CONTAINER" ] && [ "$WR_REC_CONTAINER" = "$WR_HERE_CONTAINER" ]
-}
-
-# NO RECORD HERE (Y:5344–5347): a run that finds its id with no pending record
-# of it here runs no tail, and the done mark, where there is one, has already
-# spoken (`pw_tail_found`). Its words are chosen by the journal row's
-# `workstation=` (`pw_entry_rows`) against the name this run passes as
-# `--workstation` (`WS`; tasks:1159): equal, Y:5346's, with the row's `utc=`
-# as this file's UTC stamp; otherwise Y:5347's, naming that workstation, or
-# `<unknown>` where it is empty or not given (lane openRepoTools-3, #165
-# 6770688147, T418 item 1). A record from another host or container counts as
-# none (Y:5344) and is left as it is, for a rerun there, which can take it over
-# and replay; only this run's claim goes, and the words gain one clause naming
-# that record's host and container (T418 item 6), only where that host or
-# container is not this run's (#165 6774499606, T418 item 5: REV418b NIT-3,
-# NIT-4): a record of this host and container that this run's claim no longer
-# owns counts as none for that reason, not this one, and the clause is not said.
-# Where the record's host or container, or this run's, is empty, nothing can
-# be matched (`wr_here`: "an empty one never matches"), so the clause says that
-# the record names no host and container this run can match, so it counts as
-# none (Y:5344), and is left in place, never "not this host and container" or
-# "for a rerun there" (lane openRepoTools-3, #165 6779688808, Q14).
-# `<name>` is compared as the row has it (`PW_E_WS_RAW`) and printed filtered.
-pw_no_record_end() {   # <seq>
-  local nr_u="" nr_rec=""
-  pw_abandon_all
-  wr_claim_release || :
-  if [ "$PW_REC_OURS" = 1 ] && [ -z "$WR_UPDATED_UTC" ]; then
-    wr_here
-    if [ -z "$WR_REC_HOST" ] || [ -z "$WR_REC_CONTAINER" ] || [ -z "$WR_HERE_HOST" ] || [ -z "$WR_HERE_CONTAINER" ]; then
-      nr_rec=". The pending record here names no host and container this run can match (the record's ${WR_REC_HOST:-<empty>}/${WR_REC_CONTAINER:-<empty>}, this run's ${WR_HERE_HOST:-<empty>}/${WR_HERE_CONTAINER:-<empty>}; an empty one never matches), so it counts as none, since tails are host-local, and is left in place"
-    elif [ "$WR_REC_HOST" != "$WR_HERE_HOST" ] || [ "$WR_REC_CONTAINER" != "$WR_HERE_CONTAINER" ]; then
-      nr_rec=". The pending record here was written on ${WR_REC_HOST}/${WR_REC_CONTAINER}, not this host and container, so it counts as none, since tails are host-local, and is left in place for a rerun there"
-    fi
-  fi
-  if [ -n "$PW_E_WS_RAW" ] && [ "$PW_E_WS_RAW" = "$WS" ]; then
-    nr_u="$(wr_utc_of_epoch "$PW_E_UTC")"
-    pw_tail_said "$1" "written from this host at ${nr_u:-<unknown>}. Its after-COMMIT steps may already have run here, in the run that wrote it; this run runs none of them. If they did not run, they are: $(pw_owed_words)${nr_rec}" ", "
-  fi
-  pw_tail_said "$1" "written from ${PW_E_WS:-<unknown>}; no pending record of it is here, so this run runs none of its after-COMMIT steps: $(pw_owed_words). If its run there ended 3, rerun it there${nr_rec}" ", "
-}
-
-# THE WRITE FOUND IN THE REGISTER, by `already <s>`, a snapshot's `found=` or
-# F3's lookup (Y:5307–5309): the child whose change set is the entry's, and
-# whose snapshot's `n=` is `<s>` − 1 (`pw_dir_seq_ok`), takes `committed <s>`,
-# the current attempt's (only at `already`, where it waits at its seam) before
-# the kept ones; every other child gets `abandon` (Y:5314); and with no match
-# the tail is the replay's. It never returns. The `n=` test is the seam's own
-# (lane openRepoTools-3, #165 6808937880, batch e (87)): an earlier attempt
-# with the same change set and an older snapshot would refuse `committed <s>`
-# as neither message and go to `none`, the later child that could take it
-# would already have had `abandon`, and the tail would be the replay's
-# (W9-T415's report, S1's one gap). Such an attempt now gets `abandon`, and
-# the match goes on to the next child.
-# PW_KEPT is split at each newline by parameter expansion, as
-# `pw_abandon_kept` splits it, never through a here-document: bash 3.2 writes
-# one to a temp file in /tmp, and where none can be made, as in a full /tmp,
-# the loop never ran and PW_KEPT was emptied, so no kept child was matched
-# or got `abandon`; each waited at its seam until its parent test or its cap,
-# and the tail was the replay's (review REV-W10a, M1's pattern; lane 4's
-# W10-MA report, `PT_EOF`).
-pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
-  local pt_k="" pt_l="" pt_p="" pt_d="" pt_mp="" pt_md="" pt_rest="" pt_h=""
-  pw_learned "$1"
-  pw_entry_rows "$3"
-  pw_tail_found "$1" || :
-  pw_rec_here || pw_no_record_end "$1"
-  if [ -n "$PW_E_DIGEST" ] && [ -n "$PW_CHILD" ]; then
-    pt_h="$(pw_dir_digest "$PW_DIR")" || pt_h=""
-    if [ "$pt_h" = "$PW_E_DIGEST" ] && pw_dir_seq_ok "$PW_DIR" "$1"; then pt_mp="$PW_CHILD"; pt_md="$PW_DIR"; fi
-  fi
-  pt_k="$PW_KEPT"
-  while [ -n "$pt_k" ]; do
-    pt_l="${pt_k%%"$WR_NL"*}"
-    case "$pt_k" in
-      *"$WR_NL"*) pt_k="${pt_k#*"$WR_NL"}" ;;
-      *) pt_k="" ;;
-    esac
-    [ -n "$pt_l" ] || continue
-    pt_p="${pt_l%% *}"; pt_d="${pt_l#* }"
-    pt_h=""
-    if [ -z "$pt_mp" ] && [ -n "$PW_E_DIGEST" ]; then pt_h="$(pw_dir_digest "$pt_d")" || pt_h=""; fi
-    if [ -z "$pt_mp" ] && [ -n "$pt_h" ] && [ "$pt_h" = "$PW_E_DIGEST" ] && pw_dir_seq_ok "$pt_d" "$1"; then
-      pt_mp="$pt_p"; pt_md="$pt_d"
-    else
-      pt_rest="${pt_rest}${pt_rest:+$WR_NL}$pt_l"
-    fi
-  done
-  PW_KEPT="$pt_rest"
-  pw_abandon_kept
-  if [ -n "$PW_CHILD" ] && [ "$PW_CHILD" != "$pt_mp" ]; then
-    pw_abandon_one "$PW_CHILD" "$PW_DIR"; PW_CHILD=""
-  fi
-  if [ -n "$pt_mp" ]; then
-    pw_tail_child "$1" "$pt_mp" "$pt_md" || :
-  fi
-  pw_replay_tail "$1" "$2"
-}
-
-# THE REPLAY (Y:5316–5326), where no waiting child matches, once per run:
-#   1. it takes the `call` line of the pending record whose `<files>` is the
-#      entry's change set; where none is, there is no replay (Y:5317), and so
-#      where the answer carried no rows; where two or more are, it takes this
-#      run's own committed call's, else none, and the tail is owed (#165
-#      6851422597); and it makes that line's directory's
-#      `seam.out` read `replayed`, so a later takeover reads no `none` (below);
-#   2. it makes a FRESH run segment, `<d>/<nonce>/1/`, never the committing
-#      run's (Y:5156, Y:5326; lane openRepoTools-3, #165 6755005268, T413's
-#      question 4), with `parent.pid`, `seam.fifo` and `lock` as any attempt's;
-#   3. `lanes-index register snapshot --tree <dir>/tree --checkout <c> --at
-#      <s−1>` with the write's five identity flags, of which only the
-#      generation is checked under `--at` (the contract's §3.2), builds the
-#      scratch tree at the entry's base, since the commit moved the head from
-#      `s−1` to `s`. `--checkout` goes with `--tree`, as §3.2's argv groups
-#      them: `repos_blob` is only a blob id, so its bytes come from `<c>`'s
-#      objects, and `lanes/log/README.md` from `<c>`'s `origin/main` (Y:5049);
-#      Y:5318's form is shorthand (lane openRepoTools-3, #165 6770688147, T418
-#      item 4);
-#   4. the attempt's `snapshot` is that answer with the COMMITTING call's
-#      `clock=`, its `call` line's `<clock>` (Y:5322; #165 6755005268, T413's
-#      question 3), so the replay's lines carry that call's UTC; and its
-#      `preimages/` is the committing call's (Y:5323), with a `replay` mark,
-#      so the child's `lane_state_preimage` answers from them and reads none
-#      afresh, and its `guard_type` types into no pane (Y:5326);
-#   5. the verb runs as a child under the flag, as any attempt's does
-#      (`pw_child_start`); it makes no commit call, so it skips the act's
-#      checks, and reads tmux, liveness and `gh_reads` again (Y:5326);
-#   6. at `ready` the change sets are compared: equal, it takes `committed
-#      <s>` (`pw_tail_child`); otherwise `abandon` (Y:5324).
-# A replay that stops before `ready`, or reaches the seam with another change
-# set, runs none of the tail (Y:5328–5331): `pw_tail_owed`. It reads only what
-# a kept `call` line keeps: the record's line, and its directory's
-# `preimages/` (lane openRepoTools-3, #165 6769061039, T415's question 5).
-PW_REPLAYED=0; PW_RP_RUN_DIR=""; PW_COMMITTED_DIR=""
-
-# THE `replayed` TOKEN in a call's attempt directory (lane openRepoTools-3,
-# #165 6841366245, T418 (3); #165 6841844102, point 1): its `seam.out`
-# removed, then `replayed` and its newline written under noclobber, as a
-# child writes its own (Y:5005), and read back, 16 bytes at most, from a
-# regular file that is not a link. 0 where it reads exactly `replayed`; 1
-# otherwise: a late `none` from that call's child took the slot first, or the
-# file cannot be removed, written or read. A run that later takes the record
-# over then reads neither `none` nor `tail` there (`pw_took_sent_none`), and
-# the `sent` row stands (Y:5338). Never `replay`, the mark that sets
-# REG_REPLAY in a replay's own directory (`reg_scratch_take`). The caller has
-# checked the directory (`pw_wdir_ok`).
-pw_seam_token() {   # <the call's attempt dir>
-  local st_b=""
-  rm -f -- "$1/seam.out" 2>/dev/null
-  ( set -C; printf '%s\n' replayed > "$1/seam.out" ) 2>/dev/null || :
-  if [ -f "$1/seam.out" ] && [ ! -L "$1/seam.out" ]; then
-    st_b="$(head -c 16 -- "$1/seam.out" 2>/dev/null; printf .)"; st_b="${st_b%.}"
-  fi
-  [ "$st_b" = "replayed$WR_NL" ]
-}
-pw_replay_tail() {   # <seq> <how it was learned>
-  local rp_k="" rp_l="" rp_c="" rp_f="" rp_d="" rp_clock="" rp_cdir="" rp_run="" rp_dir="" \
-        rp_bin="" rp_rc=0 rp_at="" rp_h="" rp_last="" rp_p="" rp_t="" rp_n=0 rp_oclock="" rp_odir=""
-  pw_abandon_all
-  if [ "$PW_REPLAYED" = 1 ]; then
-    pw_tail_owed "$1" "its replay's child, at seq $(( $1 - 1 )), did not take the message at its seam (its seam.out does not read tail)"
-  fi
-  PW_REPLAYED=1
-  if [ -n "$PW_E_DIGEST" ]; then
-    # By parameter expansion, never a here-string (`pw_call_fields`), so a
-    # full /tmp cannot leave the entry's change set with no call line.
-    rp_k="$WR_CALLS"
-    while [ -n "$rp_k" ]; do
-      rp_l="${rp_k%%"$WR_NL"*}"
-      case "$rp_k" in
-        *"$WR_NL"*) rp_k="${rp_k#*"$WR_NL"}" ;;
-        *) rp_k="" ;;
-      esac
-      [ -n "$rp_l" ] || continue
-      pw_call_fields "$rp_l"; rp_c="$PW_CF_C"; rp_f="$PW_CF_F"; rp_d="$PW_CF_D"
-      if [ "$rp_f" = "$PW_E_DIGEST" ] && wr_is_count "$rp_c"; then
-        rp_n=$((rp_n + 1)); rp_clock="$rp_c"; rp_cdir="$rp_d"
-        if [ -n "$PW_COMMITTED_DIR" ] && [ "$rp_d" = "$PW_COMMITTED_DIR" ]; then rp_oclock="$rp_c"; rp_odir="$rp_d"; fi
-      fi
-    done
-  fi
-  if [ -z "$rp_clock" ]; then
-    if [ -z "$PW_E_DIGEST" ]; then
-      pw_tail_owed "$1" "the register's answer (${2}) carried no change set to match a child or a call against, so it cannot be replayed (Y:5317)"
-    fi
-    pw_tail_owed "$1" "no call line of its pending record sent the entry's change set, so it cannot be replayed (Y:5317)"
-  fi
-  # ONE LINE, OR THIS RUN'S OWN COMMITTED CALL'S (lane openRepoTools-3, #165
-  # 6851422597, NIT-4 (b)). Y:5317 takes "the `call` line whose `<files>` is
-  # the entry's", one line, as a takeover reads it (`pw_took_sent_none`).
-  # Where this run's own commit answered `committed <s>`, the replay takes
-  # that call's own line (Y:5306; `pw_committed`, PW_COMMITTED_DIR).
-  # Otherwise it takes a line only where exactly one matches. Two or more are
-  # resends of one change set whose `preimages/` need not agree, and which of
-  # their calls committed is not known, so there is no replay and the tail is
-  # owed: before `pw_wdir_ok` and the `replayed` token below, so no directory
-  # is read and no token is written.
-  if [ -n "$rp_odir" ]; then
-    rp_clock="$rp_oclock"; rp_cdir="$rp_odir"
-  elif [ "$rp_n" -gt 1 ]; then
-    pw_tail_owed "$1" "${rp_n} call lines of its pending record sent the entry's change set, and the replay takes the one call line whose files are the entry's (Y:5317): which of their calls committed is not known, so it cannot be replayed"
-  fi
-  # THE CALL'S `seam.out` BECOMES `replayed` before this replay can write
-  # `tail=sent` (Y:5298; lane openRepoTools-3, #165 6841366245, T418 (3)). A
-  # run that later takes this record over reads that file through this `call=`
-  # line (`pw_took_sent_none`; Y:5342), and the `sent` it would find is this
-  # replay's, whose child runs in a fresh run segment that no `call` line
-  # names (Y:5326), not that call's child's, whose `none` it would read: it
-  # would replay a tail that this replay's child may have run. So the file is
-  # removed, `replayed` and its newline are written under noclobber, as a
-  # child writes its own (Y:5005), and it is read back from a regular file
-  # that is not a link, 16 bytes at most. A child whose parent was killed
-  # alone may still be at its seam, and writes its `none` within about 2 s
-  # (`cp_seam`, `cp_seam_stop`): after the token, that noclobber write fails
-  # and the child exits 75 (`cp_seam_out`), so a takeover reads neither `none`
-  # nor `tail` and the `sent` row stands (Y:5338); before it, the token's own
-  # write fails. Anything but exactly `replayed` sends no `committed`: the tail
-  # is owed. The token is never `replay`, the mark that sets REG_REPLAY in a
-  # replay's own directory (`reg_scratch_take`). A call's directory keeps only
-  # `snapshot`, `files` and `preimages` while its line stands (Y:5177), so
-  # nothing a reader needs goes. Every child of this run has had `abandon` and
-  # been reaped above.
-  # THE CALL'S DIRECTORY MUST BE THERE AND TRUSTED (lane openRepoTools-3, #165
-  # 6841844102, point 2): Y:5177 keeps it while its line stands, and the replay
-  # takes the committing call's sidecar pre-images from it (Y:5321–5323;
-  # `pw_replay_preimages`). One that is absent, or that is not an attempt
-  # directory of this uid (`pw_wdir_ok`: a link on its path, another uid's,
-  # not 0700, or not `<state>/register-writes/<d>/<run>/<k>`), cannot give a
-  # faithful replay: "not recorded" would write nothing where the first call
-  # may have written. So the tail is owed, here, before the token step, which
-  # is never skipped (tasks:1236, fold 1112n: anything but exactly `replayed`
-  # is owed).
-  pw_wdir_ok "$rp_cdir" attempt ||
-    pw_tail_owed "$1" "its call's directory, $rp_cdir, is not there, or is not an attempt directory of this user's (a link on its path, another user's, not 0700, or not under register-writes/), and its replay takes the committing call's sidecar pre-images from it (Y:5177, Y:5321-5323), so it was not replayed"
-  pw_seam_token "$rp_cdir" ||
-    pw_tail_owed "$1" "its call's seam.out, in $rp_cdir, could not be written as replayed under noclobber and read back as that before its replay (a late none from that call's child, or a file that cannot be removed or read), and a later takeover of this record could read what is there as this replay's child's, so it was not replayed"
-  rp_run="$(act_mint_id)" || rp_run=""
-  [ -z "$rp_run" ] || PW_RP_RUN_DIR="$WR_STATE/register-writes/$WR_D/$rp_run"
-  rp_dir="$WR_STATE/register-writes/$WR_D/$rp_run/1"
-  if [ -z "$rp_run" ] || ! wr_dir_0700 "$WR_STATE/register-writes/$WR_D/$rp_run" || ! wr_dir_0700 "$rp_dir"; then
-    # `<run>` where no run nonce could be read, never `<d>//1` (REV418b's cosmetic).
-    pw_tail_owed "$1" "its replay's directory, $WR_STATE/register-writes/$WR_D/${rp_run:-<run>}/1, could not be made a 0700 directory of this user's, so it was not replayed"
-  fi
-  PW_DIR="$rp_dir"
-  rp_t="$(mktemp "$rp_dir/.parent.pid.XXXXXX" 2>/dev/null)" || rp_t=""
-  if [ -z "$rp_t" ] || ! printf '%s\t%s\n' "$$" "$WR_CLAIM_START" > "$rp_t" 2>/dev/null ||
-     ! mv -f -- "$rp_t" "$rp_dir/parent.pid" 2>/dev/null || ! mkfifo -m 600 "$rp_dir/seam.fifo" 2>/dev/null ||
-     { [ -n "$PW_LOCK" ] && ! printf '%s\n' "$PW_LOCK" > "$rp_dir/lock" 2>/dev/null; }; then
-    pw_tail_owed "$1" "its replay's parent.pid, seam.fifo or lock, in $rp_dir, could not be written, so it was not replayed"
-  fi
-  rp_bin="$(lanes_index_bin)"
-  [ -n "$rp_bin" ] ||
-    pw_tail_owed "$1" "there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH to build its replay's tree with"
-  rp_at=$(( $1 - 1 ))
-  ( "$rp_bin" register snapshot --write-id "$WR_ID" --generation "$WR_GEN" --lane "$WR_LANE" --verb "$WR_VERB" \
-      --args-sha256 "$WR_D" --tree "$rp_dir/tree" --checkout "$PW_C" --at "$rp_at" \
-      </dev/null >"$rp_dir/snapshot.at" 2>"$rp_dir/snapshot.err"; exit "$?" ) 2>/dev/null || rp_rc=$?
-  if [ "$rp_rc" != 0 ]; then
-    [ ! -s "$rp_dir/snapshot.err" ] || cat -- "$rp_dir/snapshot.err" >&2
-    pw_tail_owed "$1" "its replay's snapshot at seq ${rp_at} (\`lanes-index register snapshot --at ${rp_at}\`) exited ${rp_rc}, above, so it was not replayed"
-  fi
-  pw_replay_snapshot "$rp_dir" "$rp_clock" ||
-    pw_tail_owed "$1" "its replay's snapshot at seq ${rp_at} answered what this lanes-edit.sh cannot read (not format=1, not this write's generation, or no clock=), so it was not replayed"
-  pw_replay_preimages "$rp_cdir" "$rp_dir" ||
-    pw_tail_owed "$1" "its replay's preimages/ and replay mark, in $rp_dir, could not be written, so it was not replayed"
-  pw_child_start
-  if ! pw_child_wait; then
-    rp_last="$(pw_last_line "$rp_dir/out.2")"
-    [ -n "$rp_last" ] || rp_last="$(pw_last_line "$rp_dir/out.1")"
-    pw_tail_owed "$1" "replayed at seq ${rp_at} it now stops before its write (exit ${PW_RC}: ${rp_last:-no output})"
-  fi
-  rp_h="$(pw_dir_digest "$rp_dir")" || rp_h=""
-  if [ "$rp_h" != "$PW_E_DIGEST" ]; then
-    rp_p="$(pw_first_diff "$rp_dir/files")"
-    pw_abandon_one "$PW_CHILD" "$rp_dir"; PW_CHILD=""
-    pw_tail_owed "$1" "replayed at seq ${rp_at} it now reaches the seam with another change set, the first path whose digest differs being ${rp_p:-unknown}"
-  fi
-  pw_tail_child "$1" "$PW_CHILD" "$rp_dir" || :
-  PW_CHILD=""
-  pw_tail_owed "$1" "its replay's child, at seq ${rp_at}, did not take the message at its seam (its seam.out does not read tail)"
-}
-
-# THE REPLAY'S `snapshot` (step 4): the `--at` answer, kept as `snapshot.at`,
-# line for line, but for its `clock=`, which is the committing call's. 1 where
-# that answer is not `format=1`, names another generation than this write's,
-# or holds no `clock=`.
-pw_replay_snapshot() {   # <replay dir> <the committing call's clock>
-  local rs_l="" rs_body="" rs_fmt="" rs_gen="" rs_clk=0
-  while IFS= read -r rs_l || [ -n "$rs_l" ]; do
-    case "$rs_l" in
-      format=*) rs_fmt="${rs_l#format=}" ;;
-      generation=*) rs_gen="${rs_l#generation=}" ;;
-      clock=*) rs_clk=$((rs_clk + 1)); rs_l="clock=$2" ;;
-    esac
-    rs_body="${rs_body}${rs_l}${WR_NL}"
-    rs_l=""
-  done < "$1/snapshot.at" 2>/dev/null
-  [ "$rs_fmt" = 1 ] && [ "$rs_gen" = "$WR_GEN" ] && [ "$rs_clk" = 1 ] || return 1
-  printf '%s' "$rs_body" > "$1/snapshot" 2>/dev/null
-}
-
-# THE REPLAY'S `preimages/` (step 4): a copy of the committing call's, each
-# lane's answer one file, and the `replay` mark beside it. An answer that call
-# did not record is not there, which the child reads as empty: "write
-# nothing" (Y:5323). Its caller has already ended the run owed where the
-# call's directory is absent or fails `pw_wdir_ok` (#165 6841844102, point 2),
-# so it copies only from a trusted, present directory.
-pw_replay_preimages() {   # <the call's attempt dir> <replay dir>
-  local rpp_f=""
-  wr_dir_0700 "$2/preimages" || return 1
-  for rpp_f in "$1"/preimages/*; do
-    [ -f "$rpp_f" ] && [ ! -L "$rpp_f" ] || continue
-    cp -- "$rpp_f" "$2/preimages/" 2>/dev/null || return 1
-  done
-  printf '%s\n' "$PW_LEARNED" > "$2/replay" 2>/dev/null
-}
-
-# A FILE'S LAST LINE THAT IS NOT EMPTY, with control characters shown by
-# `cat -v`, for a WARNING's one line.
-pw_last_line() {   # <file>
-  local ll_l="" ll_last=""
-  while IFS= read -r ll_l || [ -n "$ll_l" ]; do
-    [ -z "$ll_l" ] || ll_last="$ll_l"
-    ll_l=""
-  done < <(cat -v -- "$1" 2>/dev/null)
-  ll_last="${ll_last#"${ll_last%%[![:space:]]*}"}"
-  printf '%s\n' "$ll_last"
-}
-
-# THE FIRST PATH WHOSE DIGEST DIFFERS (Y:5330), between the entry's rows
-# (PW_E_ROWS) and a replay's `files`: in path order, bytewise, the first path
-# that is in one set and not the other, or whose `<present>` and `<sha256>`
-# differ. Each set is split at each newline by parameter expansion, and a row
-# is looked for in the other set as one whole line of it, by `case`, never
-# through a here-string: bash 3.2 writes one to a temp file in /tmp, and
-# where none can be made, as in a full /tmp, no loop ran and no path was
-# named (review REV-W10a, M1's pattern).
-pw_first_diff() {   # <the replay's files>
-  local fd_k="" fd_l="" fd_p="" fd_r="" fd_x="" fd_all="" fd_t=""
-  fd_t="$(printf '\t')"
-  fd_r="$(cat -- "$1" 2>/dev/null)"
-  fd_k="$PW_E_ROWS"
-  while [ -n "$fd_k" ]; do
-    fd_l="${fd_k%%"$WR_NL"*}"
-    case "$fd_k" in
-      *"$WR_NL"*) fd_k="${fd_k#*"$WR_NL"}" ;;
-      *) fd_k="" ;;
-    esac
-    [ -n "$fd_l" ] || continue
-    fd_p="${fd_l%%"$fd_t"*}"; fd_x=0
-    case "$WR_NL$fd_r$WR_NL" in *"$WR_NL$fd_l$WR_NL"*) fd_x=1 ;; esac
-    [ "$fd_x" = 1 ] || fd_all="${fd_all}${fd_p}${WR_NL}"
-  done
-  fd_k="$fd_r"
-  while [ -n "$fd_k" ]; do
-    fd_l="${fd_k%%"$WR_NL"*}"
-    case "$fd_k" in
-      *"$WR_NL"*) fd_k="${fd_k#*"$WR_NL"}" ;;
-      *) fd_k="" ;;
-    esac
-    [ -n "$fd_l" ] || continue
-    fd_p="${fd_l%%"$fd_t"*}"; fd_x=0
-    case "$WR_NL$PW_E_ROWS$WR_NL" in *"$WR_NL$fd_l$WR_NL"*) fd_x=1 ;; esac
-    [ "$fd_x" = 1 ] || fd_all="${fd_all}${fd_p}${WR_NL}"
-  done
-  printf '%s' "$fd_all" | LC_ALL=C sort | head -n 1
-}
-
-# A TAIL THIS RUN DID NOT RUN (Y:5328–5331): the write is committed either
-# way. Every child gets `abandon`, the done mark keeps `owed <utc>` (Y:5340),
-# the record goes, and the run prints one WARNING and exits 0.
-pw_tail_owed() {   # <seq> <what became of the tail>
-  pw_abandon_all
-  pw_tail_close "$1" "owed $(wr_host_utc)"
-  pw_tail_said "$1" "${2}, so its after-COMMIT steps did NOT run: $(pw_owed_words)"
-}
-
-# ---- (c) THE COMMIT CALL (S1's step 3; Y:2556; contract §3.3). The `call`
-# line goes into the pending record FIRST, by temporary file and `mv` (Y:5173;
-# T412's `wr_record_add_call`): the call's base `n`, the snapshot's clock, its
-# `not_after`, the sha256 of the `files` rows the seam wrote (§3.2's one digest
-# rule) and this attempt's directory; a line that cannot be written sends no
-# call, 1. Then `lanes-index register commit` with the write's identity, the
-# space form of `--lane` (contract §3.6, L1-D1), and `--workstation`, the name
-# this file stamps its lines with (`WS`: `LANES_WORKSTATION`, else its
-# fallback), in lane 3's one call form. Its answer goes to the attempt's
-# `commit.out` and `commit.err`, and its code to PW_RC.
-pw_commit() {
-  local pk_f="" pk_bin=""
-  pk_bin="$(lanes_index_bin)"
-  [ -n "$pk_bin" ] ||
-    pw_end 69 "there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH to send attempt ${PW_K}'s commit with. Nothing was sent by it. $(pw_rerun_line)" "$PW_DIR"
-  pk_f="$(wr_sha256_stdin < "$PW_DIR/files" 2>/dev/null)" || pk_f=""
-  [ -n "$pk_f" ] ||
-    pw_end 2 "attempt ${PW_K}'s files, which its seam wrote in $PW_DIR, cannot be read to make the digest its call line needs: an internal error. Nothing was sent by it" "$PW_DIR"
-  wr_record_add_call "$PW_S_N" "$PW_S_CLOCK" "$PW_S_NOT_AFTER" "$pk_f" "$PW_DIR" ||
-    pw_end 1 "attempt ${PW_K}'s call line could not be written into this write's pending record, $WR_STATE/register-pending/$WR_D, so its commit was not sent. Nothing was sent by it" "$PW_DIR"
-  PW_RC=0
-  ( "$pk_bin" register commit --write-id "$WR_ID" --generation "$WR_GEN" --lane "$WR_LANE" \
-      --verb "$WR_VERB" --args-sha256 "$WR_D" --workstation "$WS" "$PW_DIR" \
-      </dev/null >"$PW_DIR/commit.out" 2>"$PW_DIR/commit.err"; exit "$?" ) 2>/dev/null || PW_RC=$?
-}
-
-# THE DECISION ON THE COMMIT'S ANSWER (Y:5008–5015; the contract's caller map,
-# §3.3, with §2.7). Returns 0 where the run goes on to its next attempt; every
-# other answer ends the run here.
-#   0, `committed <s>`     the write committed: `pw_committed`
-#   0, `already <s>`       an earlier attempt committed it (LR006): the
-#                          tail by match, or the replay (`pw_tail`, T418)
-#   75                     a lost turn (LR001, 40001, 40P01, 55P03, LR008):
-#                          `abandon`, the call line dropped, the next attempt
-#   2                      a refusal (LR005 with its token and any `held-by=`
-#                          line, LR007, LR009, LR010) and
-#   69                     a definitive refusal (LR002, LR003, LR004 after its
-#                          retry, another SQLSTATE): `abandon`, the call line
-#                          dropped, and the run's end, the deciding attempt's
-#                          output first, then stderr's `ERROR:` and `DETAIL:`
-#                          lines and stdout's `held-by=` lines
-#   64                     usage, which this file never sends: an internal
-#                          error with nothing sent (CO-5), 2
-#   3, any other code, a signal, or an exit 0 whose answer cannot be read
-#                          in doubt (§2.7, O8; CO-6): no message, the child
-#                          KEPT at its seam and the call line KEPT, and the
-#                          next attempt, whose snapshot looks the id up
-#                          (Y:2620–2621; review M7)
-pw_decide() {
-  local pv_l="" pv_s=""
-  case "$PW_RC" in
-    0)
-      { IFS= read -r pv_l || :; } < "$PW_DIR/commit.out" 2>/dev/null
-      case "$pv_l" in
-        "committed "*)
-          pv_s="${pv_l#committed }"
-          ! wr_is_count "$pv_s" || pw_committed "$pv_s" ;;
-        "already "*)
-          pv_s="${pv_l#already }"
-          ! wr_is_count "$pv_s" || pw_tail "$pv_s" "attempt ${PW_K}'s commit answered already, LR006" "$PW_DIR/commit.out" ;;
-      esac
-      pw_keep
-      return 0 ;;
-    75)
-      pw_abandon_one "$PW_CHILD" "$PW_DIR"; PW_CHILD=""
-      wr_record_drop_call "$PW_DIR" || :
-      return 0 ;;
-    2|69)
-      pw_abandon_one "$PW_CHILD" "$PW_DIR"; PW_CHILD=""
-      wr_record_drop_call "$PW_DIR" || :
-      PW_RELAY="$( { grep -E -e '^(ERROR|DETAIL):' -- "$PW_DIR/commit.err"; grep -E -e '^held-by=' -- "$PW_DIR/commit.out"; } 2>/dev/null || :)"
-      if [ "$PW_RC" = 2 ]; then
-        # T425: `append-line --landing-expired`'s LR005, by its token alone.
-        pw_end 2 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 2, above)$(landing_expired_refusal_text "$PW_DIR/commit.err"); nothing was written" "$PW_DIR"
-      fi
-      pw_end 69 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 69, above), a definitive refusal. Nothing was written. $(pw_rerun_line)" "$PW_DIR" ;;
-    64)
-      pw_abandon_one "$PW_CHILD" "$PW_DIR"; PW_CHILD=""
-      wr_record_drop_call "$PW_DIR" || :
-      pw_end 2 "\`lanes-index register commit\` exited 64 at attempt ${PW_K}, a usage error this lanes-edit.sh never sends: an internal error, and nothing was sent (CO-5)" "$PW_DIR" ;;
-  esac
-  pw_keep
-  return 0
-}
-
-# A COMMIT CALL IN DOUBT (Y:5014): nothing is sent to its child, which stays at
-# its seam, kept, and the call keeps its line in the record. When its seam cap
-# passes is kept too, in this process's `SECONDS`: the child's cap, PW_SEAM_CAP_S
-# (`wr_seam_cap_s`, the child's own), counts from its seam wait, which starts
-# after PW_READY_T (`pw_child_wait`). PW_KEPT_END is the earliest such end, and
-# PW_KEPT_K its attempt (lane openRepoTools-3, #165 6774499606, T415 (3)).
-pw_keep() {
-  local pk_end=$((PW_READY_T + PW_SEAM_CAP_S))
-  PW_KEPT="${PW_KEPT}${PW_KEPT:+$WR_NL}$PW_CHILD $PW_DIR"
-  if [ -z "$PW_KEPT_END" ] || [ "$pk_end" -lt "$PW_KEPT_END" ]; then
-    PW_KEPT_END="$pk_end"; PW_KEPT_K="$PW_K"
-  fi
-  PW_CHILD=""
-}
-
-# THE RENDERER'S FORK (T416; FR-027; Y:5377; contract §3.7), ONCE A RUN, at
-# every end 0 at which the run learns its write is in the register, before
-# `tail=sent` where the run writes one (lane openRepoTools-3's ruling, #165
-# 6769061039, T416's item 1; renders coalesce, Y:2984–2985, so an extra fork
-# costs one pass): once the commit has answered `committed <s>` and before the
-# child is sent it (`pw_committed`; Y:5009), and at a snapshot's `found=` or
-# the commit's `already <s>` (`pw_found_end`), where T418's ends take it over
-# (whichever of T416 and T418 lands second moves it). PW_RENDERED makes every
-# call after the first a no-op, so a run that learns the write at more than
-# one end forks once. The fork is the one resolver's `lanes-index`
-# (`lanes_index_bin`), `render --checkout <c>`,
-# where `<c>` is the lane's checkout `pw_checkout` took from
-# `lane_checkout_path`, with no S3 (R17). DETACHED AS `index_nudge` FORKS
-# (Amendment 14(d)): from a subshell that exits at once, so this process has no
-# child to wait for and never reads its status; stdin from /dev/null, stdout
-# and stderr on /dev/null, and descriptors 3 to 9 closed, so it holds no
-# descriptor of this run's and keeps no caller's pipe open. `LANES_NO_FETCH` is
-# removed from its environment (D12), so the renderer fetches origin.
-# `LANES_ACT` AND `LANES_EXPECT` ARE REMOVED TOO (lane openRepoTools-3's ruling
-# on question 122, #165 6814531692, by its G5): the fork outlives the act, so
-# it carries neither the act's base nor this write's scopes, as T428's
-# commit `4c46005` has `lane-start` do for 5e's daily-report sweep
-# (`4c46005:lane-start:5468`, on T428's branch and not in this tree). This
-# process keeps both (Y:5599's check 2).
-# NOT BEHIND `LANES_INDEX=off`, which `index_nudge` honours: `lane-worktrees`
-# sets that variable on every call it makes, and it must never skip the fork
-# (Y:5377; FR-027). It stays in this process's group, as `index_nudge`'s fork
-# does, so a TERM or a HUP to the group ends it too, and the next fork renders
-# what it left (lane openRepoTools-4's plan, §11.5; R47). An INT or a QUIT
-# does not: bash starts an `&` child of a non-interactive shell with both
-# ignored, so a Ctrl-C leaves the renderer running, which is harmless, since
-# it renders committed writes, and `index_nudge`'s fork is the same (review
-# REV-W9g, N1). Its answer is never read: a
-# `lanes-index` before T321 has no such form (64), and from T321 phase 2's
-# answers "git half not installed" (69; contract :804). Where no `lanes-index`
-# resolves, which the snapshot or the commit has just run, nothing is forked.
-pw_render_fork() {
-  local rf_bin=""
-  [ "$PW_RENDERED" = 0 ] || return 0
-  PW_RENDERED=1
-  rf_bin="$(lanes_index_bin)"
-  [ -n "$rf_bin" ] || return 0
-  ( unset LANES_NO_FETCH LANES_ACT LANES_EXPECT
-    "$rf_bin" render --checkout "$PW_C" </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
-  return 0
-}
-
-# `committed <s>` (Y:5009–5012). Every other kept child gets `abandon`: none of
-# their calls committed, since one that had would have made this call's answer
-# LR006 (Y:2563–2575). The child then takes `committed <s>`
-# (`pw_tail_child`, T418), after the renderer's fork (`pw_learned`) and the
-# record's `tail=sent`: it replays its own buffered output and runs the verb's
-# tail once, after COMMIT; the parent reaps it, writes the done mark, removes
-# the record and exits the child's code. A child whose `seam.out` is not
-# exactly `tail` (`pw_seam_out_read`) did not take the message: it stopped at
-# its cap, or its parent's line was lost. That `seam.out` is `none`, the tail
-# did not run, and the tail is the replay's (Y:5007, Y:5339, Y:5342; lane
-# openRepoTools-3, #165 6767463594, question 4), of the change set this call
-# sent.
-# The fork comes before the message, so the renderer is forked for the write
-# even where the child then does not take the message (T416).
-# Its attempt's directory is noted first (PW_COMMITTED_DIR), so that a replay
-# takes this call's own line, whatever other line sent the same change set
-# (Y:5306; lane openRepoTools-3, #165 6851422597).
-pw_committed() {   # <seq>
-  pw_abandon_kept
-  pw_entry_files "$PW_DIR"
-  PW_COMMITTED_DIR="$PW_DIR"
-  pw_tail_child "$1" "$PW_CHILD" "$PW_DIR" || :
-  PW_CHILD=""
-  pw_replay_tail "$1" "attempt ${PW_K}'s commit answered committed"
-}
-
-# `seam.out` AFTER `committed <s>` (Y:5007, Y:5339, Y:5342): the parent reads
-# only a `seam.out` holding exactly `tail` as the tail run; an absent, empty or
-# other one is `none`, and the run goes to T418's replay (lane
-# openRepoTools-3, #165 6767463594, question 4). Exactly `tail` is the one line
-# `cp_seam_out` writes, `tail` and its newline, in a regular file, so that no
-# other content is ever taken for a tail that ran. It is read to 16 bytes at
-# most, and a FIFO or a link there is never opened. 0 where it says `tail`; 1
-# otherwise, with PW_SEAM_OUT naming what was there instead. A takeover reads
-# an old attempt's the same way, and replays only on PW_SEAM_OUT `none`
-# (`pw_took_sent_none`; Y:5342).
-PW_SEAM_OUT=""
-pw_seam_out_read() {   # <attempt dir>
-  local so_f="$1/seam.out" so_b=""
-  PW_SEAM_OUT="absent"
-  if [ -L "$so_f" ]; then PW_SEAM_OUT="a symbolic link"; return 1; fi
-  [ -e "$so_f" ] || return 1
-  if [ ! -f "$so_f" ]; then PW_SEAM_OUT="not a regular file"; return 1; fi
-  if [ ! -r "$so_f" ]; then PW_SEAM_OUT="unreadable"; return 1; fi
-  so_b="$(head -c 16 -- "$so_f" 2>/dev/null; printf .)"; so_b="${so_b%.}"
-  case "$so_b" in
-    "tail$WR_NL") PW_SEAM_OUT=tail; return 0 ;;
-    '') PW_SEAM_OUT="empty" ;;
-    "none$WR_NL") PW_SEAM_OUT="none" ;;
-    *) PW_SEAM_OUT="neither tail nor none" ;;
-  esac
-  return 1
-}
-
-# THE CHILD ENDED BEFORE `ready` (Y:5015): the verb's own refusal, or a no-op
-# with an empty change set. No commit call is made, and the child's output and
-# code are the run's end, T424's 2 and 69 included. In order (Y:5016,
-# Y:5019–5022; lane openRepoTools-3, #165 6767463594, question 8): where the
-# record holds a `call` line, any code but 0 waits for F3's lookup first
-# (`pw_end`, `pw_doubt_end`); then `out.1` is replayed on stdout, then `out.2` on
-# stderr, and the run exits the child's code. A 0 ends the run with no lookup
-# (Y:5020). T422: a `rename-lane` rerun ends its child 0 here with the move it
-# still owes in `<dir>/rl-move`, and that move is made after the replay, before
-# `<dir>` goes (`pw_rl_move … rerun`; Y:3449–3451).
-pw_child_end() {
-  if [ "$PW_RC" = 0 ]; then
-    pw_abandon_all
-    pw_record_done
-    pw_replay "$PW_DIR"
-    [ "$WR_VERB" != rename-lane ] || pw_rl_move "$PW_S_N" "$PW_DIR" rerun   # T422: a rerun's move (Y:3449–3451)
-    pw_run_dir_done
-    exit 0
-  fi
-  pw_end "$PW_RC" "" "$PW_DIR"
-}
-
-# A DRY RUN THAT REACHED `ready` (`pw_checkout`, PW_DRY): a dry run stages
-# nothing, so its child ends before the seam. One that reaches it is an internal
-# error: its child is abandoned, no commit call is made, and the run ends 2.
-pw_dry_ready_end() {
-  pw_end 2 "the dry run of \`$cmd\` reached the seam at attempt ${PW_K} with a change set to commit, which a dry run never makes: an internal error. No commit call was made, and nothing was written"
-}
-
-# THE PRIMARY BRANCH, once per writer process. It never returns: every path
-# ends the process with the run's code.
-pw_run() {   # <the verb's arguments>
-  local pr_rc=0
-  # ---- (a) BEFORE THE FIRST ATTEMPT.
-  pw_checkout ${1+"$@"}
-  pw_lane_given
-  pw_no_git_refuse
-  pw_hand_edit_refuse
-  act_checks
-  pw_author_read
-  wr_begin
-  PW_D_S="$(pw_deadline_s)"
-  PW_CAP_S="$(pw_child_cap_s)"
-  PW_SEAM_CAP_S="$((10#$(wr_seam_cap_s)))"
-  wr_claim_take "$(( $(date -u +%s) + PW_D_S ))" || pr_rc=$?
-  [ "$pr_rc" = 0 ] || pw_owner_live_end
-  wr_id_plan
-  case "$WR_PLAN" in
-    reuse) PW_REC_OURS=1 ;;
-    env) [ "$WR_REC_WRITE_ID" != "$WR_ID" ] || PW_REC_OURS=1 ;;
-  esac
-  pw_run_dir
-  # ---- (e) THE ATTEMPTS, UNTIL D7'S DEADLINE (Y:2632–2641): 30 s from the
-  # first attempt's start, kept with `SECONDS`, whose one-second grain is
-  # enough. No attempt starts after it. Each attempt is (b) and (c): every
-  # answer but a lost turn and a call in doubt ends the run inside them, so
-  # the loop meets its deadline only where each attempt was beaten by another
-  # write, or one of them is in doubt: "register busy", 75, or F3's lookup
-  # where a `call` line is held (`pw_end`). Only the deciding attempt's output
-  # is ever replayed (F14; FR-024).
-  PW_T0="$SECONDS"
-  while : ; do
-    if [ "$PW_K" -ge 1 ] && [ $((SECONDS - PW_T0)) -ge "$PW_D_S" ]; then
-      pw_end 75 "register busy: ${PW_K} attempts in ${PW_D_S} s, each beaten by another write; nothing was written; a retry in seconds is safe. $(pw_rerun_line)"
-    fi
-    pw_attempt_dir
-    pw_snapshot
-    pw_act_at_snapshot
-    pw_attempt_files
-    pw_child_start
-    pw_child_wait || pw_child_end
-    [ "$PW_DRY" = 0 ] || pw_dry_ready_end
-    pw_commit
-    pw_decide
-  done
-}
+utc_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # ---------------------------------------------------------------- the verbs
 #
@@ -11440,18 +5608,9 @@ log_path_ci() {   # <lane> — 0 with the ONE path, 2 where two differ only by c
 }
 
 # The repo-relative path `ensure_log` renamed a log AWAY from, for the ONE
-# caller that has to put it in the same commit as the write, or, on primary
-# only, the path of the log `rename-lane` moves (T422, with `LOG_RENAMED_TO`
-# below). Empty on every other run, reset by every `ensure_log`, and cleared
-# by the seam on `committed`, so "renamed" is never sticky.
+# caller that has to put it in the same commit as the write. Empty on every
+# other run, and reset by every `ensure_log`, so "renamed" is never sticky.
 LOG_RENAMED_FROM=""
-# FEATURE 007, T422 — THE PATH `rename-lane` MOVED THE LOG TO, ON PRIMARY
-# ONLY: set with `LOG_RENAMED_FROM` under the flag, just before that verb's
-# `commit_publish`, so that the seam pairs the move's D and A lines in
-# `renames.tsv` (O5), and cleared by the seam on `committed`. Files mode
-# never sets it, so its index commit never sees it; and an exported value is
-# nothing, since it starts empty here.
-LOG_RENAMED_TO=""
 
 ensure_log() {
   lane="$1"; lf="$(log_file_for "$lane")"
@@ -12354,40 +6513,11 @@ archive_local_text() {
 # EACH LINE NUMBER NAMES ITS COPY (the review of #263, NIT 4). Both copies are
 # scanned, and where the published archive and this checkout's differ, one bad
 # line had two numbers and no word on which file either was in.
-#
-# FEATURE 007, T426 — ON PRIMARY, `key()` TRIMS A POSITION'S LEADING ZEROS AS
-# TEXT (Y:6574–6577; R31; R45). Off primary it reads the position as a number,
-# `(p + 0)`, a double, and only a run past 2^53 (9007199254740992) can key to
-# digits the row does not hold: it can lose its last digits
-# (`foo-9007199254740993` keys to `foo-9007199254740992`), and a longer one
-# can print with an exponent (`foo-111111111111111111111` keys to
-# `foo-1.11111e+20`). Every run up to 2^53 keys to its own digits, its leading
-# zeros dropped, however long it is (mawk 1.3.4; Y:1499; review REV-W8d,
-# NIT-2). Y:6575–6577 asks that the read and v2.5's keys agree "on 16 digits
-# or more", so on primary `key()` drops the leading zeros as text and keeps
-# every other digit: `007` is `7`, `0` and `000` are `0`, `10` stays `10`. A
-# cell whose last part is not a number has no key in either mode.
-# THE SWITCH is the awk variable `ztrim` (not `trim`, which names a function
-# in `LOG_AWK`, `RULE6_AWK` and `LANES_REGISTER_INDEX_AWK`; review REV-W8d,
-# NIT-3), which `retired_identity_hits` passes from `RETIRED_KEY_TRIM`: a
-# shell variable, never exported, unset and set empty here, so an inherited
-# value is neither read nor passed on. R45's one
-# line at the dispatcher, below `reg_open`, sets it to 1, beside
-# `rule6_primary_on`, where this process's one mode answer is primary: a
-# reader whose `reg_open` (T504) answered primary, and an attempt's child (its
-# `REG_MODE` is `reg_scratch_take`'s), which runs the verb of a write the
-# write guard's arm sends into `pw_run`. `retired_identity_hits` is this
-# program's one caller, so `add-row`'s check and the `retired-identity` read
-# both take it. Off primary `key()` is `(p + 0)`, byte for byte as before, so
-# files mode, index mode and an unconfigured workstation read as they did
-# (spec:59; review m7).
-unset RETIRED_KEY_TRIM; RETIRED_KEY_TRIM=""
 RETIRED_ROWS_AWK='
   function key(n,   h, p) {
     p = n; sub(/^.*-/, "", p); sub(/[A-Za-z]$/, "", p)
     h = n; sub(/-[^-]*$/, "", h)
     if (h == n || p !~ /^[0-9]+$/) return ""
-    if (ztrim) { sub(/^0+/, "", p); if (p == "") p = "0"; return tolower(h) "-" p }
     return tolower(h) "-" (p + 0)
   }
   BEGIN { wk = key(want) }
@@ -12405,7 +6535,7 @@ retired_identity_hits() { # <lane>; stdout: matching retired spellings · 1 not 
   ri_lane="$1"
   ri_pub="$(archive_text 2>/dev/null)" || { [ "$?" != 69 ] || return 69; return 1; }   # feature 007, T505
   ri_scan=""
-  ri_scan="$(printf '%s\n' "$ri_pub" | awk -v want="$ri_lane" -v sep="$US" -v ztrim="$RETIRED_KEY_TRIM" "$RETIRED_ROWS_AWK")" || return 1
+  ri_scan="$(printf '%s\n' "$ri_pub" | awk -v want="$ri_lane" -v sep="$US" "$RETIRED_ROWS_AWK")" || return 1
   # ON PRIMARY THIS CHECKOUT'S ARCHIVE IS NOT READ (feature 007, T506; lane 3,
   # #165 6778890211, T505 Q6): the local scan is one of the unions T506 skips,
   # since a primary write is in SQL before it returns, and `archive_text` has
@@ -12413,7 +6543,7 @@ retired_identity_hits() { # <lane>; stdout: matching retired spellings · 1 not 
   ri_local=""; ri_scan2=""
   if [ "${REG_STORE:-}" != sql ]; then
     ri_local="$(archive_local_text 2>/dev/null)" || return 1
-    ri_scan2="$(printf '%s\n' "$ri_local" | awk -v want="$ri_lane" -v sep="$US" -v ztrim="$RETIRED_KEY_TRIM" "$RETIRED_ROWS_AWK")" || return 1
+    ri_scan2="$(printf '%s\n' "$ri_local" | awk -v want="$ri_lane" -v sep="$US" "$RETIRED_ROWS_AWK")" || return 1
   fi
   # WHICH COPY `archive_text` ANSWERED WITH: the index's under `--index`, else
   # origin's where the tree publishes one, else this checkout's (its own rungs,
@@ -13096,9 +7226,8 @@ act_snapshot() {
 #   IT TESTS NO `LANES_REGISTER_SCRATCH`. A flag honoured on its presence
 #   alone would let a stray export skip the mode ask, and `act-begin` would
 #   print `@files` on primary, against Y:5034 and YT:6869–6873 (lane 3's
-#   ruling, #165 6755005268). It tests `REG_SCRATCH`, the flag T413 has
-#   HONOURED: an attempt's child prints `<act-id>@files` and takes no
-#   snapshot, though its `REG_MODE` is `primary` (the same ruling, item 8).
+#   ruling, #165 6755005268). T413 adds the flag's own path at its landing,
+#   on the flag it has honoured.
 #   On primary it makes one snapshot and prints `<act-id>@<n>:<generation>`.
 #   `lanes-index mode`'s 78 is T409's 69, before anything else is read.
 # `--rebase` KEEPS `LANES_ACT`'s id and takes a new seq and generation from one
@@ -13122,16 +7251,6 @@ act_begin() {   # <1 for --rebase, else 0>
   else
     ab_id="$(act_mint_id)" ||
       die "act-begin could not mint an act id: od gave no 16 random bytes from /dev/urandom. No base was taken." 1
-  fi
-  # UNDER FEATURE 007'S INTERNAL FLAG, AS T413 HONOURS IT (`REG_SCRATCH`, set
-  # only by `reg_scratch_take`, never on the variable's presence), the verb is
-  # an attempt's child on its scratch tree: `<act-id>@files`, and no snapshot.
-  # `REG_MODE` is `primary` there and `reg_mode_ask` returns on a set answer,
-  # so without this test it would take one (lane openRepoTools-3's ruling,
-  # #165 6755005268, item 8).
-  if [ -n "$REG_SCRATCH" ]; then
-    printf '%s@files\n' "$ab_id"
-    return 0
   fi
   # THE MODE NEEDS NO ARM HERE: `reg_mode_ask` returns 0 on every path. A
   # question that cannot be answered sets `REG_MODE=files` after T409's one
@@ -13214,22 +7333,14 @@ row_field_unescape_into() {   # <field> ; sets ROW_FIELD_OUT
   done
 }
 
-# Durations that DECIDE — Rule 6's minutes and `claim --force`'s staleness — so
-# both read `now_epoch`: the snapshot's clock under feature 007's internal
-# flag, the host's otherwise (D13; T413). `age_of` above keeps the host's clock
-# in a listing; where it prints beside a decision (`claim --force`'s refusal,
-# every line of `who_object`, which `claim`'s refusal prints in the child, and
-# `who_landing`'s LANDING line) it is passed `now_epoch` (lane
-# openRepoTools-3's rulings, #165 6755005268, item 5, and #165 6767463594,
-# delta question 5).
 older_than_minutes() {   # <utc> <minutes>
   om_t="$(epoch_of "$1")"; [ -n "$om_t" ] || return 1
-  [ "$(( $(now_epoch) - om_t ))" -gt "$(( $2 * 60 ))" ]
+  [ "$(( $(date -u +%s) - om_t ))" -gt "$(( $2 * 60 ))" ]
 }
 
 older_than_threshold() {
   st_t="$(epoch_of "$1")"; [ -n "$st_t" ] || return 1
-  [ "$(( $(now_epoch) - st_t ))" -gt "$((STALE_HOURS * 3600))" ]
+  [ "$(( $(date -u +%s) - st_t ))" -gt "$((STALE_HOURS * 3600))" ]
 }
 
 # An object is treated as a PR once some lane has written OPENED on it. That
@@ -14679,16 +8790,6 @@ rows_named_ci_alias() {   # <typed name>
 # is row first and alias second — a name that is a lane today is that lane — and
 # the resolution SAYS SO on stderr, because every act under an old name is an
 # act on a lane the caller did not name.
-# `canon_lane`'S FORMER-NAME NOTE, AS ITS CALLER NEEDS IT (feature 007, T427;
-# lane 3, #165 6779688808, Q22; REV427c N3). Empty, today's note, "reading and
-# writing" the lane it answers. `former`: the note without that clause, for
-# `start-record`, whose `<L>` is the row's own spelling, so an answer in a
-# former name's is always refused next and nothing is read or written under
-# it. `none`: no note, for the router's first ask of a `start-record`, which
-# a second ask after one fetch of W repeats where it matters, so a routed call
-# prints the note once. Set only in the caller's `$( )`, never read from the
-# environment.
-CANON_LANE_NOTE=""
 canon_lane() {   # <typed name>
   cl_want="${1-}"
   [ -n "$cl_want" ] || return 0
@@ -14748,11 +8849,7 @@ canon_lane() {   # <typed name>
     fi
   fi
   if [ "$(lc "$cl_out")" != "$(lc "$cl_want")" ]; then
-    case "${CANON_LANE_NOTE-}" in
-      none) : ;;
-      former) note "'$cl_want' is a FORMER name of lane $cl_out (${LANES_ALIASES_PATH:-lanes/aliases.tsv}, Amendment 16(e))." ;;
-      *) note "'$cl_want' is a FORMER name of lane $cl_out (${LANES_ALIASES_PATH:-lanes/aliases.tsv}, Amendment 16(e)) — reading and writing $cl_out." ;;
-    esac
+    note "'$cl_want' is a FORMER name of lane $cl_out (${LANES_ALIASES_PATH:-lanes/aliases.tsv}, Amendment 16(e)) — reading and writing $cl_out."
   fi
   printf '%s' "$cl_out"
   return 0
@@ -15117,14 +9214,7 @@ rule6_line() {
 # Appends to the lane's log and commits — and for a LANDING or a LANDED
 # appends Rule 6's line to LANES.md in the SAME commit, two pathspecs, so the
 # register and the log can never disagree about a merge hold.
-#
-# ITS FIRST HALF IS `write_event_checks` (feature 007, T427): every test of the
-# line, the line itself, its pathspecs and the lifecycle pre-image, all before
-# the lock and before a byte. It sets `we_*` for the second half. `write_event`
-# runs the two halves in order, unchanged; `start-record` runs the first half
-# alone, so the log line it writes inside its one commit is refused, built and
-# followed exactly as `log` refuses, builds and follows it.
-write_event_checks() {
+write_event() {
   we_lane="$1"; we_verb="$2"; we_obj="$3"; we_ref="$4"; we_pay="$5"; we_txt="$6"; we_utc="$7"; we_uuid="$8"
   # R-A11 (e) — THE `session` FIELD IS A TRANSCRIPT UUID AND ONLY THAT, AND THE
   # WRITER ITSELF IS WHERE THAT IS ENFORCED. Amendment 7(b) says so of the
@@ -15284,10 +9374,6 @@ write_event_checks() {
       we_seam=8
       we_pre="$(lane_state_preimage "$we_lane" "$we_pay")" ;;
   esac
-  return 0
-}
-write_event() {
-  write_event_checks "$@"
   acquire_lock
   # AMENDMENT 23 S3, UNDER THE LOCK AND BEFORE THE LOG IS READ OR CREATED: the
   # fetch, the checks and the fast-forward, so the line is appended to origin's
@@ -15335,383 +9421,6 @@ write_event() {
   # of Amendment 7(i), not a failure.
   lane_state_follow "$we_lane" "$we_verb" "$we_pay" "$we_uuid" "$we_pre" "$we_seam"
   return "$we_rc"
-}
-
-# `add-row`'S TESTS OF THE ROW IT IS GIVEN, every one made before the lock, so a
-# refusal leaves the checkout as it found it: the row's shape, the marker's
-# vocabulary, and, where the row names its lane in backticks, that the name is
-# not RETIRED and has no row under any case, in this checkout or on origin
-# (Amendment 15(a), 19(b)). Sets `lane_new`, the lane the row names. Moved
-# here unchanged from the `add-row` arm (feature 007, T427), so that
-# `start-record --add-row` asks the same tests in the same words and the two
-# refuse the same rows.
-add_row_checks() {   # "<full | row |>"
-  row="${1-}"
-  case "$row" in
-    "| "*) : ;;
-    *) die "a row must start with '| '" 2 ;;
-  esac
-  case "$(rstrip_spaces "$row")" in
-    *"|") : ;;
-    *) die "a row must end with '|'" 2 ;;
-  esac
-  pipes="$(count_occurrences "$row" "|")" || exit 2
-  [ "$pipes" -ge 8 ] || die "a 7-column row needs at least 8 '|' characters, found $pipes" 2
-  if managed_projection_hint "$row"; then
-    die "the new row carries managed-owner vocabulary ('managed owner', 'managed binding', 'mode=managed' or 'managed:'), and only the managed ledger's own writer writes a managed-owner marker, and a legacy writer that wrote its vocabulary into a row would forge that lane's ownership (ruling 2026-10-04: \"managed ledger owns enrolled lanes; #97 owns legacy\"). Nothing was written." 2
-  fi
-  lane_new="$(printf '%s' "$row" | cut -d'`' -f2)"
-  # AMENDMENT 15(a) — A ROW UNDER ANY CASE IS A ROW, AND THE REFUSAL NAMES IT.
-  # This is the act the 2026-09-13 incident got past: `lane-start openxfactory
-  # 2` found no row for `openXfactory-2` and appended a second one for a lane
-  # that already had one. `row_line`'s exactly-one test cannot be the whole
-  # gate here, because two rows differing only by case make it fail for the
-  # OTHER reason and a failed `row_line` used to read as "no row, go ahead".
-  #
-  # AND THE PUBLISHED ROWS ARE ASKED TOO — R19, AND R30's FETCH IN FRONT OF IT
-  # (Copilot round 4 on openRepoTools#41). The scan was of `$LANES_FILE` alone,
-  # which a fetch does not move: on a checkout that is behind, a row `origin`
-  # already carries as `repoCase-1` is invisible here, this appends
-  # `repocase-1`, and the push that follows publishes the pair — the
-  # exact duplicate 15(a) makes this command refuse, arrived at through the one
-  # file the check never read. BOTH sets are asked and either is the refusal:
-  # the local scan stays because a row added here and not yet pushed is on no
-  # `origin` at all, and the published scan is the one the incident needed.
-  if [ -n "$lane_new" ]; then
-    log_sync
-    # AND THE ARCHIVE IS ASKED AS WELL (Amendment 19(b) and (d)). A row
-    # `archive-rows` has moved into `lanes/archive/LANES-retired.md` is still
-    # that lane's row: its object log is `lanes/log/<lane>.md` and that file is
-    # APPEND-ONLY, so a second lane under the same name would write its life
-    # into the first one's file and every read of that log — who held what,
-    # when it was claimed, which session paused it — would answer for two
-    # lanes at once. `next-free` never OFFERS such a position, because it
-    # counts the archive too; this is what refuses one that is typed by hand,
-    # which is the whole of "a retired `<repo>-<n>` is never reissued".
-    # BOTH COPIES OF THE ARCHIVE (Copilot round 1 on #93): `archive_text`
-    # answers with the PUBLISHED file wherever there is one, so a move
-    # committed here and not yet pushed was invisible to this check and its
-    # name came back on offer. The local file is read beside it, exactly as
-    # the row scan below reads `rows_named_ci_local` beside `rows_named_ci`.
-    #
-    # AND A READ THAT FAILED IS A REFUSAL, not an empty archive (round 2): the
-    # whole point of this check is that a retired identity is never reissued,
-    # and "I could not read the file that says which ones are retired" is not
-    # "none of them are" (Amendment 7(d)). NOR IS A LINE IT COULD NOT TAKE
-    # APART (#122): that row may be this lane's own, so it is the same refusal
-    # and the same 1, naming the line.
-    ar_arch_rc=0
-    ar_arch="$(retired_identity_hits "$lane_new")" || ar_arch_rc=$?
-    case "$ar_arch_rc" in
-      0) : ;;
-      3) die "$LANES_ARCH_PATH carries a line this scan cannot take apart (above), so whether '$lane_new' is a name this estate has RETIRED is not known: a row this scan cannot take apart may be that lane's own, and a retired position is never reissued (Amendment 19(b)). A row that could not be read is not a row that is not there (Amendment 7(d)). Put the lane back in backticks in that row's first cell, or remove the line if it is no row; commit the archive (\`git -C $LANES_REPO commit -m \"<what it was>\" -- $LANES_ARCH_PATH\`), publish it where the line is on origin (\`LANES_LANE=<lane> lanes-edit.sh commit \"<what it was>\"\`), and re-run. Nothing was written." 1 ;;
-      *) die "$LANES_ARCH_PATH exists and could not be read or scanned, so whether '$lane_new' is a name this estate has RETIRED is not known — and a retired position is never reissued (Amendment 19(b)). A read that failed is not 'it is not retired' (Amendment 7(d)). Fix the read and re-run; nothing was written." 1 ;;
-    esac
-    if [ -n "$ar_arch" ]; then
-      die "lane '$lane_new' is RETIRED: its row is in $LANES_ARCH_PATH, spelled $(printf '%s\n' "$ar_arch" | tr '\n' ' ')— and a retired position is NEVER REISSUED (Amendment 19(b)). That lane's object log is $(log_path_for "$lane_new") and it is append-only, so a second lane under this name would write its life into the first one's file and every read of that log would answer for two lanes at once. Take a free position instead — \`lanes --prefix <repo>\` prints the next one and the line that takes it. Nothing was written." 2
-    fi
-    ar_hits="$(rows_named_ci_local "$lane_new")"
-    # THE PUBLISHED ROWS ARE READ WITH THEIR STATUS (Copilot round 21 on #93,
-    # #138 item 18). Through `|| :` a register origin has and git could not
-    # read was "no row there", and a row this checkout had not pulled was
-    # appended a second time — and landed, wherever the rebase did not clash.
-    ar_pub=""
-    ar_pub="$(rows_named_ci "$lane_new" 2>/dev/null)" ||
-      die "the published register on origin/$LANES_BRANCH could not be read, so whether '$lane_new' already has a row there is not known — and that is NOT 'it has none' (Amendment 7(d)): a row this checkout has not pulled would be added a second time. Fix the read and re-run; nothing was written." 1
-    ar_all="$(printf '%s\n%s\n' "$ar_hits" "$ar_pub" | grep -v '^$' | LC_ALL=C sort -u || :)"
-    ar_n="$(printf '%s' "$ar_all" | grep -c . || :)"
-    ar_ln="$(printf '%s' "$ar_hits" | grep -c . || :)"
-    if [ "$ar_n" -gt 0 ]; then
-      # A LANE THE MANAGED LEDGER OWNS IS SAID TO BE ONE (Copilot round 3 on
-      # #97) before the duplicate refusal below, which would refuse it anyway
-      # without naming the owner. A new lane has no row and is never asked.
-      managed_seam_refuse "$lane_new" "add-row"
-      ar_more=""
-      [ "$ar_n" -gt 1 ] && ar_more=" Those $ar_n rows differ only by case and are themselves the refusal: merge them into one row first (Amendment 15(d))."
-      ar_where="Use set-row-state / replace-in-row on the row that is there."
-      [ "$ar_ln" = 0 ] && ar_where="That row is on origin/$LANES_BRANCH and not yet in this checkout, so adding one here would make two the moment this push lands. Use set-row-state / replace-in-row on the row that is there: each fast-forwards this checkout to it first (Amendment 23 S3)."
-      die "lane '$lane_new' already has a row, spelled $(printf '%s\n' "$ar_all" | tr '\n' ' ')— a lane name is ONE name under any case (Amendment 15(a)), so a row under another case IS that lane's row and this would be a second one. $ar_where$ar_more" 2
-    fi
-  fi
-  return 0
-}
-
-# THE STATE CELL OF A ROW, SPLIT, OR `set-row-state`'s REFUSAL IN ITS OWN WORDS
-# (2, with nothing written): RSS_HEAD, RSS_CELL and RSS_TAIL are set for the
-# caller's replacement. Moved here unchanged from the `set-row-state` arm
-# (feature 007, T427), so that `start-record --state` refuses the same rows in
-# the same words.
-row_state_split_or_die() {   # <lane> <its line> <its row>
-  rsd_lane="${1-}"; rsd_n="${2-}"; rsd_row="${3-}"
-  srs_rc=0; row_split_state_cell "$rsd_row" || srs_rc=$?
-  case "$srs_rc" in
-    0) : ;;
-    2) die "lane $rsd_lane's row (line $rsd_n) carries $(row_sep_count "$rsd_row") ' | ' separators where a seven-column row carries 6, so WHICH TEXT IS THE STATE CELL is not knowable from the row: read from the left this write lands on one cell, read from the right on another, and one of those readings overwrites the row's handoff path. Nothing was written. A Markdown table carries a literal pipe ESCAPED — \`\\|\` — so find the unescaped ' | ' inside a cell of that row, escape it by hand with an allowed tool, commit it (\`LANES_LANE=$rsd_lane lanes-edit.sh commit \"escape a literal pipe in row $rsd_lane\"\`), and re-run." 2 ;;
-    *) die "lane $rsd_lane's row (line $rsd_n) does not open with '|' and end with '|', so it is not a row this writer can take apart. Nothing was written." 2 ;;
-  esac
-  return 0
-}
-
-# `start-record`'S TAIL, ITS ONE AFTER-COMMIT ACT (feature 007, T427; the
-# design's tails table, Y:2690): the lifecycle snapshot follows the
-# `STARTED` or `RESUMED` line it committed, through `lane_state_follow`, with
-# the pre-image and the seam's verdict `write_event_checks` took before the
-# lock. It runs after the lock, as `write_event` runs it, and only after a
-# commit that returned. THE HOOK FOR "THE TAIL, ONCE" (T418; FR-023;
-# Y:5289–5373): on primary it runs at most once per write id, in the kept child
-# or in a replay, and only with the committing attempt's pre-image. That is
-# T418's to build here, and the tail test is shared with it (lane 3's
-# acceptance, 6752888006).
-start_record_tail() {
-  lane_state_follow "$we_lane" "$we_verb" "$we_pay" "$we_uuid" "$we_pre" "$we_seam"
-}
-
-# `start-record`'S FORM, READ FROM ITS WORDS AS THEY ARRIVED (feature 007, T427;
-# lane 3's ruling 4, #165 6755005268), for `lane_row_gate`, which has no other
-# copy of them: 0 where the call's options hold `--add-row`, the form that makes
-# the lane's row; 1 otherwise. `ORIG_ARGV` is walked as the arm reads it: the
-# leading global flags, the verb, `<L>` and `<STARTED|RESUMED>`, then each option
-# with its own words, so a word that is only another option's text (a why that
-# reads `--add-row`) is not the flag. It also leaves the word after `--add-row`,
-# the row, in SRA_ROW with SRA_ROW_GIVEN=1, for the router's test of it (lane 3,
-# #165 6770733371, new question (a)); an `--add-row` with no word after it
-# leaves SRA_ROW_GIVEN=0, `write_lane_of` does not route that call, and the arm
-# refuses it in its usage words. AND WHAT THE ROUTER'S `--log` TEST NEEDS, for
-# `sr_log_shape_routed` (lane 3, #165 6774499606, T427's question 3; #165
-# 6779688808, Q21), each as the arm's parse takes it: SRA_VERB, the second
-# word after the verb; SRA_LOGS, SRA_ADDS, SRA_STATES and SRA_CELLS, the
-# counts of the four options; SRA_LOG and SRA_PAY, the object and payload of a
-# `--log` with three words after it, the arrow second; and SRA_BAD, the first
-# word the arm's parse would refuse, in its order: `row-short`, `cell-short`
-# or `state-short` (that option with fewer words after it than it takes),
-# `log-short` (fewer than three words after `--log`), `log-arrow`
-# (SRA_BAD_WORD is the word where the arrow should be) or `stray`
-# (SRA_BAD_WORD is a word that is no option).
-sr_argv_adds_row() {
-  SRA_ROW=""; SRA_ROW_GIVEN=0; SRA_LOG=""; SRA_PAY=""; SRA_LOGS=0; SRA_VERB=""
-  SRA_ADDS=0; SRA_STATES=0; SRA_CELLS=0; SRA_BAD=""; SRA_BAD_WORD=""
-  sra_i=0; sra_n=${#ORIG_ARGV[@]}
-  while [ "$sra_i" -lt "$sra_n" ]; do
-    case "${ORIG_ARGV[$sra_i]}" in
-      --no-sweep|--sweep|--no-github) sra_i=$((sra_i + 1)) ;;
-      *) break ;;
-    esac
-  done
-  [ $((sra_i + 2)) -ge "$sra_n" ] || SRA_VERB="${ORIG_ARGV[$((sra_i + 2))]}"
-  sra_i=$((sra_i + 3))
-  while [ "$sra_i" -lt "$sra_n" ]; do
-    case "${ORIG_ARGV[$sra_i]}" in
-      --add-row)
-        SRA_ADDS=$((SRA_ADDS + 1))
-        if [ $((sra_i + 1)) -lt "$sra_n" ]; then
-          if [ "$SRA_ADDS" = 1 ]; then SRA_ROW="${ORIG_ARGV[$((sra_i + 1))]}"; SRA_ROW_GIVEN=1; fi
-        else
-          [ -n "$SRA_BAD" ] || SRA_BAD="row-short"
-        fi
-        sra_i=$((sra_i + 2)) ;;
-      --log)
-        SRA_LOGS=$((SRA_LOGS + 1))
-        if [ $((sra_i + 3)) -ge "$sra_n" ]; then
-          [ -n "$SRA_BAD" ] || SRA_BAD=log-short
-        else
-          case "${ORIG_ARGV[$((sra_i + 2))]}" in
-            '→'|'->') SRA_LOG="${ORIG_ARGV[$((sra_i + 1))]}"; SRA_PAY="${ORIG_ARGV[$((sra_i + 3))]}" ;;
-            *) [ -n "$SRA_BAD" ] || { SRA_BAD=log-arrow; SRA_BAD_WORD="${ORIG_ARGV[$((sra_i + 2))]}"; } ;;
-          esac
-        fi
-        sra_i=$((sra_i + 4)) ;;
-      --append-cell)
-        SRA_CELLS=$((SRA_CELLS + 1))
-        [ $((sra_i + 3)) -lt "$sra_n" ] || [ -n "$SRA_BAD" ] || SRA_BAD="cell-short"
-        sra_i=$((sra_i + 4)) ;;
-      --state)
-        SRA_STATES=$((SRA_STATES + 1))
-        [ $((sra_i + 1)) -lt "$sra_n" ] || [ -n "$SRA_BAD" ] || SRA_BAD="state-short"
-        sra_i=$((sra_i + 2)) ;;
-      *) [ -n "$SRA_BAD" ] || { SRA_BAD=stray; SRA_BAD_WORD="${ORIG_ARGV[$sra_i]}"; }; sra_i=$((sra_i + 1)) ;;
-    esac
-  done
-  [ "$SRA_ADDS" -gt 0 ]
-}
-
-# THE ROUTER ASKS AN `--add-row` CALL'S OWN WORDS WHOLE (lane 3, #165
-# 6779688808, Q21): "The `--add-row` test needs no read, so any `--log` object
-# that is not `lane:<L>` refuses before the clone, with the arm's own words and
-# code"; and ONE COPY OF THEM, THE ARM'S (#165 6780753157, Q49): a call the arm
-# refuses in its parse is refused here in the arm's words, not in the words of
-# a later test, which the row's test was for a call such as `--add-row --log
-# lane:X → p`, whose `--log` is the row. So every refusal the arm makes of the
-# call's words before it reads anything is made here first, in the arm's order
-# from its second word on, and in the arm's words, which are the functions
-# below that the arm calls too: the second word (`sr_form_die`); the options
-# short of their words, a word that is no option, and the counts of
-# `--add-row`, `--state` and `--append-cell` (`sr_form_die`); a `--log` short
-# of its words or with no arrow, as the arm's parse meets it, `--log` not
-# given once, no payload, and an object not of the form `lane:<lane>`
-# (`sr_log_usage_die`). It returns 0 where the call passes all of them, and
-# the caller then asks the row's test and `sr_log_names_lane`, as the arm does;
-# it never returns 1, since nothing the arm refuses first is left to it. (The
-# arm's own first test, that `<L>` and the second word are given, comes before
-# `check_lane_name` there and after it here, which `lane_checkout_enter` calls
-# first for every writer; a lane name that is refused and a second word that is
-# empty at once is the one call that gets the other test's words.) A resume's
-# `--log` test reads `canon_object`, so it stays in the arm.
-sr_log_shape_routed() {   # after sr_argv_adds_row
-  [ -n "$SRA_VERB" ] || die "$SR_USE" 2
-  case "$SRA_VERB" in STARTED|RESUMED) : ;; *) sr_form_die verb "$SRA_VERB" ;; esac
-  case "$SRA_BAD" in
-    '') : ;;
-    log-short) sr_log_usage_die short ;;
-    log-arrow) sr_log_usage_die arrow "$SRA_BAD_WORD" ;;
-    stray) sr_form_die stray "$SRA_BAD_WORD" ;;
-    *) sr_form_die "$SRA_BAD" ;;
-  esac
-  [ "$SRA_LOGS" = 1 ] || sr_log_usage_die count "$SRA_LOGS"
-  { [ "$SRA_ADDS" -le 1 ] && [ "$SRA_STATES" -le 1 ]; } || sr_form_die once
-  { [ "$SRA_STATES" = 0 ] && [ "$SRA_CELLS" = 0 ]; } || sr_form_die mixed
-  [ -n "$SRA_PAY" ] || sr_log_usage_die payload
-  case "$SRA_LOG" in lane:?*) return 0 ;; esac
-  sr_log_usage_die form "$SRA_VERB" "$SRA_LOG"
-}
-
-# `start-record`'S REFUSALS OF ITS OTHER WORDS, one copy of the arm's words for
-# the arm and for the router, which asks an `--add-row` call's words whole
-# before anything is cloned (lane 3, #165 6780753157, Q49): the second word
-# (`verb <word>`); an option short of its words (`row-short`, `cell-short`,
-# `state-short`); a word that is no option (`stray <word>`); `--add-row` or
-# `--state` more than once (`once`); `--add-row` with `--append-cell` or
-# `--state` (`mixed`); and neither `--add-row` nor `--state` (`neither`). Each
-# is 2, with nothing written.
-sr_form_die() {   # verb <word> | row-short | cell-short | state-short | stray <word> | once | mixed | neither
-  case "${1-}" in
-    verb) die "start-record's second word is its log line's verb, STARTED or RESUMED, and '${2-}' is neither. Nothing was written. $SR_USE" 2 ;;
-    row-short) die "--add-row takes the new row as ONE quoted string. Nothing was written. $SR_USE" 2 ;;
-    cell-short) die "--append-cell takes three words: the anchor in the session cell, the text to append to the cell, and why. Nothing was written. $SR_USE" 2 ;;
-    state-short) die "--state takes the phrase as ONE quoted string. Nothing was written. $SR_USE" 2 ;;
-    stray) die "start-record takes --add-row, --append-cell, --state and --log, and '${2-}' is none of them. Nothing was written. $SR_USE" 2 ;;
-    once) die "start-record takes --add-row once and --state once at most; --append-cell is the one word it takes more than once. Nothing was written. $SR_USE" 2 ;;
-    mixed) die "--add-row makes the lane's row, which carries its own session cell and state cell, so it takes neither --append-cell nor --state. Nothing was written. $SR_USE" 2 ;;
-    *) die "start-record makes the lane's row (--add-row) or sets the state of the row that is there (--state, after any --append-cell), and this call does neither. Nothing was written. $SR_USE" 2 ;;
-  esac
-}
-
-# `start-record`'S USAGE, one copy for its arm and for the refusals below,
-# which the router makes too.
-SR_USE="usage: start-record <lane> <STARTED|RESUMED> { --add-row \"<full | row |>\" | [--append-cell \"<anchor>\" \"<text to append>\" \"<why>\"]... --state \"<STATE> · <one line>\" } --log lane:<lane> → \"<payload>\""
-
-# `start-record`'S `--log` REFUSALS OF ITS USAGE, one copy of the arm's words
-# for the arm and for the router, which asks an `--add-row`'s `--log` test
-# whole before anything is cloned (lane 3, #165 6779688808, Q21): three words
-# after `--log`, the arrow second, `--log` once, a payload, and an object of
-# the form `lane:<lane>`. Each is 2, with nothing written.
-sr_log_usage_die() {   # short | arrow <word> | count <n> | payload | form <verb> <object>
-  case "${1-}" in
-    short) die "--log takes three words: lane:<lane>, the arrow, and the payload. Nothing was written. $SR_USE" 2 ;;
-    arrow) die "--log's second word is the arrow that introduces the payload, '→' or '->', and '${2-}' is not it. Nothing was written. $SR_USE" 2 ;;
-    count) die "start-record writes ONE log line, so it takes --log once, and this call gives it ${2-} times. Nothing was written. $SR_USE" 2 ;;
-    payload) die "'→' needs a payload after it" 2 ;;
-    *) die "--log's object is the lane itself, lane:<lane>, since ${2-} is a lane verb, and '${3-}' is not one. Nothing was written. $SR_USE" 2 ;;
-  esac
-}
-
-# `start-record --add-row`'S ROW NAMES `<L>`, BYTE FOR BYTE (feature 007, T427;
-# lane 3, #165 6767463594, question 6). THE TEST READS NOTHING, so it is asked
-# first wherever the call runs: under `LANES_ROUTE_WRITES=1` by the router,
-# before anything is cloned (lane 3, #165 6770733371, new question (a)), and in
-# the arm before `add_row_checks`, in the same words, so a call is refused
-# alike routed or not. The row's lane is the text between its first two
-# backticks, as `add_row_checks` reads `lane_new`. A row that names another
-# lane, or none, is refused because one write is one lane's; a row that names
-# `<L>` in another case is refused for its spelling. 2 either way, with
-# nothing written. A ROW IS ONE LINE, AND THAT IS ASKED FIRST (REV427b, M1):
-# `add_row_checks` reads `lane_new` from every line of the row, so a row with a
-# newline or a carriage return in it could name `<L>` here and another lane
-# there, and get past this test to the lock, where `ensure_log` made a log for
-# the second name before the append refused it. The refusal says this row's
-# own harm, the second row after the break, in lane 3's words (#165
-# 6778890211, T427 new 2).
-sr_row_names_lane() {   # <the row> <L>
-  srn_row="${1-}"
-  if [ "${srn_row//[$'\n\r']/}" != "$srn_row" ]; then
-    die "the row given to --add-row is ONE line, and this one carries a newline or a carriage return: its text after the break would be read as a second row, which can name another lane than '${2-}'. Nothing was written. $SR_USE" 2
-  fi
-  srn_named=""
-  case "${1-}" in *'`'*'`'*) srn_named="${1#*\`}"; srn_named="${srn_named%%\`*}" ;; esac
-  if [ -z "$srn_named" ] || [ "$(lc "$srn_named")" != "$(lc "${2-}")" ]; then
-    srn_says="no lane in backticks"; [ -z "$srn_named" ] || srn_says="lane '$srn_named'"
-    die "the row given to --add-row names $srn_says in its first cell, and start-record's first word is '${2-}': one write is one lane's, so the row, the checkout it goes through and the log line all name the same lane. Nothing was written. $SR_USE" 2
-  fi
-  [ "$srn_named" = "${2-}" ] ||
-    die "the row given to --add-row spells its lane '$srn_named' in its first cell, and start-record's first word is '${2-}': the row names <lane> byte for byte, since LANES_LANE equals it and is the digest's lane as given (Y:5171), so the digest, the pending record, the row and the log line spell one lane alike. Spell the lane alike in the row, the first word and LANES_LANE. Nothing was written. $SR_USE" 2
-}
-
-# A RESUME'S `<L>` IN ANOTHER SPELLING THAN THE ROW'S, REFUSED (feature 007,
-# T427; lane 3, #165 6767463594, question 6): `canon_lane` answered another
-# spelling for `<L>`, an alias's new name included. One copy of the words, for
-# the arm after its fetch and for the router after its fetch of W (#165
-# 6770733371, new question (a)), which passes `routed`: its words name the
-# read that answered and say that nothing was cloned.
-sr_spelling_die() {   # <L> <canon_lane's answer> [routed]
-  ssd_read="the register"; ssd_not=""
-  if [ "${3-}" = routed ]; then
-    ssd_read="the register on origin/$LANES_BRANCH, asked again after a fetch just now into W,"
-    ssd_not=", and nothing was cloned (Amendment 23 S1, S2)"
-  fi
-  die "start-record's first word is '$1', and $ssd_read resolves it to lane '$2': <lane> is the row's own spelling, byte for byte, since LANES_LANE equals it and is the digest's lane as given (Y:5171), so the digest, the pending record, the row and the log line spell one lane alike. Name the lane as its row does (LANES_LANE=$2 $SELF start-record $2 …). Nothing was written$ssd_not. $SR_USE" 2
-}
-
-# `start-record --add-row`'S `--log` OBJECT NAMES `<L>` (feature 007, T427;
-# lane 3, #165 6755005268, T427's question 7): `lane:<L>`, its lane compared
-# without case, as the object a new row's log line is read under. THE TEST
-# READS NOTHING, so, like the row's, it is asked by the router before anything
-# is cloned (lane 3, #165 6774499606, T427's question 3) and by the arm before
-# `add_row_checks`, in the same words. Both callers ask it only of an object of
-# the form `lane:<lane>`, after `sr_log_usage_die`'s tests have passed it.
-sr_log_names_lane() {   # <--log's object> <L>
-  [ "$(lc "${1#lane:}")" = "$(lc "${2-}")" ] ||
-    die "--log names ${1-}, and this write is lane ${2-}'s: its log line is that lane's own, lane:${2-}. Nothing was written. $SR_USE" 2
-}
-
-# `start-record --add-row` FOR A NAME `canon_lane` ANSWERS A LANE FOR (feature
-# 007, T427; lane 3, #165 6774499606, T427's question 3): tasks:1320 makes
-# `<L>` the row's own spelling, so an `--add-row` for which `canon_lane`
-# answers any lane at all exits 2, naming it, routed or not. `canon_lane`
-# answers a lane where a row matches the name under any case, or where the
-# alias table resolves it, a former name's (Amendment 15(a), 16(e)); a name
-# with neither is the miss it hands back as typed, a new lane's.
-#   `sr_add_row_known <L> <canon_lane's answer for it>` is 0 where that answer
-#   is a lane, 1 where it is the miss, and 2 where the read of the rows could
-#   not be made: no answer (R22). An answer in another spelling than `<L>` is
-#   always a lane; one in `<L>`'s own is a lane only where a row has it.
-#   `sr_known_die <L> <answer> [routed]` is the refusal, one copy of the words
-#   for the arm, after `add_row_checks`, and for the router, after its one
-#   fetch of W, which passes `routed`. WHERE THE ANSWER IS A FORMER NAME'S (it
-#   differs from `<L>` under case too, as `canon_lane`'s own note tells them
-#   apart), THE WORDS SAY SO AND NAME BOTH WAYS OUT (REV427c S1): resume that
-#   lane as itself, or take the position `next-free` offers. THE WAY OUT IS
-#   `next-free`'S POSITION (lane 3, #165 6780753157, Q47): `lane_next_free`
-#   counts each alias key of the repository as a taken position, so a former
-#   name is refused for good as a new row and is never the position `next-free`
-#   and `lanes --prefix <repo>` offer. Before that, a rename freed the old
-#   name's position and `next-free` handed it out again, so these words sent
-#   the caller back to the name just refused (REV427c S1). That change is
-#   `lane_next_free`'s own, on code `main` (lane 3, 749e969); it reaches this
-#   branch where this lands, and nothing here changes `lane_next_free`.
-sr_add_row_known() {   # <L> <canon_lane's answer for it>
-  [ "${2-}" = "${1-}" ] || return 0
-  sak_rows="$(rows_named_ci "${1-}" 2>/dev/null)" || return 2
-  [ -n "$sak_rows" ]
-}
-sr_known_die() {   # <L> <canon_lane's answer> [routed]
-  skd_read="the register"; skd_not=""
-  if [ "${3-}" = routed ]; then
-    skd_read="the register on origin/$LANES_BRANCH, asked again after a fetch just now into W,"
-    skd_not=", and nothing was cloned (Amendment 23 S1, S2)"
-  fi
-  if [ "$(lc "${2-}")" != "$(lc "${1-}")" ]; then
-    die "start-record's first word is '$1', a FORMER name of lane '$2' (${LANES_ALIASES_PATH:-lanes/aliases.tsv}, Amendment 16(e)), as $skd_read answers it: --add-row makes the row of a lane the register does not know yet, and a former name stays its lane's. Resume that lane as itself (LANES_LANE=$2 $SELF start-record $2 RESUMED …), or take the position \`next-free\` offers, as \`lanes --prefix <repo>\` prints it. Nothing was written$skd_not. $SR_USE" 2
-  fi
-  die "start-record's first word is '$1', and $skd_read answers lane '$2' for it, by a row under any case or as a former name (Amendment 15(a), 16(e)): --add-row makes the row of a lane the register does not know yet, and this one would be a second row for lane $2. Take the position \`next-free\` offers instead, as \`lanes --prefix <repo>\` prints it. Nothing was written$skd_not. $SR_USE" 2
 }
 
 # A read fetches first — there is no index, so "current" means "after a fetch".
@@ -15799,11 +9508,6 @@ log_sync() {
   fi
   reg_flush
   LOG_SYNC_FETCH=""
-  # FEATURE 007, T413 — UNDER THE INTERNAL FLAG NOTHING IS FETCHED (Y:5040):
-  # the scratch tree's `origin/<branch>` is the register at the snapshot's seq,
-  # as fresh as a fetch, so no `ls-remote` and no fetch, and `yes`, under which
-  # `retire-rows`, `archive-rows` and every verb that fetches go on.
-  [ -z "$REG_SCRATCH" ] || { LOG_SYNC_FETCH=yes; return 0; }
   [ "$NO_GIT" = 1 ] && { LOG_SYNC_FETCH="LANES_NO_GIT=1 is set, so nothing in this run touches git"; return 0; }
   [ "${LANES_NO_FETCH:-0}" = 1 ] && { LOG_SYNC_FETCH="LANES_NO_FETCH=1 is set in this environment"; note "LANES_NO_FETCH=1 — not fetching; reading origin/$LANES_BRANCH as the ref already stands here"; cs_seen_mark; return 0; }
   git -C "$LANES_REPO" rev-parse --git-dir >/dev/null 2>&1 || { LOG_SYNC_FETCH="$LANES_REPO is not a git checkout"; return 0; }
@@ -15914,24 +9618,18 @@ who_object() {
   fi
   printf 'object   %s\n' "$wo_obj"
   wo_held=0
-  # ONE CLOCK PER PRINTED BLOCK: every age this block prints takes `now_epoch`,
-  # the `super.`, `HOLDS` and `closed` lines as well as the stale lines below.
-  # `claim`'s refusal prints this block in the child under feature 007's
-  # internal flag, where `now_epoch` is the snapshot's clock; with no flag it is
-  # the host's, which `age_of` alone reads, so the bytes are unchanged (lane
-  # openRepoTools-3's ruling, #165 6767463594, delta question 5; T413).
   while IFS="$US" read -r s_utc s_lane s_verb s_uuid s_ws s_o s_ref s_pay s_txt s_file s_line; do
     [ -n "${s_verb:-}" ] || continue
     wo_sup="$(superseded_by "$wo_obj" "$s_lane" "$s_verb")"
     if [ -n "$wo_sup" ]; then
       printf 'super.   lane %-22s %-9s %s (%s ago) — superseded by TAKEOVER (lane:%s) at %s\n' \
-        "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc" "$(now_epoch)")" "${wo_sup%@*}" "${wo_sup#*@}"
+        "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc")" "${wo_sup%@*}" "${wo_sup#*@}"
       printf '         this lane no longer holds it; it closes its own line with: lanes-edit.sh release %s "taken over by %s"\n' "$wo_obj" "${wo_sup%@*}"
     elif is_open_verb "$s_verb"; then
-      printf 'HOLDS    lane %-22s %-9s %s (%s ago)%s\n' "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc" "$(now_epoch)")" "${s_pay:+ ${s_ref:-} $s_pay}"
+      printf 'HOLDS    lane %-22s %-9s %s (%s ago)%s\n' "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc")" "${s_pay:+ ${s_ref:-} $s_pay}"
       wo_held=1
     else
-      printf 'closed   lane %-22s %-9s %s (%s ago)%s\n' "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc" "$(now_epoch)")" "${s_pay:+ ${s_ref:-} $s_pay}"
+      printf 'closed   lane %-22s %-9s %s (%s ago)%s\n' "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc")" "${s_pay:+ ${s_ref:-} $s_pay}"
     fi
     # A line written with --no-github is not yet a Rule 1 claim: the comment a
     # person outside this estate reads does not exist.
@@ -15959,14 +9657,14 @@ EOF
     # abandoned", and Rule 6 governing a PR) leave a claim past the threshold
     # and NOT stale, and neither was named.
     if [ "$s_verb" = CLAIMED ] && claim_is_stale "$s_lane" "$wo_obj" "$s_utc" "$s_file" "$s_line"; then
-      printf '  stale    YES — claimed %s ago with no OPENED naming it, past the %sh threshold; a takeover is allowed (claim --force)\n' "$(age_of "$s_utc" "$(now_epoch)")" "$STALE_HOURS"
+      printf '  stale    YES — claimed %s ago with no OPENED naming it, past the %sh threshold; a takeover is allowed (claim --force)\n' "$(age_of "$s_utc")" "$STALE_HOURS"
     elif [ "$s_verb" = CLAIMED ]; then
       if ! older_than_threshold "$s_utc"; then
-        printf '  stale    no — %s old, threshold %sh\n' "$(age_of "$s_utc" "$(now_epoch)")" "$STALE_HOURS"
+        printf '  stale    no — %s old, threshold %sh\n' "$(age_of "$s_utc")" "$STALE_HOURS"
       elif object_is_pr "$wo_obj"; then
-        printf '  stale    no — %s old, past the %sh threshold, but this object is a PR: Rule 6'"'"'s thirty minutes govern it, not Rule 1'"'"'s hours\n' "$(age_of "$s_utc" "$(now_epoch)")" "$STALE_HOURS"
+        printf '  stale    no — %s old, past the %sh threshold, but this object is a PR: Rule 6'"'"'s thirty minutes govern it, not Rule 1'"'"'s hours\n' "$(age_of "$s_utc")" "$STALE_HOURS"
       else
-        printf '  stale    no — %s old, past the %sh threshold, but lane %s has since written an OPENED naming it (Rule 1: a claim followed by a PR is not abandoned)\n' "$(age_of "$s_utc" "$(now_epoch)")" "$STALE_HOURS" "$s_lane"
+        printf '  stale    no — %s old, past the %sh threshold, but lane %s has since written an OPENED naming it (Rule 1: a claim followed by a PR is not abandoned)\n' "$(age_of "$s_utc")" "$STALE_HOURS" "$s_lane"
       fi
     fi
     print_holder_detail "$s_lane" "$wo_obj"
@@ -16164,56 +9862,6 @@ BEGIN {
 }
 END { for (k in ST) printf "%s%c%s%c%s%c%s%c%s%c\n", ST[k], 31, L[k], 31, P[k], 31, U[k], 31, R[k], 31 }'
 
-# FEATURE 007, T425 — RULE 6 ON PRIMARY: A `LANDING EXPIRED` CLOSES THE LANDING
-# IT NAMES (F13; Y:5120–5138; lane 3's R45). On primary the register releases a
-# LANDING past Rule 6's thirty minutes on Brett's word, by the line
-# `append-line --landing-expired` composes (`append_line_landing_expired`,
-# above), and the database closes that LANDING's slot. Unchanged, this
-# program would go on listing the released LANDING, marked STALE, and a
-# script that gates on `who --landing` would block where `main` is free. One
-# flag fixes that on primary.
-#
-# THE FLAG, `RULE6_PRIMARY`: a shell variable, never exported, set empty here,
-# beside the program, so an inherited value never counts (it is unset first,
-# so a value in the environment is neither read nor passed on). One helper,
-# `rule6_primary_on`, sets it to 1 and appends `RULE6_EXPIRED_AWK` to
-# `RULE6_AWK`, once. R45's one line at the dispatcher calls it, where this
-# process's one mode answer is primary (see there). Off primary `RULE6_AWK` is
-# byte-identical to the program above, so files mode, index mode and an
-# unconfigured workstation read Rule 6 exactly as before, and after a rollback
-# to files `who --landing` lists a released LANDING again, marked STALE.
-#
-# THE BRANCH, `RULE6_EXPIRED_AWK`, is Y:5127–5137 verbatim. It pairs as
-# `LANDED` pairs, by lane and PR, the repository through the same alias table
-# (`canon`); the lane is the `for lane` name, compared exactly. Unlike
-# `LANDED`, it closes only the holder's open LANDING for that PR and that
-# repository: it never falls back to the group's latest LANDING, and prints no
-# `UNPAIRED` row. A line it cannot pair closes nothing, so the reader errs
-# toward blocked. It does not test the window, which F13's check did at the
-# commit. A later LANDING by the holder on that PR and repository opens again,
-# as after `LANDED`, and `who_landing` lists only LANDING rows, so an `EXPIRED`
-# row is never printed. The program above never reads such a line: its rule is
-# `^(LANDING|LANDED) — `, and `LANDING EXPIRED — ` has a word between.
-unset RULE6_PRIMARY; RULE6_PRIMARY=""
-RULE6_EXPIRED_AWK='
-/^LANDING EXPIRED — / {
-  line = $0
-  if (!match(line, /for lane [A-Za-z0-9._-]+/)) next
-  lane = substr(line, RSTART + 9, RLENGTH - 9)
-  pr = ""; repo = ""
-  if (match(line, /PR #[0-9]+/))                      pr   = substr(line, RSTART + 4, RLENGTH - 4)
-  if (match(line, /into [A-Za-z0-9\/._-]+ main/))     repo = canon(substr(line, RSTART + 5, RLENGTH - 10))
-  if (pr == "" || repo == "") next
-  k = lane "\037" pr "\037" tolower(repo)
-  if ((k in ST) && ST[k] == "LANDING") { ST[k] = "EXPIRED"; O[k] = NR }
-  next
-}'
-rule6_primary_on() {
-  [ -z "$RULE6_PRIMARY" ] || return 0
-  RULE6_PRIMARY=1
-  RULE6_AWK="$RULE6_AWK$RULE6_EXPIRED_AWK"
-}
-
 # Rule 6's window, in minutes. A LANDING past it with no LANDED is still a
 # line somebody wrote and is still listed — but it is marked, because reporting
 # a 253-day-old LANDING as a live merge hold with nothing to say it is not one
@@ -16280,7 +9928,7 @@ who_landing() {
     [ "$(lc "$wd_c")" = "$(lc "$wd_repo")" ] || continue
     wd_stale=""
     older_than_minutes "$wd_utc" "$LANDING_MINUTES" && wd_stale="  STALE (Rule 6: >${LANDING_MINUTES} min)"
-    printf 'LANDING  %s#%s  lane %s, %s (%s ago)%s\n' "$wd_repo" "$wd_pr" "$wd_lane" "$wd_utc" "$(age_of "$wd_utc" "$(now_epoch)")" "$wd_stale"
+    printf 'LANDING  %s#%s  lane %s, %s (%s ago)%s\n' "$wd_repo" "$wd_pr" "$wd_lane" "$wd_utc" "$(age_of "$wd_utc")" "$wd_stale"
     wd_n=$((wd_n + 1))
   done <<EOF
 $wd_rows
@@ -20210,31 +13858,6 @@ binding_facts() {   # <lane> <host> <container> <window> <utc> <session> <window
     "$1" "${4:-none}" "${3:-none}" "${2:-unknown}" "${6:-unknown}" "${5:-unknown}" "${7:-unknown}"
 }
 
-# FEATURE 007, T423 — `request-handoff`'S TAIL RUNS ONLY AFTER `committed`
-# (FR-024: every side effect outside the register runs after the seam; F14,
-# Y:5153; Y:5011–5012; lane openRepoTools-4's block, T423). On primary each
-# attempt's verb runs as a child under the internal flag, and `write_event`
-# returns into the arm once the seam has said `committed <s>`, which sets
-# `REGISTER_SEQ` (T414). Two ways back reach the arm with nothing committed:
-# `LANES_NO_GIT=1`, whose `commit_publish` returns 0 above the seam's branch,
-# and a seam that found nothing staged. Either way this child made no commit
-# call, so what follows the write in the arm, the pane, the wait, and the words
-# that say a request was written or a binding forced, would act on a line that
-# is not in the register. The child ends here instead, before any of it, with
-# `pw_pre_rc`'s 64, as T415's `pw_no_git_refuse` does: nothing was sent and
-# nothing is known about the binding (Q35; lane openRepoTools-3, #165
-# 6807881675, batch c Q75). B14 tasks:1286's "Exit 2 where none of its tail
-# ran" stays for the binding's 2 after `committed`; this is not that 2. Its
-# parent takes it as a child that ended before `ready`: no commit call, and
-# the child's output and code are the run's end (Y:5016). It is a backstop that
-# no input reaches now, since T415's `pw_no_git_refuse` refuses LANES_NO_GIT=1
-# in the parent before its claim (review REV-W9f, N2). Off the flag
-# `REG_SCRATCH` is empty, and this returns at once.
-rh_after_committed() {   # <what the write was: the request, or the forced release>
-  [ -z "$REG_SCRATCH" ] || [ -n "$REGISTER_SEQ" ] ||
-    die "request-handoff's ${1-write} returned in an attempt's child under LANES_REGISTER_SCRATCH without its seam's \`committed\` (LANES_NO_GIT=1 in this environment, though the parent's \`pw_no_git_refuse\` refuses that flag before its claim, or nothing staged), so this child made no commit call. Nothing after the seam runs: no pane is typed into, nothing is waited for, and nothing is said to be written (FR-024; Y:5011). It is an internal error of the write path. Nothing was sent." "$(pw_pre_rc)"
-}
-
 # The UTC of the lane's last `STARTED` or `RESUMED` — Amendment 18(b)'s BINDING,
 # read from the lane's own log out of `origin/<branch>` like every other state
 # read. Clause (h) rule 2 compares a record's `nameSince` against it: a rename
@@ -20281,11 +13904,6 @@ lane_binding_utc() {   # <lane>
 guard_type() {   # <pane target> <the line to type>
   gt_pane="${1-}"; gt_text="${2-}"
   [ -n "$gt_text" ] || return 1
-  # A REPLAY TYPES INTO NO PANE (feature 007, T418; Y:5326): the pane may hold
-  # another session by then, so in a replay's child nothing is typed, and the
-  # request travels in the register, as it does where no pane is live. T423
-  # gives `request-handoff`'s own words for it.
-  [ "$REG_REPLAY" != 1 ] || return 1
   command -v tmux >/dev/null 2>&1 || return 1
   # THE RECORD'S PANE, ELSE THIS ONE — AND THIS ONE IS THE RIGHT FALLBACK
   # BECAUSE OF WHERE THIS CODE RUNS. The pane comes from the live record's
@@ -23218,40 +16836,7 @@ sibling_filter() {   # <object> [pr|branch]; candidate lines on stdin
     | grep -E -- "(^|[^0-9A-Za-z])$sfl_q([^0-9A-Za-z]|\$)" || :
 }
 
-# FEATURE 007, T413 — UNDER THE INTERNAL FLAG RULE 1'S READS ARE MADE ONCE A
-# RUN (Y:5043): cached in the run's directory, `<d>/<run>/`, which every attempt
-# of the run shares. They decide nothing (R2A §2c), and three GitHub calls an
-# attempt, 55 attempts in a burst of ten, would spend the shared REST quota.
-# Keyed by the object's sha256, written by a temporary file and `mv`, and
-# only where the reads ended 0; a cached answer is printed byte for byte.
-# Where the flag's take found no run directory this file may write in
-# (`REG_SCRATCH_RUN`), and under `--no-github`, the reads are made as they are
-# without the flag (`gh_reads_live`).
-gh_reads() {   # <object>
-  if [ -n "$REG_SCRATCH_RUN" ] && [ "$NO_GITHUB" != 1 ]; then
-    gh_reads_cached "$1"
-    return $?
-  fi
-  gh_reads_live "$1"
-}
-gh_reads_cached() {   # <object>
-  grc_k="$(printf '%s' "$1" | wr_sha256_stdin)" || grc_k=""
-  if [ -z "$grc_k" ]; then gh_reads_live "$1"; return $?; fi
-  grc_f="$REG_SCRATCH_RUN/gh-reads.$grc_k"
-  if [ -f "$grc_f" ] && [ ! -L "$grc_f" ] && [ -O "$grc_f" ]; then
-    cat -- "$grc_f"
-    return 0
-  fi
-  grc_t="$(mktemp "$REG_SCRATCH_RUN/.gh-reads.XXXXXX" 2>/dev/null)" || grc_t=""
-  if [ -z "$grc_t" ]; then gh_reads_live "$1"; return $?; fi
-  grc_rc=0
-  gh_reads_live "$1" > "$grc_t" || grc_rc=$?
-  cat -- "$grc_t"
-  if [ "$grc_rc" = 0 ] && mv -f -- "$grc_t" "$grc_f" 2>/dev/null; then return 0; fi
-  rm -f -- "$grc_t"
-  return "$grc_rc"
-}
-gh_reads_live() {   # <object>
+gh_reads() {
   gr_obj="$1"; gr_repo="$(object_repo "$gr_obj")"; gr_n="$(object_number "$gr_obj")"; gr_slug="$(object_slug "$gr_obj")"
   gr_term="${gr_n:+#$gr_n}"; gr_term="${gr_term:-$gr_slug}"
   if [ "$NO_GITHUB" = 1 ]; then
@@ -23296,38 +16881,6 @@ gh_comment() {
   printf '%s\n' "$gc_url"
 }
 
-# FEATURE 007, T421 — `claim`'S AND `release`'S COMMENTS RUN ONLY IN THE TAIL
-# (F14, Y:5146–5152; Y:5066). In an attempt's child each verb's comment, and
-# `claim`'s line naming what it wrote, follow its `write_event`, whose
-# `commit_publish` waits at the seam (T414) and returns 0 on `committed <s>`
-# with `REGISTER_SEQ` set: so they run once, after COMMIT. Two ways return 0
-# with no `committed`: `LANES_NO_GIT=1`, which `commit_publish` and
-# `checkout_sync` answer before they test the flag, and the seam's "nothing
-# staged", which neither verb meets, since each appends a line. Either would
-# post a comment for a write the register does not hold. So under the flag,
-# with no seq, the verb stops here: an internal error, 2, before `ready`, so
-# nothing is sent; a backstop that no input reaches now, since T415's
-# `pw_no_git_refuse` refuses LANES_NO_GIT=1 in the parent before its claim
-# (review REV-W9f, N2). Files mode never stops here: `REG_SCRATCH` is empty.
-reg_tail_committed() {   # <verb>
-  [ -z "$REG_SCRATCH" ] || [ -n "$REGISTER_SEQ" ] ||
-    die "refusing to run ${1}'s steps after its write in an attempt's child under LANES_REGISTER_SCRATCH: the write took no \`committed <seq>\` from the seam (it reached the seam with nothing staged, or never reached it: LANES_NO_GIT=1 stops it before the seam, though the parent's \`pw_no_git_refuse\` refuses that flag before its claim), so its GitHub comment would speak for a write the register does not hold. An internal error of the write path. Nothing was sent." 2
-}
-
-# FEATURE 007, T421 — CLAIM-LOST IS UNREACHABLE ON PRIMARY (FR-031; Y:3349–3354,
-# Y:5080, Y:5089, Y:5095). Its two functions below run only on 1b's re-run,
-# the `exec` that a refused push or S3's `cs_recheck` makes (`CP_REPLAYING`),
-# and an attempt's child makes neither: the seam stands where the push was
-# (T414), and S3 is skipped whole under the flag (T413). On primary the race
-# is the commit's: the loser's next attempt reads the winner's line on its
-# snapshot, and `claim`'s own check refuses it with 2, writing nothing
-# (Q12(a)). So under the flag each function asserts it was not reached, as an
-# internal error, 2, before `ready`: nothing is sent.
-claim_lost_unreachable() {   # <the function reached>
-  [ -z "$REG_SCRATCH" ] ||
-    die "refusing to run ${1} in an attempt's child under LANES_REGISTER_SCRATCH: CLAIM-LOST is never written on primary, where a claim that loses its race is the register's refusal, 2, with nothing written (Q12(a)), and only 1b's re-run after a refused push reaches ${1}, which a child never makes. An internal error of the write path. Nothing was sent." 2
-}
-
 # The check a `claim` replay runs first (Amendment 23 S4), on origin's new tip.
 # If another lane's CLAIMED or TAKEOVER on this object is on the rebased
 # history, THEIRS LANDED FIRST and this claim has lost. Git's push
@@ -23367,7 +16920,6 @@ EOF
 }
 
 claim_rescan_hook() {
-  claim_lost_unreachable claim_rescan_hook   # feature 007, T421: never on primary
   CLAIM_WINNER=""
   # AMENDMENT 23 S4: THE REPLAY'S FIRST CHECK. This claim's push was refused,
   # its commit dropped, and origin's new tip fetched — so OUR line is not on
@@ -23465,7 +17017,6 @@ EOF
 # `claim_rescan_hook`, and the CLAIM-LOST line is the only one of this claim's
 # that reaches origin: the CLAIMED or TAKEOVER commit was dropped.
 claim_lost_write() {   # <7|9> <lane> <object> <uuid>
-  claim_lost_unreachable claim_lost_write   # feature 007, T421: never on primary
   clw_rc="$1"; clw_lane="$2"; clw_obj="$3"; clw_uuid="$4"
   # "ALIVE AGAIN" ONLY WHERE IT WAS SEEN (Copilot on 05d7889, PR #61):
   # `claim_rescan_hook` sets `CLAIM_ABANDON_REVIVED` for a confirmed revival — a
@@ -23976,22 +17527,6 @@ EOF
         fi
         if mig_is_ruling "$msc_e"; then msc_verb=RULED; msc_ruled=$((msc_ruled + 1))
         else                            msc_verb=NOTED; msc_noted=$((msc_noted + 1)); fi
-        # UNDER FEATURE 007'S FLAG, WHOLE SECONDS (T413; lane
-        # openRepoTools-3's ruling, #165 6834224496, question 2). On primary
-        # `log_lines`' CHECK takes a line's UTC only as `YYYY-MM-DDTHH:MM:SSZ`
-        # (Y:1217–1219), and D13 (Y:528–530) composes a line's time in whole
-        # seconds, so a minute-only time, the entry's own `HH:MMZ` lead or its
-        # row's `started` cell as `T00:00Z` or `HH:MMZ` (`mig_started_utc`),
-        # gets `:00`, which says nothing the minute did not. It is done here,
-        # after the entry's text was cut past its lead, so `mig_lead_utc`'s
-        # answer, which that cut and `mig_strip_lead` compare as text, is
-        # unchanged, and the text keeps every byte. Files mode writes the
-        # minute as it always has.
-        if [ -n "$REG_SCRATCH" ]; then
-          case "$msc_eutc" in
-            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]Z) msc_eutc="${msc_eutc%Z}:00Z" ;;
-          esac
-        fi
         printf '%s — lane %s, session %s@%s, %s, lane:%s — %s\n' \
           "$msc_verb" "$msc_lane" "$msc_uuid" "$msc_ws" "$msc_eutc" "$msc_lane" "$msc_text" >> "$msc_tmp/block/$msc_n"
         msc_en=$((msc_en + 1)); msc_lines=$((msc_lines + 1))
@@ -25963,40 +19498,11 @@ lane_state_put() {   # <root> <lane> <state> <gen> <op> <owner> <agent> <profile
 # a delayed act whose lane has moved on since*. A lane with no control root
 # answers the same `none/0/none` a lane with no snapshot does: nothing to
 # compare, and nothing to overwrite either.
-#
-# FEATURE 007, T418 (Y:5323): in an attempt's child, each answer is RECORDED in
-# its attempt's directory, `preimages/<lane>`, and in a replay (`REG_REPLAY`)
-# the answer is the committing call's, from that file, and none is read
-# afresh: with a fresh pre-image the follow-up's fence would pass and move the
-# lane's `generation` again (Y:5358). An answer the call did not record, or a
-# lane whose name cannot be a file's, is empty, which `lane_state_follow`
-# reads as "write nothing". A record that cannot be written is left out, so its
-# replay writes nothing too.
 lane_state_preimage() {   # <lane> <payload>
-  lsp_root=""; lsp_prc=0; lsp_k=""; lsp_a=""
-  if [ -n "$REG_SCRATCH" ]; then
-    case "${1-}" in
-      ''|*[!A-Za-z0-9._-]*|.*|-*) : ;;
-      *) lsp_k="$REG_SCRATCH/preimages/$1" ;;
-    esac
-    if [ "$REG_REPLAY" = 1 ]; then
-      if [ -n "$lsp_k" ] && [ -f "$lsp_k" ]; then
-        { IFS= read -r lsp_a || :; } < "$lsp_k" 2>/dev/null
-      fi
-      printf '%s\n' "$lsp_a"
-      return 0
-    fi
-  fi
+  lsp_root=""; lsp_prc=0
   lsp_root="$(lane_control_root "${1-}" "${2-}")" || lsp_prc=$?
-  if [ "$lsp_prc" = 0 ]; then
-    lsp_a="$(lane_state_fingerprint "$lsp_root/lane-state.yaml")"
-  else
-    lsp_a="none/0/none"
-  fi
-  if [ -n "$lsp_k" ]; then
-    ( umask 077 && mkdir -p -- "$REG_SCRATCH/preimages" && printf '%s\n' "$lsp_a" > "$lsp_k" ) 2>/dev/null || :
-  fi
-  printf '%s\n' "$lsp_a"
+  [ "$lsp_prc" = 0 ] || { printf 'none/0/none\n'; return 0; }
+  lane_state_fingerprint "$lsp_root/lane-state.yaml"
 }
 
 # THE LINE THAT WAS WRITTEN IS WHAT MOVES THE SNAPSHOT, and this is where the
@@ -26157,588 +19663,6 @@ lane_state_rename() {   # <the old name's control root> <new lane>
     note "the lane lifecycle snapshot and inventory could NOT be moved from $lsn_old to $lsn_to (the rename itself has landed). Move it by hand; until then \`lanes-edit.sh lane-reconcile $lsn_new\` reads no snapshot for this lane."
   fi
   return 0
-}
-
-# FEATURE 007, T422 — `rename-lane` ON PRIMARY UNDER Q13(a) (Y:3444–3451,
-# Y:5092; spec:368–376; lane 3's R18 and R19). The register's transaction
-# comes first: an attempt's child (T413–T415) commits the row's key cell, the
-# log's move and `RENAMED` line, and `lanes/aliases.tsv` as one journal entry,
-# with the row's handoff column already naming the handoff's new path. The
-# handoff's move and Rule 3 stamp follow, after `committed`: the PARENT makes
-# them outside the flag, as a git commit in the lane's checkout `<c>` under
-# Amendment 23's S3 and S4, which is no register write (R18; review M5), and
-# the renderer never moves the handoff. A move that fails leaves the row's
-# column naming the file not yet moved (spec:372–376).
-#
-# THE CHECKOUT THE HANDOFF IS READ IN, into `rl_hrepo`: `LANES_REPO` off the
-# flag, as it always was; under it, `<c>`, the lane's own checkout by its name
-# (`lane_checkout_path`), which the parent's `pw_checkout` names from the same
-# lane and requires to be there (R17). The scratch tree holds no handoff
-# (Y:5050). A `<c>` that is not there is an internal error, 2, nothing sent.
-rl_handoff_repo() {   # <the old name, as the row spells it>
-  rl_hrepo="${LANES_REPO:-}"
-  [ -n "$REG_SCRATCH" ] || return 0
-  rl_hrepo="$(lane_checkout_path "$1")" || rl_hrepo=""
-  [ -n "$rl_hrepo" ] && [ -d "$rl_hrepo" ] ||
-    die "refusing to rename lane $1 in an attempt's child under LANES_REGISTER_SCRATCH: its own register checkout, ${rl_hrepo:-<no workspace>}, is not here, and on primary the handoff its row names is read there before anything is sent, and moved and stamped there after the register commits (Q13(a); Y:5092). Its parent requires that checkout before the first attempt, so this is an internal error of the write path. Nothing was sent." 2
-}
-
-# ONE HANDOFF PATH AGAINST THE SET #162 KEEPS OUT OF EVERY WORKSPACE COMMIT
-# (`bytecode_in_pathspec`'s, asked of the path's own parts), and its refusal
-# before the seam: 2, nothing sent. The one copy of the set and the words,
-# for a first run (`rl_move_refuse_checks`; lane 4's REV422c N1) and for the
-# rerun (`rl_rerun`; REV-W8b N4), so the two refuse alike.
-rl_cache_part_refuse() {   # <the row's lane> <its handoff cell> <the path> <its checkout>
-  local cpr_c=""
-  cpr_c="$(printf '%s\n' "$3" | LC_ALL=C awk '{ n = split($0, part, "/")
-    for (i = 1; i <= n; i++)
-      if (part[i] == "__pycache__" || part[i] == ".pytest_cache" || part[i] == ".mypy_cache" ||
-          part[i] == ".ruff_cache" || part[i] == "node_modules" || part[i] == ".venv" ||
-          part[i] == "venv" || part[i] == "site-packages") { print part[i]; exit }
-    if ($0 ~ /\.py[co]$/) print $0 }')"
-  [ -z "$cpr_c" ] ||
-    die "lane $1's row names the handoff '$2', which is $3 in its checkout $4, a path with a cache, bytecode or environment part ($cpr_c) that no workspace commit carries (opensoft/openRepoTools#162). On primary the register commits this rename first, and the handoff's move and Rule 3 stamp follow as a git commit in that checkout, which would refuse it after COMMIT, so this move could never be made (Y:5138). Move that handoff to a path without one in a commit of its own, point the row's handoff column at it (replace-in-row), and re-run. Nothing was sent." 2
-}
-
-# THE REFUSALS ONLY PRIMARY MAKES, before the seam (Y:5092), for a handoff
-# the row names and `<c>` holds (`rl_h_touch`): each path under `handoffs/`,
-# since the move's push on primary sends nothing else (T420's backstop;
-# spec:183–185; R16 (d)); no cache, bytecode or environment component in
-# either path (`rl_cache_part_refuse`), the set #162 keeps out of every
-# workspace commit (`bytecode_in_pathspec`), which the move's own commit
-# would refuse after COMMIT, so a handoff that cannot be moved and stamped
-# refuses before anything is sent (Y:5138; lane 4's REV422c N1); and no
-# pending change to either path in `<c>`, which the move's own S3 step 4
-# would refuse after COMMIT. 2, nothing sent.
-# A LISTING GIT CANNOT MAKE IS NO ANSWER: `cs_pending_of --rc` returns git's
-# status, taken here before the list is piped into `tr`, and where it is not
-# 0 the rename refuses with 2, naming the read and its code, before the seam.
-# Until then a failed listing read as "no pending change", so the rename
-# committed and the move failed after COMMIT (lane openRepoTools-3, #165
-# 6814531692, batch h Q124, by Q114's reason).
-rl_move_refuse_checks() {
-  rmr_p=""; rmr_hits=""; rmr_rc=0; rmr_c=""
-  for rmr_p in "$rl_h_rel" "$rl_h_rel_new"; do
-    case "$rmr_p" in
-      handoffs/?*) : ;;
-      *) die "lane $rl_old's row names the handoff '$rl_hcell', which is $rmr_p in its checkout $rl_hrepo and not a file under handoffs/. On primary the register commits this rename first, and the handoff's move and Rule 3 stamp follow as a git commit in that checkout, whose push sends only changes under handoffs/ (Q13(a); D10; spec:183–185), so this move could never be published. Move that handoff under handoffs/<estate>/ in a commit of its own, point the row's handoff column at it (replace-in-row), and re-run. Nothing was sent." 2 ;;
-    esac
-    rl_cache_part_refuse "$rl_old" "$rl_hcell" "$rmr_p" "$rl_hrepo"
-  done
-  [ "$NO_GIT" != 1 ] || return 0
-  rmr_hits="$(LANES_REPO="$rl_hrepo" cs_pending_of --rc "$rl_h_rel" "$rl_h_rel_new")" || rmr_rc=$?
-  if [ "$rmr_rc" != 0 ]; then
-    rmr_c="$(printf '%q' "$rl_hrepo") diff --name-only HEAD -- $(printf '%q' "$rl_h_rel") $(printf '%q' "$rl_h_rel_new")"
-    die "refusing to rename lane $rl_old on primary: git could not list the uncommitted changes to the handoff its row names in its checkout $rl_hrepo: \`git -C $rmr_c\` exited $rmr_rc. So whether that handoff holds a change is not known, and a read that failed is never 'no pending change' (Amendment 7(d)): on primary the register commits this rename first, and the handoff's move and Rule 3 stamp follow as a git commit in that checkout, whose S3 would refuse such a change after COMMIT (Amendment 23 S3 step 4). Fix the read, then re-run. Nothing was sent." 2
-  fi
-  rmr_hits="$(printf '%s\n' "$rmr_hits" | tr '\n' ' ')"
-  [ -z "${rmr_hits// /}" ] ||
-    die "the handoff lane $rl_old's row names holds an uncommitted change in its checkout $rl_hrepo: ${rmr_hits}— and on primary its move and Rule 3 stamp are a commit by pathspec in that checkout once the register has committed this rename, which would carry that change under the rename's subject, so its S3 would refuse it then, after COMMIT (Amendment 23 S3 step 4). Read it: git -C $rl_hrepo diff HEAD. Whoever made it commits it first, as its own write (\`handoff(<lane>@<workstation>): <what>\`), and re-run. Nothing was sent." 2
-}
-
-# RULE 3'S STAMP, BUILT AND PROVEN (Amendment 16(d)): the line goes under the
-# handoff's header block, at the first blank line after its first, and taking
-# it back out must give the file back byte for byte. Into `rl_hat`, the line
-# it follows, and `rl_htmpd`, a temporary directory holding `pre` (the file)
-# and `out` (the stamped copy), which the caller removes. A file that cannot
-# be read, or that cannot take the stamp, is 5, in files mode's own words.
-rl_stamp_build() {   # <the handoff> <the stamp>
-  rl_hat="$(awk 'NR > 1 && /^[[:space:]]*$/ { print NR; exit }' "$1" 2>/dev/null || :)"
-  [ -n "$rl_hat" ] || rl_hat=1
-  rl_htmpd="$(mktemp -d)" || die "no temporary directory could be made under ${TMPDIR:-/tmp} for the handoff's Rule 3 stamp." 1
-  cat -- "$1" > "$rl_htmpd/pre" 2>/dev/null || { rm -rf -- "$rl_htmpd"; die "the handoff at $1 could not be read, so Rule 3's stamp cannot be written and this rename is not made without it." 5; }
-  { head -n "$rl_hat" -- "$rl_htmpd/pre"
-    printf '%s\n' "$2"
-    tail -n "+$((rl_hat + 1))" -- "$rl_htmpd/pre"
-  } > "$rl_htmpd/out"
-  if [ "$(sed -n -e "$((rl_hat + 1))p" "$rl_htmpd/out")" != "$2" ] ||
-     ! { head -n "$rl_hat" -- "$rl_htmpd/out"; tail -n "+$((rl_hat + 2))" -- "$rl_htmpd/out"; } | cmp -s - "$rl_htmpd/pre"
-  then
-    rm -rf -- "$rl_htmpd"
-    die "the handoff at $1 cannot take Rule 3's stamp without rewriting a byte of it, and a handoff written whole from anything but its own bytes is the act that lost two lanes' rows on 2026-09-08. The line it wants under its header block is: $2" 5
-  fi
-  return 0
-}
-
-# THE STAMPED COPY REPLACES THE HANDOFF BY RENAME (opensoft/openRepoTools#158;
-# the comment at its call in `rename-lane`): `rl_htmpd/out` goes to an
-# exclusive temporary file beside the handoff, `rl_htmp`, which `cleanup`
-# removes, with the handoff's mode, and `mv -f` replaces it. `rl_htmpd` is
-# removed here. 5 where any step fails, in files mode's own words.
-rl_stamp_publish() {   # <the handoff>
-  rl_hpub="$( CDPATH=''; cd -P -- "$(dirname -- "$1")" && pwd -P )" || { rm -rf -- "$rl_htmpd"; die "the directory of the handoff at $1 could not be resolved, so Rule 3's stamp cannot be published beside it and this rename is not made without it." 5; }
-  rl_hpub="$rl_hpub/$(basename -- "$1")"
-  rl_htmp="$(mktemp "$rl_hpub.rename.XXXXXX")" || { rl_htmp=""; rm -rf -- "$rl_htmpd"; die "no temporary file could be made beside the handoff at $1, and Rule 3's stamp is not written into a handoff in place. This rename is not made without it." 5; }
-  if ! cp -p -- "$rl_hpub" "$rl_htmp" || ! cat -- "$rl_htmpd/out" > "$rl_htmp" || ! mv -f -- "$rl_htmp" "$rl_hpub"; then
-    rm -f -- "$rl_htmp"; rl_htmp=""; rm -rf -- "$rl_htmpd"
-    die "the handoff at $1 could not be written, so Rule 3's stamp is not there and this rename is not made without it." 5
-  fi
-  rl_htmp=""
-  rm -rf -- "$rl_htmpd"
-  return 0
-}
-
-# THE CHILD'S STEPS AFTER ITS WRITE RUN ONLY AFTER `committed` (FR-024; F14,
-# Y:5153; Y:5011–5012). In an attempt's child the arm's `commit_publish` waits
-# at the seam (T414) and returns 0 on `committed <s>`, with `REGISTER_SEQ` set.
-# `LANES_NO_GIT=1` returns 0 above the seam with nothing sent, and the seam's
-# "nothing staged" would too, which a rename never meets; either way the
-# lifecycle directory's move, the comments and the handoff's move would speak
-# for a rename the register does not hold. So under the flag, with no seq, the
-# child stops here: 2, before `ready`, so its parent makes no commit call
-# (Y:5016). It is a backstop that no input reaches now, since T415's
-# `pw_no_git_refuse` refuses LANES_NO_GIT=1 in the parent before its claim
-# (`pw_run`; review REV-W9f, N2). Off the flag `REG_SCRATCH` is empty and this
-# returns at once. The same rule as `claim`'s and `request-handoff`'s (T421,
-# T423).
-rl_after_committed() {
-  [ -z "$REG_SCRATCH" ] || [ -n "$REGISTER_SEQ" ] ||
-    die "refusing to run rename-lane's steps after its write in an attempt's child under LANES_REGISTER_SCRATCH: the write took no \`committed <seq>\` from the seam (LANES_NO_GIT=1 stops it before the seam, though the parent's \`pw_no_git_refuse\` refuses that flag before its claim), so moving the lane's lifecycle directory, posting its comments and moving its handoff would act for a rename the register does not hold. An internal error of the write path. Nothing was sent." 2
-}
-
-# THE MOVE, HANDED TO THE PARENT (R18): `<attempt dir>/rl-move`, written after
-# `committed` by the child that took it, a kept one or the replay's (T418),
-# one `key=value` a line: `checkout` (`<c>`), `from` (the handoff's path in
-# it, empty where it is stamped where it is), `to`, `stamp` (Rule 3's line,
-# on the snapshot's clock), `old`, `new` and `seq`. Nothing where the row
-# names no handoff, or `<c>` holds none. Through a temporary file and `mv`, so
-# the parent reads it whole or not at all; one that cannot be written leaves
-# the move owed, and says so with the hand steps.
-rl_move_write() {
-  [ -n "$REG_SCRATCH" ] && [ -n "$RL_MOVE_TO" ] || return 0
-  if { printf 'checkout=%s\nfrom=%s\nto=%s\nstamp=%s\nold=%s\nnew=%s\nseq=%s\n' \
-         "$rl_hrepo" "$RL_MOVE_FROM" "$RL_MOVE_TO" "$RL_MOVE_STAMP" "$rl_old" "$rl_new" "$REGISTER_SEQ" \
-         > "$REG_SCRATCH/rl-move.tmp" && mv -f -- "$REG_SCRATCH/rl-move.tmp" "$REG_SCRATCH/rl-move"; } 2>/dev/null; then
-    return 0
-  fi
-  note "WARNING: the rename is in the register at seq ${REGISTER_SEQ}, and its handoff's move could not be handed to the parent that makes it ($REG_SCRATCH/rl-move could not be written), so it is NOT made: the row's handoff column names ${RL_MOVE_TO}, which is not there yet. The move is owed: $(rl_move_hand_steps "$rl_hrepo" "$rl_old" "$rl_new")."
-  return 0
-}
-
-# THE STEPS FOR A MOVE OWED, one sentence (lane 3, #165 6774499606, T422 (6);
-# #165 6780753157, Q42). Y:5331 has `<owed>` name "the command that does each
-# step by hand", and the rerun is that command (`rl_rerun`). First, S6.3's
-# archive of what `<c>` holds above origin, and the reset to origin, with
-# S6.3's STOP line. Then any person's commit in that archive goes out by
-# `commit`, the publish act, from `<new>`'s checkout, where `LANES_LANE=<new>`
-# routes it: made first where it is not there, and the commit put on it by
-# `cherry-pick` (REV422c S2), after a `fetch` of step (1)'s archive branch,
-# named with the same stamp: `lane-checkout <new> --create` MOVES `<old>`'s
-# checkout only where W's alias table names that directory's key
-# (`lane_checkout_old`); where it finds none it CLONES `--single-branch`
-# (`lane_checkout_ensure`), and the clone has not got the archived commits,
-# so the cherry-pick alone would fail "bad object" there (REV-W8b N3). Where
-# the checkout was moved, the fetch finds them there already and changes
-# nothing the cherry-pick reads. Then, where `<new>`'s checkout is still
-# missing, `lane-checkout <new> --create`, and this verb, `rename-lane <old>
-# <new>`, again, printed with `LANES_LANE=<new>` as step (2)'s `commit` is: on
-# primary `pw_run` refuses 2 before its claim where LANES_LANE is unset
-# (`pw_lane_given`), so without it the step as printed makes no move (REV-W8b
-# S1; REV422c S2). It writes no register line and makes only the move and the
-# stamp, in `<new>`'s checkout once W resolves `<old>` to `<new>`, and its own
-# code says whether they were made: 0 where they were, or where origin has
-# both; 2 naming `lane-checkout <new> --create` where that checkout is missing
-# (`pw_checkout`). Never `lane-rename`: once `<old>` resolves to `<new>`, its
-# repair arm reads any 2 from this verb as "already landed" and ends 0 with no
-# move made (`lane-rename:226-231`; Q42). Never `commit` on the move: its
-# fence refuses the move's D by design. And never a raw `git push`, which
-# skips T420's backstop.
-rl_move_hand_steps() {   # <checkout> <old> <new>
-  local hs_nc="" hs_ts=""
-  hs_nc="$(lane_checkout_path "$3" 2>/dev/null)" || hs_nc=""
-  [ -n "$hs_nc" ] || hs_nc="<W>-lanes/$3"
-  hs_ts="$(date -u +%Y%m%dT%H%MZ)"
-  printf '(1) in %s, archive what it holds above origin/%s and reset to it (S6.3): list it with git -C %s cherry -v refs/remotes/origin/%s HEAD; if any + line is not your own write, STOP and take it to the lane its subject names, and never reset, stash or overwrite a peer'"'"'s work; otherwise, where it lists any commit, git -C %s push origin HEAD:refs/heads/archive/%s-stranded-%s, then git -C %s reset --keep refs/remotes/origin/%s; (2) where lane %s'"'"'s checkout, %s, is not there yet, make it: %s lane-checkout %s --create (the publish act routes there, and so does the rerun once W resolves %s to %s); then, for each commit step (1) listed that a person made, never the move'"'"'s own handoff(%s@...): RENAMED commit, put it there and publish it: git -C %s fetch origin refs/heads/archive/%s-stranded-%s, then git -C %s cherry-pick <sha>, then the publish act, LANES_LANE=%s %s commit "<what it is>"; (3) where lane %s'"'"'s checkout, %s, is still missing, %s lane-checkout %s --create, and then LANES_LANE=%s %s rename-lane %s %s again, never lane-rename, whose arm ends this verb'"'"'s 2 for a missing checkout as 0 with no move made: it writes no register line, makes only the move and the stamp, and ends 0 where they are made or origin has both. Never `commit` on the move, and never a raw git push of it' \
-    "$1" "$LANES_BRANCH" "$1" "$LANES_BRANCH" "$1" "$3" "$hs_ts" "$1" "$LANES_BRANCH" \
-    "$3" "$hs_nc" "$SELF" "$3" "$2" "$3" "$3" "$hs_nc" "$3" "$hs_ts" "$hs_nc" "$3" "$SELF" \
-    "$3" "$hs_nc" "$SELF" "$3" "$3" "$SELF" "$2" "$3"
-}
-
-# THE LIFECYCLE DIRECTORY'S MOVE, UNDER THE WORKSTATION'S SIDECAR LOCK ON
-# PRIMARY (R19; review m2). `lane_state_rename` takes no lock of its own: off
-# the flag it runs inside `rename-lane`'s held lock, as it always has; in an
-# attempt's child that lock is the scratch tree's, which serialises nothing,
-# so it runs under `sidecar_try`, the lock the parent names in `<dir>/lock`,
-# and the lock goes at once after. A lock not taken in 20 s, as
-# `lane_state_follow` waits, leaves the directory where it is, said.
-rl_state_rename() {   # <the old name's control root> <new lane>
-  if [ -z "$REG_SCRATCH" ]; then lane_state_rename "$1" "$2"; return 0; fi
-  [ -n "$1" ] && { [ -e "$1" ] || [ -L "$1" ]; } || return 0
-  if sidecar_try 20; then
-    lane_state_rename "$1" "$2"
-    sidecar_release
-    return 0
-  fi
-  note "the lane lifecycle snapshot and inventory were NOT moved from $1 to ${1%/*}/$2 (the rename itself has landed): the workstation's sidecar lock, which this move takes on primary, could not be taken in 20 s (R19). Move it by hand once that lock is free; until then \`lanes-edit.sh lane-reconcile $2\` reads no snapshot for this lane."
-  return 0
-}
-
-# THE RERUN, IN AN ATTEMPT'S CHILD (Y:3449–3451: "rerunning `lane-rename`
-# finds the register already renamed and makes only the move and the stamp";
-# lane 3, #165 6774499606, T422 (2)). Called where `canon_lane` answered
-# `<new>` for the typed `<old>`, before a byte is written. It acts only where
-# the snapshot shows this rename done: `<new>`'s log holds a `RENAMED` line
-# from `<old>`, and the row's handoff cell names a path under `handoffs/` that
-# the first run named for its move: the `-lane-<new>.md` name it rewrote the
-# cell to, with `-lane-<old>.md` as the file not yet moved, or a handoff not
-# named for its lane, stamped where it is. Then this run writes no register
-# line: the move goes to the parent in `rl-move`, as the first run's did,
-# with that line's stamp, the seq of the snapshot that holds the rename, and
-# NO checkout, since the child looked at none; the parent makes it in its own
-# `<c>` (`pw_rl_move … rerun`). The child ends 0 before `ready`, so no commit
-# call is made. The act reads origin's tip after its S3: where origin has the
-# file at `<to>` with the stamp and nothing at `<from>`, it is 0 with nothing
-# written. Anything else returns, and the caller refuses as before. Never in a
-# replay, whose snapshot predates its own write.
-rl_rerun() {   # <the typed old name>
-  local rr_l="" rr_rest="" rr_ln="" rr_s="" rr_o="" rr_u="" rr_t="" rr_on="" rr_oo="" rr_lu="" rr_lt="" \
-        rr_lon="" rr_loo="" rr_log="" rr_n="" rr_row="" rr_cell="" rr_base="" rr_dir="" rr_bl="" rr_sl="" \
-        rr_ol="" rr_keep="" rr_from="" rr_seq="" rr_st="" rr_want_n="" rr_want_o="" rr_c="" rr_p=""
-  [ -n "$REG_SCRATCH" ] && [ "$REG_REPLAY" != 1 ] || return 0
-  rr_log="$(log_file_for "$rl_old")"
-  [ -f "$rr_log" ] && [ ! -L "$rr_log" ] || return 0
-  rr_want_n="$(lc "$rl_new")"; rr_want_o="$(lc "$1")"
-  # THE LAST `RENAMED` LINE FROM `<old>` TO `<new>`, parsed by its fixed
-  # separators (`event_line`): `RENAMED — lane <new>, session <uuid>@<ws>,
-  # <utc>, lane:<new> ← lane:<old> — <why>`.
-  while IFS= read -r rr_l || [ -n "$rr_l" ]; do
-    case "$rr_l" in "RENAMED — lane "*) : ;; *) continue ;; esac
-    rr_rest="${rr_l#"RENAMED — lane "}"
-    rr_ln="${rr_rest%%", session "*}"; [ "$rr_ln" != "$rr_rest" ] || continue
-    rr_rest="${rr_rest#*", session "}"
-    rr_s="${rr_rest%%", "*}"; [ "$rr_s" != "$rr_rest" ] || continue
-    rr_rest="${rr_rest#*", "}"
-    rr_t="${rr_rest%%", "*}"; [ "$rr_t" != "$rr_rest" ] || continue
-    rr_rest="${rr_rest#*", "}"
-    rr_o="${rr_rest%%" — "*}"
-    case "$rr_o" in "lane:"*" ← lane:"*) : ;; *) continue ;; esac
-    rr_on="${rr_o#lane:}"; rr_on="${rr_on%%" ← lane:"*}"
-    rr_oo="${rr_o#*" ← lane:"}"
-    [ "$(lc "$rr_ln")" = "$rr_want_n" ] && [ "$(lc "$rr_on")" = "$rr_want_n" ] &&
-      [ "$(lc "$rr_oo")" = "$rr_want_o" ] && valid_uuid "${rr_s%%@*}" || continue
-    rr_lu="${rr_s%%@*}"; rr_lt="$rr_t"; rr_lon="$rr_on"; rr_loo="$rr_oo"
-  done < "$rr_log"
-  [ -n "$rr_lu" ] || return 0
-  # THE ROW'S HANDOFF CELL, the sixth, counted from the left as the arm does.
-  rr_n="$(row_line "$rl_old" 2>/dev/null)" || return 0
-  rr_row="$(sed -n -e "${rr_n}p" "$LANES_FILE")"
-  rr_cell="$(row_cell "$rr_row" 7 | sed 's/^ *//; s/ *$//')"
-  case "$rr_cell" in handoffs/?*) : ;; *) return 0 ;; esac
-  case "/$rr_cell/" in *"/../"*|*"/./"*|*"//"*) return 0 ;; esac
-  [ "${rr_cell//[[:cntrl:]]/}" = "$rr_cell" ] || return 0
-  rr_base="${rr_cell##*/}"; rr_dir="${rr_cell%"$rr_base"}"
-  rr_bl="$(lc "$rr_base")"; rr_sl="$(lc "-lane-$rr_lon.md")"; rr_ol="$(lc "-lane-$rr_loo.md")"
-  case "$rr_bl" in
-    *"$rr_sl")
-      rr_keep=$(( ${#rr_base} - ${#rr_sl} ))
-      [ "$rr_keep" -gt 0 ] || return 0
-      rr_from="$rr_dir${rr_base:0:$rr_keep}-lane-$rr_loo.md" ;;
-    # THE CELL STILL NAMES `<old>`'s FILE: the first run found none to move
-    # and left the column as it was, so no move was owed.
-    *"$rr_ol") return 0 ;;
-  esac
-  # N1's REFUSAL, BEFORE THE SEAM (REV-W8b N4): a cell edited since the
-  # rename to a path with a cache, bytecode or environment part would hand
-  # the parent a move whose commit #162 refuses, whose WARNING prints step
-  # (3), this rerun, and so on round again. Either path refuses 2 here, in
-  # N1's words, with nothing sent. This child looks at no checkout, so,
-  # unlike N1's, the check reads the cell's paths alone, whether or not a
-  # file is at either.
-  rr_c="$(lane_checkout_path "$rr_lon" 2>/dev/null)" || rr_c=""
-  for rr_p in ${rr_from:+"$rr_from"} "$rr_cell"; do
-    rl_cache_part_refuse "$rl_old" "$rr_cell" "$rr_p" "${rr_c:-<c>}"
-  done
-  rr_st="RENAMED from $rr_loo by $rr_lu (lane $rr_lon) at $rr_lt"
-  rr_l=""
-  while IFS= read -r rr_l || [ -n "$rr_l" ]; do
-    case "$rr_l" in n=*) rr_seq="${rr_l#n=}"; break ;; esac
-    rr_l=""
-  done 2>/dev/null < "$REG_SCRATCH/snapshot"
-  wr_is_count "$rr_seq" ||
-    die "refusing to rename lane $1 again in an attempt's child under LANES_REGISTER_SCRATCH: the register already holds it, and this attempt's snapshot, $REG_SCRATCH/snapshot, gives no seq to make the handoff's move after, an internal error of the write path. Nothing was sent." 2
-  if ! { printf 'checkout=\nfrom=%s\nto=%s\nstamp=%s\nold=%s\nnew=%s\nseq=%s\n' \
-           "$rr_from" "$rr_cell" "$rr_st" "$rr_loo" "$rr_lon" "$rr_seq" \
-           > "$REG_SCRATCH/rl-move.tmp" && mv -f -- "$REG_SCRATCH/rl-move.tmp" "$REG_SCRATCH/rl-move"; } 2>/dev/null; then
-    note "WARNING: lane $1 is lane $rr_lon in the register already (seq ${rr_seq}), so this run wrote no register line; its handoff's move could not be handed to the parent that makes it ($REG_SCRATCH/rl-move could not be written), so it is NOT made: the row's handoff column names ${rr_cell}. The move is owed: $(rl_move_hand_steps "$(lane_checkout_path "$rr_lon" 2>/dev/null || printf '%s' '<c>')" "$rr_loo" "$rr_lon")."
-    exit 0
-  fi
-  note "lane $1 is lane $rr_lon in the register already (its RENAMED line is in the snapshot at seq ${rr_seq}), so this run writes no register line; the handoff's move and Rule 3 stamp, where still owed, are made in the lane's checkout after this attempt, outside the flag (Y:3449–3451): ${rr_from:+$rr_from → }$rr_cell"
-  exit 0
-}
-
-# THE PARENT'S MOVE AND STAMP, AFTER `committed` (R18; Y:3444–3451, Y:5092),
-# from `pw_tail_child` once the child has exited and its `seam.out` is read,
-# while its record still holds `tail=sent`, before `tail=done` is written
-# (lane 3, #165 6778890211, T422 (1); Y:5338–5339), the record is closed and
-# the attempt directories go, since `rl-move` is in one: this file again,
-# OUTSIDE the flag, in `<c>`, with
-# `LANES_REPO`, `LANES_DIR` and `LANES_FILE` at it and the act's two markers
-# (file scope, `RL_MOVE`), started from this shell so its `$PPID` is this
-# process. Its own words go to this run's stdout and stderr. It is a git
-# commit, never a second
-# register write (F21, Y:5097). A move the child named for another checkout
-# than `PW_C`, or an act that fails, is said in one WARNING with the hand
-# steps, and the run keeps its code: the rename is committed either way, as
-# with its other steps after COMMIT (Y:5328), and the row's handoff column
-# names `<to>`. The WARNING says `<to>` is not there yet and the move is owed
-# (spec:372–376), unless the act ran in `PW_C`, failed, and something is at
-# `<to>` there: then it says `<to>` is there and puts the act's refusal first
-# (lane openRepoTools-3, #165 6827722997, Q127 Q-b). An act that exits 3 has
-# not refused: the WARNING says its push was not confirmed, and that a re-run
-# of the hand steps confirms the move on origin or makes it (lane
-# openRepoTools-3, #165 6828797873, item 3).
-# A RERUN'S MOVE (`rerun`, from `pw_child_end`; `rl_rerun`): this run wrote no
-# register line, its child looked at no checkout and names none, and the move
-# is made in this run's own `<c>`, `PW_C`, at the seq of the snapshot that
-# holds the rename. A failed one is the same one WARNING, and the run's code
-# stays 0.
-pw_rl_move() {   # <seq> <the child's attempt dir> [rerun]
-  local pm_f="$2/rl-move" pm_l="" pm_c="" pm_from="" pm_to="" pm_st="" pm_old="" pm_new="" pm_rc=0 pm_lead=""
-  [ -f "$pm_f" ] || return 0
-  while IFS= read -r pm_l || [ -n "$pm_l" ]; do
-    case "$pm_l" in
-      checkout=*) pm_c="${pm_l#checkout=}" ;;
-      from=*) pm_from="${pm_l#from=}" ;;
-      to=*) pm_to="${pm_l#to=}" ;;
-      stamp=*) pm_st="${pm_l#stamp=}" ;;
-      old=*) pm_old="${pm_l#old=}" ;;
-      new=*) pm_new="${pm_l#new=}" ;;
-    esac
-    pm_l=""
-  done < "$pm_f" 2>/dev/null
-  pm_lead="register write $WR_ID is in the register at seq ${1}"
-  if [ "${3-}" = rerun ]; then
-    pm_lead="this run wrote no register line, since lane ${pm_old:-<old>}'s rename to ${pm_new:-<new>} is in the register already (seq ${1})"
-    [ -n "$pm_c" ] || pm_c="$PW_C"
-  fi
-  if [ -z "$pm_c" ] || [ "$pm_c" != "$PW_C" ]; then
-    note "WARNING: ${pm_lead}; its handoff's move was named for the checkout ${pm_c:-<none>}, not lane ${PW_LANE}'s $PW_C, so it is NOT made: the row's handoff column names ${pm_to:-<unknown>}, which is not there yet. The move is owed: $(rl_move_hand_steps "$PW_C" "${pm_old:-<old>}" "${pm_new:-<new>}")."
-    return 0
-  fi
-  LANES_REPO="$PW_C" LANES_DIR="$PW_C/lanes" LANES_FILE="$PW_C/lanes/LANES.md" \
-    LANES__RL_MOVE="$pm_f" LANES__RL_MOVE_PID="$$" \
-    "${BASH:-bash}" "$RESOLVED" ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"} </dev/null || pm_rc=$?
-  [ "$pm_rc" != 0 ] || return 0
-  # AN ACT THAT EXITS 3 HAS NOT REFUSED (lane openRepoTools-3, #165
-  # 6828797873, item 3): its push was not confirmed (exit row 3), so its
-  # WARNING points at no refusal above, and a re-run of the hand steps
-  # confirms the move on origin or makes it. The run's code is the same.
-  if [ "$pm_rc" = 3 ]; then
-    note "WARNING: ${pm_lead}; the push of its handoff's move and RENAMED stamp in $PW_C was not confirmed (exit ${pm_rc}, above). A re-run of these steps confirms the move on origin or makes it: $(rl_move_hand_steps "$PW_C" "${pm_old:-<old>}" "${pm_new:-<new>}")."
-    return 0
-  fi
-  # A `<to>` THAT IS THERE IS NEVER "NOT THERE YET" (lane openRepoTools-3,
-  # #165 6827722997, question 127's Q-b): the act's refusal above says why it
-  # stopped, and the hand steps end in this verb again, which meets that
-  # refusal again until a person has settled what it names. The run's code
-  # is the same either way.
-  if [ -n "$pm_to" ] && { [ -e "$PW_C/$pm_to" ] || [ -L "$PW_C/$pm_to" ]; }; then
-    note "WARNING: ${pm_lead}; its handoff's move and RENAMED stamp in $PW_C did not complete (exit ${pm_rc}, above), and the row's handoff column names ${pm_to}, which is there: the refusal above says why the act stopped. Once a person has settled what it names, what this rename still owes is made by hand: $(rl_move_hand_steps "$PW_C" "${pm_old:-<old>}" "${pm_new:-<new>}")."
-    return 0
-  fi
-  note "WARNING: ${pm_lead}; its handoff's move and RENAMED stamp in $PW_C did not complete (exit ${pm_rc}, above), so the row's handoff column names ${pm_to}, which is not there yet. The move is owed: $(rl_move_hand_steps "$PW_C" "${pm_old:-<old>}" "${pm_new:-<new>}")."
-  return 0
-}
-
-# THE ROW'S HANDOFF CELL WHEN THE RENAME WAS RENDERED (REV422c S1's rarer
-# case): origin's oldest commit whose `LANES.md` holds the renamed key cell,
-# ``*(ex `<old>`, renamed <utc>)*``, which the rename writes and nothing else
-# does; that row's sixth cell, read as the arm reads it. 0 where it is
-# `<path>`; 1 where it is another, or no commit holds the mark; 3 where that
-# history was not read: `LANES_NO_GIT=1`, or a `git log` or `git show` that
-# failed, each one's status taken before `head`. A history read that failed,
-# or was not made, is no answer (lane openRepoTools-3, #165 6827722997, the
-# 7(d) point; Amendment 7(d)).
-rl_cell_at_rename() {   # <path> <old> <utc>
-  local ca_mark="*(ex \`$2\`, renamed $3)*" ca_out="" ca_sha="" ca_row=""
-  [ "$NO_GIT" != 1 ] || return 3
-  ca_out="$(git -C "$LANES_REPO" log --reverse --format=%H -S"$ca_mark" "refs/remotes/origin/$LANES_BRANCH" -- "$LANES_PATH" 2>/dev/null)" || return 3
-  ca_sha="$(printf '%s\n' "$ca_out" | head -n 1)"
-  [ -n "$ca_sha" ] || return 1
-  ca_out="$(git -C "$LANES_REPO" show "$ca_sha:$LANES_PATH" 2>/dev/null)" || return 3
-  ca_row="$(printf '%s\n' "$ca_out" | grep -F -- "$ca_mark" | head -n 1)"
-  [ -n "$ca_row" ] && [ "$(row_cell "$ca_row" 7 | sed 's/^ *//; s/ *$//')" = "$1" ]
-}
-
-# THE HANDOFF ACT ITSELF (R18; review M5): `rename-lane` as the parent ran it
-# again in `<c>`, outside the flag. Its input is the child's `rl-move`, read
-# whole and checked: two paths under `handoffs/`, with no `.` or `..` part and
-# no control character, `<c>` this process's own checkout, a stamp, two lane
-# names and a seq. Then it is `rename-lane`'s own commit, as Amendment 23
-# makes it: `<c>`'s lock, S3 (its fetch kept, R16 (b): D12 governs register
-# writes), the move and Rule 3's stamp by the shared helpers, and
-# `commit_publish` of the two paths, whose push carries only this commit
-# (S3's step 5 refuses a queue under it) and which T420's backstop lets
-# through, since both paths are under `handoffs/`, a D and an A under
-# `--no-renames`. A refused push replays the act by S4's `exec`. A handoff
-# already moved and stamped is 0 with nothing written. It exits.
-rl_move_act() {
-  local ma_l="" ma_c="" ma_from="" ma_to="" ma_st="" ma_old="" ma_new="" ma_seq="" ma_p="" ma_rc=0 ma_rerun=0 \
-        ma_creal="" ma_real="" ma_hf="" ma_ht="" ma_msg="" ma_what="" ma_kind="" ma_hand="" \
-        ma_cell=0 ma_why="" ma_read=""
-  [ -f "$RL_MOVE" ] && [ -r "$RL_MOVE" ] ||
-    die "refusing rename-lane's handoff act: the move its parent named, $RL_MOVE, cannot be read, an internal error of the primary write path. Nothing was written." 2
-  while IFS= read -r ma_l || [ -n "$ma_l" ]; do
-    case "$ma_l" in
-      checkout=*) ma_c="${ma_l#checkout=}" ;;
-      from=*) ma_from="${ma_l#from=}" ;;
-      to=*) ma_to="${ma_l#to=}" ;;
-      stamp=*) ma_st="${ma_l#stamp=}" ;;
-      old=*) ma_old="${ma_l#old=}" ;;
-      new=*) ma_new="${ma_l#new=}" ;;
-      seq=*) ma_seq="${ma_l#seq=}" ;;
-    esac
-    ma_l=""
-  done < "$RL_MOVE"
-  ma_what="move lane ${ma_old:-<old>}'s handoff to lane ${ma_new:-<new>}'s name"
-  for ma_p in "$ma_to" ${ma_from:+"$ma_from"}; do
-    case "$ma_p" in handoffs/?*) : ;; *) ma_p="" ;; esac
-    case "/$ma_p/" in *"/../"*|*"/./"*|*"//"*) ma_p="" ;; esac
-    [ "${ma_p//[[:cntrl:]]/}" = "$ma_p" ] || ma_p=""
-    [ -n "$ma_p" ] ||
-      die "refusing to $ma_what: the move its parent named, $RL_MOVE, holds a path that is not a file under handoffs/ with no . or .. part and no control character, an internal error of the primary write path. Nothing was written." 2
-  done
-  case "$ma_st" in "RENAMED from "*) : ;; *) ma_st="" ;; esac
-  [ "${ma_st//[[:cntrl:]]/}" = "$ma_st" ] || ma_st=""
-  if [ -z "$ma_st" ] || ! wr_is_count "$ma_seq" ||
-     ! ( check_lane_name "$ma_old" && check_lane_name "$ma_new" ) 2>/dev/null; then
-    die "refusing to $ma_what: the move its parent named, $RL_MOVE, has no RENAMED stamp, no seq or no lane names, an internal error of the primary write path. Nothing was written." 2
-  fi
-  # A RERUN'S MOVE NAMES NO CHECKOUT (`rl_rerun`): its parent's own `<c>`, the
-  # `LANES_REPO` it started this act with (`pw_rl_move … rerun`). A move after
-  # `committed` always names one, and its parent refuses it without.
-  [ -n "$ma_c" ] || { ma_c="$LANES_REPO"; ma_rerun=1; }
-  ma_real="$( CDPATH=''; cd -P -- "$LANES_REPO" 2>/dev/null && pwd -P )" || ma_real=""
-  ma_creal="$( CDPATH=''; cd -P -- "$ma_c" 2>/dev/null && pwd -P )" || ma_creal=""
-  [ -n "$ma_real" ] && [ "$ma_real" = "$ma_creal" ] ||
-    die "refusing to $ma_what in ${LANES_REPO:-<none>}: the move its parent named is for the checkout ${ma_c:-<none>}, an internal error of the primary write path. Nothing was written." 2
-  acquire_lock
-  checkout_sync "$ma_what" "$ma_new" write "$ma_to" ${ma_from:+"$ma_from"}
-  ma_ht="$LANES_REPO/$ma_to"; ma_hf=""
-  [ -z "$ma_from" ] || ma_hf="$LANES_REPO/$ma_from"
-  # DONE ALREADY: the handoff at its new path with its stamp, and nothing at the
-  # old one. An act's replay that finds origin holding them writes nothing.
-  if [ -f "$ma_ht" ] && [ ! -L "$ma_ht" ] && { [ -z "$ma_hf" ] || { [ ! -e "$ma_hf" ] && [ ! -L "$ma_hf" ]; }; } &&
-     grep -qxF -e "$ma_st" "$ma_ht" 2>/dev/null; then
-    note "the handoff is at $ma_to with its stamp already, so there is nothing to move or stamp: $ma_st"
-    release_lock
-    exit 0
-  fi
-  # FEATURE 007, T422 — A RERUN OWES ONLY THE MOVE ITS FIRST RUN LEFT (Y:3449–
-  # 3451; lane 3, #165 batch 6, Q27 and Q29; lane 4's REV422c S1). Read at
-  # origin's tip, after S3, where no `<from>` is there:
-  # - NO FILE AT `<to>` EITHER: nothing is owed. The first run's own words,
-  #   0, and no hand steps (Q29).
-  # - A REGULAR FILE AT `<to>` AND A `<from>` NAMED: the rerun takes `<to>` for
-  #   a later handoff the cell names since, so no move is owed: 0, no hand
-  #   steps (S1). At origin's tip it cannot tell that from this rename's
-  #   handoff moved by hand without its stamp, so it stamps nothing, and its
-  #   note gives the stamp line for a person to apply there (lane 3, #165
-  #   6808141050, batch c Q72).
-  # - ANYTHING ELSE AT `<to>` AND A `<from>` NAMED: a symlink, to a regular
-  #   file or not, a directory, a FIFO. 2 before (72)'s note, with nothing
-  #   moved or stamped (lane 3, #165 6814837872, Q127; below).
-  # - A FILE AT `<to>` AND NO `<from>`, a handoff not named for its lane: it
-  #   takes this rename's stamp only where origin's render of the rename shows
-  #   the row naming it then (`rl_cell_at_rename`). Any other handoff the cell
-  #   names since never takes the old stamp: 0, no hand steps. Its note
-  #   offers the stamp by hand only where `<to>` is a regular file (lane
-  #   openRepoTools-3, #165 6827722997, Q-a; below). A read of that render
-  #   that failed or was not made is no answer: 1, with nothing moved or
-  #   stamped (the same post, the 7(d) point; below).
-  if [ "$ma_rerun" = 1 ] && { [ -z "$ma_hf" ] || { [ ! -e "$ma_hf" ] && [ ! -L "$ma_hf" ]; }; }; then
-    if [ ! -e "$ma_ht" ] && [ ! -L "$ma_ht" ]; then
-      note "the handoff the row names is not at $ma_ht, so nothing was moved or stamped and the row's handoff column is left exactly as it is. If it turns up, rename it — ${ma_from:-$ma_to} → $ma_to — and stamp it: $ma_st"
-      release_lock
-      exit 0
-    fi
-    if [ -n "$ma_hf" ]; then
-      # A `<to>` THAT IS NOT A REGULAR FILE never reaches (72)'s note (lane
-      # openRepoTools-3, #165 6814837872, Q127): DONE ALREADY read no stamp
-      # there, and a read that cannot be made is never "without the stamp"
-      # (Amendment 7(d)). A symlink is refused even where it leads to a
-      # regular file: DONE ALREADY never reads the stamp through one, and
-      # Rule 3's stamp is never written through one (Amendment 16(d)), so
-      # the note's stamp line could not be applied there either. So for a
-      # link the refusal says the stamp is not read through one, never that
-      # it cannot be read (lane 4's review RC-W12c, N2). It ends with its way
-      # out and the stamp line, for a regular file put there by hand (lane
-      # openRepoTools-3, #165 6827722997, Q-b: lane 4's addition).
-      if [ -L "$ma_ht" ] || [ ! -f "$ma_ht" ]; then
-        ma_read="cannot be read, and a read that cannot be made"
-        if [ -L "$ma_ht" ]; then
-          ma_kind="a symlink"; [ -e "$ma_ht" ] || ma_kind="a symlink to nothing"
-          ma_read="is not read through a link (Amendment 16(d)), and a read that is not made"
-        elif [ -d "$ma_ht" ]; then ma_kind="a directory"
-        elif [ -p "$ma_ht" ]; then ma_kind="a FIFO"
-        else ma_kind="a special file"
-        fi
-        die "refusing to $ma_what in ${LANES_REPO}: $ma_to, the handoff the row names, is ${ma_kind} there now, at origin's tip, not a regular file, and $ma_from, the file this rename would move there, is not there, so whether $ma_to holds this rename's stamp ${ma_read} is never \"without the stamp\" (Amendment 7(d)). The rename is in the register at seq ${ma_seq}, and the row's handoff column names $ma_to. Nothing was moved or stamped, and nothing was sent. Put the handoff there as a regular file, not a link to one, or point the row's column at one, and re-run. If it is this rename's handoff, moved by hand without its stamp, stamp it by hand once it is a regular file there, since neither a link nor a directory takes one (Amendment 16(d)): $ma_st" 2
-      fi
-      note "the handoff the row names is at $ma_to, without this rename's stamp, and $ma_from, the file this rename would move there, is not at origin's tip, so this rerun takes $ma_to for a later handoff the cell names since, and no move is owed. Nothing was moved or stamped. If it is this rename's handoff, moved by hand without its stamp, stamp it by hand: $ma_st"
-      release_lock
-      exit 0
-    fi
-    rl_cell_at_rename "$ma_to" "$ma_old" "${ma_st##* at }" || ma_cell=$?
-    case "$ma_cell" in
-      0) : ;;
-      1)
-        # A `<to>` THAT IS NOT A REGULAR FILE IS STILL NOT THIS RENAME'S HERE:
-        # origin's render says so, not a read of `<to>` (lane openRepoTools-3,
-        # #165 6827722997, question 127's Q-a). It is given no stamp line to
-        # apply by hand: Rule 3's stamp is never written through a link
-        # (Amendment 16(d)), and only a regular file takes one.
-        ma_hand="If it is the handoff the rename left unstamped, stamp it by hand: $ma_st"
-        [ ! -L "$ma_ht" ] && [ -f "$ma_ht" ] ||
-          ma_hand="It is not a regular file there, so it takes no stamp by hand either: Rule 3's stamp is never written through a link (Amendment 16(d)), and only a regular file takes one."
-        note "the handoff the row names, $ma_to, is not named for its lane, and origin's render of this rename does not show the row naming it then, so it is not this rename's to stamp, and no stamp is owed. Nothing was moved or stamped. $ma_hand"
-        release_lock
-        exit 0
-        ;;
-      *)
-        # A HISTORY READ THAT FAILED, OR WAS NOT MADE, IS NO ANSWER (lane
-        # openRepoTools-3, #165 6827722997, the 7(d) point; Amendment 7(d)):
-        # never "not named", so never the note's "no stamp is owed". The act
-        # refuses with row 1's code, with nothing moved or stamped, and
-        # `pw_rl_move` says it in its one WARNING, the run's code unchanged.
-        ma_why="git could not read origin's history of $LANES_PATH at refs/remotes/origin/$LANES_BRANCH"
-        [ "$NO_GIT" != 1 ] || ma_why="LANES_NO_GIT=1 is set, so it was never read"
-        die "refusing to $ma_what in ${LANES_REPO}: $ma_to, the handoff the row names, is not named for its lane, and whether origin's render of this rename shows the row naming it then is unknown: ${ma_why}, and a read that failed or was not made is never \"not named\" (Amendment 7(d)). The rename is in the register at seq ${ma_seq}, and the row's handoff column names $ma_to. Nothing was moved or stamped, and nothing was sent. Re-run where that history can be read." 1
-        ;;
-    esac
-  fi
-  ma_p="${ma_hf:-$ma_ht}"
-  [ ! -L "$ma_p" ] ||
-    die "refusing to $ma_what in $LANES_REPO: ${ma_from:-$ma_to} is a SYMLINK, and Rule 3's stamp is never written through one (Amendment 16(d)). The rename is in the register at seq ${ma_seq}, and the row's handoff column names $ma_to. Nothing was written here." 2
-  [ -f "$ma_p" ] ||
-    die "refusing to $ma_what in $LANES_REPO: ${ma_from:-$ma_to} is not a regular file there now, at origin's tip, so there is nothing to move and stamp. The rename is in the register at seq ${ma_seq}, and the row's handoff column names $ma_to. Nothing was written here." 2
-  [ "$NO_GIT" = 1 ] || git -C "$LANES_REPO" ls-files --error-unmatch -- "${ma_from:-$ma_to}" >/dev/null 2>&1 ||
-    die "refusing to $ma_what in $LANES_REPO: ${ma_from:-$ma_to} is there and git does not track it, so its lines have never been committed by anyone, and this act would commit them under the rename's subject. Whoever wrote it commits it first. The rename is in the register at seq ${ma_seq}. Nothing was written here." 2
-  if [ -n "$ma_hf" ] && { [ -e "$ma_ht" ] || [ -L "$ma_ht" ]; }; then
-    die "refusing to $ma_what in $LANES_REPO: the handoff would move to $ma_to and something is already there, which is not this rename's to overwrite. Move it aside, then make the move and stamp by hand. The rename is in the register at seq ${ma_seq}. Nothing was written here." 2
-  fi
-  # THE COPY THAT UNDOES IT, then the move and the stamp, armed through the
-  # commit (`rl_move_undo`), as the rename's own undo is.
-  RL_SNAP="$(mktemp -d)" || die "no temporary directory could be made under ${TMPDIR:-/tmp}, and this act is not made without the copy that undoes it. Nothing was written." 1
-  cat -- "$ma_p" > "$RL_SNAP/handoff" ||
-    die "the handoff at $ma_p could not be READ, so it can be neither stamped nor rolled back. The rename is in the register at seq ${ma_seq}. Nothing was written here." 5
-  RL_MA_HEAD="$(git -C "$LANES_REPO" rev-parse -q --verify HEAD 2>/dev/null || :)"
-  RL_MA_FROM="$ma_hf"; RL_MA_TO="$ma_ht"; RL_MA_PATHS=("$ma_to")
-  [ -z "$ma_from" ] || RL_MA_PATHS+=("$ma_from")
-  RL_MA_ARMED=1
-  if [ -n "$ma_hf" ]; then
-    mv -- "$ma_hf" "$ma_ht" || die "could not rename $ma_hf to $ma_ht." 5
-    note "$ma_from → $ma_to"
-  fi
-  rl_stamp_build "$ma_ht" "$ma_st"
-  rl_stamp_publish "$ma_ht"
-  note "handoff stamped at line $((rl_hat + 1)) of $ma_to: $ma_st"
-  ma_msg="handoff($ma_new@$WS): RENAMED from $ma_old, moved and stamped after register seq $ma_seq (Amendment 16(d), Q13(a))"
-  [ -n "$ma_from" ] || ma_msg="handoff($ma_new@$WS): RENAMED from $ma_old, stamped after register seq $ma_seq (Amendment 16(d), Q13(a))"
-  commit_publish "$ma_msg" "$ma_to" ${ma_from:+"$ma_from"} || ma_rc=$?
-  RL_MA_ARMED=0
-  release_lock
-  exit "$ma_rc"
 }
 
 # ------------------------------------------------- the worktree inventory
@@ -28488,28 +21412,6 @@ write_lane_of() {   # <verb> <its arguments…>
       case "$1" in *'`'*'`'*) wlo_l="${1#*\`}"; wlo_l="${wlo_l%%\`*}" ;; esac
       [ -n "$wlo_l" ] || return 2
       printf '%s\n' "$wlo_l" ;;
-    # FEATURE 007, T427 — `start-record <lane> …` NAMES ITS LANE FIRST (the
-    # review's M6). Without this arm, `*) return 1` would let it write through W
-    # under LANES_ROUTE_WRITES=1, which Amendment 23 S5 forbids. A first word
-    # that is missing or a flag is the arm's own usage refusal (2), as for
-    # `write-handoff`. So is a call whose LANES_LANE is not `<L>` or whose
-    # LANES_SESSION is not a transcript uuid (lane 3's rulings 2 and 3, #165
-    # 6755005268): it is not routed, and the arm refuses it before any clone.
-    # A first word in another spelling than the row's passes here, since this
-    # arm reads no row, and so does an `--add-row` for a name the register
-    # already answers for: `lane_checkout_enter` refuses each before anything
-    # is cloned where W's own copy answers a lane and its fetch confirms it
-    # (#165 6770733371, new question (a); #165 6774499606, T427's question
-    # 3); otherwise the arm refuses it in the lane's checkout, before the lock
-    # (#165 6767463594, question 6). An
-    # `--add-row` with no row after it is the
-    # arm's usage refusal too, so it is not routed either (REV427b, N1), as a
-    # missing `<L>` is not, and nothing is cloned for it.
-    start-record)
-      case "${1-}" in ''|-*) return 1 ;; esac
-      [ "${LANES_LANE-}" = "$1" ] && valid_uuid "${LANES_SESSION-}" || return 1
-      if sr_argv_adds_row && [ "$SRA_ROW_GIVEN" = 0 ]; then return 1; fi
-      printf '%s\n' "$1" ;;
     append-line)
       [ -n "${1-}" ] || return 1
       if [ -n "${LANES_LANE:-}" ]; then printf '%s\n' "$LANES_LANE"; return 0; fi
@@ -28660,35 +21562,17 @@ lane_row_gate() {   # <canonical lane> <its checkout>
   case "$cmd" in
     set-row-state|replace-in-row|append-session-id|rename-lane|write-handoff) lrg_log=0 ;;
     log|commit|request-handoff|append-line|claim|release|retire-rows|archive-rows|migrate-state-cells) lrg_log=1 ;;
-    # FEATURE 007, T427 (lane 3's ruling 4, #165 6755005268; N5): `start-record
-    # --add-row` makes the lane's row, as `add-row` does, so it passes; every
-    # other form edits the row that is there, as `set-row-state` does.
-    start-record) if sr_argv_adds_row; then return 0; fi; lrg_log=0 ;;
     *) return 0 ;;
   esac
   [ ! -e "$2/.git" ] || return 0
   lrg_rc=0; lrg_known "$1" "$lrg_log" || lrg_rc=$?
   [ "$lrg_rc" = 1 ] || return 0
-  # ONE FETCH OF W (REV427b, N3): where the router's `start-record` re-ask has
-  # fetched W just now, in this process, that fetch is the one, and the miss
-  # above was asked after it.
-  [ "$LOG_SYNC_FETCH" = yes ] || log_sync
+  log_sync
   [ "$LOG_SYNC_FETCH" = yes ] || return 0
   lrg_rc=0; lrg_known "$1" "$lrg_log" || lrg_rc=$?
   [ "$lrg_rc" = 1 ] || return 0
   if [ "$lrg_log" = 1 ]; then
     die "lane $1 has no row and no object log on origin/$LANES_BRANCH (fetched just now into W), so no lane of that name was ever started or archived, and \`$cmd\` would write for it: its checkout $2/ was not cloned (Amendment 23 S1, S2). Nothing was written. Check the name — \`$SELF lanes\` lists every lane, and \`$SELF lanes --closed\` the closed ones — or start the lane first (lane-start; its \`add-row\` makes the row)." 2
-  fi
-  # FEATURE 007, T427 (lane 3, #165 6770733371, new question (a)): a resume
-  # under a former name that W had not fetched yet reached here as a miss,
-  # since `canon_lane` answered the name as typed. This gate's fetch is its one
-  # fetch, so `canon_lane` is asked again here, and an answer in another
-  # spelling, an alias's new name, gets `start-record`'s refusal naming it,
-  # as `lane_checkout_enter` gives it, rather than "no row".
-  if [ "$cmd" = start-record ]; then
-    lrg_c="$(CANON_LANE_NOTE=former; canon_lane "${lcn_lane:-$1}")" || exit $?
-    [ "$lrg_c" = "${lcn_lane:-$1}" ] ||
-      sr_spelling_die "${lcn_lane:-$1}" "$lrg_c" routed
   fi
   lrg_needs="edits that lane's row: there is nothing for it to edit"
   [ "$cmd" != write-handoff ] || lrg_needs="writes the handoff that lane's row names: there is none to write"
@@ -28744,73 +21628,7 @@ lane_checkout_enter() {   # <write_lane_of's status> <its lane, or empty>
     return 0
   fi
   check_lane_name "$lcn_lane"
-  # FEATURE 007, T427 — `start-record`'S `<L>` IN ANOTHER SPELLING THAN THE
-  # ROW'S IS REFUSED HERE, BEFORE ANYTHING IS CLONED (lane 3, #165 6770733371,
-  # new question (a)). The arm refuses it (#165 6767463594, question 6), but in
-  # the lane's checkout, so a routed call cloned that checkout first, for a
-  # write refused anyway: the cost `lane_row_gate` exists to avoid. So the
-  # router refuses first:
-  #   * AN `--add-row` CALL'S OWN WORDS ARE ASKED WHOLE, first, in the arm's
-  #     order and in the arm's words (`sr_log_shape_routed`: its second word,
-  #     its options and their counts, and every refusal it makes of its
-  #     `--log`; lane 3, #165 6779688808, Q21; #165 6780753157, Q49, one copy
-  #     of the words, the arm's), and then the row, which is one line and names
-  #     `<L>` byte for byte (`sr_row_names_lane`), and the `--log` object's
-  #     lane (`sr_log_names_lane`; lane 3, #165 6774499606, T427's question
-  #     3). They read nothing, so they come before `canon_lane`, and nothing
-  #     the arm refuses in its words is left to it after a clone.
-  #   * AN `--add-row` FOR WHICH `canon_lane` ANSWERS ANY LANE AT ALL, a row
-  #     under any case or an alias's new name, is refused, 2, naming it
-  #     (`sr_known_die`; the same ruling). A miss is a new lane's and goes on
-  #     unasked; an answer that is a lane is asked again after one fetch of
-  #     W, as below, and refused only where it is still one.
-  #   * Every other form is a resume. Where this router's own `canon_lane`
-  #     answer is not `<L>` byte for byte, it is asked again after one fetch of
-  #     W (`log_sync`: W is still `LANES_REPO` here), as the gate asks a miss,
-  #     so a rename that another checkout published and W has not fetched yet
-  #     is never refused. A second answer that is still not `<L>` is refused,
-  #     2, naming it; one that is `<L>` is the lane the write goes through.
-  #   * A FETCH THAT FAILED OR DID NOT RUN, OR A READ OF THE ROWS THAT COULD
-  #     NOT BE MADE, IS NO ANSWER (R22), as at the gate: the write goes on, and
-  #     the arm decides in the lane's checkout, after its own fetch, as it did
-  #     before these rulings. UNDER `LANES_NO_FETCH=1` THERE
-  #     IS NO FETCH TO ASK AFTER, so the router does not ask again (REV427b,
-  #     N2): that too is no answer, and the no-fetch refusal below, or the arm
-  #     in an existing checkout, decides.
-  # Each is asked whether the lane's checkout exists or not, so a routed call
-  # gets these answers from the router, never from the checkout's copy. THE
-  # FIRST ASK OF A `start-record` PRINTS NO FORMER-NAME NOTE, and every later
-  # one prints it without "reading and writing", since a refusal follows: a
-  # routed call says it once (lane 3, #165 6779688808, Q22; REV427c N3).
-  lcn_add=0
-  if [ "$cmd" = start-record ] && sr_argv_adds_row && [ "$SRA_ROW_GIVEN" = 1 ]; then
-    lcn_add=1
-    sr_log_shape_routed
-    sr_row_names_lane "$SRA_ROW" "$lcn_lane"
-    sr_log_names_lane "$SRA_LOG" "$lcn_lane"
-  fi
-  lcn_cn=""; [ "$cmd" != start-record ] || lcn_cn=none
-  lcn_c="$(CANON_LANE_NOTE="$lcn_cn"; canon_lane "$lcn_lane")" || exit $?
-  if [ "$cmd" = start-record ] && [ "${LANES_NO_FETCH:-0}" != 1 ]; then
-    if [ "$lcn_add" = 1 ]; then
-      if sr_add_row_known "$lcn_lane" "$lcn_c"; then
-        log_sync
-        if [ "$LOG_SYNC_FETCH" = yes ]; then
-          lcn_c="$(CANON_LANE_NOTE=former; canon_lane "$lcn_lane")" || exit $?
-          if sr_add_row_known "$lcn_lane" "$lcn_c"; then
-            sr_known_die "$lcn_lane" "$lcn_c" routed
-          fi
-        fi
-      fi
-    elif [ "$lcn_c" != "$lcn_lane" ]; then
-      log_sync
-      if [ "$LOG_SYNC_FETCH" = yes ]; then
-        lcn_c="$(CANON_LANE_NOTE=former; canon_lane "$lcn_lane")" || exit $?
-        [ "$lcn_c" = "$lcn_lane" ] ||
-          sr_spelling_die "$lcn_lane" "$lcn_c" routed
-      fi
-    fi
-  fi
+  lcn_c="$(canon_lane "$lcn_lane")" || exit $?
   check_lane_name "$lcn_c"
   lcn_p="$(lane_checkout_path "$lcn_c")" || die "$(lanes_workspace_why)" 1
   lane_checkout_inside "$lcn_p"
@@ -29195,31 +22013,6 @@ RWS_LIST
   return 0
 }
 
-# FEATURE 007, T401 — THE SET THE TWO READERS ANSWER (FR-036; Y:4920–4926).
-# `register-text` and `register-grep` are the verbs the lifecycle scripts'
-# direct reads move behind: `lane-start`'s and `lane-end`'s awk over
-# `$LANES_FILE`, and `lane-worktrees`' three `git grep`s of `origin/<branch>`.
-# Their set is O21's option (a), closed by lane 4's decision, with the log set
-# by lane 4's ruling: `lanes/LANES.md`, `lanes/aliases.tsv` and each
-# `lanes/log/<lane>.md`, which is Y's Q18 (A) render set without
-# `lanes/archive/` (Y:258–259), and, for `register-grep` alone, `lanes/log`,
-# which stands for exactly those logs. Any other path is 2 in every mode,
-# `lanes/log/README.md` and `lanes/repos.tsv` among them, so that no caller
-# comes to depend on files mode reading more than the primary image holds.
-# A log is one path segment, matched exactly as `register-grep`'s pathspec
-# matches it (`*` never crosses `/`, and README.md is out by its exact name).
-# Prints the path's kind: `register`, `aliases`, `log`, or with `grep`, `logs`.
-reg_reader_kind() {   # <path> [grep] — 2 for a path outside the set
-  case "$1" in
-    lanes/LANES.md) printf 'register\n' ;;
-    lanes/aliases.tsv) printf 'aliases\n' ;;
-    lanes/log) [ "${2-}" = grep ] || return 2; printf 'logs\n' ;;
-    lanes/log/README.md | lanes/log/*/*) return 2 ;;
-    lanes/log/?*.md) printf 'log\n' ;;
-    *) return 2 ;;
-  esac
-}
-
 # ---------------------------------------------------------------- subcommands
 
 cmd="${1-}"
@@ -29278,32 +22071,11 @@ case "$cmd" in
   # AND AMENDMENT 19-S TWO WRITES, `retire-rows` and `archive-rows`, for the
   # same reason: each is ONE commit over several rows and logs, and every
   # `RETIRED` line it appends carries `session <uuid>@<ws>`.
-  # AND FEATURE 007'S `start-record` (T427), which is `add-row`, or
-  # `append-session-id` and `set-row-state`, with `log STARTED|RESUMED`, as
-  # one write: its log line carries `session <uuid>@<ws>` too.
-  replace-in-row|append-session-id|append-line|add-row|start-record|set-row-state|migrate-state-cells|retire-rows|archive-rows|commit|log|claim|release|request-handoff|rename-lane)
+  replace-in-row|append-session-id|append-line|add-row|set-row-state|migrate-state-cells|retire-rows|archive-rows|commit|log|claim|release|request-handoff|rename-lane)
     REG_ASK=1   # feature 007, T409: these verbs ask the register's mode, after the workspace check
     ws_why="$(lanes_workstation_why "$WS_SOURCE")"
     [ -z "$ws_why" ] || die "$ws_why" 2 ;;
 esac
-# FEATURE 007, T413 — AN ATTEMPT'S CHILD ASKS NOTHING (Y:5038; review M4).
-# Under the internal flag the verb is files-mode code on the scratch tree, and
-# asking the register's mode would recurse into the primary branch. `REG_ASK`
-# is the switch of lane 4's T409, which lands before this task: the write
-# guard's arm sets it, and the writers' question below runs only where it is 1.
-# Cleared here, between the two, it skips the question and its arm in the
-# child, and `REG_MODE` is already `primary` (`reg_scratch_take`). This is the
-# one test of the flag at the ask: T409 tests no flag itself (lane
-# openRepoTools-3's ruling, #165 6755005268, item 8). Lane 5's `reg_open` tests
-# `REG_SCRATCH` before `REG_MODE`: it asks nothing, prefetches nothing, makes no
-# marker check, and answers the files store though `REG_MODE` is `primary`
-# (T504; Q-L5-1; Y:5041).
-[ -z "$REG_SCRATCH" ] || REG_ASK=0
-# FEATURE 007, T422 — NOR DOES `rename-lane`'s HANDOFF ACT (R18): its parent
-# asked, the answer was `primary` (`RL_MOVE`, above), and the act is a git
-# commit in the lane's checkout, which is no register write, so it never meets
-# the attempt loop.
-[ -z "$RL_MOVE" ] || REG_ASK=0
 
 # `guard` JOINS THAT EXEMPTION AND REFUSES FOR ITSELF (Amendment 12(d)). It is
 # a hook too, and a blocking one: `die … 1` here would print the workspace
@@ -29331,12 +22103,7 @@ case "$cmd" in
   # AND `guard-bind` (feature 007, T502): its outer writes the bind's outcome
   # into the offer file whatever else fails, and a `die … 1` here would leave
   # a record with no outcome, held at BINDING IN PROGRESS until its deadline.
-  # AND 007's TWO READERS (T401) MAKE THIS CHECK THEMSELVES, after their own
-  # usage check, and answer it with 69: their exits are 0, 1 (`register-grep`'s
-  # "no match"), 2 (usage, or a path outside the set) and 69 (a read that could
-  # not be made). This refusal's 1 would read as "no match" to `lane-worktrees`,
-  # which acts on that answer, and would come before a usage error's 2.
-  session-start|guard|guard-bind|lane-groups|next-free|append-row-status|project-legs|register-text|register-grep) : ;;
+  session-start|guard|guard-bind|lane-groups|next-free|append-row-status|project-legs) : ;;
   *)
     # AND W ITSELF UNDER THE OPT-IN, an explicit `LANES_REPO` or not
     # (Amendment 23): S5 refuses a write whose checkout is W, and the sidecar
@@ -29352,64 +22119,24 @@ case "$cmd" in
     ;;
 esac
 
-# FEATURE 007, T409 — THE WRITERS' MODE QUESTION, AND T415'S PRIMARY ARM
+# FEATURE 007, T409 — THE WRITERS' MODE QUESTION AND PHASE 1'S MODE ARM
 # (FR-002, FR-003; lane 3's R17). Asked after the two guards above, so a
 # container with no workstation name and a W with no register refuse first,
 # and BEFORE THE ROUTING below, so a refusal here comes before any clone,
 # fetch, lock or `exec`. The write guard's verbs only (`REG_ASK`), and once
 # (`reg_mode_ask`). Under a flag T413 honours nothing is asked; T409 tests no
 # flag itself (lane 3, #165 6755005268): a stray `LANES_REGISTER_SCRATCH`
-# export skips nothing here, so a primary register still meets the primary
-# arm below and never a files-mode write (Y:5034).
-# PHASE 2'S ARM (T415): `primary` runs the write through the register's attempt
-# loop, `pw_run`, which ends this process and never writes the files instead.
-# `commit` IS EXEMPT FROM THE LOOP (T420; R16; review M2; ERR-06). It journals
-# nothing: its carry form, the hand edit of Rule 9(d), and a hand edit of any
-# other rendered file are refused with 2 in its arm below (D10; spec:171–173),
-# and its publish act, the publish of queued handoff commits and of a person's
-# commits of `lanes/repos.tsv` and `lanes/log/README.md` alone, runs as a git
-# act outside the loop, with S3's fetch (R16 (b)) and the fence narrowed to
-# `handoffs/` and those two files (`cp_publish_fence`). So it goes on from
-# here to 1a's routing, `lane_checkout_enter` included, since it needs
-# `LANES_LANE`'s checkout (R16 (c)); T415's skip of that routing (R17) is not
-# its. `index` and `files` run the verb as it runs today.
+# export skips nothing here, so a primary register still meets the 69 below
+# and never a files-mode write (Y:5034).
+# PHASE 1'S ARM: `primary` exits 69 here and never writes the files instead,
+# the placeholder that phase 2's T415 replaces (only a `lanes-index` newer than
+# this file answers it). `index` and `files` run the verb as it runs today.
 if [ "$REG_ASK" = 1 ]; then
   reg_mode_ask
   case "$REG_MODE" in
     primary)
-      if [ "$cmd" != commit ]; then
-        REG_PW=1
-        pw_run ${1+"$@"}
-      fi ;;
+      die "this lanes-edit.sh has no SQL write path: \`lanes-index mode\` answered primary, which only a lanes-index newer than this lanes-edit.sh answers. \`$cmd\` wrote nothing, and wrote no files instead. Install the lanes-edit.sh that ships with that lanes-index." 69 ;;
   esac
-fi
-# THE PRIMARY ARM NEVER FALLS THROUGH (Y:4885: primary is "never files"; review
-# REV415, S2). `pw_run` ends this process on every path. But where an expansion
-# fails inside it, an arithmetic error for one, bash abandons the whole `if`
-# above and goes on after its `fi`, into the routing and the verb's files-mode
-# arm. So a process that entered the attempt loop refuses here with 69, having
-# written no files. ONE MARKER IS TESTED, AND NOTHING ELSE (lane
-# openRepoTools-3, #165 6774499606, A1): `REG_PW`, set just before `pw_run`.
-# Keyed on the mode, this guard would also stop a process that never entered
-# the loop but comes here with `REG_MODE` already `primary`: an attempt's
-# child (`reg_scratch_take`), `commit`'s publish act (T420), `rename-lane`'s
-# handoff act (T422), and, once T504's `reg_open` answers a `write-handoff`
-# primary below here, that write run again by S4's replay (`cp_replay`), whose
-# `exec` keeps the pid and so carries the mode in `LANES__MODE`. Not a reader:
-# `reg_open` runs below this guard, and a read is never replayed. After
-# `reg_mode_ask` answers
-# `primary` nothing between it and the arm can abort, so a 1 here means only
-# that `pw_run` was entered and returned or was abandoned. An attempt's child
-# runs this file afresh, so its `REG_PW` is 0. So does `rename-lane`'s
-# handoff act (T422; R18): `REG_ASK=0` skips the question and the arm, so it
-# never sets `REG_PW` and needs no exemption of its own here (lane
-# openRepoTools-3, #165 6774499606, A1; #165 6778890211, T422 (2)).
-# `commit` never enters the loop (T420; R16; review M2), so its `REG_PW`
-# stays 0 and it goes on to 1a's routing by design, as the arm above says.
-# So the guard has no `commit` exemption of its own: T420's
-# `[ "$cmd" != commit ]` goes (A1).
-if [ "$REG_PW" = 1 ]; then
-  die "\`lanes-index mode\` answered primary, and \`$cmd\` left the register's attempt loop without ending, which is an internal error of this lanes-edit.sh. Whether it reached the register is not known: a write already made reads as found when the command is run again. \`$cmd\` wrote no files instead." 69
 fi
 
 # AMENDMENT 23 S2 — UNDER `LANES_ROUTE_WRITES=1`, EVERY WRITE GOES THROUGH ITS
@@ -29418,10 +22145,8 @@ fi
 # cloned; and asked once — the process this re-runs as (`LANES_ROUTED`) is
 # already in the checkout. A read goes on in W, which is what every read verb
 # has always read. Without the opt-in nothing here runs (MUST 2 of #282's
-# review): the write goes through `LANES_REPO`, W by default. NOR UNDER FEATURE
-# 007's INTERNAL FLAG (T413; Y:5039): an attempt's child writes only
-# its scratch tree, which `LANES_REPO` already names, and is never re-run.
-if [ "$LANES_ROUTE_ON" = 1 ] && [ -z "$LANES_ROUTED" ] && [ -z "$REG_SCRATCH" ]; then
+# review): the write goes through `LANES_REPO`, W by default.
+if [ "$LANES_ROUTE_ON" = 1 ] && [ -z "$LANES_ROUTED" ]; then
   wlo_rc=0
   wlo_lane="$(write_lane_of "$cmd" ${1+"$@"})" || wlo_rc=$?
   [ "$wlo_rc" = 1 ] || lane_checkout_enter "$wlo_rc" "$wlo_lane"
@@ -29433,25 +22158,6 @@ fi
 # a process the `exec` then replaces; and before the dispatcher, so what it sets
 # outlives the arms' `$( )` reads (lane 5's answer 11, #165 6746507353).
 reg_open "$cmd" ${1+"$@"}
-
-# FEATURE 007, T425 AND T426 — R45'S ONE LINE (Y:5121; Q-L5-4, answered; lane
-# 4's block, T425 and T426). Here, after the doors and before the arms, the one
-# mode answer this process holds sets the awk variables that read the
-# register as primary reads it: `rule6_primary_on`, Rule 6 with `LANDING
-# EXPIRED` (T425), and `RETIRED_KEY_TRIM`, `RETIRED_ROWS_AWK`'s `key()`
-# trimming a position's leading zeros as text (T426). A reader takes it from
-# lane 5's `reg_open` (T504), which runs above this line (lane 3, #165
-# 6770688147), and a writing verb from the write guard's answer, where the
-# arm above lets it through. Where that arm runs `pw_run`, which ends the
-# process, the verb runs in an attempt's child, which takes it from
-# `reg_scratch_take`'s `REG_MODE` (`REG_ASK` is 0 there, and `reg_open`
-# leaves `REG_MODE` alone for a writing verb), since it asks no mode and its
-# file at the snapshot's seq is primary's. It cannot be set where `REG_MODE`
-# is: `reg_scratch_take` runs before `RULE6_AWK` and `RETIRED_KEY_TRIM` are
-# assigned, which would overwrite both, and inside `who_landing`'s pipeline a
-# variable set is lost. Off primary it sets nothing, and the programs are
-# today's.
-[ "$REG_MODE" != primary ] || { rule6_primary_on; RETIRED_KEY_TRIM=1; }
 
 case "$cmd" in
   verify-row)
@@ -29520,7 +22226,12 @@ Nothing was written." 2
     managed_seam_refuse "$lane" "set-row-state"   # 283: again, on what S3 brought in (write_event says why)
     n="$(row_line "$lane")" || exit 2
     row="$(sed -n -e "${n}p" "$LANES_FILE")"
-    row_state_split_or_die "$lane" "$n" "$row"
+    srs_rc=0; row_split_state_cell "$row" || srs_rc=$?
+    case "$srs_rc" in
+      0) : ;;
+      2) die "lane $lane's row (line $n) carries $(row_sep_count "$row") ' | ' separators where a seven-column row carries 6, so WHICH TEXT IS THE STATE CELL is not knowable from the row: read from the left this write lands on one cell, read from the right on another, and one of those readings overwrites the row's handoff path. Nothing was written. A Markdown table carries a literal pipe ESCAPED — \`\\|\` — so find the unescaped ' | ' inside a cell of that row, escape it by hand with an allowed tool, commit it (\`LANES_LANE=$lane lanes-edit.sh commit \"escape a literal pipe in row $lane\"\`), and re-run." 2 ;;
+      *) die "lane $lane's row (line $n) does not open with '|' and end with '|', so it is not a row this writer can take apart. Nothing was written." 2 ;;
+    esac
     srs_new="$ROW_STATE · $(utc_now) · $ROW_STATE_LINE"
     srs_was="$(rstrip_spaces "$RSS_CELL")"
     replace_line "$n" "$RSS_HEAD$srs_new $RSS_TAIL"
@@ -29632,11 +22343,6 @@ Nothing was written." 2
     ;;
 
   append-line)
-    # FEATURE 007, T425 — THE FORM `--landing-expired` (F13; Y:5099–5142) IS
-    # HANDED ON FIRST, before anything of this arm's own runs: it composes its
-    # own line, and its refusals, its write and its output are its own
-    # (`append_line_landing_expired`). Plain `append-line` is unchanged.
-    if [ "${1-}" = --landing-expired ]; then shift; append_line_landing_expired ${1+"$@"}; exit 0; fi
     text="${1-}"; [ -n "$text" ] || die "usage: append-line \"<text>\"" 2
     # ONE LINE, REFUSED A NEWLINE BEFORE THE LOCK (opensoft/openRepoTools#85).
     # `append_text_line` refuses it too, and before it writes — but that is
@@ -29655,11 +22361,6 @@ Nothing was written." 2
     if managed_projection_hint "$text"; then
       die "the line carries managed-owner vocabulary ('managed owner', 'managed binding', 'mode=managed' or 'managed:'), and only the managed ledger's own writer writes it into the register. Nothing was written." 2
     fi
-    # FEATURE 007, T424 — ON PRIMARY ONLY, THE FOUR TEXTS THE ONE CLASSIFIER
-    # NAMES are refused with 2 here, before the lock, as the two refusals above
-    # are (`append_line_primary_refusals`). Files mode and index mode skip it
-    # and start no `lanes-index`.
-    if [ "$REG_MODE" = primary ]; then append_line_primary_refusals "$text"; fi
     lane_tag="${LANES_LANE:-}"
     [ -z "$lane_tag" ] || lane_tag="$(canon_lane "$lane_tag")" || reg_exit $? 2
     if [ -z "$lane_tag" ]; then
@@ -29698,13 +22399,98 @@ Nothing was written." 2
     [ -n "$lane_tag" ] || lane_tag="${LANES_ROUTED:-}"
     acquire_lock; checkout_sync append-line "$lane_tag" write "$LANES_PATH"   # Amendment 23 S3
     append_text_line "$text"
-    msg="LANES(${lane_tag:-unknown}@$WS): append line — $(utf8_prefix_72 "$text")"
+    msg="LANES(${lane_tag:-unknown}@$WS): append line — ${text:0:72}"
     commit_publish "$msg"
     ;;
 
   add-row)
     row="${1-}"; [ -n "$row" ] || die "usage: add-row \"<full | row |>\"" 2
-    add_row_checks "$row"
+    case "$row" in
+      "| "*) : ;;
+      *) die "a row must start with '| '" 2 ;;
+    esac
+    case "$(rstrip_spaces "$row")" in
+      *"|") : ;;
+      *) die "a row must end with '|'" 2 ;;
+    esac
+    pipes="$(count_occurrences "$row" "|")" || exit 2
+    [ "$pipes" -ge 8 ] || die "a 7-column row needs at least 8 '|' characters, found $pipes" 2
+    if managed_projection_hint "$row"; then
+      die "the new row carries managed-owner vocabulary ('managed owner', 'managed binding', 'mode=managed' or 'managed:'), and only the managed ledger's own writer writes a managed-owner marker, and a legacy writer that wrote its vocabulary into a row would forge that lane's ownership (ruling 2026-10-04: \"managed ledger owns enrolled lanes; #97 owns legacy\"). Nothing was written." 2
+    fi
+    lane_new="$(printf '%s' "$row" | cut -d'`' -f2)"
+    # AMENDMENT 15(a) — A ROW UNDER ANY CASE IS A ROW, AND THE REFUSAL NAMES IT.
+    # This is the act the 2026-09-13 incident got past: `lane-start openxfactory
+    # 2` found no row for `openXfactory-2` and appended a second one for a lane
+    # that already had one. `row_line`'s exactly-one test cannot be the whole
+    # gate here, because two rows differing only by case make it fail for the
+    # OTHER reason and a failed `row_line` used to read as "no row, go ahead".
+    #
+    # AND THE PUBLISHED ROWS ARE ASKED TOO — R19, AND R30's FETCH IN FRONT OF IT
+    # (Copilot round 4 on openRepoTools#41). The scan was of `$LANES_FILE` alone,
+    # which a fetch does not move: on a checkout that is behind, a row `origin`
+    # already carries as `repoCase-1` is invisible here, this appends
+    # `repocase-1`, and the push that follows publishes the pair — the
+    # exact duplicate 15(a) makes this command refuse, arrived at through the one
+    # file the check never read. BOTH sets are asked and either is the refusal:
+    # the local scan stays because a row added here and not yet pushed is on no
+    # `origin` at all, and the published scan is the one the incident needed.
+    if [ -n "$lane_new" ]; then
+      log_sync
+      # AND THE ARCHIVE IS ASKED AS WELL (Amendment 19(b) and (d)). A row
+      # `archive-rows` has moved into `lanes/archive/LANES-retired.md` is still
+      # that lane's row: its object log is `lanes/log/<lane>.md` and that file is
+      # APPEND-ONLY, so a second lane under the same name would write its life
+      # into the first one's file and every read of that log — who held what,
+      # when it was claimed, which session paused it — would answer for two
+      # lanes at once. `next-free` never OFFERS such a position, because it
+      # counts the archive too; this is what refuses one that is typed by hand,
+      # which is the whole of "a retired `<repo>-<n>` is never reissued".
+      # BOTH COPIES OF THE ARCHIVE (Copilot round 1 on #93): `archive_text`
+      # answers with the PUBLISHED file wherever there is one, so a move
+      # committed here and not yet pushed was invisible to this check and its
+      # name came back on offer. The local file is read beside it, exactly as
+      # the row scan below reads `rows_named_ci_local` beside `rows_named_ci`.
+      #
+      # AND A READ THAT FAILED IS A REFUSAL, not an empty archive (round 2): the
+      # whole point of this check is that a retired identity is never reissued,
+      # and "I could not read the file that says which ones are retired" is not
+      # "none of them are" (Amendment 7(d)). NOR IS A LINE IT COULD NOT TAKE
+      # APART (#122): that row may be this lane's own, so it is the same refusal
+      # and the same 1, naming the line.
+      ar_arch_rc=0
+      ar_arch="$(retired_identity_hits "$lane_new")" || ar_arch_rc=$?
+      case "$ar_arch_rc" in
+        0) : ;;
+        3) die "$LANES_ARCH_PATH carries a line this scan cannot take apart (above), so whether '$lane_new' is a name this estate has RETIRED is not known: a row this scan cannot take apart may be that lane's own, and a retired position is never reissued (Amendment 19(b)). A row that could not be read is not a row that is not there (Amendment 7(d)). Put the lane back in backticks in that row's first cell, or remove the line if it is no row; commit the archive (\`git -C $LANES_REPO commit -m \"<what it was>\" -- $LANES_ARCH_PATH\`), publish it where the line is on origin (\`LANES_LANE=<lane> lanes-edit.sh commit \"<what it was>\"\`), and re-run. Nothing was written." 1 ;;
+        *) die "$LANES_ARCH_PATH exists and could not be read or scanned, so whether '$lane_new' is a name this estate has RETIRED is not known — and a retired position is never reissued (Amendment 19(b)). A read that failed is not 'it is not retired' (Amendment 7(d)). Fix the read and re-run; nothing was written." 1 ;;
+      esac
+      if [ -n "$ar_arch" ]; then
+        die "lane '$lane_new' is RETIRED: its row is in $LANES_ARCH_PATH, spelled $(printf '%s\n' "$ar_arch" | tr '\n' ' ')— and a retired position is NEVER REISSUED (Amendment 19(b)). That lane's object log is $(log_path_for "$lane_new") and it is append-only, so a second lane under this name would write its life into the first one's file and every read of that log would answer for two lanes at once. Take a free position instead — \`lanes --prefix <repo>\` prints the next one and the line that takes it. Nothing was written." 2
+      fi
+      ar_hits="$(rows_named_ci_local "$lane_new")"
+      # THE PUBLISHED ROWS ARE READ WITH THEIR STATUS (Copilot round 21 on #93,
+      # #138 item 18). Through `|| :` a register origin has and git could not
+      # read was "no row there", and a row this checkout had not pulled was
+      # appended a second time — and landed, wherever the rebase did not clash.
+      ar_pub=""
+      ar_pub="$(rows_named_ci "$lane_new" 2>/dev/null)" ||
+        die "the published register on origin/$LANES_BRANCH could not be read, so whether '$lane_new' already has a row there is not known — and that is NOT 'it has none' (Amendment 7(d)): a row this checkout has not pulled would be added a second time. Fix the read and re-run; nothing was written." 1
+      ar_all="$(printf '%s\n%s\n' "$ar_hits" "$ar_pub" | grep -v '^$' | LC_ALL=C sort -u || :)"
+      ar_n="$(printf '%s' "$ar_all" | grep -c . || :)"
+      ar_ln="$(printf '%s' "$ar_hits" | grep -c . || :)"
+      if [ "$ar_n" -gt 0 ]; then
+        # A LANE THE MANAGED LEDGER OWNS IS SAID TO BE ONE (Copilot round 3 on
+        # #97) before the duplicate refusal below, which would refuse it anyway
+        # without naming the owner. A new lane has no row and is never asked.
+        managed_seam_refuse "$lane_new" "add-row"
+        ar_more=""
+        [ "$ar_n" -gt 1 ] && ar_more=" Those $ar_n rows differ only by case and are themselves the refusal: merge them into one row first (Amendment 15(d))."
+        ar_where="Use set-row-state / replace-in-row on the row that is there."
+        [ "$ar_ln" = 0 ] && ar_where="That row is on origin/$LANES_BRANCH and not yet in this checkout, so adding one here would make two the moment this push lands. Use set-row-state / replace-in-row on the row that is there: each fast-forwards this checkout to it first (Amendment 23 S3)."
+        die "lane '$lane_new' already has a row, spelled $(printf '%s\n' "$ar_all" | tr '\n' ' ')— a lane name is ONE name under any case (Amendment 15(a)), so a row under another case IS that lane's row and this would be a second one. $ar_where$ar_more" 2
+      fi
+    fi
     # A PEER'S RETIREMENT OR ROW LANDING FIRST IS MET BY A RE-RUN ON ORIGIN'S
     # NEW TIP, whichever side of S3's fetch it lands on: before it, S3 finds
     # the tip moved and runs the verb again (`CS_RECHECK`); after it, the push
@@ -29717,277 +22503,6 @@ Nothing was written." 2
     msg="LANES(${lane_new:-${LANES_LANE:-unknown}}@$WS): add row"
     commit_publish "$msg"
     exit $?
-    ;;
-
-  # FEATURE 007, T427 — `start-record`: LANE-START'S THREE REGISTER WRITES AS
-  # ONE WRITE VERB (FR-025; the design's "The bind as one verb", Y:5521–5555,
-  # at spec commit `a6497d00`). `lane-start` makes them today as three commits
-  # and pushes: `add-row` for a new row, or, for a row that is there, its
-  # session-cell appends (`append-session-id`) and `set-row-state`; then `log
-  # STARTED` or `log RESUMED`. Here they are ONE write, in files mode one
-  # commit and one push, so the partial states between them go away:
-  #   * every test the three make is made first, before the lock: `add-row`'s
-  #     (`add_row_checks`), `set-row-state`'s of the phrase (`row_state_check`)
-  #     and of the row (`row_state_split_or_die`), `append-session-id`'s of the
-  #     text it appends, and the log line's (`write_event_checks`). A refusal
-  #     leaves the checkout as it found it;
-  #   * one lock, and one `checkout_sync … write` over the register and the
-  #     lane's log;
-  #   * the edits in today's order: the new row; or each cell append, in the
-  #     order given, then the state; then the log line. A cell append whose
-  #     anchor does not occur exactly once in the session cell is LEFT OUT AND
-  #     SAID, and the write goes on without it, as `lane-start`'s own append is
-  #     a note and never a refusal (Y:5537). Any other refusal refuses the whole
-  #     write, with nothing written;
-  #   * one `commit_publish` of `lanes/LANES.md` and the log (with a case-only
-  #     rename's old path, as `write_event`'s), under Y:5536's message:
-  #     `LOG(<L>@<WS>): RESUMED lane:<L> + row: LIVE, session cell → <sid>`.
-  #     `<sid>` is the log line's session, and the clause is there only where a
-  #     cell append was made. A new row says `+ row: added`;
-  #   * then, after the lock, its tail (`start_record_tail`).
-  # ON PRIMARY it takes the entry every writer takes. It is in the write guard's
-  # list, so T409's mode ask runs for it, and its `primary` arm exits 69 until
-  # phase 2's T415 replaces that arm with the attempt loop, which runs this arm
-  # in its child and stops it at `commit_publish`'s seam (T414). Nothing here
-  # is primary's own, and LANES_ACT and LANES_EXPECT are read on primary only.
-  #   EXIT CODES (the table at the head of this file): 0 written and
-  #   confirmed · 1 environment, or a read `add-row`'s tests could not make ·
-  #   2 usage; every refusal of the writes it makes as one; a row or a `--log`
-  #   object that names another lane than its first word; a LANES_LANE that is
-  #   not that word; a first word that is not the row's own spelling, byte for
-  #   byte, an alias's new name included (6767463594, question 6); an
-  #   `--add-row` for which `canon_lane` answers any lane at all, naming it
-  #   (6774499606, T427's question 3); under LANES_ROUTE_WRITES=1 the router
-  #   refuses those two before anything is cloned where W's own copy answers
-  #   a lane and its fetch confirms it (6770733371, new question (a)), and
-  #   every refusal the arm makes of an `--add-row` call's own words before
-  #   it reads anything (its second word, its options and their counts, its
-  #   `--log`, its row), in the arm's own words and in its order
-  #   (6779688808, Q21; 6780753157, Q49); a
-  #   LANES_SESSION that is not a transcript uuid; S3's refusals; each with
-  #   nothing written · 3 pushed, not confirmed · 4 the lock · 5 an edit's
-  #   proof · 6 S4's commit, kept and named · 66 an alias table that could
-  #   not be read, where the router asks `canon_lane` (under
-  #   LANES_ROUTE_WRITES=1, before anything is cloned): the router carries
-  #   `canon_lane`'s code as it does for every routed verb, `canon_lane … ||
-  #   exit $?`. WHERE THIS ARM ASKS, in the lane's checkout or in a call that
-  #   is not routed, the same unreadable table is its 2, `canon_lane … || exit
-  #   2`, as every writer arm's ask is. BOTH CODES STAND, with nothing written
-  #   under either (lane 3, #165 6780753157, Q48), since changing either
-  #   reaches beyond this verb · 69 on primary, at T409's ask (T415 and T417
-  #   give 69, 75 and 3 their primary meanings)
-  start-record)
-    sr_use="$SR_USE"
-    sr_in="${1-}"; sr_verb="${2-}"
-    [ -n "$sr_in" ] && [ -n "$sr_verb" ] || die "$sr_use" 2
-    check_lane_name "$sr_in"
-    case "$sr_verb" in
-      STARTED|RESUMED) : ;;
-      *) sr_form_die verb "$sr_verb" ;;
-    esac
-    shift 2
-    sr_row=""; sr_rows=0; sr_phrase=""; sr_states=0; sr_obj=""; sr_pay=""; sr_logs=0
-    sr_anc=(); sr_add=(); sr_why=(); sr_k=0
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        --add-row)
-          [ $# -ge 2 ] || sr_form_die row-short
-          sr_row="$2"; sr_rows=$((sr_rows + 1)); shift 2 ;;
-        --append-cell)
-          [ $# -ge 4 ] || sr_form_die cell-short
-          sr_anc[$sr_k]="$2"; sr_add[$sr_k]="$3"; sr_why[$sr_k]="$4"; sr_k=$((sr_k + 1)); shift 4 ;;
-        --state)
-          [ $# -ge 2 ] || sr_form_die state-short
-          sr_phrase="$2"; sr_states=$((sr_states + 1)); shift 2 ;;
-        --log)
-          [ $# -ge 4 ] || sr_log_usage_die short
-          case "$3" in
-            '→'|'->') : ;;
-            *) sr_log_usage_die arrow "$3" ;;
-          esac
-          sr_obj="$2"; sr_pay="$4"; sr_logs=$((sr_logs + 1)); shift 4 ;;
-        *) sr_form_die stray "$1" ;;
-      esac
-    done
-    [ "$sr_logs" = 1 ] || sr_log_usage_die count "$sr_logs"
-    [ "$sr_rows" -le 1 ] && [ "$sr_states" -le 1 ] || sr_form_die once
-    if [ "$sr_rows" = 1 ]; then
-      [ "$sr_states" = 0 ] && [ "$sr_k" = 0 ] || sr_form_die mixed
-    else
-      [ "$sr_states" = 1 ] || sr_form_die neither
-    fi
-    [ -n "$sr_pay" ] || sr_log_usage_die payload
-    case "$sr_obj" in
-      lane:?*) : ;;
-      *) sr_log_usage_die form "$sr_verb" "$sr_obj" ;;
-    esac
-    # THE CALLER NAMES THE LANE AND THE SESSION, as Y:5528's call form does
-    # (lane 3's rulings 2 and 3 on T427, #165 6755005268). `LANES_LANE` is
-    # `<L>` byte for byte, and `<L>` is the row's own spelling, which is asked
-    # below, where the row is known (#165 6767463594, question 6), so T412's
-    # digest, the pending record's `lane`, T415's `--lane` and the row all name
-    # one lane in one spelling. `LANES_SESSION` is a transcript
-    # uuid, `valid_uuid`'s 8-4-4-4-12 hexadecimal, the test `write_event_checks`
-    # makes of every event line's session (Amendment 7(b), R-A11 (e)): Y:5431's
-    # guard finds the pending record by it, and a fallback to the row's last id
-    # would read the row before this write, the previous transcript's. Asked
-    # before any read and before the lock; `write_lane_of` does not route a call
-    # that fails either, so no checkout is cloned for it.
-    if [ "${LANES_LANE-}" != "$sr_in" ]; then
-      sr_says="LANES_LANE is not set"; [ -z "${LANES_LANE:-}" ] || sr_says="LANES_LANE is '$LANES_LANE'"
-      die "$sr_says, and start-record's first word is '$sr_in': the call names its lane in both, byte for byte (LANES_LANE=$sr_in $SELF start-record $sr_in …), so its digest, its pending record and its row are one lane's. Nothing was written. $sr_use" 2
-    fi
-    if ! valid_uuid "${LANES_SESSION-}"; then
-      sr_says="LANES_SESSION is not set"; [ -z "${LANES_SESSION:-}" ] || sr_says="LANES_SESSION is '$LANES_SESSION', which is not a transcript uuid"
-      die "$sr_says: start-record's log line names the session taking the act, and the pending record is found by it, so the call names it (LANES_SESSION=\"\$CLAUDE_CODE_SESSION_ID\" LANES_LANE=$sr_in $SELF start-record …). It is never taken from the row, which this write is about to change. Nothing was written. $sr_use" 2
-    fi
-    # THE WORDS' OWN TESTS, BEFORE THE FETCH, THE RESOLVER AND THE LOCK, as
-    # `set-row-state` and `append-session-id` make theirs.
-    sr_word=""; sr_line=""
-    if [ "$sr_rows" = 0 ]; then
-      row_state_check "$sr_phrase"
-      sr_word="$ROW_STATE"; sr_line="$ROW_STATE_LINE"
-      sr_i=0
-      while [ "$sr_i" -lt "$sr_k" ]; do
-        [ -n "${sr_anc[$sr_i]}" ] && [ -n "${sr_add[$sr_i]}" ] ||
-          die "--append-cell's anchor and its text to append may not be empty: the anchor is matched inside the session cell, and the text is appended at the cell's end. Nothing was written. $sr_use" 2
-        case "${sr_add[$sr_i]}" in
-          *"|"*) die "start-record's appended text may not contain '|': it would forge a cell boundary in the row. Got '${sr_add[$sr_i]}'. Nothing was written." 2 ;;
-        esac
-        if managed_projection_hint "${sr_add[$sr_i]}"; then
-          die "start-record's appended text carries managed-owner vocabulary ('managed owner', 'managed binding', 'mode=managed' or 'managed:'), and only the managed ledger's own writer writes it into a row. Nothing was written." 2
-        fi
-        sr_i=$((sr_i + 1))
-      done
-    fi
-    # THE LANE, AND ITS LOG LINE'S OBJECT. A new row names its lane in its
-    # first cell, as `add-row` reads it, and the first word must name the same
-    # lane: one write is one lane's, so the row, the checkout it is routed
-    # through and the log line agree. The row's spelling is kept, as `add-row`
-    # keeps it and `log` then finds it. A row that is there is found as
-    # `set-row-state` finds it, after `log`'s fetch (R30). EITHER WAY `<L>` IS
-    # THE ROW'S OWN SPELLING, byte for byte (lane 3, #165 6767463594,
-    # question 6), and a first word in another spelling is refused, 2. A NEW
-    # ROW IS A NEW LANE'S: an `--add-row` for which `canon_lane` answers any
-    # lane at all is refused, 2, naming it (#165 6774499606, T427's question
-    # 3). Under `LANES_ROUTE_WRITES=1` the router has asked these already,
-    # before anything was cloned (#165 6770733371, new question (a)), and an
-    # `--add-row`'s `--log` object too; here they are asked again in the same
-    # words, for a call that is not routed and for one whose router fetch was
-    # no answer. A row under any case is the one exception: the router names
-    # it in `sr_known_die`'s words, and this arm in Amendment 15(a)'s, from
-    # `add_row_checks`, which `add-row` shares.
-    if [ "$sr_rows" = 1 ]; then
-      # THE ROW'S TEST AND THE `--log` TEST READ NOTHING, SO THEY COME FIRST,
-      # before `add_row_checks` and its reads, as the router asks them before
-      # the clone (new question (a); lane 3, #165 6774499606, T427's question
-      # 3). So a row that spells `<L>` in another case is refused for its
-      # spelling, routed or not; a row the lane already has, spelled as `<L>`,
-      # still gets Amendment 15(a)'s refusal from `add_row_checks`.
-      sr_row_names_lane "$sr_row" "$sr_in"
-      sr_log_names_lane "$sr_obj" "$sr_in"
-      add_row_checks "$sr_row"
-      # AND THE LANE `add_row_checks` READ IS `<L>` BYTE FOR BYTE, asked of
-      # `lane_new` itself, before the lock (REV427b, M1): this arm refuses so
-      # wherever it runs, whether or not a router asked the row first.
-      [ "$lane_new" = "$sr_in" ] ||
-        die "the row given to --add-row spells its lane '$lane_new' in its first cell, and start-record's first word is '$sr_in': the row names <lane> byte for byte, since LANES_LANE equals it and is the digest's lane as given (Y:5171), so the digest, the pending record, the row and the log line spell one lane alike. Spell the lane alike in the row, the first word and LANES_LANE. Nothing was written. $sr_use" 2
-      sr_lane="$lane_new"
-      # AND `canon_lane` ANSWERS NO LANE FOR IT (lane 3, #165 6774499606,
-      # T427's question 3), asked after `add_row_checks`' fetch and before the
-      # lock. A row under any case got Amendment 15(a)'s refusal above, so
-      # what is left here is a former name's: an alias the table resolves to
-      # another lane, refused, 2, naming it. Plain `add-row` does not ask
-      # this; its row for a former name is older than 007 (REV427b's R7a).
-      sr_c="$(CANON_LANE_NOTE=former; canon_lane "$sr_lane")" || exit 2   # Amendment 15
-      [ "$sr_c" = "$sr_lane" ] || sr_known_die "$sr_lane" "$sr_c"
-      CS_RECHECK=1   # `add-row`'s, for the same reason: its checks ran before the lock
-    else
-      log_sync
-      sr_lane="$(CANON_LANE_NOTE=former; canon_lane "$sr_in")" || exit 2   # Amendment 15
-      check_lane_name "$sr_lane"
-      # `<L>` IS THE ROW'S OWN SPELLING (lane 3, #165 6767463594, question 6,
-      # which corrects ruling 3 of 6755005268): where `canon_lane` answers
-      # another spelling, an alias's new name included, the call is refused
-      # here, before the lock, naming it. `LANES_LANE` equals `<L>` and is the
-      # digest's lane as given (Y:5171), which T412 and T415 keep so that a
-      # rerun finds its record, so only `<L>` in the row's spelling makes the
-      # digest, the pending record and the row spell one lane alike.
-      [ "$sr_lane" = "$sr_in" ] || sr_spelling_die "$sr_in" "$sr_lane"
-      sr_co="$(canon_object "$sr_obj" "")" || exit 2
-      if [ "$sr_co" != "lane:$sr_lane" ]; then
-        sr_says="$sr_obj"; [ "$sr_co" = "$sr_obj" ] || sr_says="$sr_obj, that is $sr_co"
-        die "--log names $sr_says, and this write is lane $sr_lane's: its log line is that lane's own, lane:$sr_lane. Nothing was written. $sr_use" 2
-      fi
-    fi
-    # THE LOG LINE, TESTED AND BUILT AS `log` TESTS AND BUILDS IT, with its
-    # lifecycle pre-image and the managed seam's verdict, before the lock. ONE
-    # INSTANT FOR THE ONE WRITE: the state cell is stamped with the log line's
-    # UTC, taken here as `log` takes it.
-    sr_utc="$(utc_now)"
-    write_event_checks "$sr_lane" "$sr_verb" "lane:$sr_lane" '→' "$sr_pay" "" "$sr_utc" "$LANES_SESSION"
-    acquire_lock
-    checkout_sync start-record "$sr_lane" write "$LANES_PATH" "${we_paths[@]}" "$we_lp"   # Amendment 23 S3
-    managed_seam_refuse "$sr_lane" "start-record"   # 283: again, on what S3 brought in (write_event says why)
-    # THE ROW, COMPUTED WHOLE BEFORE A BYTE IS WRITTEN: each cell append on the
-    # row as the one before it left it, then the state on the result, so a
-    # refusal here (the row, or its state cell) still leaves the register as it
-    # was. The row is read after S3, as each of the three verbs reads it.
-    sr_cells=0; sr_n=""; sr_new=""; sr_state=""; sr_was=""; sr_said=()
-    if [ "$sr_rows" = 0 ]; then
-      sr_n="$(row_line "$sr_lane")" || exit 2
-      sr_new="$(sed -n -e "${sr_n}p" "$LANES_FILE")"
-      sr_i=0
-      while [ "$sr_i" -lt "$sr_k" ]; do
-        sr_a="${sr_anc[$sr_i]}"; sr_t="${sr_add[$sr_i]}"; sr_w="${sr_why[$sr_i]}"
-        if ! row_split_session_cell "$sr_new"; then
-          sr_said+=("lane $sr_lane's row (line $sr_n) does not have three '|' before its session cell ends, so '$sr_t' is NOT appended to it. It is left out of this write, which goes on without it, as lane-start's own cell append is a note and never a refusal (Y:5537).")
-        else
-          sr_c="$(count_occurrences "$RSC_CELL" "$sr_a")" || sr_c="?"
-          if [ "$sr_c" = 1 ]; then
-            sr_new="$RSC_HEAD$(rstrip_spaces "$RSC_CELL") $sr_t $RSC_TAIL"
-            sr_cells=$((sr_cells + 1))
-            sr_said+=("session cell: '$sr_t' appended after its anchor '$sr_a'${sr_w:+ ($sr_w)}")
-          else
-            sr_said+=("the session cell was NOT extended with '$sr_t': '$sr_a' occurs $sr_c time(s) in lane $sr_lane's SESSION CELL (line $sr_n), where exactly 1 is required, so this checkout's copy of the row may be older than the one the caller read. It is left out of this write, which goes on without it, as lane-start's own cell append is a note and never a refusal (Y:5537). Append it by hand once the row is current: LANES_LANE=$sr_lane $SELF append-session-id $sr_lane \"<the session cell's last id>\" \"$sr_t\"${sr_w:+ \"$sr_w\"}")
-          fi
-        fi
-        sr_i=$((sr_i + 1))
-      done
-      row_state_split_or_die "$sr_lane" "$sr_n" "$sr_new"
-      # SAID ONCE THE ROW IS KNOWN TO TAKE THE STATE, so a refusal above says
-      # only "Nothing was written", and never that a cell was appended.
-      for sr_s in ${sr_said[@]+"${sr_said[@]}"}; do note "$sr_s"; done
-      sr_state="${sr_word} · ${sr_utc} · ${sr_line}"
-      sr_was="$(rstrip_spaces "$RSS_CELL")"
-      sr_new="$RSS_HEAD$sr_state $RSS_TAIL"
-    fi
-    # AMENDMENT 15 — the log may be renamed to the row's spelling in this same
-    # commit, as `write_event` renames it; the old path joins the pathspecs.
-    ensure_log "$sr_lane"
-    sr_paths=("$LANES_PATH" "${we_paths[@]}")
-    [ -z "$LOG_RENAMED_FROM" ] || sr_paths+=("$LOG_RENAMED_FROM")
-    if [ "$sr_rows" = 1 ]; then
-      append_text_line "$sr_row"
-      sr_msg="LOG(${sr_lane}@${WS}): ${sr_verb} lane:${sr_lane} + row: added"
-    else
-      replace_line "$sr_n" "$sr_new"
-      if [ "${REPLACE_LINE_NOOP:-0}" = 1 ]; then
-        note "row UNCHANGED: it already reads exactly this, to the second"
-      else
-        note "state cell REPLACED: ${#sr_was} chars → ${#sr_state} chars"
-      fi
-      sr_msg="LOG(${sr_lane}@${WS}): ${sr_verb} lane:${sr_lane} + row: ${sr_word}"
-      [ "$sr_cells" = 0 ] || sr_msg="${sr_msg}, session cell → ${we_uuid}"
-    fi
-    append_text_line "$we_line" "$(log_file_for "$sr_lane")"
-    commit_publish "$sr_msg" "${sr_paths[@]}"
-    sr_rc=$?
-    state_events_flush
-    release_lock
-    # THE TAIL, AFTER THE LOCK (T418 makes it once per write id on primary).
-    start_record_tail
-    exit "$sr_rc"
     ;;
 
   commit)
@@ -30004,16 +22519,6 @@ Nothing was written." 2
     # A clean register is THE PUBLISH ACT (#194's remedy 1): it writes nothing
     # new, so S3 runs with every row but the unpushed one and no fast-forward,
     # and `commit_publish` publishes the queue (S4, "the publish act").
-    # FEATURE 007, T420 — ON PRIMARY A HAND EDIT IS REFUSED (D10; FR-026;
-    # R16; spec:171–173, which governs: lane openRepoTools-3, #165 6770820384,
-    # T420 S2): the register is the database there and the files it renders
-    # are its rendering, so a hand edit of the register, the carry form, or of
-    # any other rendered file is never committed, carried or pushed. It
-    # refuses with 2 before S3, writing nothing, with Y:2459's recovery
-    # (`commit_hand_edit_refuse`). The publish act stays (`cp_publish_fence`
-    # narrows it to `handoffs/` and Brett's two git files, `lanes/repos.tsv`
-    # and `lanes/log/README.md`, which are not rendered).
-    if [ "$NO_GIT" != 1 ] && cp_on_primary; then commit_hand_edit_refuse; fi
     if [ "$NO_GIT" != 1 ] && [ -n "$(cs_pending_of "$LANES_PATH")" ]; then
       checkout_sync commit "${LANES_LANE:-}" carry "$LANES_PATH"
       CP_REPLAY_KEEPS_EDIT=1
@@ -30103,30 +22608,6 @@ Nothing was written." 2
   # the rename from the content, as it always does. `ensure_log`'s two-step
   # `mv` is not needed either: a case-ONLY rename is refused below, so the two
   # names are two files on every filesystem this ships to.
-  #
-  # ON PRIMARY (FEATURE 007, T422; Q13(a), Brett's answer, #165 6710653292;
-  # Y:3444–3451, Y:5092; spec:368–376; lane 3's R18 and R19) THE FOUR MOVES
-  # ARE TWO ACTS, AND THE TRANSACTION COMES FIRST:
-  #   - THE TRANSACTION, from an attempt's child: the row's key cell, the
-  #     log's move and its `RENAMED` line, and `lanes/aliases.tsv`, as one
-  #     journal entry. The row's handoff column already names the handoff's
-  #     new path, and the handoff's checks, the stamp's among them, read the
-  #     lane checkout's file before the seam, so a handoff that could not be
-  #     moved and stamped refuses with nothing sent.
-  #   - THEN THE HANDOFF, after `committed`: the parent moves it and writes
-  #     Rule 3's stamp in the lane's checkout, outside the flag, as this
-  #     arm's own S3–S4 commit (`pw_rl_move`, `rl_move_act`), which is no
-  #     register write. The renderer never moves it. A move that fails
-  #     leaves the column naming the file not yet moved, with the hand steps
-  #     printed, and the run keeps the code its tail gave.
-  #   - The lifecycle directory moves under the workstation's sidecar lock
-  #     (R19), and the note and the comments cite `register seq <s>` where
-  #     they cited the commit's sha (Q19(A)).
-  #   - EXIT 3 ON PRIMARY IS D8's: the rename
-  #     may not be written; run the printed `LANES_WRITE_ID` rerun, which writes it once or finds it
-  #     (T417; the exit table's row 3). Off primary 3 is still a push not
-  #     confirmed, which `commit_publish` says in its own words. 69 and 75
-  #     are the primary branch's, and nothing was written.
   rename-lane)
     rl_old=""; rl_new=""; rl_why=""; rl_verbatim=0
     while [ $# -gt 0 ]; do
@@ -30148,10 +22629,6 @@ Nothing was written." 2
     done
     [ -n "$rl_old" ] && [ -n "$rl_new" ] \
       || die "usage: rename-lane <old> <new> [\"<why>\"] [--verbatim] [--no-github]" 2
-    # FEATURE 007, T422 — THE HANDOFF ACT (R18): this process is the one a
-    # primary run's parent started after COMMIT, outside the flag, to move and
-    # stamp the handoff in the lane's checkout. It never returns.
-    [ -z "$RL_MOVE" ] || rl_move_act
     check_lane_name "$rl_old"
     check_lane_name "$rl_new"
     if managed_projection_hint "$rl_new"; then
@@ -30179,7 +22656,6 @@ Nothing was written." 2
     # own spelling, and with clause (e) behind it a name this lane was called
     # two renames ago renames the lane it is now.
     rl_crc=0
-    rl_typed="$rl_old"   # feature 007, T422: the rerun is asked by the name as typed (`rl_rerun`)
     rl_old="$(canon_lane "$rl_old")" || rl_crc=$?
     # ONE CONDITION, ONE CODE (Copilot round 6 on openRepoTools#81). `canon_lane`
     # answers 66 for an alias table it could not read so that `canon-lane`'s four
@@ -30226,13 +22702,6 @@ Nothing was written." 2
     # case-insensitive filesystem they are the same intent, whose stored lane
     # carries the canonical spelling rather than the requested new spelling.
     if [ "$(lc "$rl_old")" = "$(lc "$rl_new")" ]; then
-      # FEATURE 007, T422 — UNLESS IT IS THE RERUN (Y:3449–3451): on primary,
-      # where the typed `<old>` is another name than `<new>` and `canon_lane`
-      # answered `<new>`, the register holds this rename already, and a
-      # handoff move it still owes is made with no register line (`rl_rerun`,
-      # which ends the child where it acts). Files mode, and a rerun with no
-      # move to make, refuse here as they always have.
-      [ "$(lc "$rl_typed")" = "$(lc "$rl_new")" ] || rl_rerun "$rl_typed"
       die "'$rl_old' and '$rl_new' are ONE name under any case (Amendment 15), so this is not a rename at all: it is a change to the row's own SPELLING, which every reader already resolves to and which Amendment 15(d) makes a hand act — the newer row's session id(s) appended to the older row's cell, in one commit. Nothing was written." 2
     fi
 
@@ -30538,19 +23007,11 @@ EOF
       esac
     fi
     rl_hfile=""; rl_hfile_new=""; rl_h_rel=""; rl_h_rel_new=""
-    # FEATURE 007, T422 — ON PRIMARY THE HANDOFF IS THE LANE CHECKOUT'S (Q13(a);
-    # Y:5092; spec:368–376). An attempt's child runs this arm on a scratch tree
-    # that holds the register's render set and no handoff (Y:5050), so the
-    # handoff the row names is looked for, and every check below is made, in
-    # the lane's own checkout `<c>`, where the parent makes its move and stamp
-    # after COMMIT (`rl_hrepo`, `rl_move_write`). Off the flag it is
-    # `LANES_REPO`, as it always was.
-    rl_handoff_repo "$rl_old"
     if [ -n "$rl_hcell" ]; then
       case "$rl_hcell" in
         '~/'*) rl_hfile="$HOME/${rl_hcell#'~/'}"; rl_hfile_new="$HOME/${rl_hpath_new#'~/'}" ;;
         /*)    rl_hfile="$rl_hcell"; rl_hfile_new="$rl_hpath_new" ;;
-        *)     rl_hfile="${rl_hrepo:+$rl_hrepo/}$rl_hcell"; rl_hfile_new="${rl_hrepo:+$rl_hrepo/}$rl_hpath_new" ;;
+        *)     rl_hfile="${LANES_REPO:+$LANES_REPO/}$rl_hcell"; rl_hfile_new="${LANES_REPO:+$LANES_REPO/}$rl_hpath_new" ;;
       esac
       # THE CONTAINMENT TEST IS PHYSICAL (Copilot round 5 on openRepoTools#81).
       # A string prefix accepts `handoffs/../../outside/x.md` and accepts a path
@@ -30567,8 +23028,8 @@ EOF
       # (and its estate directory) at the first swap — so `cd -P` of the leaf
       # directory fails for every lane that has not swapped yet, and taking that
       # failure as "outside the workspace" refused the ordinary case.
-      if [ -n "$rl_hrepo" ]; then
-        rl_repo_real="$( CDPATH=''; cd -P -- "$rl_hrepo" 2>/dev/null && pwd -P )" || rl_repo_real="$rl_hrepo"
+      if [ -n "${LANES_REPO:-}" ]; then
+        rl_repo_real="$( CDPATH=''; cd -P -- "$LANES_REPO" 2>/dev/null && pwd -P )" || rl_repo_real="$LANES_REPO"
         rl_anc="$(dirname -- "$rl_hfile")"; rl_suffix=""; rl_hdir_real=""; rl_walk=0
         while [ "$rl_walk" -lt 64 ]; do
           if [ -d "$rl_anc" ]; then
@@ -30606,7 +23067,7 @@ EOF
       # `lane-start` computes), so a row naming one elsewhere is a hand edit,
       # and the exit is to put the file where the row's own convention puts it.
       if [ -z "$rl_h_rel" ]; then
-        die "lane $rl_old's row names the handoff '$rl_hcell', which resolves to $rl_hfile — outside the workspace repository ${rl_hrepo:-<unknown>}. A rename is FOUR MOVES IN ONE COMMIT (Amendment 16), and a commit cannot carry a file outside its own checkout, so this one would be three moves and a note. Move that handoff under $rl_hrepo — \`handoffs/<estate>/session-handoff-<date>-lane-$rl_old.md\` is the path \`lane-start\` computes — point the row's handoff column at it, and re-run. Nothing was written." 2
+        die "lane $rl_old's row names the handoff '$rl_hcell', which resolves to $rl_hfile — outside the workspace repository ${LANES_REPO:-<unknown>}. A rename is FOUR MOVES IN ONE COMMIT (Amendment 16), and a commit cannot carry a file outside its own checkout, so this one would be three moves and a note. Move that handoff under $LANES_REPO — \`handoffs/<estate>/session-handoff-<date>-lane-$rl_old.md\` is the path \`lane-start\` computes — point the row's handoff column at it, and re-run. Nothing was written." 2
       fi
       # `-L` BESIDE `-e`, because `-e` IS FALSE ON A DANGLING LINK (Copilot
       # round 5) — and `mv` would then replace that link, destroying a path this
@@ -30645,19 +23106,8 @@ EOF
     # half-written handoff would be stamped and committed under this rename's
     # message, the thing the old `--no-sweep` default was made to stop.
     if [ "$rl_h_touch" = 1 ] && [ "$NO_GIT" != 1 ] \
-       && ! git -C "$rl_hrepo" ls-files --error-unmatch -- "$rl_h_rel" >/dev/null 2>&1; then
-      die "the handoff at $rl_h_rel exists here and git does not track it, so its lines have never been committed by anyone — and this rename would stamp it, move it and commit it under its own message. Whoever wrote it commits it first: \`git -C $rl_hrepo add -- $rl_h_rel && git -C $rl_hrepo commit -m \"handoff(<lane>@<workstation>): <what>\"\`. Nothing was written." 2
-    fi
-    # FEATURE 007, T422 — ON PRIMARY, TWO MORE REFUSALS BEFORE THE SEAM, so a
-    # handoff whose move and stamp could not be committed after COMMIT refuses
-    # with nothing sent (Y:5092). The move is a git commit in `<c>` whose push
-    # T420's backstop lets through only where every path it changes is under
-    # `handoffs/` (spec:183–185; R16 (d)), so a handoff elsewhere in `<c>` is
-    # refused here, where files mode would carry it in its one commit. And a
-    # pending change to either path in `<c>` is the lane's own unfinished work,
-    # which S3 step 4 refuses there as files mode refuses it here (S3 step 4).
-    if [ -n "$REG_SCRATCH" ] && [ "$rl_h_touch" = 1 ]; then
-      rl_move_refuse_checks
+       && ! git -C "$LANES_REPO" ls-files --error-unmatch -- "$rl_h_rel" >/dev/null 2>&1; then
+      die "the handoff at $rl_h_rel exists here and git does not track it, so its lines have never been committed by anyone — and this rename would stamp it, move it and commit it under its own message. Whoever wrote it commits it first: \`git -C $LANES_REPO add -- $rl_h_rel && git -C $LANES_REPO commit -m \"handoff(<lane>@<workstation>): <what>\"\`. Nothing was written." 2
     fi
 
     # ---- NOTHING ABOVE HAS WRITTEN A BYTE. The four moves follow, in one
@@ -30670,18 +23120,11 @@ EOF
     # gone, and `git add` FAILS on a pathspec that matches nothing at all,
     # which would end this write inside `commit_publish` with all four moves on
     # disk. Nothing in the index refers to it, so there is nothing to stage.
-    rl_log_tracked=0
     if [ -n "$rl_log_old_rel" ] && [ "$rl_log_old_rel" != "$rl_log_new_rel" ] \
        && { [ "$NO_GIT" = 1 ] || git -C "$LANES_REPO" ls-files --error-unmatch -- "$rl_log_old_rel" >/dev/null 2>&1; }; then
       rl_paths+=("$rl_log_old_rel")
-      rl_log_tracked=1
     fi
-    # FEATURE 007, T422 — ON PRIMARY THE HANDOFF PATHS LEAVE THE CHANGE SET
-    # (Y:5092; the plan's §3.13): the transaction holds the row, the log and
-    # the alias table, the seam refuses any path outside the render set
-    # (Y:5060), and the handoff's move and stamp are the parent's git commit
-    # in `<c>` after COMMIT (R18).
-    if [ "$rl_h_touch" = 1 ] && [ -z "$REG_SCRATCH" ]; then
+    if [ "$rl_h_touch" = 1 ]; then
       rl_paths+=("$rl_h_rel_new")
       [ "$rl_hmove" = 1 ] && rl_paths+=("$rl_h_rel")
     fi
@@ -30698,7 +23141,7 @@ EOF
     # four moves are one act and a filesystem can refuse the third of them.
     RL_SNAP="$(mktemp -d)" || die "no temporary directory could be made under ${TMPDIR:-/tmp}, and this write is not made without somewhere to put the copy that undoes it. Nothing was written." 1
     [ -n "$rl_log_old" ] && { cat -- "$rl_log_old" > "$RL_SNAP/log" || die "lane $rl_old's object log at $rl_log_old could not be read, so there is no copy to roll back to and this rename is not started. Nothing was written." 5; }
-    [ "$rl_h_touch" = 1 ] && [ -z "$REG_SCRATCH" ] && { cat -- "$rl_hfile" > "$RL_SNAP/handoff" || die "the handoff at $rl_hfile is named by the row and could not be READ, so it can be neither stamped nor rolled back — and a rename that moved it unstamped is three moves and a half (Amendment 16(d)). Fix the permission, or point the row's column at a handoff that is there, and re-run. Nothing was written." 5; }
+    [ "$rl_h_touch" = 1 ] && { cat -- "$rl_hfile" > "$RL_SNAP/handoff" || die "the handoff at $rl_hfile is named by the row and could not be READ, so it can be neither stamped nor rolled back — and a rename that moved it unstamped is three moves and a half (Amendment 16(d)). Fix the permission, or point the row's column at a handoff that is there, and re-run. Nothing was written." 5; }
     RL_ALIAS="$LANES_ALIASES_TSV"; RL_ALIAS_EXISTED=0
     if [ -f "$LANES_ALIASES_TSV" ]; then
       RL_ALIAS_EXISTED=1
@@ -30741,32 +23184,10 @@ EOF
     # on 2026-09-08 was a file written whole from what somebody remembered.
     rl_hstamp="RENAMED from $rl_old by $rl_uuid (lane $rl_new) at $rl_utc"
     rl_hdone=0
-    RL_MOVE_FROM=""; RL_MOVE_TO=""; RL_MOVE_STAMP=""
     if [ -z "$rl_hcell" ]; then
       note "the row names no handoff, so there is none to move or stamp (Amendment 16(d))"
     elif [ ! -f "$rl_hfile" ]; then
       note "the handoff the row names is not at $rl_hfile, so nothing was moved or stamped and the row's handoff column is left exactly as it is. If it turns up, rename it — $rl_hcell → $rl_hpath_new — and stamp it: $rl_hstamp"
-    elif [ -n "$REG_SCRATCH" ]; then
-      # FEATURE 007, T422 — ON PRIMARY, THE TRANSACTION FIRST (Q13(a); Y:3444–
-      # 3451, Y:5092; spec:368–376). Nothing is moved or stamped here: the
-      # stamp's checks run on `<c>`'s file before the seam, so a handoff that
-      # cannot take the stamp refuses with nothing sent; the row's handoff
-      # column is rewritten as if the file had moved (`rl_hdone`), so a move
-      # that fails after COMMIT leaves the column naming the file not yet
-      # moved; and the move and the stamp are kept for the parent, which makes
-      # them after `committed`, outside the flag (R18; `rl_move_write`).
-      [ "$rl_hmove" = 1 ] || rl_hfile_new="$rl_hfile"
-      rl_stamp_build "$rl_hfile" "$rl_hstamp"
-      rm -rf -- "$rl_htmpd"; rl_htmpd=""
-      RL_MOVE_TO="$rl_h_rel_new"; RL_MOVE_STAMP="$rl_hstamp"
-      if [ "$rl_hmove" = 1 ]; then
-        RL_MOVE_FROM="$rl_h_rel"
-        rl_hdone=1
-        note "the handoff moves $rl_hcell → $rl_hpath_new and takes Rule 3's stamp at line $((rl_hat + 1)) in lane ${rl_old}'s checkout $rl_hrepo once the register has committed this rename, as a git commit of its own (Q13(a)); the row's handoff column names $rl_hpath_new from this write on"
-      else
-        RL_MOVE_TO="$rl_h_rel"
-        note "the handoff $rl_hcell is not named \`…-lane-$rl_old.md\`, so it has no lane in its name to rename; it takes Rule 3's stamp at line $((rl_hat + 1)) where it is, in lane ${rl_old}'s checkout $rl_hrepo, once the register has committed this rename, as a git commit of its own (Q13(a))"
-      fi
     else
       if [ "$rl_hmove" = 1 ]; then
         RL_H_OLD="$rl_hfile"; RL_H_NEW="$rl_hfile_new"
@@ -30785,9 +23206,20 @@ EOF
       # The redirect is checked for the same reason: this file runs `set -u` and
       # not `set -e`, so an unwritable handoff would otherwise reach the
       # "stamped" note having written nothing.
-      # The stamped copy and its proof (`rl_stamp_build`), shared with the
-      # primary branch's checks before the seam and its move after COMMIT.
-      rl_stamp_build "$rl_hfile_new" "$rl_hstamp"
+      rl_hat="$(awk 'NR > 1 && /^[[:space:]]*$/ { print NR; exit }' "$rl_hfile_new" 2>/dev/null || :)"
+      [ -n "$rl_hat" ] || rl_hat=1
+      rl_htmpd="$(mktemp -d)" || die "no temporary directory could be made under ${TMPDIR:-/tmp} for the handoff's Rule 3 stamp." 1
+      cat -- "$rl_hfile_new" > "$rl_htmpd/pre" 2>/dev/null || { rm -rf -- "$rl_htmpd"; die "the handoff at $rl_hfile_new could not be read, so Rule 3's stamp cannot be written and this rename is not made without it." 5; }
+      { head -n "$rl_hat" -- "$rl_htmpd/pre"
+        printf '%s\n' "$rl_hstamp"
+        tail -n "+$((rl_hat + 1))" -- "$rl_htmpd/pre"
+      } > "$rl_htmpd/out"
+      if [ "$(sed -n -e "$((rl_hat + 1))p" "$rl_htmpd/out")" != "$rl_hstamp" ] ||
+         ! { head -n "$rl_hat" -- "$rl_htmpd/out"; tail -n "+$((rl_hat + 2))" -- "$rl_htmpd/out"; } | cmp -s - "$rl_htmpd/pre"
+      then
+        rm -rf -- "$rl_htmpd"
+        die "the handoff at $rl_hfile_new cannot take Rule 3's stamp without rewriting a byte of it, and a handoff written whole from anything but its own bytes is the act that lost two lanes' rows on 2026-09-08. The line it wants under its header block is: $rl_hstamp" 5
+      fi
       # AND THE STAMPED COPY REPLACES THE HANDOFF BY RENAME, NEVER THROUGH A
       # REDIRECT INTO IT (opensoft/openRepoTools#158). `>` truncated the handoff
       # before the first stamped byte was written, so a writer killed inside
@@ -30805,7 +23237,15 @@ EOF
       # leaves is `<handoff>.rename.XXXXXX`, which no reader of `*.md` takes
       # for a handoff. THIS MAKES THE STAMP ATOMIC, NOT THE RENAME: a crash
       # between two of the four moves still leaves them apart.
-      rl_stamp_publish "$rl_hfile_new"
+      rl_hpub="$( CDPATH=''; cd -P -- "$(dirname -- "$rl_hfile_new")" && pwd -P )" || { rm -rf -- "$rl_htmpd"; die "the directory of the handoff at $rl_hfile_new could not be resolved, so Rule 3's stamp cannot be published beside it and this rename is not made without it." 5; }
+      rl_hpub="$rl_hpub/$(basename -- "$rl_hfile_new")"
+      rl_htmp="$(mktemp "$rl_hpub.rename.XXXXXX")" || { rl_htmp=""; rm -rf -- "$rl_htmpd"; die "no temporary file could be made beside the handoff at $rl_hfile_new, and Rule 3's stamp is not written into a handoff in place. This rename is not made without it." 5; }
+      if ! cp -p -- "$rl_hpub" "$rl_htmp" || ! cat -- "$rl_htmpd/out" > "$rl_htmp" || ! mv -f -- "$rl_htmp" "$rl_hpub"; then
+        rm -f -- "$rl_htmp"; rl_htmp=""; rm -rf -- "$rl_htmpd"
+        die "the handoff at $rl_hfile_new could not be written, so Rule 3's stamp is not there and this rename is not made without it." 5
+      fi
+      rl_htmp=""
+      rm -rf -- "$rl_htmpd"
       note "handoff stamped at line $((rl_hat + 1)) of $rl_hpath_new: $rl_hstamp"
     fi
     # The row's handoff column follows the file, and only where the file
@@ -30847,67 +23287,20 @@ EOF
     # exists, the work is IN it, and `commit_publish` owns the recovery from there
     # — its exit 3 says so in its own words, and undoing a committed rename
     # behind its back would be a second, inverse change nobody asked for.
-    # ON PRIMARY (feature 007, T422) NO COMMIT IS MADE HERE: the seam hands
-    # the change set to the parent, whose commit call decides it, and the
-    # scratch tree's HEAD never moves, so the undo is the scratch tree's alone.
-    # A 3 there is D8's (T417): the rename
-    # may not be written; run the printed `LANES_WRITE_ID` rerun, which writes it once or finds it.
     RL_HEAD_BEFORE="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
     rl_msg="LANES($rl_new@$WS): RENAMED lane $rl_old → $rl_new (Amendment 16) — the row, $rl_log_new_rel, the handoff and $LANES_ALIASES_PATH in one commit"
-    # FEATURE 007, T422 — ON PRIMARY THE ENTRY'S MESSAGE NAMES WHAT IT HOLDS:
-    # the seam hands `$msg` to the journal as git's default cleanup leaves it
-    # (Y:5061; T414, #165 6859073786), and the handoff
-    # is not in this entry but in the git commit that follows it (Q13(a)).
-    [ -z "$REG_SCRATCH" ] ||
-      rl_msg="LANES($rl_new@$WS): RENAMED lane $rl_old → $rl_new (Amendment 16) — the row, $rl_log_new_rel and $LANES_ALIASES_PATH in one register write; the handoff's move and stamp follow in the lane's checkout (Q13(a))"
-    # FEATURE 007, T422 — ON PRIMARY THE LOG'S MOVE IS ONE `rename` (lane
-    # openRepoTools-3, #165 6834224496, question 1; O5; register-cli.md:492,
-    # "one per rename the verb made"; Y:3446–3447): where the old log is
-    # tracked and is not the new one, the seam is told both paths, and pairs
-    # the old path's D line with the new path's A line in `renames.tsv`. So
-    # the entry moves the log's lines with it and sends only the `RENAMED`
-    # line, where `remove` plus `create` sent every line again, as lines of
-    # this write, and a line the primary CHECK refuses (Y:1217–1219) ended it
-    # with 23514, 69. Under the flag only: files mode's `commit_publish` reads
-    # `LOG_RENAMED_FROM` as `ensure_log`'s case-only rename and commits from
-    # the index, so there the pair is never set, and the commit stays by the
-    # pathspecs above. The seam clears both on `committed`.
-    if [ -n "$REG_SCRATCH" ] && [ "$rl_log_tracked" = 1 ]; then
-      LOG_RENAMED_FROM="$rl_log_old_rel"
-      LOG_RENAMED_TO="$rl_log_new_rel"
-    fi
     commit_publish "$rl_msg" "${rl_paths[@]}"
     rl_rc=$?
     # `commit_publish` RETURNED, so either it committed or it had nothing staged;
     # every other outcome exits from inside it and is the trap's business.
     RL_ACTIVE=0
-    # FEATURE 007, T422 — ON PRIMARY, WHAT FOLLOWS RUNS ONLY AFTER `committed`
-    # (FR-024; Y:5011), and the handoff's move goes to the parent (R18): an
-    # attempt's child that returned here with no seq refuses 2, nothing sent
-    # (`rl_after_committed`); one with its seq writes the move for its parent
-    # (`rl_move_write`), and moves the lifecycle directory under the
-    # workstation's sidecar lock, since its own lock is the scratch tree's,
-    # which `release_lock` then releases (R19; review m2).
-    [ "$rl_rc" != 0 ] || rl_after_committed
     state_events_flush
     lane_alias_flush
-    [ "$rl_rc" != 0 ] || rl_move_write
-    [ "$rl_rc" != 0 ] || rl_state_rename "$rl_lsr_old" "$rl_new"
+    [ "$rl_rc" != 0 ] || lane_state_rename "$rl_lsr_old" "$rl_new"
     release_lock
     [ "$rl_rc" = 0 ] || exit "$rl_rc"
 
-    # FEATURE 007, T422 — ON PRIMARY, `register seq <s>` WHERE THE SHA WAS
-    # (Q19(A); Y:266–267, Y:5076): in an attempt's child HEAD is the scratch
-    # tree's snapshot commit, not this write's, whose commit is the mirror's,
-    # made later by the renderer with `Register-Seq: <s>` in its trailers. So
-    # the note and each comment below cite `register seq <s>`, from
-    # `REGISTER_SEQ`, which only the seam's `committed <s>` sets; a replay's
-    # child takes the entry's own seq (T418), so a replayed comment cites it.
-    if [ -n "$REG_SCRATCH" ]; then
-      rl_sha="register seq ${REGISTER_SEQ}"
-    else
-      rl_sha="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
-    fi
+    rl_sha="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
     note "lane $rl_old is lane $rl_new (${rl_sha:-no sha}); '$rl_old' resolves to it for ever through $LANES_ALIASES_PATH"
 
     # (g) ONE COMMENT PER OBJECT THE LANE HOLDS — Amendment 7(b)'s partition,
@@ -31251,7 +23644,7 @@ EOF
           die "--force refused: lane $h_lane's own log ends $HOLDER_TERMINAL_UNKNOWN, and this workstation could not read whether a live session still backs it up. That is NOT 'no live session holds it' — refused for the same reason an unreadable read refuses the dead-lane path (issue #30), never assumed safe. Rule 1: the lane stops and reports; it does not author a successor." 2
         fi
         if ! claim_is_stale "$h_lane" "$obj" "$h_utc" "$h_file" "$h_line"; then
-          die "--force refused: lane $h_lane's claim on $obj is $(age_of "$h_utc" "$(now_epoch)") old (threshold ${STALE_HOURS}h), or it is a PR, or that lane has since OPENED a PR naming it. Rule 1 makes a claim takeable only when it is stale, and lane $h_lane's own log does not end on ENDED or RETIRED either (or a live session on this workstation still holds it)." 2
+          die "--force refused: lane $h_lane's claim on $obj is $(age_of "$h_utc") old (threshold ${STALE_HOURS}h), or it is a PR, or that lane has since OPENED a PR naming it. Rule 1 makes a claim takeable only when it is stale, and lane $h_lane's own log does not end on ENDED or RETIRED either (or a live session on this workstation still holds it)." 2
         fi
         takeover_from="$h_lane"
         takeover_note="stale claim by lane $h_lane, posted $h_utc, no PR after ${STALE_HOURS}h"
@@ -31353,22 +23746,9 @@ EOF
     CS_RECHECK=0
     CLAIM_SKIP_DEAD=""
     [ "$wrc" = 0 ] || exit "$wrc"
-    reg_tail_committed claim   # feature 007, T421: on primary, only after `committed`
 
     # 6. the comment, AFTER the push, citing the commit that carries the line.
-    #    FEATURE 007, T421 — ON PRIMARY, `register seq <s>` WHERE THE SHA WAS
-    #    (Q19(A); FR-031; Y:266–267, Y:5076; spec:377–384). In an attempt's
-    #    child HEAD is the scratch tree's snapshot commit, not this write's: the
-    #    write's commit is the mirror's, which the renderer makes later with
-    #    `Register-Seq: <s>` in its trailers. So the comment and the line below
-    #    cite `register seq <s>` in the sha's place, from `REGISTER_SEQ`, which
-    #    only the seam's `committed <s>` sets. A replay's child takes the
-    #    entry's own seq (T418), so a replayed comment cites the same.
-    if [ -n "$REG_SCRATCH" ]; then
-      sha="register seq ${REGISTER_SEQ}"
-    else
-      sha="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
-    fi
+    sha="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
     if [ "$NO_GITHUB" != 1 ]; then
       # The comment opens with its own verb, as Rule 1 spells it: `TAKEOVER —
       # lane <name>, …` for a takeover and `CLAIMED — lane <name>, …` for a
@@ -31427,7 +23807,6 @@ EOF
     uuid="$(session_for "$lane")"
     utc="$(utc_now)"
     write_event "$lane" RELEASED "$obj" "" "" "$why" "$utc" "$uuid" || exit $?
-    reg_tail_committed release   # feature 007, T421: on primary, only after `committed`
     if [ "$NO_GITHUB" != 1 ]; then
       url="$(gh_comment "$obj" "$(printf 'RELEASED — lane %s, session %s@%s, %s, for %s%s\n' \
                "$lane" "$uuid" "$WS" "$utc" "$obj" "${why:+ — $why}")" 2>/dev/null || :)"
@@ -31826,23 +24205,6 @@ EOF
   # EXIT CODES, this file's family: 0 THE LANE IS FREE — bind it · 2 the wait
   # ended with nothing, or the request was refused · 8 the lane was already free
   # · 1 a read failed, which is never "the lane is free" · 64 usage.
-  #
-  # ON PRIMARY (feature 007, T423; Y:5090, Y:5153, Y:5326; spec:257–259) the
-  # write is one register transaction made from an attempt's child (T415), and
-  # the arm's code after `write_event` is the write's after-COMMIT tail, run
-  # once. The note, the pane and the wait run only where the seam said
-  # `committed` (`rh_after_committed`); a replay (T418) types into no pane but
-  # still waits; and each poll reads the register at its head (`reg_flush`),
-  # with no fetch. Its notes, the PLAN lines included, say the register, not
-  # the pushed or published log (lane openRepoTools-3, #165 6770688147, T423
-  # Q5). A failed poll waits on, but a wait whose last poll failed ends 69,
-  # not 2's "still bound", which it cannot know (T423 Q6). Where the wait ends
-  # 2 after `committed`, its notes name the request's register seq, as the 69's
-  # do; the window's name is not given back here, which is `lane-start`'s
-  # (SR:690), never the verb's (#165 6774499606, T423 item 1). A run that finds
-  # its request committed and runs none of this tail exits 2, not 0, naming
-  # the tail it did not run (T418's `pw_tail_said`), and the register's own
-  # 69, 75 and 3 are the primary branch's (T415, T417).
   request-handoff)
     lane="${1-}"; [ -n "$lane" ] || die "usage: request-handoff <lane> [--wait <s>] [--session <uuid>] [--force \"<why>\"] [--dry-run]" 64
     shift
@@ -32002,7 +24364,6 @@ EOF
         exit 0
       fi
       write_event "$lane" PAUSED "lane:$lane" '→' "$rh_fpay" "forced release" "$(utc_now)" "$rh_uuid" || exit $?
-      rh_after_committed "forced release"
       note "FORCED: lane $lane's binding is released on behalf of ${rh_bsess:-the bound session}. $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate")"
       note "If that session is alive after all it will read this line at its next prompt and refuse EVERY prompt from then on, naming it and naming you, until the person there hands off or ends it (Amendment 18(e)). Two places never both write a lane in silence."
       exit 0
@@ -32019,92 +24380,44 @@ EOF
     [ -n "$rh_mywin" ] || rh_mywin=none
     rh_pay="by host $LANES_HOST_NAME; container $LANES_CONTAINER_NAME; window $rh_mywin; wait ${rh_wait}s"
     rh_type="/handoff --exit requested by $rh_uuid@$LANES_HOST_NAME/$LANES_CONTAINER_NAME"
-    # FEATURE 007, T423 — ON PRIMARY THE NOTES SAY THE REGISTER (lane
-    # openRepoTools-3, #165 6770688147, T423 Q5; texts say only what is true).
-    # There the request is one register transaction, and this run pushes and
-    # publishes no log, so every note below, the PLAN lines included, names
-    # the register where files mode names the pushed or published log. Keyed
-    # on the flag, `REG_SCRATCH`, as T421's words are: on primary only an
-    # attempt's child runs this arm, a dry run included (T415). Files mode
-    # keeps its words.
-    rh_log="the pushed log"; rh_plog="the published log"; rh_first="committed and pushed FIRST"
-    if [ -n "$REG_SCRATCH" ]; then
-      rh_log="the register"; rh_plog="the register"; rh_first="committed to the register FIRST"
-    fi
     if [ "$rh_dry" = 1 ]; then
       note "PLAN: $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate") ($rh_here)"
-      note "PLAN: $SELF log HANDOFF-REQUESTED lane:$lane → \"$rh_pay\"   (as session $rh_uuid), $rh_first"
+      note "PLAN: $SELF log HANDOFF-REQUESTED lane:$lane → \"$rh_pay\"   (as session $rh_uuid), committed and pushed FIRST"
       if [ "$rh_wstate" = live ]; then
         note "PLAN: tmux send-keys into ${rh_win##* } — $rh_type"
       else
-        note "PLAN: nothing is typed into a pane — this tmux server says the bound window is $rh_wstate, and the request travels through $rh_log alone"
+        note "PLAN: nothing is typed into a pane — this tmux server says the bound window is $rh_wstate, and the request travels through the pushed log alone"
       fi
-      note "PLAN: then poll $rh_plog every ${LANES_POLL_SECONDS:-15}s for ${rh_wait}s for a PAUSED, ENDED or RETIRED newer than the request; an empty wait REFUSES and names --force"
+      note "PLAN: then poll the published log every ${LANES_POLL_SECONDS:-15}s for ${rh_wait}s for a PAUSED, ENDED or RETIRED newer than the request; an empty wait REFUSES and names --force"
       exit 0
     fi
     rh_wrote="$(utc_now)"
     write_event "$lane" HANDOFF-REQUESTED "lane:$lane" '→' "$rh_pay" "" "$rh_wrote" "$rh_uuid" || exit $?
-    rh_after_committed request
     note "REQUESTED: $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate")"
 
     # ---- AND ONLY NOW THE PANE, WHERE IT IS ON THIS TMUX SERVER (Amendment
     # 12's M1). It is an OPTIMISATION of the same-host case and never the
     # request: a session that never reads it answers at its hook's next read of
     # the pushed line instead.
-    #
-    # FEATURE 007, T423 — A REPLAY TYPES INTO NO PANE (Y:5326; Y:2688, "the
-    # typing, no; the poll, yes"). A replay (T418) runs this verb again at
-    # `s−1` only to reach the seam with the committed entry's change set, and
-    # the pane it reads may hold another session by now, so a second
-    # `/handoff --exit` would be typed into whatever runs there. So in a replay
-    # the arm does not call `guard_type` at all, and says so in its own words;
-    # `guard_type`'s own refusal in a replay (T418) stays as the backstop for
-    # every caller. The wait below still runs, since it only reads.
     rh_typed=no
-    if [ "$REG_REPLAY" = 1 ]; then
-      rh_typed="no, a replay types into no pane"
-      note "this run replays the request the register holds at seq ${REGISTER_SEQ}, and a replay types into no pane: lane ${lane}'s bound pane may hold another session by now, and a request is never typed after the fact (Y:5326). The request travels in the register, as it does where no pane is live, and is read at that session's next prompt."
-    elif [ "$rh_wstate" = live ]; then
+    if [ "$rh_wstate" = live ]; then
       rh_trc=0
       guard_type "${rh_win##* }" "$rh_type" || rh_trc=$?
       case "$rh_trc" in
         0) rh_typed=yes; note "typed into ${rh_win##* }: $rh_type" ;;
-        9) note "the bound pane is running something other than \`claude\`, so nothing was typed into it (M1's own condition): the request is in $rh_log and is read at that session's next prompt." ;;
-        8) note "the bound pane's current command could not be read, so nothing was typed into it — fail closed (M1). The request is in $rh_log." ;;
-        *) note "tmux would not take the keys for ${rh_win##* }, so nothing was typed. The request is in $rh_log and is read at that session's next prompt." ;;
+        9) note "the bound pane is running something other than \`claude\`, so nothing was typed into it (M1's own condition): the request is in the pushed log and is read at that session's next prompt." ;;
+        8) note "the bound pane's current command could not be read, so nothing was typed into it — fail closed (M1). The request is in the pushed log." ;;
+        *) note "tmux would not take the keys for ${rh_win##* }, so nothing was typed. The request is in the pushed log and is read at that session's next prompt." ;;
       esac
     else
-      note "the bound window is $rh_wstate from here, so no pane was typed into: the request travels through $rh_log, which is why it is written first."
+      note "the bound window is $rh_wstate from here, so no pane was typed into: the request travels through the pushed log, which is why it is written first."
     fi
 
     # ---- THE WAIT (clause (c)), AND ITS EMPTY END (clause (e)).
     rh_poll="${LANES_POLL_SECONDS:-15}"
     case "$rh_poll" in ''|*[!0-9]*|0) rh_poll=15 ;; esac
     rh_deadline=$(( $(date -u +%s) + rh_wait ))
-    [ "$rh_wait" = 0 ] || note "waiting up to ${rh_wait}s for lane $lane to be released (polling $rh_plog every ${rh_poll}s) …"
-    # FEATURE 007, T423 — A FAILED POLL WAITS ON, AND ON PRIMARY A WAIT WHOSE
-    # LAST POLL FAILED ENDS 69 (lane openRepoTools-3, #165 6770688147, T423
-    # Q6; Y:5359, "safe; reads only; it waits again"; tasks:723, the decide
-    # class's 69, nothing on stdout). A poll that cannot read the binding is
-    # waited past, as before. But the empty end below says "still bound", and
-    # a wait whose last poll failed cannot know that: the lane may have been
-    # released after the last poll that read it. So on primary that wait ends
-    # 69, naming its request, which is in the register; files mode keeps its
-    # 2 and its words. `rh_last` is the last poll's answer, 0 where it read.
-    rh_last=0
-    rh_pollfail="the lane's log could not be read on this poll — waiting on"
-    [ -z "$REG_SCRATCH" ] || rh_pollfail="the register could not be read on this poll — waiting on"
-    # FEATURE 007, T423 — ON PRIMARY THE REQUEST IS NAMED WITH ITS REGISTER SEQ
-    # ON EVERY END OF THE WAIT (lane openRepoTools-3, #165 6774499606, T423
-    # item 1; B13 item 12), computed here, above the loop, so the BOUND AGAIN
-    # end inside it names it too (#165 6779688808, Q1). The 69 below always
-    # named it, and the empty end's 2 named the request without it.
-    # `rh_after_committed` has returned by here, so on primary `REGISTER_SEQ`
-    # is the seq this run's one write committed at. Files mode has no seq and
-    # keeps its words. The window's name is not given back here: that is
-    # `lane-start`'s (SR:690), never the verb's.
-    rh_atseq=""
-    [ -z "$REG_SCRATCH" ] || rh_atseq=", in the register at seq ${REGISTER_SEQ}"
+    [ "$rh_wait" = 0 ] || note "waiting up to ${rh_wait}s for lane $lane to be released (polling the published log every ${rh_poll}s) …"
     while : ; do
       rh_left=$(( rh_deadline - $(date -u +%s) ))
       if [ "$rh_left" -le 0 ]; then break; fi
@@ -32117,27 +24430,9 @@ EOF
       [ "$rh_nap" -gt "$rh_left" ] && rh_nap="$rh_left"
       sleep "$rh_nap"
       log_sync
-      # FEATURE 007, T423 — ON PRIMARY EACH POLL READS THE REGISTER AT ITS HEAD
-      # (D17; Y:5090; contract §3.6: "After `committed`, the child's tail reads
-      # take D17's path through the read family that `reg_flush` drops"). On
-      # primary only an attempt's child reaches this wait, after `committed`,
-      # and `log_sync` fetches nothing there (D12): the flag returns before any
-      # fetch (T413), and its primary form makes no fetch and no flush with the
-      # read door open (T506). So the family the wait's first read cached would
-      # answer every later poll at that read's head, and a release written
-      # since would never be seen. `reg_flush` (lane 5's T505) drops the whole
-      # family, `.head` with it, before each poll's read, so the read below is
-      # the readers' second read at the register's head (§3.6, form 3), never
-      # git. Off primary, `log_sync`'s fetch and drops are the poll, as before.
-      # Keyed on the flag, `REG_SCRATCH`, as the arm's other primary switches
-      # are, so that one key decides "on primary" across the arm (review
-      # REV-W9f, N1); `reg_scratch_take` sets REG_MODE=primary in every child,
-      # so the two agree.
-      [ -z "$REG_SCRATCH" ] || reg_flush
       rh_out=""; rh_rc=0
       rh_out="$(lane_binding_scan "$lane")" || rh_rc=$?
-      rh_last="$rh_rc"
-      [ "$rh_rc" = 0 ] || { note "$rh_pollfail"; continue; }
+      [ "$rh_rc" = 0 ] || { note "the lane's log could not be read on this poll — waiting on"; continue; }
       IFS="$US" read -r rh_state2 rh_host2 rh_cont2 rh_win2 rh_utc2 rh_bsess2 rh_os2 rh_rest2 <<EOF
 $rh_out
 EOF
@@ -32148,20 +24443,12 @@ EOF
         bound|requested)
           if ! binding_identity_same "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" \
                                      "$rh_host2" "$rh_cont2" "$rh_win2" "$rh_utc2" "$rh_bsess2"; then
-            die "lane $lane was released and BOUND AGAIN while this request waited — its binding is now window ${rh_win2:-none} in container ${rh_cont2:-none} on host ${rh_host2:-unknown} (session ${rh_bsess2:-unknown}, $rh_utc2). The request this run wrote${rh_atseq}${rh_atseq:+,} is answered and the lane is somebody else's: ask again, or take it up with that place." 2
+            die "lane $lane was released and BOUND AGAIN while this request waited — its binding is now window ${rh_win2:-none} in container ${rh_cont2:-none} on host ${rh_host2:-unknown} (session ${rh_bsess2:-unknown}, $rh_utc2). The request this run wrote is answered and the lane is somebody else's: ask again, or take it up with that place." 2
           fi ;;
       esac
     done
-    if [ -n "$REG_SCRATCH" ] && [ "$rh_last" != 0 ]; then
-      note "THE WAIT ENDED ON A POLL THAT COULD NOT READ THE REGISTER. As read before the request, $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate")"
-      note "  the request: $rh_wrote → $rh_pay, as session $rh_uuid${rh_atseq}"
-      note "  the pane:    ${rh_typed} (this tmux server says that window is $rh_wstate)"
-      die "the register could not be read at this wait's last poll, so whether lane $lane is still bound, or was released after the last poll that read it, is not known here, and NOTHING here has bound it. The request is in the register and is not written again. Read the lane once the register answers, and bind it if it is free; or ask again with a longer wait:
-    $SELF binding $lane
-    $SELF request-handoff $lane --wait 900" 69
-    fi
     note "THE WAIT ENDED WITH NOTHING. $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate")"
-    note "  the request: $rh_wrote → $rh_pay, as session $rh_uuid${rh_atseq}"
+    note "  the request: $rh_wrote → $rh_pay, as session $rh_uuid"
     note "  the pane:    ${rh_typed} (this tmux server says that window is $rh_wstate)"
     die "no PAUSED, ENDED or RETIRED newer than that request arrived in ${rh_wait}s, so lane $lane is still bound and NOTHING here has bound it (Amendment 18(e)). A working session is never interrupted — a hook fires at a prompt boundary, and a session inside a long turn answers when that turn ends. Wait longer, or override, which is a SECOND invocation and never automatic:
     $SELF request-handoff $lane --wait 900
@@ -32889,308 +25176,6 @@ EOF
     [ -n "$rr_row" ] || exit 8
     case "$rr_row" in *$'\n'*) die "more than one ${rrl_local}row names $lane" 2 ;; esac
     printf '%s\n' "$rr_row"
-    ;;
-
-  # FEATURE 007, T401 — ONE REGISTER FILE, ITS BYTES (the set is
-  # `reg_reader_kind`'s). In files and `index` mode it prints exactly what the
-  # scripts read today, so each keeps its own awk unchanged (spec:59):
-  # `lanes/LANES.md` is `$LANES_FILE`, the working tree `lane-start` and
-  # `lane-end` read; the alias table and a log are the files beside it,
-  # `$LANES_ALIASES_TSV` and `$LANES_LOG_DIR/<lane>.md`. Nothing is fetched and
-  # nothing is cached. The file is copied whole before a byte is printed, so a
-  # read that fails prints nothing.
-  #   0   the file's bytes; nothing at all for an absent alias table or log
-  #   2   usage, or a path outside the set
-  #   69  the file could not be read: no workspace, a missing `lanes/LANES.md`,
-  #       or a file that is there and cannot be opened, or whose absence is not
-  #       clear-cut (below)
-  # ON PRIMARY IT PRINTS LANE 5'S `reg_image <path>` (T505; Q-L5-3), the read
-  # door's image of that path at its snapshot, under the door's `decide` class
-  # (T504's table; Q-L5-5), never the files. THE BRANCH IS TAKEN at the one test
-  # T505 gives a read site, `[ "${REG_STORE:-}" = sql ]`: the door sets `sql`
-  # only where it opened on primary, and `files` in files and `index` mode and
-  # under T413's flag, so neither of those reaches it and their bytes are the
-  # ones above (FR-034). It comes after the usage and set checks, 2, and after
-  # the workspace check, 69 (lane 3's item 10). ON PRIMARY ALL OF THEM COME
-  # AFTER THE DOOR'S PREFETCH, which runs in the main shell before the arm, so
-  # a failed prefetch is 69 before any of those 2s (Y:4890; lane 5's answer 12
-  # (a), #165 6746507353; tasks:856 at 94fab177; lane 3's N1, #165 6851977580).
-  # The image is held whole before a byte is printed. An absent alias table or
-  # log is `reg_image`'s 0 with nothing on stdout; anything else it cannot give
-  # (a missing `lanes/LANES.md`, two logs that differ only by case, C11, or a
-  # failed second read) is 69, ended by the class where a second read failed
-  # (`reg_fail_end`), never the files instead (C3). `reg_image`,
-  # `reg_read_lost`, `reg_fail_end` and `REG_STORE`, which T504 assigns at file
-  # scope and never takes from the environment, are lane 5's (T504, T505): this
-  # branch lands after them (tasks:851; task set S007-35 after S007-34).
-  register-text)
-    [ "$#" = 1 ] || die "usage: register-text <path>   (lanes/LANES.md, lanes/aliases.tsv or lanes/log/<lane>.md)" 2
-    rtx_kind="$(reg_reader_kind "$1")" || die "register-text reads lanes/LANES.md, lanes/aliases.tsv or one lanes/log/<lane>.md, and '$1' is none of them (O21 (a))" 2
-    [ -n "$LANES_DIR" ] || die "$1 could not be read: $(lanes_workspace_why)" 69
-    if [ "${REG_STORE:-}" = sql ]; then   # feature 007, T401's primary branch (above)
-      TMPD="$(mktemp -d)" || die "$1 could not be read: no temporary directory could be made under ${TMPDIR:-/tmp} to hold it whole before printing it" 69
-      if ! reg_image "$1" > "$TMPD/text"; then
-        if reg_read_lost; then reg_fail_end 69; fi
-        die "$1 could not be read from the register: the read door could not give its image (a missing lanes/LANES.md, or a cache it could not read), and a read that failed is never answered from the files instead (feature 007, T401 on primary; C3)" 69
-      fi
-      cat -- "$TMPD/text" || exit 69
-      exit 0
-    fi
-    case "$rtx_kind" in
-      register) rtx_src="$LANES_FILE" ;;
-      aliases)  rtx_src="$LANES_ALIASES_TSV" ;;
-      *)        rtx_src="$LANES_LOG_DIR/${1#lanes/log/}" ;;
-    esac
-    # AN ABSENT ALIAS TABLE OR LOG IS 0, WITH NOTHING ON STDOUT, in every mode
-    # (lane 3's ruling on lane 4's Q9, (b), #165 6746035594): an estate that
-    # never renamed a lane has no table, and a lane with no log yet has none.
-    # ABSENT IS CLEAR-CUT OR IT IS 69. Nothing is at the name, not even a link
-    # (`-e` is false on a dangling one); the register's directory is there and
-    # searchable; and the name's own directory is a searchable directory, or is
-    # not there at all, which is `lane_log_events`' test of a missing log. So a
-    # dangling link, a directory in the file's place, an unsearchable directory
-    # or a register directory that is not there is a read that could not be
-    # made. `lanes/LANES.md` is never absent: a missing register stays 69.
-    if [ "$rtx_kind" != register ] && [ ! -e "$rtx_src" ] && [ ! -L "$rtx_src" ] &&
-       [ -d "$LANES_DIR" ] && [ -x "$LANES_DIR" ]; then
-      rtx_dir="$(dirname -- "$rtx_src")"
-      if { [ ! -e "$rtx_dir" ] && [ ! -L "$rtx_dir" ]; } || { [ -d "$rtx_dir" ] && [ -x "$rtx_dir" ]; }; then
-        exit 0
-      fi
-    fi
-    TMPD="$(mktemp -d)" || die "$1 could not be read: no temporary directory could be made under ${TMPDIR:-/tmp} to hold it whole before printing it" 69
-    cat -- "$rtx_src" > "$TMPD/text" || die "$1 could not be read at $rtx_src (above)" 69
-    cat -- "$TMPD/text" || exit 69
-    ;;
-
-  # FEATURE 007, T401 — A GREP OF THE REGISTER, exactly as `lane-worktrees` runs
-  # it today: `git grep [-h] -E -e <ERE> origin/<branch> -- <pathspecs>` in the
-  # workspace root (`workspace-root`'s answer), under `LC_ALL=C` as that
-  # script's git calls run, on the ref as it was last fetched (nothing is
-  # fetched here). So its output is byte for byte what that `git grep` prints,
-  # and the script's own parsing stays as it is (spec:59). Its paths are
-  # `reg_reader_kind`'s set. `lanes/log` is the pathspec pair
-  # `:(glob)lanes/log/*.md` `:(exclude)lanes/log/README.md`, exactly the lane
-  # logs (README.md holds no line the three greps match, so their output does
-  # not change), and one log is taken literally. The four pathspec switches git
-  # reads from the environment are cleared for the call, so that no inherited
-  # one widens or narrows the set. The answer is held whole before a byte of it
-  # is printed.
-  #   0   the matches, as `git grep` prints them
-  #   1   no match, and nothing printed
-  #   2   usage (the form below, or an ERE `git grep -E` cannot compile), or a
-  #       path outside the set
-  #   69  the read could not be made: no workspace, a ref that does not resolve,
-  #       a repository git cannot read; nothing on stdout
-  # ON PRIMARY IT GREPS LANE 5'S `reg_image` OF EACH PATH (T505; Q-L5-3), under
-  # the read door's `decide` class (T504's table; Q-L5-5), never git. THE
-  # BRANCH IS TAKEN at T505's one test at a read site, `[ "${REG_STORE:-}" =
-  # sql ]`, after every check above it: the usage and the set (2), the ERE
-  # (2), the workspace root (69). ON PRIMARY EACH OF THOSE COMES ONLY WHERE THE
-  # DOOR'S PREFETCH HAS READ THE STORE: the door runs in the main shell before
-  # the arm, so a failed prefetch is 69 before any of those 2s (Y:4890; lane
-  # 5's answer 12 (a), #165 6746507353; tasks:856 at 94fab177; lane 3's N1,
-  # #165 6851977580). Files and `index` mode, where the door set `REG_STORE`
-  # to `files`, never reach the branch.
-  #   - THE PATHS: `lanes/log` is each path lane 5's `reg_paths` lists (`.paths`,
-  #     the render set at the door's snapshot; C10) that `reg_reader_kind` reads
-  #     as a `log`, so never `lanes/log/README.md` (tasks:851; T505's
-  #     `reg_paths` line). Every other path is the one named.
-  #   - THE ORDER, AS `git grep`'S (lane 5's answer 14): tree order, which for
-  #     this set is bytewise order, whatever order the paths came in, and a path
-  #     named twice is grepped once.
-  #   - EACH IMAGE is grepped by the read's own `git grep -E -e <ERE>`, under
-  #     `LC_ALL=C`, as `--no-index` over the image held in `$TMPD`, with no
-  #     repository, no config and none of the pathspec switches, as the probe
-  #     above runs, and as text (`--text`), so no git attributes file outside
-  #     the register makes a `Binary file` line of it (lane 3's Q3 ruling).
-  #     Without `-h` each line is `origin/$LANES_BRANCH:`, the path as `git
-  #     grep` prints it under git's defaults whatever the workstation's git
-  #     configuration says (C-quoted where it holds `"`, `\`, a control byte,
-  #     below 0x20 or 0x7f, or a byte from 0x80 up; tasks:860; lane 3's Q3
-  #     ruling), `:` and the line, as files mode prints it and the callers
-  #     split it (lane 5's answer 14 (b); `lane-worktrees`' two greps without
-  #     `-h`); with `-h` the line alone.
-  #   - THE ANSWER is held whole: 0 with the lines, 1 with none. Any end of
-  #     `reg_paths` or `reg_image` but 0 is 69 with nothing on stdout
-  #     (tasks:851), a case pair of logs (C11) and a failed second read among
-  #     them, ended by the class where a second read failed (`reg_fail_end`),
-  #     never git instead (C3). An absent alias table or log is `reg_image`'s 0
-  #     with nothing, so it matches nothing.
-  #   - ONE SNAPSHOT: where `.head`'s `n` or generation moved while the run
-  #     read, the answer is dropped and the run made again, three runs at
-  #     most, then 69 with nothing on stdout (lane 3's Q2 ruling, below).
-  # `reg_paths`, `reg_image`, `reg_head_n`, `reg_head_generation`,
-  # `reg_read_lost`, `reg_fail_end` and `REG_STORE`
-  # are lane 5's (T504, T505): this branch lands after them (tasks:851; task
-  # set S007-35 after S007-34).
-  register-grep)
-    rgr_usage="usage: register-grep [-h] -E <ERE> -- <path>…   (lanes/LANES.md, lanes/aliases.tsv, lanes/log, or one lanes/log/<lane>.md)"
-    rgr_h=""
-    if [ "${1-}" = -h ]; then rgr_h=-h; shift; fi
-    [ "${1-}" = -E ] && [ "$#" -ge 2 ] || die "$rgr_usage" 2
-    rgr_ere="$2"; shift 2
-    [ "${1-}" = -- ] && [ "$#" -ge 2 ] || die "$rgr_usage" 2
-    shift
-    # THE `--` HEADS THE PATHSPEC LIST. It is git's own line between the
-    # revision and the pathspecs, which `git grep` needs where a pathspec such as
-    # `:(glob)…` could read as a revision; it is not BSD getopt's end of options,
-    # which `git grep` never reaches. Held in the list, the call's own line pairs
-    # no `grep` word with a late `--` (`test_no_shipped_bash_ends_its_options_after_an_operand`).
-    rgr_specs=(--)
-    for rgr_p in "$@"; do
-      rgr_kind="$(reg_reader_kind "$rgr_p" grep)" || die "register-grep reads lanes/LANES.md, lanes/aliases.tsv, lanes/log and one lanes/log/<lane>.md, and '$rgr_p' is none of them (O21 (a))" 2
-      case "$rgr_kind" in
-        logs) rgr_specs+=(':(glob)lanes/log/*.md' ':(exclude)lanes/log/README.md') ;;
-        log)  rgr_specs+=(":(literal)$rgr_p") ;;
-        *)    rgr_specs+=("$rgr_p") ;;
-      esac
-    done
-    # A MALFORMED ERE IS REFUSED BEFORE ANY READ, as a path outside the set is
-    # just above (lane 3's (97), #165 6808937880: "A malformed ERE is the call's
-    # own words, refused before any read"). So it is 2 with no workspace, with
-    # no temporary directory, and whatever the ref. THE VERDICT IS GIT'S: the
-    # probe is the read's own `git grep -E -e <ERE>`, the same `git` under the
-    # same `LC_ALL=C`, which compiles the pattern before it opens a file and
-    # exits 128 on one it cannot compile; `-E` outranks any `grep.patternType`.
-    # A system `grep -E` may differ: GNU grep 3.11 takes `*a`, `+a` and `a{1`,
-    # which git's regcomp refuses. NOTHING BUT THE PATTERN CAN FAIL THE PROBE,
-    # and it needs neither the workspace nor `TMPDIR`. It runs in `/`, with
-    # `--no-index`, and `GIT_DIR` naming /dev/null, which is no repository, so
-    # none is looked for. No system or global config, no `git -c`, no
-    # repository variable and none of the four pathspec switches is carried in.
-    # Its one pathspec, `dev/null`, is a device, which a `--no-index` grep never
-    # reads. Its stderr is held by the command substitution, a pipe, and printed
-    # only above the refusal. Any other end of the probe leaves the answer to
-    # the read.
-    rgr_erc=0
-    rgr_err="$(env -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT \
-        -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \
-        GIT_DIR=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 LC_ALL=C \
-        git -C / grep --no-index -q -E -e "$rgr_ere" -- dev/null 2>&1 >/dev/null </dev/null)" || rgr_erc=$?
-    if [ "$rgr_erc" = 128 ]; then
-      [ -z "$rgr_err" ] || printf '%s\n' "$rgr_err" >&2
-      die "$rgr_usage — '$rgr_ere' is not an ERE that git grep -E can compile (above)" 2
-    fi
-    rgr_root="$LANES_WS_ROOT"
-    [ -n "$rgr_root" ] || die "the register could not be read: $(lanes_workspace_why)" 69
-    TMPD="$(mktemp -d)" || die "the register could not be read: no temporary directory could be made under ${TMPDIR:-/tmp} to hold the answer whole" 69
-    if [ "${REG_STORE:-}" = sql ]; then   # feature 007, T401's primary branch (above)
-      # ONE SNAPSHOT, OR RUN AGAIN (lane 3's ruling on lane 4's Q2, #165
-      # 6851977580, taking lane 5's detect-and-retry, #165 6851740524). A second
-      # read inside the loop, which an out-of-class log's `--log-key=` makes each
-      # time, may move the family to a later `n`, and a lane renamed in between
-      # would then drop out of the answer. So `.head`'s `n` and generation
-      # (lane 5's `reg_head_n` and `reg_head_generation`) are taken once the
-      # paths are known, after `reg_paths` where `lanes/log` is named and
-      # before the first image either way, and again after the last image. The
-      # head only moves forward within a generation, so an unchanged pair proves
-      # every read was at one `n`. Where either moved, the answer is dropped and
-      # the run starts again from `reg_paths`: three runs at most, then 69 with
-      # nothing on stdout.
-      rgr_run=0; rgr_nl=$'\n'
-      while :; do
-        rgr_run=$((rgr_run + 1))
-        rgr_logs=0; rgr_want=(); rgr_order=(); rgr_quoted=()
-        for rgr_p in "$@"; do
-          # `lanes/log` is the one path `reg_reader_kind` reads as the set `logs`.
-          # A NAMED PATH HOLDING A NEWLINE IS ABSENT (RC-W30's NIT 1): no register
-          # path holds one, since `.paths` gives one path a line and the door
-          # refuses a path with a control byte. So it matches nothing, as its
-          # literal pathspec matches nothing in files mode, and with nothing
-          # else matched the answer is 1 (tasks:863), never a 69 naming a piece.
-          case "$rgr_p" in *"$rgr_nl"*) continue ;; esac
-          if [ "$rgr_p" = lanes/log ]; then rgr_logs=1; else rgr_want+=("$rgr_p"); fi
-        done
-        if [ "$rgr_logs" = 1 ]; then
-          if ! reg_paths > "$TMPD/paths"; then
-            if reg_read_lost; then reg_fail_end 69; fi
-            die "the register could not be read: the read door could not list its render set's paths (reg_paths), so lanes/log names no logs, and a read that failed is never answered from git instead (feature 007, T401 on primary; C3)" 69
-          fi
-          # Under `lanes/log/`, every path `reg_reader_kind` takes is a `log`.
-          while IFS= read -r rgr_p || [ -n "$rgr_p" ]; do
-            case "$rgr_p" in
-              lanes/log/*) if reg_reader_kind "$rgr_p" > /dev/null; then rgr_want+=("$rgr_p"); fi ;;
-            esac
-          done < "$TMPD/paths"
-        fi
-        rgr_n0="$(reg_head_n)"; rgr_g0="$(reg_head_generation)"
-        if [ "${#rgr_want[@]}" -gt 0 ]; then
-          printf '%s\n' "${rgr_want[@]}" | LC_ALL=C sort -u > "$TMPD/order" ||
-            die "the register could not be read: its paths could not be put in tree order under $TMPD" 69
-          while IFS= read -r rgr_p; do rgr_order+=("$rgr_p"); done < "$TMPD/order"
-          # EACH PATH AS `git grep` PRINTS IT UNDER GIT'S DEFAULTS, `core.quotePath`
-          # on, whatever the workstation's git configuration says (tasks:860 at
-          # 94fab177; lane 3's Q3 ruling, #165 6851977580, and its S1, #165
-          # 6852996343): a path holding `"`, `\`, a control byte (below 0x20, or
-          # 0x7f) or a byte from 0x80 up is put in double quotes, with `"` and `\`
-          # escaped by a backslash, `\a`, `\b`, `\t`, `\n`, `\v`, `\f` and `\r` for
-          # those seven control bytes, and each other such byte written as a
-          # backslash and three octal digits; any other path is printed as it is.
-          # A newline ends a path in this list, and none holds one: `reg_paths`
-          # gives one path a line, and a named path holding one was skipped
-          # above, as absent. `od` gives the bytes as numbers, so `awk` writes
-          # only ASCII.
-          if [ -z "$rgr_h" ]; then
-            od -An -v -tu1 < "$TMPD/order" | LC_ALL=C awk '{ for (i = 1; i <= NF; i++) { c = $i + 0
-                if (c == 10) { print (q ? "\"" s "\"" : s); s = ""; q = 0 }
-                else if (c == 34 || c == 92) { s = s "\\" sprintf("%c", c); q = 1 }
-                else if (c >= 7 && c <= 13) { s = s "\\" substr("abtnvfr", c - 6, 1); q = 1 }
-                else if (c < 32 || c > 126) { s = s sprintf("\\%03o", c); q = 1 }
-                else s = s sprintf("%c", c) } }' > "$TMPD/quoted" ||
-              die "the register could not be read: its paths could not be quoted under $TMPD" 69
-            while IFS= read -r rgr_p; do rgr_quoted+=("$rgr_p"); done < "$TMPD/quoted"
-            [ "${#rgr_quoted[@]}" = "${#rgr_order[@]}" ] ||
-              die "the register could not be read: ${#rgr_order[@]} paths gave ${#rgr_quoted[@]} quoted names under $TMPD" 69
-          fi
-        fi
-        : > "$TMPD/grep" || die "the register could not be read: no file could be made under $TMPD to hold the answer whole" 69
-        rgr_hit=0; rgr_i=0
-        for rgr_p in ${rgr_order[@]+"${rgr_order[@]}"}; do
-          rgr_i=$((rgr_i + 1))
-          if ! reg_image "$rgr_p" > "$TMPD/image"; then
-            if reg_read_lost; then reg_fail_end 69; fi
-            die "the register could not be read: the read door could not give $rgr_p (a missing lanes/LANES.md, or a cache it could not read), so no part of the answer is printed, and a read that failed is never answered from git instead (feature 007, T401 on primary; C3)" 69
-          fi
-          rgr_rc=0
-          env -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT \
-              -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \
-              GIT_DIR=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 LC_ALL=C \
-              git -C "$TMPD" grep --no-index --text -h -E -e "$rgr_ere" -- image > "$TMPD/hits" </dev/null || rgr_rc=$?
-          case "$rgr_rc" in
-            0) rgr_hit=1 ;;
-            1) continue ;;
-            *) die "the register could not be read: git grep -E over the register's image of $rgr_p exited $rgr_rc (above)" 69 ;;
-          esac
-          if [ -n "$rgr_h" ]; then
-            cat -- "$TMPD/hits" >> "$TMPD/grep" || die "the register could not be read: its answer could not be held whole under $TMPD" 69
-          else
-            RGR_PFX="origin/$LANES_BRANCH:${rgr_quoted[$((rgr_i - 1))]}:" LC_ALL=C awk '{ print ENVIRON["RGR_PFX"] $0 }' "$TMPD/hits" >> "$TMPD/grep" ||
-              die "the register could not be read: its answer could not be held whole under $TMPD" 69
-          fi
-        done
-        rgr_n1="$(reg_head_n)"; rgr_g1="$(reg_head_generation)"
-        [ "$rgr_n1" != "$rgr_n0" ] || [ "$rgr_g1" != "$rgr_g0" ] || break
-        [ "$rgr_run" -lt 3 ] ||
-          die "the register could not be read at one snapshot: its head moved while it was read, in each of 3 runs (the last from n=$rgr_n0, generation $rgr_g0, to n=$rgr_n1, generation $rgr_g1), so no answer is printed, never a part of one (feature 007, T401 on primary; lane 3's Q2 ruling)" 69
-      done
-      [ "$rgr_hit" = 1 ] || exit 1
-      cat -- "$TMPD/grep" || exit 69
-      exit 0
-    fi
-    rgr_rc=0
-    env -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \
-      LC_ALL=C GIT_OPTIONAL_LOCKS=0 \
-      git -C "$rgr_root" grep ${rgr_h:+"$rgr_h"} -E -e "$rgr_ere" "origin/$LANES_BRANCH" "${rgr_specs[@]}" \
-      > "$TMPD/grep" || rgr_rc=$?
-    case "$rgr_rc" in
-      0) cat -- "$TMPD/grep" || exit 69; exit 0 ;;
-      1) exit 1 ;;
-    esac
-    # THE PROBE ABOVE DID NOT REFUSE THE ERE, so any other end is the
-    # register's read failing, 69, a 128 from the workspace's own config (a bad
-    # `grep.threads`, which meets every grep asked of it) among them.
-    die "the register could not be read: git grep on origin/$LANES_BRANCH in $rgr_root exited $rgr_rc (above)" 69
     ;;
 
   # 0 with archived spellings, 8 absent, 1 when either archive cannot be read
@@ -34979,6 +26964,6 @@ EOF
     ;;
 
   *)
-    die "unknown subcommand '$cmd' (verify-row|set-row-state|append-row-status|replace-in-row|append-session-id|append-line|add-row|start-record|retire-rows|archive-rows|migrate-state-cells|commit|rename-lane|log|claim|release|who|history|swapped|session-start|guard|guard-bind|idle-holders|live-holder|window-session|transcript-holders|binding|request-handoff|session-lane|window-lane|lane-dir|lane-profile|lane-agent|lane-transcript|lane-last|workspace-root|last-session|forks|duplicate-holder|workstation|fetch-age|lanes|lane-groups|next-free|sibling-filter|resolve-repo|lane-objects|register-row|register-row-local|register-text|register-grep|retired-identity|canon-lane|act-begin|resolve-home|managed-projection|lane-state|set-lane-state|lane-trees|set-lane-tree|lane-tree-now|project-legs|lane-reconcile|lane-holders|legacy-restart-check|publish-handoff|restart-intent|set-restart-intent|worktrees|pathspec-check|lane-checkout|refresh-workspace|write-handoff|handoff-path)" 2
+    die "unknown subcommand '$cmd' (verify-row|set-row-state|append-row-status|replace-in-row|append-session-id|append-line|add-row|retire-rows|archive-rows|migrate-state-cells|commit|rename-lane|log|claim|release|who|history|swapped|session-start|guard|guard-bind|idle-holders|live-holder|window-session|transcript-holders|binding|request-handoff|session-lane|window-lane|lane-dir|lane-profile|lane-agent|lane-transcript|lane-last|workspace-root|last-session|forks|duplicate-holder|workstation|fetch-age|lanes|lane-groups|next-free|sibling-filter|resolve-repo|lane-objects|register-row|register-row-local|retired-identity|canon-lane|act-begin|resolve-home|managed-projection|lane-state|set-lane-state|lane-trees|set-lane-tree|lane-tree-now|project-legs|lane-reconcile|lane-holders|legacy-restart-check|publish-handoff|restart-intent|set-restart-intent|worktrees|pathspec-check|lane-checkout|refresh-workspace|write-handoff|handoff-path)" 2
     ;;
 esac
