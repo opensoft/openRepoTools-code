@@ -8754,7 +8754,17 @@ class RegisterService:
         answer is given only where the configuration epoch the request was
         checked against still holds, under `cond`, so a request running
         under an earlier epoch is answered `unavailable`, whatever the old
-        child returned (socket API 8.4, draft 13)."""
+        child returned (socket API 8.4, draft 13).
+
+        AND NOT ONCE A CHANGE IS SEEN (round 3b; socket API 8.4, "once a
+        request has seen a change, no answer built on the old settings is
+        sent"): the worker re-reads a change only between its jobs (M1), so
+        the epoch cannot move while this query runs. Where another request
+        has seen a change the worker has not yet taken (`reload_due`, set
+        under `cond`), this answer, built on the old settings, is not given,
+        and the request is answered `unavailable`, as 8.4 answers a request
+        running under an earlier epoch. A change `take_change` then finds
+        gone costs that one `unavailable`."""
         timer = register_serve_timer_ms(self.cfg) / 1000
         if time.monotonic() >= job.arrival + timer:
             job.give(b"unavailable slow\n")
@@ -8762,7 +8772,7 @@ class RegisterService:
         try:
             answer = self.query(job, job.arrival + timer)
             with self.cond:
-                if job.epoch == self.config_epoch:
+                if job.epoch == self.config_epoch and not self.reload_due:
                     job.give(answer)
         finally:
             job.give(b"unavailable\n")
