@@ -120,6 +120,9 @@ first when every installed copy is behind. Never resolved through PATH.
                 (status is verified, ahead, unverified or stale)
   --offline     no npm read and no update: the newest installed copy, unverified
 
+On resolution, stdout is one absolute executable path (or the four porcelain
+fields above). Diagnostics and update progress go to stderr.
+
 Exit 0 resolved, 1 nothing runnable, 2 refused as stale, 64 usage or a
 malformed CLAUDE_CURRENT_* bound.
 CLAUDE_ALLOW_STALE=1 launches a stale copy anyway. The CLAUDE_CURRENT_*
