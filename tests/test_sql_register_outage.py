@@ -79,7 +79,8 @@ a render commit carries the trailer `Register-Seq: <k>`, a handoff commit
 none.
 
 Every case fails until L5-A3, L5-A5 and L1-A18 land, and the rollback's head
-until lane 3's T304; `test_the_guard_refuses_a_ref_behind_a_rollbacks_head`
+until lane 3's T304 and, for the write on primary before it, lane 4's T415;
+`test_the_guard_refuses_a_ref_behind_a_rollbacks_head`
 and the silent database are real-engine cases on `tests/pgcluster.py`'s `pg`.
 """
 
@@ -1025,12 +1026,25 @@ def test_the_guard_refuses_a_ref_behind_a_rollbacks_head(pg, tmp_path, request):
     """AT-F11, a ref behind a rollback's head (A9: phase N, on lane 3's T304,
     against this test's own database). The database is brought to primary
     and rolled back by the real commands, `import --at <C>`, `cutover
-    --import <C>` and `rollback`, so its switch is at `files` with a
-    `rollback` entry at `set_seq`, and `rollback` writes its declaration,
-    marked as from a rollback, with `mirror-seq=<k>`. With the guard's read
-    finding the switch at `files`: last fetched at `k - 1`, the guard exits 2
-    with lane 5's text for seqs `k - 1` and `k`, and does not answer from the
-    mirror; at `k`, it answers from the mirror, `read: mirror`."""
+    --import <C>` and `rollback`, with one write on primary between the
+    cutover and the rollback, so its switch is at `files` with a `rollback`
+    entry at `set_seq`, and `rollback` writes its declaration, marked as from
+    a rollback, with `mirror-seq=<k>`, `k` being `set_seq - 1`. With the
+    guard's read finding the switch at `files`: its checkout last fetched at
+    `k - 1`, one behind the rollback's head, the guard exits 2 with lane 5's
+    text for seqs `k - 1` and `k`, and does not answer from the mirror;
+    fetched at `k`, it answers from the mirror, `read: mirror`.
+
+    THE WRITE MAKES `k` 2 (lane 1, #165 6869810000): the import's entry is
+    at seq 0, the cutover's at 1, the write's at 2 and the rollback's at 3.
+    Without it `k` is 1, and "a ref at `k - 1`" is a ref at seq 0, which no
+    render commit here carries: the guard's history was then empty, its
+    checkout held no `lanes/LANES.md`, and the name guard refused it before
+    any mirror read (rounds 6b to 6j). The write is `log NOTED`, R3b's
+    smoke-test write, from the lane's own register checkout `<c>`, made after
+    the cutover's push (T219g; T415's `pw_checkout`). The guard's checkout is
+    built on a fetched register commit at `k - 1`, as the rollback cases'
+    `found-files` builds its own at `k`."""
     estate = Estate(tmp_path, [_render(1)])
     writer = f"t215_{uuid.uuid4().hex[:12]}"
     reader = f"t215_{uuid.uuid4().hex[:12]}"
@@ -1046,7 +1060,30 @@ def test_the_guard_refuses_a_ref_behind_a_rollbacks_head(pg, tmp_path, request):
                PATH=os.pathsep.join([str(estate.bin), str(Path(pg.psql_bin).parent),
                                      os.environ.get("PATH", os.defpath)]))
     c = estate.tip()
-    for argv in (["import", "--at", c], ["cutover", "--import", c], ["rollback"]):
+    git = estate.env["T215_REAL_GIT"]
+    for argv in (["import", "--at", c], ["cutover", "--import", c], "write", ["rollback"]):
+        if argv == "write":
+            # ONE WRITE ON PRIMARY, from the lane's `<c>`, made after the
+            # cutover's push. Its forked render pushes to origin (T416); the
+            # rollback starts once origin carries the write's seq, or after
+            # 60 s, since the rollback renders `k` itself where it does not.
+            estate.lane_checkout()
+            wrote = subprocess.run(
+                ["bash", str(estate.root / "tool" / "lanes-edit.sh"), "log", "NOTED",
+                 f"lane:{WINDOW}", "T215: one write on primary before the rollback"],
+                capture_output=True, text=True, env=dict(env, LANES_SESSION=estate.session),
+                cwd=str(estate.wip), timeout=300, stdin=subprocess.DEVNULL)
+            assert wrote.returncode == 0, (
+                f"`log NOTED` on primary exited {wrote.returncode} (lane 4's T415): "
+                f"{(wrote.stdout + wrote.stderr)[-600:]}")
+            head = pg.psql(f"SELECT seq FROM {SCHEMA}.register_head WHERE id = 1;").stdout.strip()
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline and head not in subprocess.run(
+                    [git, "--git-dir", str(estate.origin), "log", "-1",
+                     "--format=%(trailers:key=Register-Seq,valueonly)", "main"],
+                    capture_output=True, text=True, env=estate.env).stdout.split():
+                time.sleep(0.2)
+            continue
         proc = subprocess.run([sys.executable, str(estate.copy), *argv], capture_output=True,
                               text=True, env=env, cwd=str(estate.wip), timeout=300,
                               stdin=subprocess.DEVNULL)
@@ -1056,8 +1093,21 @@ def test_the_guard_refuses_a_ref_behind_a_rollbacks_head(pg, tmp_path, request):
     fields = dict(line.split("=", 1) for line in path.read_text(encoding="utf-8").splitlines())
     assert fields.get("kind") == "rollback" and "until" not in fields, fields
     k = int(fields["mirror-seq"])
-    # The guard's checkout, as last fetched: a history at k - 1, then at k.
-    guard_estate = Estate(tmp_path / "guard", [_render(s) for s in range(1, k)])
+    assert k >= 2, (
+        f"the rollback's head k is {k}, not 2 or more, though a write on primary came between "
+        f"the cutover and the rollback: a ref one behind it, at {k - 1}, would carry no "
+        f"Register-Seq here")
+    # The guard's checkout: built on a fetched register commit at k - 1, the
+    # ref one behind the rollback's head; origin then gains k, unfetched.
+    guard_estate = Estate(tmp_path / "guard", [_render(1)])
+    guard_estate.grow([_render(s) for s in range(2, k)])
+    guard_estate.fetch()
+    behind = subprocess.run([git, "-C", str(guard_estate.wip), "log", "-1",
+                             "--format=%(trailers:key=Register-Seq,valueonly)",
+                             "refs/remotes/origin/main"], capture_output=True, text=True,
+                            env=guard_estate.env).stdout.split()
+    assert behind == [str(k - 1)], (
+        f"the guard's checkout, as last fetched, carries Register-Seq {behind}, not {k - 1}")
     guard_estate.grow([_render(k)])
     estate_config = guard_estate.config(url=pg.url(reader))
     shutil.copy2(path, estate_config.parent / "register-outage")
