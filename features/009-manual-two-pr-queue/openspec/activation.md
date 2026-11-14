@@ -108,3 +108,21 @@ tested parents, scope, actual admission, independent source reviews and strict
 final raw rereads remain mandatory. Invalid description types retain full.
 The spec leg's canonical ledger/tasks govern qualification and genuinely fresh
 R6 acceptance; this amendment claims neither live success nor assembly adoption.
+
+## R6 final consistency reread — CI-METADATA-16
+
+Fresh sources75/76 qualified fast-only and real ordered two-member admission,
+but draft77 logged candidate-reread at02:51:19.803Z after its initial proof checks.
+Mergify edited the description in the same second. The individual original raw
+field was not captured; do not assert a sole historical cause. The owned duplicate
+and heavy runs were cancelled, sources dequeued and draft closed before landing;
+main stayeda15a6b5. This is failed efficiency acceptance, not a test assertion.
+
+The bounded fresh-observation repair never accepts a raced view. Only a still-
+valid authenticated final PR/caller movement can request the existing no-proof
+wait; accepted proof still requires exact raw rereads. Hard identity/ref/body/
+hint/caller/source/artifact failures remain full. Candidate gate uses the same
+per-invocation bound and original mode/digest; exhaustion or changed proof refuses.
+Source gate semantics and all budgets/schemas/workflows remain unchanged. The
+canonical spec ledger records qualification and genuinely fresh R7 acceptance;
+this code-local dated pointer grants no live success or assembly authority.
