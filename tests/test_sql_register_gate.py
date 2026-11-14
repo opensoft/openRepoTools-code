@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""THE LANDING GATE, T280: ITS NINE CASES (Brett's "Temporary landing gate
+"""THE LANDING GATE, T280: ITS TEN CASES (Brett's "Temporary landing gate
 (Recommended)", 2026-11-13; FR-059). TEMPORARY: T281 removes this module with
 the gate, in the last set.
 
@@ -10,7 +10,8 @@ landed when its marker is in `tests/sql_register_landed/`. The gate is active
 only in a GitHub Actions run whose workflow is not `verify` and whose ref is
 not a `verify/` branch, unless `SQL_REGISTER_GATE` is `on` or `off` (lane 3's
 rulings, 2026-11-13, and (b), 2026-11-14, opensoft/openRepoTools#165 comments
-6867533114 and 6870017590). Eight cases are T280's; the ninth is (b)'s.
+6867533114 and 6870017590). Eight cases are T280's; the ninth is (b)'s; the
+tenth, a gated run with no marker directory, is lane 2's review RV26's.
 
 EACH CASE RUNS A CHILD PYTEST, since a table or a marker the gate cannot read
 ends the session that reads it. The child runs in a code root of the case's
@@ -94,6 +95,15 @@ ALL_IDS = ("test_gate_probe_waits", "test_gate_probe_runs",
 #: An Actions run of `tests.yml` on a push to `main`, where the gate is active.
 ON_MAIN = {"GITHUB_ACTIONS": "true", "GITHUB_WORKFLOW": "tests",
            "GITHUB_EVENT_NAME": "push", "GITHUB_REF_NAME": "main"}
+
+#: THE SKIP'S WORDS, WRITTEN OUT: what follows the tasks in every reason. A case
+#: that pins the words compares with this and never with the reader's own
+#: `reason()` (lane 2's RV26, SHOULD 2).
+REASON_TAIL = " (the landing gate, T280: no marker in tests/sql_register_landed/)"
+
+#: pgcluster's tag, which its banner counts as an engine skip: a gated id's
+#: reason must never hold it (`pgcluster.py`'s `SKIP_TAG`).
+ENGINE_TAG = "real PostgreSQL 16"
 
 #: What the child must not inherit from the outer run.
 NOT_INHERITED = ("GITHUB_", "OPENREPOTOOLS_", "PG", "PYTEST_", SWITCH)
@@ -239,6 +249,10 @@ def test_a_gated_id_is_reported_skipped_naming_the_tasks_it_waits_for(tmp_path):
     assert gated_on_t205_alone(run), f"the gated ids, by the table:\n{shown(run)}"
     assert "SKIPPED [1] tests/test_gate_probe.py:" in run.output, shown(run)
     assert f"{sql_register_gate.reason(('T415', 'T416'))}" in run.output, shown(run)
+    assert "waits for T415, T416 (" in run.output, shown(run)
+    assert run.ids["test_gate_probe_waits"] == (
+        "skipped", "waits for T415, T416" + REASON_TAIL), shown(run)
+    assert not any(ENGINE_TAG in message for _, message in run.ids.values()), shown(run)
     assert "3 skipped" in run.output and "2 passed" in run.output, shown(run)
     later = child(estate(tmp_path / "t415", markers=("T205", "T415")), **{SWITCH: "on"})
     assert later.code == 0 and later.ids == {
@@ -248,6 +262,29 @@ def test_a_gated_id_is_reported_skipped_naming_the_tasks_it_waits_for(tmp_path):
         "test_gate_probe_param[b]": waits("T416"),
         "test_gate_free_runs": ("passed", ""),
     }, f"with T415 landed, only T416 is waited for:\n{shown(later)}"
+
+
+def test_with_the_gate_on_and_no_marker_directory_every_row_is_waited_for(tmp_path):
+    """With the gate on and no marker directory at all, as the code leg is until
+    the first set's cut (git keeps no empty directory), no task has landed.
+    Every probe id is skipped, and each reason names every task of its rows in
+    task order, the `"*"` row's T205 first: `test_gate_probe_runs` waits for
+    T205 alone, by the `"*"` row. The module with no table runs. The reasons
+    are written out here, not built by the reader. A reader that dropped the
+    `"*"` row, or read a missing directory as every task landed, fails here
+    (lane 2's RV26, SHOULDs 1 and 2)."""
+    root = estate(tmp_path / "none")
+    assert not (root / "tests" / sql_register_gate.LANDED).exists()
+    run = child(root, **{SWITCH: "on"})
+    assert run.code == 0 and run.ids == {
+        "test_gate_probe_waits": ("skipped", "waits for T205, T415, T416" + REASON_TAIL),
+        "test_gate_probe_runs": ("skipped", "waits for T205" + REASON_TAIL),
+        "test_gate_probe_param[a]": ("skipped", "waits for T205, T415" + REASON_TAIL),
+        "test_gate_probe_param[b]": ("skipped", "waits for T205, T416" + REASON_TAIL),
+        "test_gate_free_runs": ("passed", ""),
+    }, f"no marker directory is no task landed:\n{shown(run)}"
+    assert "4 skipped" in run.output and "1 passed" in run.output, shown(run)
+    assert not any(ENGINE_TAG in message for _, message in run.ids.values()), shown(run)
 
 
 def test_an_id_whose_tasks_all_have_markers_is_never_skipped(tmp_path):
