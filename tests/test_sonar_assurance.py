@@ -292,8 +292,15 @@ def pin_pr_context(tmp_path, monkeypatch, change="code"):
             "git", "-C", str(root), "-c", "user.name=Test",
             "-c", "user.email=test@invalid", *args]).decode().strip()
 
-    for leg, oid in (("code", "a" * 40), ("spec", "c" * 40)):
-        run("update-index", "--add", "--cacheinfo", "160000," + oid + "," + leg)
+    revisions = {}
+    for leg in ("code", "spec"):
+        leg_root = root / leg
+        repo(leg_root, {"sample": b"before\n"})
+        old = run("-C", str(leg_root), "rev-parse", "HEAD")
+        repo(leg_root, {"sample": b"after\n"})
+        revisions[leg] = run("-C", str(leg_root), "rev-parse", "HEAD")
+        run("-C", str(leg_root), "checkout", "--detach", "-q", old)
+        run("update-index", "--add", "--cacheinfo", "160000," + old + "," + leg)
     if change == "create":
         run("rm", "contracts/code-pin.yaml")
     run("commit", "-qm", "base pins")
@@ -301,7 +308,8 @@ def pin_pr_context(tmp_path, monkeypatch, change="code"):
     legs = ("spec",) if change == "spec" else ("code", "spec") if change == "both" else ("code",)
     for leg in legs:
         if change != "pin-without-link" and change != "empty":
-            run("update-index", "--cacheinfo", "160000," + "b" * 40 + "," + leg)
+            run("-C", str(root / leg), "checkout", "--detach", "-q", revisions[leg])
+            run("update-index", "--cacheinfo", "160000," + revisions[leg] + "," + leg)
         if change != "link-without-pin" and change != "empty":
             (root / "contracts" / (leg + "-pin.yaml")).write_text(leg + " new\n")
             run("add", "--", "contracts/" + leg + "-pin.yaml")
