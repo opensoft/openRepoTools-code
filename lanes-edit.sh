@@ -20163,21 +20163,45 @@ guard_bind_rewrite() {   # <offer file> <keys to drop, space-separated> [<key>=<
   for gbw_a in "$@"; do gbw_drop="$gbw_drop${gbw_a%%=*} "; done
   gbw_t="$(umask 077; mktemp "${gbw_f%/*}/.${gbw_f##*/}.XXXXXX" 2>/dev/null || printf '')"
   [ -n "$gbw_t" ] || return 1
-  if ! ( umask 077
-         { for gbw_a in "$@"; do
-             case "$gbw_a" in mode=*) printf '%s\n' "$gbw_a"; break ;; esac
-           done
-           if [ -e "$gbw_f" ]; then
-             while IFS= read -r gbw_l || [ -n "$gbw_l" ]; do
-               case "$gbw_drop" in *" ${gbw_l%%=*} "*) continue ;; esac
-               printf '%s\n' "$gbw_l"
-             done < "$gbw_f" || exit 1
-           fi
-           for gbw_a in "$@"; do
-             case "$gbw_a" in mode=*) : ;; *) printf '%s\n' "$gbw_a" ;; esac
-           done
-         } > "$gbw_t" ) 2>/dev/null; then
+  gbw_rc=0
+  ( umask 077
+    { for gbw_a in "$@"; do
+        case "$gbw_a" in mode=*) printf '%s\n' "$gbw_a"; break ;; esac
+      done
+      if [ -e "$gbw_f" ]; then
+        gbw_seen=" "; gbw_m=""; gbw_p=""; gbw_ps=""; gbw_h=""; gbw_c=""
+        while IFS= read -r gbw_l || [ -n "$gbw_l" ]; do
+          if [ "$gbw_own" = 1 ]; then
+            case "$gbw_l" in
+              mode=*|pid=*|pidstart=*|host=*|container=*)
+                case "$gbw_seen" in
+                  *" ${gbw_l%%=*} "*) : ;;
+                  *)
+                    gbw_seen="$gbw_seen${gbw_l%%=*} "
+                    case "$gbw_l" in
+                      mode=*)      gbw_m="${gbw_l#*=}" ;;
+                      pid=*)       gbw_p="${gbw_l#*=}" ;;
+                      pidstart=*)  gbw_ps="${gbw_l#*=}" ;;
+                      host=*)      gbw_h="${gbw_l#*=}" ;;
+                      container=*) gbw_c="${gbw_l#*=}" ;;
+                    esac ;;
+                esac ;;
+            esac
+          fi
+          case "$gbw_drop" in *" ${gbw_l%%=*} "*) continue ;; esac
+          printf '%s\n' "$gbw_l"
+        done < "$gbw_f" || exit 1
+        [ "$gbw_own" = 0 ] || guard_bind_own "$gbw_m" "$gbw_p" "$gbw_ps" "$gbw_h" "$gbw_c" || exit 2
+      elif [ "$gbw_own" = 1 ]; then
+        exit 2
+      fi
+      for gbw_a in "$@"; do
+        case "$gbw_a" in mode=*) : ;; *) printf '%s\n' "$gbw_a" ;; esac
+      done
+    } > "$gbw_t" ) 2>/dev/null || gbw_rc=$?
+  if [ "$gbw_rc" != 0 ]; then
     rm -f -- "$gbw_t"
+    [ "$gbw_own" = 1 ] && [ "$gbw_rc" = 2 ] && return 2
     return 1
   fi
   mv -f -- "$gbw_t" "$gbw_f" 2>/dev/null || { rm -f -- "$gbw_t"; return 1; }
@@ -21667,7 +21691,7 @@ guard_answer() {   # <offer file> <the prompt> <pane>
 # Exits: 0 once the outcome is written (its own code is the record's `rc`);
 # 1 where the record could not be rewritten at the start, and nothing ran; 2
 # where it refuses.
-GBO_CPID=""; GBO_BD=yes; GBO_TRAPS=0
+GBO_CPID=""; GBO_BD=yes; GBO_TRAPS=0; GBO_MYPS=""
 
 # THE OUTER'S `TERM` TRAP: a person's `kill <p>`, forwarded — to `timeout`,
 # which passes it to the body's group and sends `KILL` 10 s later (probe P2),
@@ -21709,6 +21733,27 @@ guard_bind_uuid_ok() {   # <uuid>
   return 0
 }
 
+# THE OUTER'S OWN `binding`, ONE TEST for its read before the outcome and for
+# that outcome's rewrite, on the very lines it copies (`guard_bind_rewrite
+# --own`; lane 3's ruling on spec#47's point 21, #165 6879754335): `mode` is
+# `binding`; `pid` is its own `$$`; `pidstart` is the token it wrote at its
+# start, `GBO_MYPS`, or none where it wrote `pid` alone (lane 3's ruling on the
+# contract's point 18, #165 6751772589, with point 15, 6747528875, and spec#47's
+# point 19); and `host` and `container` are its own, `WS` and
+# `LANES_CONTAINER_NAME`, without regard to case, as the guard's own test of
+# them is (spec#47's point 20, (a)). `out` is not matched. `lower_into` and not
+# `lc`, so the test forks no process inside the window (the contract, draft
+# 11, section 1).
+#   0 its own · 1 not
+guard_bind_own() {   # <mode> <pid> <pidstart> <host> <container>
+  [ "${1-}" = binding ] && [ "${2-}" = "$$" ] && [ "${3-}" = "$GBO_MYPS" ] || return 1
+  lower_into "${4-}"; gbm_v="$LOWER_OUT"; lower_into "$WS"
+  [ "$gbm_v" = "$LOWER_OUT" ] || return 1
+  lower_into "${5-}"; gbm_v="$LOWER_OUT"; lower_into "$LANES_CONTAINER_NAME"
+  [ "$gbm_v" = "$LOWER_OUT" ] || return 1
+  return 0
+}
+
 guard_bind_outer() {   # <session uuid>
   gbo_u="${1-}"
   if ! guard_bind_uuid_ok "$gbo_u"; then
@@ -21743,8 +21788,8 @@ guard_bind_outer() {   # <session uuid>
   # no pid: running until `deadline_epoch`, then stale with no session test.
   gbo_ps=""; gbo_psrc=0
   gbo_ps="$(pid_start_of "$$" 2>/dev/null)" || gbo_psrc=$?
-  gbo_pid=("pid=$$"); gbo_myps=""
-  if [ "$gbo_psrc" = 0 ] && [ -n "$gbo_ps" ]; then gbo_myps="$gbo_ps"; gbo_pid+=("pidstart=$gbo_ps"); fi
+  gbo_pid=("pid=$$"); GBO_MYPS=""
+  if [ "$gbo_psrc" = 0 ] && [ -n "$gbo_ps" ]; then GBO_MYPS="$gbo_ps"; gbo_pid+=("pidstart=$gbo_ps"); fi
   # THE ATTEMPT'S OWN FILES, FROM THE RECORD'S `out=`, never recomputed from
   # `bind`, which counts attempts and is not the files' index (lane 3's rulings
   # on the contract's point 18, #165 6751772589 and 6751818233). The facts file
@@ -21866,6 +21911,21 @@ guard_bind_outer() {   # <session uuid>
       fi ;;
   esac
   gbo_out+=("ended_utc=$(utc_now)")
+  # FEATURE 007, T510 - THE FIVE COPIES MIRROR `start-record`'s PENDING RECORD
+  # (W:5380, the bind record's keys; tasks.md T510, "The five copies"): on
+  # every outcome but 0 they are copied from this transcript's newest
+  # `start-record` pending record on this host and container that holds a
+  # `call=` line (`guard_bind_copies`), and on every outcome they are in the
+  # drop list. So a record kept by a 3 or by LR007 `generation` keeps them; a
+  # record removed, by `absent`, LR007 `another-write`, a 0 or a refusal, takes
+  # them away; and a bound record holds none. THEY ARE GATHERED HERE, BEFORE
+  # THE READ BELOW, and not between that read and the `mv` (lane 3's ruling on
+  # spec#47's point 21, #165 6879754335).
+  gbo_copies=()
+  if [ "${gbo_out[0]}" != mode=bound ]; then
+    guard_bind_copies "$gbo_u"
+    gbo_copies=(${GBC_KV[@]+"${GBC_KV[@]}"})
+  fi
   # WRITTEN ONLY OVER ITS OWN RECORD (lane 3's ruling on the contract's point
   # 18, question 2, #165 6751772589): just before the write the record is read
   # again, and the outcome goes in only where it is still this outer's own
@@ -21875,15 +21935,28 @@ guard_bind_outer() {   # <session uuid>
   # a process only inside one pid namespace, so a record from another host or
   # container whose outer had the same pid, and also wrote `pid` alone, is not
   # this one's. `out` is not matched (lane 3's ruling on spec#47's point 20,
-  # (a), #165 6879754335; the contract, draft 11, section 1). One that is not
-  # has been answered by the guard since (its stale row), dropped (case 11) or
-  # replaced by a new offer's attempt, and an outcome written over it would
-  # contradict what the person was told; it is left as it is, and the outcome
-  # stays in this attempt's `.out`, where these words go. The write itself is
-  # still a temporary file and `mv -f`.
-  if ! guard_bind_load "$gbo_f" || [ "$GBR_MODE" != binding ] || [ "$GBR_PID" != "$$" ] ||
-     [ "$GBR_PIDSTART" != "$gbo_myps" ] || [ "$(lc "$GBR_HOST")" != "$(lc "$WS")" ] ||
-     [ "$(lc "$GBR_CONTAINER")" != "$(lc "$LANES_CONTAINER_NAME")" ]; then
+  # (a), #165 6879754335; the contract, draft 11, section 1). That test is
+  # `guard_bind_own`. One that is not has been answered by the guard since
+  # (its stale row), dropped (case 11) or replaced by a new offer's attempt,
+  # and an outcome written over it would contradict what the person was told;
+  # it is left as it is, and the outcome stays in this attempt's `.out`, where
+  # these words go. The write itself is still a temporary file and `mv -f`.
+  # THE WINDOW IS KEPT, AND NARROWED IN CODE (lane 3's ruling on spec#47's
+  # point 21, #165 6879754335; the contract, draft 11, sections 1 and 8): the
+  # five copies are gathered above, before this read, and the rewrite makes
+  # the same test on the very lines it copies (`guard_bind_rewrite --own`), so
+  # a record changed after this read is still left as it is. What is left is
+  # the rewrite's own read to its `mv`. No lock per record: it would put a new
+  # stuck state on every prompt's path.
+  gbo_wrc=2
+  if guard_bind_load "$gbo_f" &&
+     guard_bind_own "$GBR_MODE" "$GBR_PID" "$GBR_PIDSTART" "$GBR_HOST" "$GBR_CONTAINER"; then
+    gbo_wrc=0
+    guard_bind_rewrite --own "$gbo_f" "mode rc why note ended_utc $GBC_KEYS" "${gbo_out[@]}" ${gbo_copies[@]+"${gbo_copies[@]}"} || gbo_wrc=$?
+    # A RECORD THAT CHANGED BETWEEN THE TWO READS is named as it now stands.
+    [ "$gbo_wrc" != 2 ] || guard_bind_load "$gbo_f" || :
+  fi
+  if [ "$gbo_wrc" = 2 ]; then
     note "guard-bind: the record at $gbo_f is no longer this bind's own (mode=${GBR_MODE:-none}, pid ${GBR_PID:-none}, pidstart ${GBR_PIDSTART:-none}, host ${GBR_HOST:-none}, container ${GBR_CONTAINER:-none}), so it is left as it is and the outcome is not written over it: ${gbo_out[*]}"
     [ -z "$gbo_facts" ] || rm -f -- "$gbo_facts"
     return 0
