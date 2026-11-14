@@ -56,6 +56,7 @@ from typing import Dict, List, Mapping, Optional, Tuple
 import pytest
 
 import pgcluster
+import sql_register_gate
 
 #: THE TREE THIS SUITE WAS LOADED FROM, which is the code root unless
 #: `OPENREPOTOOLS_CODE_ROOT` names another one.
@@ -642,3 +643,39 @@ def git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProces
         raise AssertionError(f"git {' '.join(args)} in {cwd} failed:\n"
                              f"{proc.stderr}{proc.stdout}")
     return proc
+
+
+#: THE LANDING GATE (T280; Brett's "Temporary landing gate (Recommended)",
+#: 2026-11-13; FR-059), TEMPORARY: T281 removes this block in the last set,
+#: with `tests/sql_register_gate.py`, which says what the gate reads. In a
+#: GitHub Actions run whose workflow is not `verify` and whose ref is not a
+#: `verify/` branch, or wherever `SQL_REGISTER_GATE=on`, each 007 test whose
+#: tasks have not all landed is SKIPPED, and the skip names them. Every run checks the tables and the
+#: markers, so a bad row fails a local run too. Nothing else changes in a run
+#: where the gate is not active, so a local run is otherwise ungated. The skips
+#: are marked after `-k` has deselected (`trylast`), so no fixture of a gated
+#: id runs, and no cluster starts for one.
+SQL_REGISTER_LANDED = Path(__file__).resolve().parent / sql_register_gate.LANDED
+
+#: Every module the run collected, by `id()`, before `-k` deselects: each one's
+#: table is checked whether or not its ids are selected.
+_GATE_MODULES: Dict[int, object] = {}
+
+
+def pytest_itemcollected(item):
+    module = getattr(item, "module", None)
+    if module is not None:
+        _GATE_MODULES.setdefault(id(module), module)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(config, items):
+    """THE GATE: pytest's own `UsageError`, exit 4, for a table or a marker it
+    cannot read, and a skip naming the tasks each gated id still waits for."""
+    try:
+        skips = sql_register_gate.gate(items, list(_GATE_MODULES.values()),
+                                       os.environ, SQL_REGISTER_LANDED)
+    except sql_register_gate.GateError as exc:
+        raise pytest.UsageError(f"the landing gate (T280): {exc}") from None
+    for item, why in skips:
+        item.add_marker(pytest.mark.skip(reason=why))
