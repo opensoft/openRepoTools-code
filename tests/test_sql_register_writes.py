@@ -72,6 +72,31 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
     reason="the lane tooling is bash over git")]
 
+#: THE LANDING GATE'S TABLE (T280; `tests/sql_register_gate.py` reads it, and
+#: T281 removes it in the last set): the tasks each id of this module waits
+#: for, by T210's and T241's Orders (tasks.md at 204145ae), keyed by function
+#: or by one id, with T241's As built for `[log]`. Lane 2's plan GP-24 wrote
+#: it (task sets 12b's rule 11).
+SQL_REGISTER_GATE_TABLE = {
+    "test_a_failure_in_a_late_statement_leaves_journal_lines_and_head_unchanged": ("T413", "T414", "T415", "T420"),  # T241; tasks:2324
+    "test_a_hand_edit_commit_is_refused_on_primary": ("T413", "T414", "T415", "T420"),  # T241; tasks:2324
+    "test_a_pending_hand_edit_names_the_file_and_a_recovery_that_works": ("T413", "T414", "T415", "T420"),  # T241; tasks:2324
+    "test_a_queued_handoff_commit_is_still_published": ("T413", "T414", "T415", "T420"),  # T241; tasks:2324
+    "test_a_queued_lanes_commit_is_refused_as_a_divergence": ("T413", "T414", "T415", "T420"),  # T241; tasks:2324
+    "test_a_refused_write_leaves_no_lock": ("T413", "T414", "T415", "T420"),  # T241; tasks:2324
+    "test_a_write_goes_on_with_the_service_down": ("T413", "T414", "T415", "T420"),  # T241; tasks:2324
+    "test_an_image_holding_a_cr_or_a_nul_is_refused_with_2_and_nothing_sent": ("T112",),  # T241; tasks:2324
+    "test_each_direct_write_refuses_with_2_on_primary": ("T413", "T414", "T415", "T420"),  # T241; tasks:2324
+    "test_each_write_exits_69_when_the_database_is_unreachable": ("T413", "T414", "T415", "T420"),  # T241; tasks:2324
+    "test_each_write_exits_69_when_the_database_refuses_the_transaction": ("T413", "T414", "T415", "T420"),  # T241; tasks:2324
+    "test_each_write_exits_69_when_the_switch_is_not_primary": ("T413", "T414", "T415", "T420"),  # T241; tasks:2324
+    "test_request_handoff_refuses_64_never_2_on_primary": ("T413", "T414", "T415", "T420"),  # T241; tasks:2324
+    "test_the_storage_layer_entry_exits_69_when_the_database_is_unreachable": ("T105", "T107", "T108", "T111", "T112", "T227", "T301"),  # T210; tasks:1951
+    "test_a_failure_in_a_late_statement_leaves_journal_lines_and_head_unchanged[rename-lane]": ("T413", "T414", "T415", "T420", "T422"),  # T241; tasks:2324
+    "test_a_refused_write_leaves_no_lock[rename-lane]": ("T413", "T414", "T415", "T420", "T422"),  # T241; tasks:2324
+    "test_each_write_exits_69_when_the_switch_is_not_primary[log]": ("T412", "T413", "T414", "T415", "T417", "T420"),  # T241; tasks:2322
+}
+
 #: Contract section 2.2's argv, exactly.
 PSQL_ARGV = ["--no-psqlrc", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-v",
              "VERBOSITY=verbose", "-v", "SHOW_CONTEXT=never"]
