@@ -61,7 +61,8 @@ WHAT EACH FAILS UNTIL. B15's Order (tasks:2542): it waits for T229, and its
 tests fail until L1-A18, T326 and T327 land. Each step's labelled assertion
 also names the tasks its own verbs rest on, by their B15 bullets, and lane
 4's by lane 4's reading of its own code (#165 6826679959, item 1):
-  1. `ready` (T119), the logins (T110) and the TLS cluster (T229);
+  1. `ready` (T119; its fourteenth check, git 2.32 or later, is lane 1's
+     T119 follow-up 2), the logins (T110) and the TLS cluster (T229);
   2. `import --at` (T115, L1-A13);
   3. `cutover` (T116, L1-A14) and its marker's push, read-back and
      `record_marker` (lane 3's T327); the flips (T120);
@@ -213,11 +214,13 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: as lane 2's plan GP-24 v2 (sha256 9600adda) gives it. Every id waits for
 #: the "*" row; the drill itself also for T415, T416 and T507, and the
 #: uncleared workstation's case for T415 and T416. AT-F4's three wait for
-#: nothing more.
+#: nothing more. Since T276k the two AT-13 ids also wait for T119: step 1,
+#: which both run, counts `ready`'s fourteen checks, and check 14 is lane 1's
+#: T119 follow-up 2 (T276's line, tasks:2537 at lane 3's commit 24, f9d6069e).
 SQL_REGISTER_GATE_TABLE = {
     "*": ("T121", "T326", "T327"),  # every id: the tasks all its rows share
-    "test_a_workstation_not_yet_cleared_refuses_after_rollback": ("T415", "T416"),  # T276; tasks:2544
-    "test_the_drill_import_cutover_outage_rollback_and_files_mode_write": ("T415", "T416", "T507"),  # T276; tasks:2544
+    "test_a_workstation_not_yet_cleared_refuses_after_rollback": ("T119", "T415", "T416"),  # T276; tasks:2544; T119: tasks:2537
+    "test_the_drill_import_cutover_outage_rollback_and_files_mode_write": ("T119", "T415", "T416", "T507"),  # T276; tasks:2544; T119: tasks:2537
 }
 
 INDEXER = REPO / "lanes-index"
@@ -907,9 +910,10 @@ class Drill:
             assert proc.returncode == 0, (
                 f"[step 1] `ready --expect index` fails in {ws.name} (lane 1's T119; the TLS "
                 f"cluster, T229; the logins, T110):\n{_said(proc)}")
-            assert sorted(checks) == list(range(1, 14)) and all(
+            assert sorted(checks) == list(range(1, 15)) and all(
                 state == "ok" for state, _ in checks.values()), (
-                f"[step 1] not every check of the thirteen is ok in {ws.name}:\n{_said(proc)}")
+                f"[step 1] not every check of the fourteen is ok in {ws.name} (check 14, git "
+                f"2.32 or later, is lane 1's T119 follow-up 2):\n{_said(proc)}")
 
     def freeze(self, *, ruleset: bool = True) -> str:
         """The drain's last `PAUSED` write, in files mode from ws2 as the
