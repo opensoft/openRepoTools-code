@@ -8269,6 +8269,7 @@ class RegisterService:
         self.reload_due = False      # a request saw a change; the worker re-reads it (M1)
         self.asks = 0                # requests that saw a change, counted (NIT-A)
         self.taken = 0               # of them, those a finished `take_change` has covered
+        self.change_ends = False     # the worker found a change that ends the service
         self.idle_check_s, ignored = register_serve_seconds(REGISTER_SERVE_IDLE_CHECK)
         if ignored:
             register_serve_log(paths, "the idle check's test value is ignored: the default is kept")
@@ -9039,7 +9040,13 @@ class RegisterService:
             # most as long as a request's answer may take (section 7), so no
             # connection thread runs `load_config`'s `git` or waits on a kill.
             # That request is answered `unavailable`, or `unavailable
-            # restarting` where the change ends the service.
+            # restarting` where the worker has taken the change, within the
+            # wait, and found that it ends the service (`change_ends`; lane
+            # 5's review of round 3, NIT 2). A stop of any other cause during
+            # the wait, an idle stop, a signal or an ended worker, is plain
+            # `unavailable`, and so is a change that ends the service but
+            # that the worker reaches past the wait's limit: a limit, which
+            # nothing here tries to know sooner.
             # NIT-A (lane 1, #165 6883749855): the request is counted, and
             # the wait also ends once a `take_change` that began after it has
             # finished (`taken`), so one that finds no difference, a file
@@ -9063,8 +9070,8 @@ class RegisterService:
                 self.cond.wait_for(lambda: (self.config_epoch != epoch or self.taken >= ticket
                                             or self.stopping),
                                    max(0.0, limit - time.monotonic()))
-                stopping = self.stopping
-            return b"unavailable restarting\n" if stopping else b"unavailable\n"
+                restarting = self.change_ends
+            return b"unavailable restarting\n" if restarting else b"unavailable\n"
         return self.request(items, arrival, epoch)
 
     def take_change(self) -> None:
@@ -9077,18 +9084,27 @@ class RegisterService:
         compares is read after them, so whatever change they saw, it sees
         that or a later state. Once it has finished, with a step, with none
         where it finds no difference, or with a fault, those requests' waits
-        end (`answer`)."""
+        end (`answer`).
+
+        Where the change ends the service, that is recorded (`change_ends`)
+        under the same hold of `cond` that ends those waits, before the
+        service is stopped, so a waiting request that wakes then answers
+        `unavailable restarting`, and one that wakes for any other stop
+        answers plain `unavailable` (lane 5's review of round 3, NIT 2)."""
         with self.cond:
             cfg, stamp, upto = self.cfg, self.config_stamp, self.asks
+        why = ""
         try:
             if register_serve_config_stamp(cfg) != stamp:
                 why = self.reload()
-                if why:
-                    self.stop(why)
         finally:
             with self.cond:
                 self.taken = max(self.taken, upto)
+                if why:
+                    self.change_ends = True
                 self.cond.notify_all()
+        if why:
+            self.stop(why)
 
     def reload(self) -> str:
         """The configuration re-read (Y:3918-3920): why the service must exit,
