@@ -144,7 +144,8 @@ def _code_lines(blocks: list[str]) -> list[str]:
 #: lane 2 reviews these stub hunks): `register-row` the lane's row for the
 #: window's name, `$STUB_WINDOW`, and nothing for any other name; and
 #: `canon-lane` the name it was given. `window-lane` and `swapped` keep the
-#: stub's 2, which step 1's ladder falls through where the window's name has a row.
+#: stub's 2: the ladder asks them only where the window's name has NO row, and
+#: `register-row` answers for `$STUB_WINDOW`, the name `tmux` gives, so no case asks.
 STUB = f"""#!{sys.executable}
 import json, os, sys
 argv = sys.argv[1:]
@@ -429,6 +430,41 @@ def test_every_register_write_and_the_handoff_write_names_its_lane_in_the_text()
     assert len(calls) == 4, calls
     for call in calls:
         assert 'LANES_LANE="$lane"' in call, f"this call does not name its lane: {call}"
+
+
+# --- step 4 reads the identity again and refuses a lane it did not bind ------
+
+#: The verbs that write: the swap's three register writes (step 4) and the
+#: handoff's one (step 2). Anything else the stub logs is a read.
+WRITE_VERBS = ("log", "append-line", "set-row-state", "write-handoff")
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_step4_refuses_2_and_writes_nothing_where_the_window_names_another_lane(estate, shell):
+    """Pins step 4's identity refusal (`skills/handoff/SKILL.md`: `REFUSED: step 1
+    bound this window to lane ...`, T431's `7c74b907`), which no case reached:
+    every other case that runs step 4 ends 0, and the refusal was only ever hit
+    as a failure (W36-SKF's 23 cases, before the stub answered the reads).
+    `step4()` binds `lane=repoHS-1` as step 1 did, the window's own name answers
+    `repoHS-2` (a row and a `canon-lane` name of its own), and the same reads,
+    run again after the base, name another lane. So the block ends 2 with that
+    text on stderr, has asked the reads and sends no write: no `log`,
+    `append-line`, `set-row-state` or `write-handoff`, and the line step 4
+    prints last is never printed. Lane 2's SHOULD on `d0bbaeb0` (6867788229:
+    "One case with `STUB_WINDOW="repoHS-2"` would pin it") and lane 3's word
+    (6867841072: a case "that expects 2, the refusal text and no writes, in
+    bash and in its zsh twin")."""
+    other = "repoHS-2"
+    proc = estate.run(shell, estate.step4(), STUB_WINDOW=other)
+    assert proc.returncode == 2, (proc.returncode, proc.stdout, proc.stderr)
+    assert (f'REFUSED: step 1 bound this window to lane "{LANE}", and the same reads, run again '
+            f'after this block took its base, answer "{other}".') in proc.stderr, proc.stderr
+    assert "Nothing of step 4 was written" in proc.stderr, proc.stderr
+    asked = [c["argv"] for c in estate.calls()]
+    assert ["register-row", other] in asked and ["canon-lane", other] in asked, asked
+    assert [v for v in estate.verbs() if v in WRITE_VERBS] == [], estate.calls()
+    assert "row_write_refused" not in proc.stdout, "the block ended before its last line"
+    assert estate.handoff.read_text(encoding="utf-8") == OLD, "nothing wrote the handoff"
 
 
 # --- the words: what each exit says, and that the swap goes on ---------------
