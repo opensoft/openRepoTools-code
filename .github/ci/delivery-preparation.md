@@ -17,7 +17,8 @@ It is deliberately not triggered by labels or late edited/closed metadata.
 ## Reusable candidate entry
 
 `task-set-candidate.yml` has only a parameterless workflow_call, no dispatch or
-queue/push trigger. A future activation must be separately approved. The entry:
+queue/push trigger. The proposed non-gating caller below requires a separately
+approved merge before it can observe queue events. The entry:
 
 1. Executes main-owned verifier code with read-only GitHub metadata permissions.
 2. Requires genuine same-repository Mergify push context, exact queue ref/SHA and
@@ -70,3 +71,37 @@ The full rollout goal does not override the current prohibitions on live canarie
 ruleset changes/bypass, app access or releases. Preserve lanes1–5, their claims,
 bindings, worktrees, running benches and installed sessions. Assembly pins and
 composed acceptance remain coherent separate delivery stages.
+
+## Proposed non-gating caller (CANDIDATE-SHADOW-08)
+
+`task-set-candidate-shadow.yml` prepares push-only observation on
+`mergify/merge-queue/*`. No dispatch, auto-enqueue, secret inheritance or write
+permission is added. A probe checks out only main and executes the existing
+main-owned candidate verifier. Only an explicit successful proof writes the
+literal scheduling output qualify=true. Missing policy, stale/mixed/unknown
+content, unsupported context or any verifier failure writes qualify=false;
+timeout, cancellation or job failure cannot schedule additional qualification.
+No event data or verifier stdout is copied into shell/output instructions.
+
+That boolean schedules only an ADDITIONAL call to the existing candidate entry,
+which verifies independently, runs the same full suite and rechecks live evidence.
+It is not admission, a CI exemption or a heavy receipt. The caller is non-gating:
+no existing queue or ruleset consumes its observation or its nested check names.
+The existing verifier still requires the exact claude-current/test regular-file
+scope, one or two independent main-based members, current fast provenance and
+clean official exact-head Codex evidence. Local review or a quota message cannot
+substitute for those future candidate receipts.
+
+This proposal does not save heavy runs. After a separately approved merge,
+eligible observations intentionally add a full run while existing source and
+candidate full CI continue. Mixed or uncertain work stays on that original full
+path. The original tests.yml, thirteen-job inventory, reusable entry, all queues
+and release workflows are unchanged. Opening the PR does not execute a live
+candidate, merge it, advance assembly pins or refresh running sessions.
+
+Next gates are separate: checked source merge with user authority; approved
+live scoped qualification with exact member/run/candidate/landed-tree evidence;
+then an explicit proposal for admission and required-check migration. Until that
+cutover is approved, retain the current four required full gates. Never post
+success aliases for tests not run. Broader scopes/dependencies, apps, rulesets,
+releases and lanes remain outside this preparation.
