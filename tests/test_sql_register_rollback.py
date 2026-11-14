@@ -661,10 +661,14 @@ def test_rollback_steps_0_and_1_run_only_against_a_scratch_schema(rb_register, c
 #: WHAT EACH WAITS FOR. Every estate case fails until lane 3's T327 (the
 #: cutover's push and read-back, so the marker reads `present`), lane 4's
 #: T415 and T416 (a write on primary, and its render's fork), lane 3's T321 to
-#: T323 (the render), and T326 (step 0's fetch and steps 2 to 4). The missed
-#: writer's refusals also wait for lane 4's T420 (D10's refusals on primary)
-#: and T421 (`claim` on primary), and case (i) for T417 (exit 3 and its
-#: rerun). `test_a_rollback_entry_over_a_recorded_divergence_is_lr012` (direct
+#: T323 (the render), and T326 (step 0's fetch and steps 2 to 4). Of the
+#: missed writer's ids, the eight `commit-*` also wait for lane 4's T420
+#: (D10's refusals on primary), and the other 40 for lane 1's T111 (AT-3's
+#: line in check 4's 69); case (i) also waits for T417 (exit 3 and its
+#: rerun). No id waits for lane 4's T421 or lane 5's T507: none runs the
+#: guard, and with T421's merge reverted the `claim` ids fail as they do with
+#: it (T273's Order, tasks:2512 at 204145ae; lane 2's RB15; lane 4, #165
+#: 6826679959). `test_a_rollback_entry_over_a_recorded_divergence_is_lr012` (direct
 #: calls, lane 1's T107) and `test_rollback_exits_2_on_lr012_naming_the_
 #: divergence_and_both_ways_out` (a False copy on the scratch schema, T304)
 #: need neither, and can pass on line R now. The four FP lost-turn ids need
