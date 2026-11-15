@@ -22996,7 +22996,8 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     # outcome, which goes to its `.out` alone. So the `.bind.*` sweep (point 13)
     # removes only the names LISTED BEFORE THE TEST, and of those only the
     # offer's own: an index at most that of the `out` the offer names at the
-    # test, none where it names none. A newer attempt's files are never swept.
+    # test, or, where it names none, every name so listed. A newer attempt's
+    # files are never swept.
     # And after the `mv` the names are read again: one not listed before, above
     # the offer's own, is that answer `2`'s attempt, whose record this allowance
     # replaced, and the person is told so plainly, with its output named.
@@ -23031,6 +23032,17 @@ guard_answer() {   # <offer file> <the prompt> <pane>
       return 2
     fi
     ga_own="$(guard_bind_own_index "$ga_f" "$GRS_OUT")"
+    if [ "$ga_own" = 0 ]; then
+      # AN OFFER THAT NAMES NO ATTEMPT (a fresh one, or one a back-out left with
+      # no `out`) owns every canonical name listed before the check, as point
+      # 13 swept them: nothing made after that list is among them.
+      for ga_x in ${ga_bl[@]+"${ga_bl[@]}"}; do
+        [ -e "$ga_x" ] || continue
+        ga_i="${ga_x#"$ga_f".bind.}"; ga_i="${ga_i%%.*}"
+        guard_bind_index_ok "$ga_i" || continue
+        guard_bind_index_le "$ga_i" "$ga_own" || ga_own="$ga_i"
+      done
+    fi
     for ga_x in ${ga_bl[@]+"${ga_bl[@]}"}; do
       [ -e "$ga_x" ] || continue
       ga_i="${ga_x#"$ga_f".bind.}"; ga_i="${ga_i%%.*}"
