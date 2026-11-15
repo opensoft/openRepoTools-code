@@ -1401,12 +1401,19 @@ EOF
 	# D8's words for primary (Y:468–469), then the files-mode meaning that D8
 	# adds to and does not replace. This word prints no rerun of its own: the
 	# writer's words are above, on its stderr, which is not redirected (Y:5698–5699).
+	# Where the writer printed no rerun, the words say to follow what it printed,
+	# except under this request's base, where `$prog` is run again from its start,
+	# as it was typed (D9's base clause, lane 3): what it printed may be a hand
+	# command, and one run without this request's `LANES_ACT` and `LANES_EXPECT`
+	# writes unchecked (Y:5587).
 	3) die "\`$LANES_EDIT request-handoff $R_LANE\` exited 3, the writer's own code (its report is
     above). On primary the request may not be written; run the printed
     \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer
-    printed no such rerun, follow what it printed; off primary, the commit is
-    local and may already be on origin. That is neither 'the lane is free' nor
-    the refusal that says it is not. Nothing was launched or attached." 3 ;;
+    printed no such rerun, follow what it printed, except under this request's
+    base, where you run \`$prog\` again from its start, as it was typed,
+    instead; off primary, the commit is local and may already be on origin.
+    That is neither 'the lane is free' nor the refusal that says it is not.
+    Nothing was launched or attached." 3 ;;
 	*) die "\`$LANES_EDIT request-handoff $R_LANE\` exited $ge_rh_rc, which is neither 'the lane is
     free' nor the refusal that says it is not. Nothing was launched or attached." 1 ;;
 	esac

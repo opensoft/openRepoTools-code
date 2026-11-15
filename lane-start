@@ -1478,20 +1478,31 @@ case "$LANES_ACT" in
     fi ;;
 esac
 
-# THE TEXT FOR A WRITE THAT EXITED 3 (T428; design D8, Y:463-469; FR-028;
-# review M11), IN T433's FORM, BOTH SENTENCES (lane 3's G3 and shared ruling
-# 3, #165 6770733371; tasks:1400 at B12b): D8's words, then the rule for a
-# writer that printed no such rerun (spec#58 review, NIT 8, item D9). A 3 is
-# not "written" and not "NOT written": on primary the write is in doubt and
-# may never have committed, and the writer prints the rerun that settles it
-# (Y:2661-2665) in two of its five 3s, in two more only where this run was
-# under a `LANES_WRITE_ID`, and in the fifth, a record it cannot read, not
-# at all. So where it printed none, what it printed is what to follow; off
-# primary the commit is local and may already be on origin. The writer's
-# stderr is kept, and this script prints no command or hint of its own for
-# it (Y:5698-5699): a second write by another command line could write it
-# twice. Defined here, above its first user, W8's arm.
-LS_D8="may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun, follow what it printed; off primary, the commit is local and may already be on origin"
+# THE TEXT FOR A WRITE THAT EXITED 3 (T428; design D8, Y:463-469; FR-028; review
+# M11), IN T433's FORM, BOTH SENTENCES (lane 3's G3 and shared ruling 3, #165
+# 6770733371; tasks:1400 at B12b): D8's words, then the rule for a writer that
+# printed no such rerun (spec#58 review, NIT 8, item D9). A 3 is not "written"
+# and not "NOT written": on primary the write is in doubt and may never have
+# committed, and the writer prints the rerun that settles it (Y:2661-2665) in
+# two of its five 3s, in two more only where this run was under a
+# `LANES_WRITE_ID`, and in the fifth, a record it cannot read, not at all. So
+# where it printed none, what it printed is what to follow, EXCEPT UNDER THIS
+# LAUNCH'S BASE (lane 3's ruling on D9, its base clause): what it printed may be
+# a hand command, and one run without this launch's `LANES_ACT` and
+# `LANES_EXPECT` writes unchecked (Y:5587), so the launch is run again instead.
+# Which run depends on the arm, as Q41's does: an arm that dies has launched
+# nothing, so it is `$prog` from its start (`LS_D8`); an arm the launch goes on
+# past names `$prog --no-launch` with the same arguments, in the launched
+# session's window, as its first act, since a second `$prog` from its start
+# would launch twice (`LS_D8_GO`; Q39, Q41). Off primary the commit is local and
+# may already be on origin. The writer's stderr is kept, and this script prints
+# no command or hint of its own for it (Y:5698-5699): a second write by another
+# command line could write it twice. Defined here, above its first user, W8's
+# arm.
+LS_D8_HEAD="may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun, follow what it printed, except under this launch's base, where you run"
+LS_D8_TAIL="; off primary, the commit is local and may already be on origin"
+LS_D8="${LS_D8_HEAD} \`$prog\` again from its start instead${LS_D8_TAIL}"
+LS_D8_GO="${LS_D8_HEAD} \`$prog --no-launch\` with the same arguments instead, in the launched session's window, as its first act (a second \`$prog\` without \`--no-launch\` would launch again)${LS_D8_TAIL}"
 # NO HAND COMMAND OF ITS OWN AFTER A WRITE THAT DID NOT END 0, UNDER A SEQ
 # BASE (lane 3's REV-ACT Q4, #165 6774499606, widened by Q11, #165
 # 6779688808; Y:5601). A command run by hand without this launch's
@@ -1501,7 +1512,8 @@ LS_D8="may not be written; run the printed \`LANES_WRITE_ID\` rerun, which write
 # prints no command for the write, and an arm that dies says to run it again
 # from its start (`LS_Q4`); an arm the launch goes on past names the act
 # without its launch instead (`ls_q41_note`, below; Q39, Q41). A 3 keeps the
-# writer's rerun (G3), in T433's text (`LS_D8`).
+# writer's rerun where it printed one (G3), in T433's text (`LS_D8`,
+# `LS_D8_GO`), and where it printed none says which run to make instead (D9).
 # Under `@files` today's hand commands stand (Y:5596): no write there reads
 # either variable. `act-begin`'s 2 never reaches here: `lane-start` refuses
 # it (A2). Defined here, above its first user, W8's arm.
@@ -1519,7 +1531,8 @@ LS_Q4="No command is printed for it here, since one run by hand without this lau
 # the stamp and the launch go on as before; the arm names `lane-start
 # --no-launch` with the same arguments, run in the launched session's window
 # as its first act: the act without its launch (`--no-launch`, the first act
-# INSIDE a running session). A 3 keeps the writer's rerun (G3), in `LS_D8`.
+# INSIDE a running session). A 3 keeps the writer's rerun where it printed one
+# (G3), and where it printed none `LS_D8_GO` names the same act (D9).
 # A new row's arms die, and `LS_Q4`'s "from its start" stands for them, a
 # 69 or 75 included, as it does for W8's `request-handoff` 2 (lane 3's Q63
 # and Q66, #165 6808141050). Under `@files` today's texts stand.
@@ -3168,11 +3181,12 @@ if [ "$bind_rc" = 0 ]; then
            die "\`$LANES_EDIT request-handoff $LANE\` exited 2 under this launch's base (its words are above: the holder kept the lane, or lane ${LANE}'s binding changed after this launch's base), so the handoff was not obtained, and NOTHING here has been renamed, written or launched. ${LS_Q4}." 2
          die "the handoff was not obtained (the helper's own facts and its \`--force\` line are above), so lane $LANE is still bound elsewhere and NOTHING here has been renamed, written or launched." 2 ;;
       # A WRITE'S ARM (Y:5731), AND IT PASSES THE CODE NOW (feature 007, T428;
-      # lane 3's ruling 6747281902, T402 item 2; ERR-33): 69 and the busy 75
-      # say nothing was sent; the in-doubt 3 says the request may be in the
-      # lane's log or may not, and the writer's own words above carry what it
-      # printed, its rerun where it printed one, in T433's text (G3). Every
-      # other code keeps 1, as the read arms keep theirs (ERR-36).
+      # lane 3's ruling 6747281902, T402 item 2; ERR-33): 69 and the busy 75 say
+      # nothing was sent; the in-doubt 3 says the request may be in the lane's
+      # log or may not, and the writer's own words above carry what it printed,
+      # its rerun where it printed one, in T433's text (G3; `LS_D8` says what to
+      # do where it printed none, D9). Every other code keeps 1, as the read
+      # arms keep theirs (ERR-36).
       69 | 75)
         ls_rh_why="the register is busy"
         [ "$ls_rh_rc" = 75 ] || ls_rh_why="the register could not be read, or refused the write"
@@ -4729,7 +4743,7 @@ else
       if [ "$ls_w_rc" = 0 ]; then
         step "session cell updated: $cell_anchor → $harness_sid (the transcript live in this window)"
       elif [ "$ls_w_rc" = 3 ]; then
-        note "the session cell's extension with $harness_sid is in doubt (\`append-session-id\` exited 3): it ${LS_D8}. The launch is not refused for it."
+        note "the session cell's extension with $harness_sid is in doubt (\`append-session-id\` exited 3): it ${LS_D8_GO}. The launch is not refused for it."
       elif ls_q4 "$ls_w_rc"; then
         ls_q41_note "the session cell was NOT extended with $harness_sid (\`append-session-id\` exited $ls_w_rc under this launch's base; its words are above)" "The launch is not refused for it."
       else
@@ -4764,7 +4778,7 @@ else
       if [ "$ls_w_rc" = 0 ]; then
         step "session cell updated: $row_sid → $restored_sid (the exact transcript from the lane's last PAUSED record)"
       elif [ "$ls_w_rc" = 3 ]; then
-        note "the session cell's extension with recovered transcript $restored_sid is in doubt (\`append-session-id\` exited 3): it ${LS_D8}. The launch is not refused for it."
+        note "the session cell's extension with recovered transcript $restored_sid is in doubt (\`append-session-id\` exited 3): it ${LS_D8_GO}. The launch is not refused for it."
       elif ls_q4 "$ls_w_rc"; then
         ls_q41_note "the session cell was NOT extended with recovered transcript $restored_sid (\`append-session-id\` exited $ls_w_rc under this launch's base; its words are above)" "The launch is not refused for it."
       else
@@ -4815,7 +4829,7 @@ else
       if [ "$ls_w_rc" = 0 ]; then
         step "session cell updated: $row_sid → $new_sid"
       elif [ "$ls_w_rc" = 3 ]; then
-        note "the session cell's stamp with $new_sid is in doubt (\`append-session-id\` exited 3): it ${LS_D8}. The launch is not refused for it."
+        note "the session cell's stamp with $new_sid is in doubt (\`append-session-id\` exited 3): it ${LS_D8_GO}. The launch is not refused for it."
       elif ls_q4 "$ls_w_rc"; then
         ls_q41_note "the session cell was NOT stamped with $new_sid (\`append-session-id\` exited $ls_w_rc under this launch's base; its words are above)" "The launch is not refused for it."
       else
@@ -4909,7 +4923,7 @@ else
     if [ "$srs_rc" = 0 ]; then
       step "row state set: LIVE · $lane_verb by ${lane_sid:-unknown}"
     elif [ "$srs_rc" = 3 ]; then
-      note "the row's state cell is in doubt (\`set-row-state\` exited 3): it ${LS_D8}. The launch is not refused for it: the stamp is the record of this act, not its licence."
+      note "the row's state cell is in doubt (\`set-row-state\` exited 3): it ${LS_D8_GO}. The launch is not refused for it: the stamp is the record of this act, not its licence."
     elif ls_q4 "$srs_rc"; then
       ls_q41_note "the row's state cell was NOT set (\`set-row-state\` exited $srs_rc under this launch's base; its words are above)" "The launch is not refused for it: the stamp is the record of this act, not its licence."
     else
@@ -4955,7 +4969,7 @@ else
       if [ "$ls_w_rc" = 0 ]; then
         step "session cell updated: $row_sid → $agent_cell"
       elif [ "$ls_w_rc" = 3 ]; then
-        note "the session cell's extension with $agent_cell is in doubt (\`append-session-id\` exited 3): it ${LS_D8}. The launch is not refused for it."
+        note "the session cell's extension with $agent_cell is in doubt (\`append-session-id\` exited 3): it ${LS_D8_GO}. The launch is not refused for it."
       elif ls_q4 "$ls_w_rc"; then
         ls_q41_note "the session cell was NOT extended with $agent_cell (\`append-session-id\` exited $ls_w_rc under this launch's base; its words are above)" "The launch is not refused for it."
       else
@@ -5219,14 +5233,14 @@ else
         die "lane ${LANE}'s bind was REFUSED: \`$LANES_EDIT start-record\` exited 2 (its words are above), and none of ${ls_sr_what} was written. A 2 refuses the whole write: on primary a scope this launch read changed after its base, which is another place binding or changing lane $LANE, a SECOND BINDING this launch does not write over; or LR010, a key that is not a scope, or a refusal of the write's own words (spec:317; FR-029). This window has been renamed to $LANE, and nothing has been launched. No command is printed for the write: read the lane (\`$LANES_EDIT binding $LANE\`), then run \`$prog\` again from its start (Y:5601)." 2 ;;
       *)
         # THE TEXTS FOR 3, AND THE WRITER'S RERUN (T428; review M11; D8;
-        # Y:5698-5699). On 69 and 75 the writer prints the rerun that
-        # settles the write, with its write id and generation where it has
-        # one, or says nothing was sent where it has none (T415, T417); on a
-        # 3 it prints that rerun in two of its five forms, and where it
-        # printed none, what it printed is what to follow (`LS_D8`; spec#58
-        # review, NIT 8, D9). This script relays it as printed and prints no
-        # command of its own. A 3 is in doubt, never "NOT added" or "NOT
-        # written".
+        # Y:5698-5699). On 69 and 75 the writer prints the rerun that settles
+        # the write, with its write id and generation where it has one, or says
+        # nothing was sent where it has none (T415, T417); on a 3 it prints that
+        # rerun in two of its five forms, and where it printed none, what it
+        # printed is what to follow, except under this launch's base (`LS_D8`,
+        # `LS_D8_GO`; spec#58 review, NIT 8, D9). This script relays it as
+        # printed and prints no command of its own. A 3 is in doubt, never "NOT
+        # added" or "NOT written".
         if [ -n "$LS_SR_ROW" ]; then
           case "$ls_sr_rc" in
             3) die "the register row for $LANE MAY NOT have been added, with its STARTED line: \`$LANES_EDIT start-record\` exited 3, and it ${LS_D8}. This window has been renamed and nothing has been launched: a lane whose row is in doubt is not started until that is settled." 3 ;;
@@ -5243,7 +5257,7 @@ else
         fi
         case "$ls_sr_rc" in
           3)
-            note "${ls_sr_what} MAY NOT have been written: \`$LANES_EDIT start-record\` exited 3, and it ${LS_D8}. The launch is not refused for it: they are the record of this resume, not its licence (spec:318, 2A)." ;;
+            note "${ls_sr_what} MAY NOT have been written: \`$LANES_EDIT start-record\` exited 3, and it ${LS_D8_GO}. The launch is not refused for it: they are the record of this resume, not its licence (spec:318, 2A)." ;;
           69 | 75)
             # Under a seq base the writer's rerun is not pointed to: the
             # arm names the act without its launch (lane 3's Q39, Q41).

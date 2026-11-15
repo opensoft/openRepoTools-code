@@ -30701,7 +30701,7 @@ fi
 # So the guard has no `commit` exemption of its own: T420's
 # `[ "$cmd" != commit ]` goes (A1).
 if [ "$REG_PW" = 1 ]; then
-  die "\`lanes-index mode\` answered primary, and \`$cmd\` left the register's attempt loop without ending, which is an internal error of this lanes-edit.sh. Whether it reached the register is not known: a write already made reads as found when the command is run again. \`$cmd\` wrote no files instead." 69
+  die "\`lanes-index mode\` answered primary, and \`$cmd\` left the register's attempt loop without ending, which is an internal error of this lanes-edit.sh. Whether it reached the register is not known: a write already made reads as found when the command is run again within 15 minutes, so run it again at once; a pending record more than 15 minutes old is not reused, so look the write up first with \`lanes-index status\`. \`$cmd\` wrote no files instead." 69
 fi
 
 # AMENDMENT 23 S2 — UNDER `LANES_ROUTE_WRITES=1`, EVERY WRITE GOES THROUGH ITS

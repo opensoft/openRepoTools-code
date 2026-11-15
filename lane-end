@@ -295,39 +295,41 @@
 #   any walk code other than 0, 69, 75 and 3, or a walk's 0 that prints no
 #   name (#165 6779688808, Q10).
 #   W13 ENDS THIS COMMAND WITH THE WRITER'S OWN CODE, before W14 and the
-#   fragment: through `set -e` under `@files` or after `act-begin`'s 2, and under
-#   a seq base through its own arm, which keeps the writer's stderr and prints
-#   one note. For a 3 the note relays the writer's rerun (G3) and says the
-#   object-log line and the fragment are still owed, so this command is run
-#   again from its start once the rerun, or what the writer printed where it
-#   printed none, has settled the row; for any other code it says the row was
-#   NOT closed and that neither W14 nor the fragment ran, so this
-#   command is run again from its start (Y:5601; Y:5692's partial states; lane
-#   3's Q4, #165 6836816821). W14 does it by hand: the object-log line is the
-#   one write this command used to NOTE and carry on past, and on primary a
-#   failed write is not "written by the next push". It prints the writer's own
-#   words (the writer's rerun where the code is 3, whose note says what D8 says,
-#   in T433's form), prints the handoff fragment, and then exits with the
-#   writer's code: W13 has already committed the ending, and the fragment is read
-#   from the log, so it is right whatever W14 did. Under a seq base no hand
-#   command is printed for a W14 that did not end 0: a 3 keeps the writer's
-#   rerun, and any other code keeps the writer's stderr and this command says
-#   to run it again from its start (Y:5601); under `@files` or after
-#   `act-begin`'s 2, the hand command stands (Y:5596) (lane 3's REV-ACT Q4,
-#   #165 6774499606, and Q11, #165 6779688808).
-#   THE SWEEP'S NOTED LINE ON PRIMARY (lane 3, #165 6894116246: T430 takes
-#   lane 4's fix, #165 6889006976 item 3). `--sweep-checkouts` takes no act
-#   base, so its one write, the NOTED line, cannot tell the mode by
-#   `LANES_ACT`: it tells it by the writer's own words, which it keeps (lane
-#   openRepoTools-3's SHOULD 373). A 3 in one of the five forms a primary
-#   write ends 3 in (a register write in doubt; an identical write still
-#   running, its record read or not, or being started; a claim whose owner
-#   cannot be tested) is no push the read-back could not confirm, and the
-#   publish act sends nothing for a register write. So the sweep relays the
-#   writer's words, its rerun among them, prints no command of its own, and
-#   exits 1. Every other 3, files mode's `pushed, not confirmed` and one whose
-#   words could not be kept among them, keeps files mode's note and the
-#   publish act, as before.
+#   fragment: through `set -e` under `@files` or after `act-begin`'s 2, and
+#   under a seq base through its own arm, which keeps the writer's stderr and
+#   prints one note. For a 3 the note relays the writer's rerun where it printed
+#   one (G3) and says the object-log line and the fragment are still owed, so
+#   this command is run again from its start, after that rerun where there is
+#   one and instead of following what the writer printed where there is none
+#   (D9); for any other code it says the row was NOT closed and that neither W14
+#   nor the fragment ran, so this command is run again from its start (Y:5601;
+#   Y:5692's partial states; lane 3's Q4, #165 6836816821). W14 does it by hand:
+#   the object-log line is the one write this command used to NOTE and carry on
+#   past, and on primary a failed write is not "written by the next push". It
+#   prints the writer's own words (the writer's rerun where the code is 3 and it
+#   printed one, whose note says what D8 says, in T433's form), prints the
+#   handoff fragment, and then exits with the writer's code: W13 has already
+#   committed the ending, and the fragment is read from the log, so it is right
+#   whatever W14 did. Under a seq base no hand command is printed for a W14 that
+#   did not end 0: a 3 keeps the writer's rerun where it printed one and says,
+#   where it printed none, to run this command again from its start (D9), and
+#   any other code keeps the writer's stderr and this command says to run it
+#   again from its start (Y:5601); under `@files` or after `act-begin`'s 2, the
+#   hand command stands (Y:5596) (lane 3's REV-ACT Q4, #165 6774499606, and Q11,
+#   #165 6779688808).
+#   THE SWEEP'S NOTED LINE ON PRIMARY (lane 3, #165 6894116246: T430 takes lane
+#   4's fix, #165 6889006976 item 3). `--sweep-checkouts` takes no act base, so
+#   its one write, the NOTED line, cannot tell the mode by `LANES_ACT`: it tells
+#   it by the writer's own words, which it keeps (lane openRepoTools-3's SHOULD
+#   373). A 3 in one of the five forms a primary write ends 3 in (a register
+#   write in doubt; an identical write still running, its record read or not, or
+#   being started; a claim whose owner cannot be tested) is no push the
+#   read-back could not confirm, and the publish act sends nothing for a
+#   register write. So the sweep relays the writer's words, its rerun among them
+#   where it printed one, prints no command of its own (it takes no base, so
+#   where it printed none what it printed is what to follow), and exits 1. Every
+#   other 3, files mode's `pushed, not confirmed` and one whose words could not
+#   be kept among them, keeps files mode's note and the publish act, as before.
 #
 # EXIT
 #   0  done
@@ -341,7 +343,7 @@
 #      that did not finish, or removals whose NOTED line was not written or
 #      not confirmed on origin (the commands to finish it are printed), or
 #      whose write ended 3 on primary (the writer's words are above, its rerun
-#      among them, and no publish act is printed).
+#      among them where it printed one, and no publish act is printed).
 #      And feature 007's refusals before the first
 #      write (A2): `act-begin` answered 1, 64 or another code that is no base,
 #      or exited 0 with no line or a malformed one; or `canon-lane --walk`
@@ -395,13 +397,15 @@
 #   W13's or W14's code  the writer's own, its words above. W13 (`set-row-state
 #      ENDED|RETIRED`) ends this command before W14 and the fragment, under
 #      `set -e`, and under a seq base with one note of this command's own (a 3's
-#      rerun is the writer's, above; any other code says the row was NOT closed);
-#      W14 (`log ENDED|RETIRED`) ends it once the handoff fragment
+#      rerun, where the writer printed one, is above, and where it printed none
+#      the note says to run this command again; any other code says the row was
+#      NOT closed); W14 (`log ENDED|RETIRED`) ends it once the handoff fragment
 #      has printed in full on stdout, W13 having committed. On primary a 2 is a
 #      scope another act changed after the base (an expectation), a token the
 #      client's own check refuses (Y:5600) or a base of another generation
 #      (Y:5591), and a 3 a commit that may or may not have landed (D8; the
-#      writer's rerun is above)
+#      writer's words are above, its `LANES_WRITE_ID` rerun where it printed
+#      one)
 #   130, 143  stopped by INT or TERM (128 plus the signal): the run ends where
 #      the signal found it and removes its temporary file, never resumes.
 #      `--sweep-checkouts --yes` lets a checkout's move and removal in hand
@@ -5072,10 +5076,11 @@ LE_WALK_NAMES
 # its own, and nothing said that W14 and the handoff fragment had not run. So
 # under a seq base W13 keeps the writer's stderr, prints one note, and exits
 # with the writer's code before W14 and the fragment:
-#   a 3  relays the writer's rerun (G3, as W14's note does) and says the
-#        object-log line and the fragment are still owed, so this command is run
-#        again from its start once the rerun, or what the writer printed where
-#        it printed none, has settled the row;
+#   a 3  relays the writer's rerun where it printed one (G3, as W14's note
+#        does) and says the object-log line and the fragment are still owed, so
+#        this command is run again from its start, after that rerun where there
+#        is one and instead of following what the writer printed where there is
+#        none (D9's base clause);
 #   any other code, 69 and 75 included, says the row was NOT closed, that
 #        neither W14 nor the fragment ran, and that this command is run again
 #        from its start (Y:5601); no hand command is printed.
@@ -5092,7 +5097,7 @@ else
     if [ "$w13_rc" != 0 ]; then
       case "$w13_rc" in
         3)
-          note "the row's closing write ($state_word) may not have landed: the writer answered 3. Where it printed a \`LANES_WRITE_ID\` rerun (it is above), run it, which writes the row once or finds it; where it printed none, follow what it printed. The object log's line ($state_word) and the handoff fragment are still owed: this command ended here, so neither was written or printed. Once that has settled the row, run this \`lane-end\` again from its start, as it was typed: it takes a new base and reads again what it rests on." ;;
+          note "the row's closing write ($state_word) may not have landed: the writer answered 3. The object log's line ($state_word) and the handoff fragment are still owed: this command ended here, so neither was written or printed. Where the writer printed a \`LANES_WRITE_ID\` rerun (it is above), run it, which writes the row once or finds it, and then run this \`lane-end\` again from its start, as it was typed; where it printed none, run this \`lane-end\` again from its start, as it was typed, instead of following what it printed. That run takes a new base and reads again what it rests on." ;;
         *)
           note "the row was NOT closed ($state_word): the writer answered $w13_rc under this act's base (its words are above), and this command ended here, so neither the object log's line nor the handoff fragment ran. No hand command is printed, since one without this act's base and expectations would write unchecked, and one with them would only be refused again. Run this \`lane-end\` again from its start, as it was typed: it takes a new base and reads again what it rests on." ;;
       esac
@@ -5157,17 +5162,18 @@ fi
 # exits with it, at the end, after the note and after the fragment: W13 has
 # already committed `ENDED` or `RETIRED`, and the fragment is read from the log,
 # so it is right whatever W14 did. The writer's stderr is kept: where the code
-# is 3 that is the writer's own rerun line (D8, Y:468-469; T417's), which this
-# command does not repeat in a hint of its own; the note says what D8 says for a
-# 3, in T433's form, both sentences (lane 3's G3).
-# NO HAND COMMAND UNDER A SEQ BASE (lane 3's REV-ACT Q4, #165 6774499606,
-# widened by Q11, #165 6779688808, to "any write that did not end 0"): a hand
-# command without this act's two variables writes unchecked, which Y:5587
-# forbids, and one with them would only refuse again. So a 3 keeps the
-# writer's rerun (G3, above), and every other code (2, 69, 75 or any other)
-# keeps the writer's stderr and the note says to run this command again from
-# its start (Y:5601). Under `@files`, or after `act-begin`'s 2 (no base),
-# today's hand command stands (Y:5596).
+# is 3 that is the writer's own rerun line where it printed one (D8, Y:468-469;
+# T417's), which this command does not repeat in a hint of its own; the note
+# says what D8 says for a 3, in T433's form, both sentences (lane 3's G3). NO
+# HAND COMMAND UNDER A SEQ BASE (lane 3's REV-ACT Q4, #165 6774499606, widened
+# by Q11, #165 6779688808, to "any write that did not end 0"): a hand command
+# without this act's two variables writes unchecked, which Y:5587 forbids, and
+# one with them would only refuse again. So a 3 keeps the writer's rerun where
+# it printed one (G3, above) and says, where it printed none, to run this
+# command again from its start (D9's base clause), and every other code (2, 69,
+# 75 or any other) keeps the writer's stderr and the note says to run this
+# command again from its start (Y:5601). Under `@files`, or after `act-begin`'s
+# 2 (no base), today's hand command stands (Y:5596).
 w14_rc=0
 if (( dry_run )); then
   plan "lanes-edit.sh log $lane_verb lane:$LANE --text \"$lane_text\""
@@ -5178,7 +5184,7 @@ else
   else
     case "$w14_rc" in
       3)
-        note "the lane's object log line ($lane_verb) may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun, follow what it printed; off primary, the commit is local and may already be on origin." ;;
+        note "the lane's object log line ($lane_verb) may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun, follow what it printed, except under this act's base, where you run this \`lane-end\` again from its start, as it was typed, instead; off primary, the commit is local and may already be on origin." ;;
       *)
         w14_seq=0
         case "${LANES_ACT:-}" in '' | *@files) : ;; *) w14_seq=1 ;; esac
