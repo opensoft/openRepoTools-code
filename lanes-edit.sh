@@ -21131,8 +21131,15 @@ guard_offer_site() {   # <offer file> <pane> <the prompt>
   # A RECORD THAT IS NOT A FILE (NIT 1: a directory, or a link to one) is a
   # record that is there and that cannot be answered or replaced: refused, with
   # nothing written, and `guard_answer` is never called on it.
-  if { [ -e "$gos_f" ] || [ -L "$gos_f" ]; } && [ ! -f "$gos_f" ]; then
-    guard_refuse "the pending offer could not be recorded: a record of this transcript's is at $gos_f and could not be replaced, so nothing was written to it. Send your prompt again and the question will be asked afresh."
+  if [ -L "$gos_f" ] && [ ! -e "$gos_f" ]; then
+    # A DANGLING LINK (lane 5's re-check, E) is dropped, as case 11 drops a record
+    # that cannot be read, so it heals as it did at 2497b864: the retry below
+    # makes the offer.
+    rm -f -- "$gos_f" 2>/dev/null || :
+  elif [ -e "$gos_f" ] && [ ! -f "$gos_f" ]; then
+    # A DIRECTORY, OR A LINK TO ONE, is not for this guard to remove: the person
+    # is told to, and the question is not said to be asked afresh.
+    guard_refuse "the pending offer could not be recorded: a record of this transcript's is at $gos_f and could not be replaced, so nothing was written to it. It is a directory, or a link to one: remove it, then send your prompt again."
     return 2
   fi
   # A RECORD THAT HAS GONE SINCE THE FAILED CREATE (F3): neither `-e` nor `-L`
@@ -21151,7 +21158,15 @@ guard_offer_site() {   # <offer file> <pane> <the prompt>
           guard_allow_pass
           return 0
         fi
-        guard_allow_drop "$gos_f" || : ;;
+        gos_dr=0
+        guard_allow_drop "$gos_f" || gos_dr=$?
+        if [ "$gos_dr" != 0 ] && { [ -e "$gos_f" ] || [ -L "$gos_f" ]; }; then
+          # THE ALLOWANCE HAS BECOME ANOTHER RECORD since this site read it (H):
+          # a bind record is answered once, as `guard_site_moved` answers one, and
+          # not refused with "could not be replaced".
+          guard_site_moved "$gos_f" "$gos_pane"
+          return 2
+        fi ;;
       *)
         gos_arc=0
         guard_answer "$gos_f" "$gos_prompt" "$gos_pane" || gos_arc=$?
