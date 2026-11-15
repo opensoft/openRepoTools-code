@@ -3984,6 +3984,51 @@ def test_release_guard_upload_refuses_every_ref_but_the_version_s_own_tag(
     assert done.returncode != 0, f"{name}'s guard passed on {ref!r}:\n{transcript(done)}"
 
 
+#: THE GUARD `pypi` AND `asset` SHARE, LINE FOR LINE, REFUSING: `(repository,
+#: ref, version, the one line it prints)`. Feature 006's contract says each
+#: `asset` refusal is one `::error::` line that names its cause
+#: (contracts/workflows.md's `asset` section), so a version it refuses is
+#: shown on that line, quoted by bash's `printf %q`, with each `%` written
+#: `%25` as a workflow command's message needs, and never on a second line.
+PYPI_GUARD_REFUSAL = ("::error::PyPI takes a final release X.Y.Z alone, never a "
+                      "pre-release, so nothing is uploaded (the input, quoted: {})")
+PYPI_GUARD_REFUSALS = {
+    "a-pre-release": (CODE_LEG, "refs/tags/v1.3.0rc1", "1.3.0rc1",
+                      PYPI_GUARD_REFUSAL.format("1.3.0rc1")),
+    "no-version": (CODE_LEG, "refs/tags/v", "", PYPI_GUARD_REFUSAL.format("''")),
+    "the-unstamped-0-0-0": (CODE_LEG, "refs/tags/v0.0.0", "0.0.0",
+                            PYPI_GUARD_REFUSAL.format("0.0.0")),
+    "a-version-holding-a-new-line-and-a-percent": (
+        CODE_LEG, "refs/tags/v1.3.0", "1.3.0\n::error::forged %0A",
+        PYPI_GUARD_REFUSAL.format("$'1.3.0\\n::error::forged %250A'")),
+    "another-ref": (CODE_LEG, "refs/heads/main", "1.3.0",
+                    "::error::an upload is made from the tag v1.3.0 alone, and this run "
+                    "names 'refs/heads/main', so nothing is uploaded"),
+    "another-repository": (THIS_REPOSITORY, "refs/tags/v1.3.0", "1.3.0",
+                           "::error::a release reaches PyPI from opensoft/openRepoTools-code "
+                           "alone, as GitHub spells it, and this run is in "
+                           "'opensoft/openRepoTools', so nothing is uploaded"),
+}
+
+
+@NEEDS_UPSTREAM
+@NEEDS_BASH
+@WINDOWS_SKIP
+@pytest.mark.parametrize("which", PYPI_GUARD_REFUSALS)
+@pytest.mark.parametrize("name", ["pypi", "asset"])
+def test_release_guard_upload_pypi_s_and_asset_s_refusal_is_one_error_line(
+        tmp_path, name, which):
+    """`pypi`'s FIRST STEP, WHICH `asset` RUNS LINE FOR LINE, REFUSING: a
+    pre-release, no version, the unstamped 0.0.0, a version holding a new
+    line and a `%`, another ref and another repository each exit 1, and the
+    step's whole output, stdout and stderr, is exactly the one `::error::`
+    line that names the cause, the refused version quoted on it."""
+    repository, ref, version, line = PYPI_GUARD_REFUSALS[which]
+    done = run_upload_guard(tmp_path, name, repository, version, ref)
+    assert done.returncode == 1, transcript(done)
+    assert (done.stdout + done.stderr).splitlines() == [line], transcript(done)
+
+
 # --- the jobs, their grants and their conditions ---------------------------------------
 
 @NEEDS_UPSTREAM
@@ -4300,14 +4345,26 @@ def test_release_upload_the_approval_recheck_refuses_a_run_its_environment_did_n
         assert "::error::" in done.stderr, transcript(done)
 
 
-#: THE TAG RE-CHECK, RUN: `(what the forge says of v1.1.0's tag object,
-#: whether the step passes)`, the run's commit being `c` * 40.
+#: THE TAG RE-CHECK, RUN: `(what the forge says of v1.1.0's tag object, or
+#: None where it answers a 404 for the tag's ref, or "no-tag-object" where it
+#: answers one for the tag object alone; the one line its refusal is, or None
+#: where the step passes)`, the run's commit being `c` * 40 and the tag
+#: object `7a` * 20. A read the forge refuses is named on that one line, and
+#: gh's own report of it never reaches the log (feature 006's contract: each
+#: `asset` refusal is one `::error::` line that names its cause).
+TAG_AGAIN_MOVED = ("::error::the annotated tag v1.1.0 no longer names {commit} (it names "
+                   "'{names}'), so nothing is uploaded")
+TAG_AGAIN_UNREAD = ("::error::the {what} cannot be read (gh: Not Found (HTTP 404)), so "
+                    "whether it still names {commit} is not known, and nothing is uploaded")
 TAG_AGAIN_CASES = {
-    "it-still-names-this-commit": ({}, True),
-    "it-was-moved-to-another-commit": ({"names": "d" * 40}, False),
-    "it-was-deleted": (None, False),
-    "it-is-a-lightweight-tag-now": ({"lightweight": True}, False),
-    "its-object-names-a-tag": ({"type": "tag"}, False),
+    "it-still-names-this-commit": ({}, None),
+    "it-was-moved-to-another-commit": ({"names": "d" * 40},
+                                       TAG_AGAIN_MOVED.replace("{names}", "d" * 40)),
+    "it-was-deleted": (None, TAG_AGAIN_UNREAD.replace("{what}", "tag v1.1.0")),
+    "its-tag-object-cannot-be-read": (
+        "no-tag-object", TAG_AGAIN_UNREAD.replace("{what}", f"tag object {'7a' * 20} of v1.1.0")),
+    "it-is-a-lightweight-tag-now": ({"lightweight": True}, TAG_AGAIN_MOVED.replace("{names}", "")),
+    "its-object-names-a-tag": ({"type": "tag"}, TAG_AGAIN_MOVED.replace("{names}", "")),
 }
 
 
@@ -4315,27 +4372,37 @@ TAG_AGAIN_CASES = {
 @NEEDS_BASH
 @WINDOWS_SKIP
 @pytest.mark.parametrize("which", TAG_AGAIN_CASES)
-@pytest.mark.parametrize("name", sorted(UPLOADS))
+@pytest.mark.parametrize("name", sorted([*UPLOADS, "asset"]))
 def test_release_upload_the_tag_recheck_refuses_a_tag_moved_while_the_run_waited(
         tmp_path, name, which):
-    """RIGHT BEFORE THE UPLOAD, RUN under a forge, in each upload job: the
-    annotated tag `v$VERSION` still names the run's commit, so it passes; a
-    tag moved to another commit, deleted, made lightweight, or whose object
-    names a tag is refused, since an upload cannot be taken back."""
-    lie, passes = TAG_AGAIN_CASES[which]
+    """RIGHT BEFORE THE UPLOAD, RUN under a forge, in each upload job and in
+    `asset`, which runs `pypi`'s tag step line for line: the annotated tag
+    `v$VERSION` still names the run's commit, so it passes; a tag moved to
+    another commit, deleted, whose tag object cannot be read, made
+    lightweight, or whose object names a tag is refused, since an upload
+    cannot be taken back. A refusal exits 1, and the step's whole output,
+    stdout and stderr, is exactly its one `::error::` line."""
+    lie, refusal = TAG_AGAIN_CASES[which]
     commit = "c" * 40
-    answers = ({} if lie is None
-               else annotated_tag(CODE_LEG, "v1.1.0", "7a" * 20, commit, **lie))
+    if lie is None:
+        answers = {}
+    elif lie == "no-tag-object":
+        answers = annotated_tag(CODE_LEG, "v1.1.0", "7a" * 20, commit)
+        answers.pop(f"repos/{CODE_LEG}/git/tags/{'7a' * 20}")
+    else:
+        answers = annotated_tag(CODE_LEG, "v1.1.0", "7a" * 20, commit, **lie)
     forge, values = api_forge(tmp_path, answers)
     values.update(GITHUB_REPOSITORY=CODE_LEG, GITHUB_SHA=commit, VERSION="1.1.0")
     workflow = release()
     runner = Runner(tmp_path / "work", workflow, name, values, forge)
     done = runner.run(named(workflow, name, TAG_AGAIN_STEP))
-    assert (done.returncode == 0) == passes, transcript(done)
-    if passes:
+    if refusal is None:
+        assert done.returncode == 0, transcript(done)
         assert done.stdout.strip() == f"v1.1.0 still names {commit}", transcript(done)
     else:
-        assert "::error::" in done.stdout, transcript(done)
+        assert done.returncode == 1, transcript(done)
+        assert (done.stdout + done.stderr).splitlines() == [
+            refusal.replace("{commit}", commit)], transcript(done)
 
 
 # --- the index checks, run against a fake index ----------------------------------------
@@ -5013,9 +5080,12 @@ def test_release_asset_the_release_holds_the_list_at_the_recorded_sha256(tmp_pat
     Another file under its name, two releases on the tag, a forge that
     cannot list or answers a page, a draft that cannot be made, an upload
     the forge refuses, a list already there that cannot be read, a copy that
-    cannot be read back and a copy of other bytes each refuse in an
-    `::error::` line, with no traceback, after exactly the `gh release`
-    calls the case names, and nothing is ever replaced."""
+    cannot be read back and a copy of other bytes each refuse in one
+    `::error::` line that names the cause, with no traceback, after exactly
+    the `gh release` calls the case names, and nothing is ever replaced.
+    The refusal is the whole of stderr, and no other line of the output is
+    an `::error::` line, so gh's own report never reaches the log (feature
+    006's contract: each `asset` refusal is one `::error::` line)."""
     before, faults, serve, passes, said, expected = ASSET_CASES[which]
     workflow = release()
     store = tmp_path / "before"
@@ -5053,8 +5123,9 @@ def test_release_asset_the_release_holds_the_list_at_the_recorded_sha256(tmp_pat
     after = json.loads(state.read_text(encoding="utf-8"))["releases"]
     if not passes:
         assert done.returncode == 1, transcript(done)
-        assert [line for line in out.splitlines() if line.startswith("::error::")], (
-            transcript(done))
+        errors = [line for line in out.splitlines() if line.startswith("::error::")]
+        assert len(errors) == 1 and said in errors[0], transcript(done)
+        assert done.stderr.splitlines() == errors, transcript(done)
         for found, (tag, _, assets) in zip(after, before):
             assert {a["name"]: Path(a["path"]).read_text(encoding="utf-8")
                     for a in found["assets"]} == assets, f"{tag} was changed: {found}"
