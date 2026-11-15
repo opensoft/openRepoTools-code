@@ -22317,16 +22317,30 @@ guard_offer_choices() {   # <from> <the lane choice 2 moves to> <binds spent>
 # session's own pane. Case 10 renames nothing, since that bind ran on another
 # host or container.
 # WITH `none` (lane 5's wording note to lane 2, #165 6888777622; Codex's S6 on
-# spec#47's draft 17): where this answer keeps no offer, as in (A), the offer
-# gone or no longer the one answered, the words say what the answer did, and
-# not that an offer is kept. The first clause is the same in both forms.
+# spec#47's draft 17; lane 5's check of parts 42 to 47): where the answer `2`
+# that renamed the window started no bind and keeps no offer, the words say what
+# the answer did, and not that an offer is kept. Its callers: (A), in
+# `guard_answer_moved`, the offer gone or no longer the one answered; that
+# function's allowance branch, where another prompt's choice 1 made the offer an
+# allowance (it returns 3, and `guard_run` judges the allowance afresh); the
+# hook's I/O refusal where the record, read again, is no longer the answered
+# offer (`guard_answer_unrecorded`); and the back-out where it found the record
+# changed (its 2), or where its I/O failure left a record that is not its own
+# `binding`.
+# WITH `changed` (the same check, part 48): cases 6, 7 and 9, whose bind DID
+# start, where their restore of the offer failed (an I/O 1) and the record, read
+# again, is neither the one they loaded nor an offer between the same two lanes
+# (`guard_site_back_form`): no offer is kept there either.
+# The first clause is the same in every form.
 #   0 renamed · 1 not, and the person is told the one command
-guard_window_back() {   # <from> <to> [none]
+guard_window_back() {   # <from> <to> [none | changed]
   gwb_from="${1-}"; gwb_to="${2-}"; gwb_form="${3-}"
   [ -n "$gwb_from" ] || return 1
   if command -v tmux >/dev/null 2>&1 && tmux rename-window "$gwb_from" 2>/dev/null; then
     if [ "$gwb_form" = none ]; then
       note "This window has been renamed back to $gwb_from, the lane it was before the answer \`2\`, which started no bind."
+    elif [ "$gwb_form" = changed ]; then
+      note "This window has been renamed back to $gwb_from, the lane it was before the answer \`2\`; the record no longer holds that answer's offer, so the next prompt reads whatever is there."
     else
       note "This window has been renamed back to $gwb_from, the lane it was before the answer \`2\`, so the offer it keeps is still this window's."
     fi
@@ -22334,6 +22348,8 @@ guard_window_back() {   # <from> <to> [none]
   fi
   if [ "$gwb_form" = none ]; then
     note "This window could NOT be renamed back to $gwb_from, so it still carries ${gwb_to:-the other lane}'s name, though the answer \`2\` started no bind. Rename it yourself: tmux rename-window -t ${G_WINREF:-<this window>} $gwb_from"
+  elif [ "$gwb_form" = changed ]; then
+    note "This window could NOT be renamed back to $gwb_from, so it still carries ${gwb_to:-the other lane}'s name, and the record no longer holds that answer's offer. Rename it yourself: tmux rename-window -t ${G_WINREF:-<this window>} $gwb_from"
   else
     note "This window could NOT be renamed back to $gwb_from, so it still carries ${gwb_to:-the other lane}'s name, and the next prompt would drop the kept offer as one about another window. Rename it first: tmux rename-window -t ${G_WINREF:-<this window>} $gwb_from"
   fi
@@ -22582,6 +22598,17 @@ guard_site_moved() {   # <offer file> <pane>
 # prompt answers it the same way; anything else, and this prompt changed nothing
 # there and the next prompt reads whatever is there. The first clause is the
 # same in both forms.
+# THE RENAME-BACK NOTE'S FORM FOR CASES 6, 7 AND 9 WHERE THEIR RESTORE FAILED (an
+# I/O 1; lane 5's check of parts 42 to 47, part 48): the record is read again
+# first. Still the record loaded (its mode, `bind` and `started_utc`), the next
+# prompt restores the offer; an offer between the same two lanes, another prompt
+# restored it; either way the offer is kept, and the default form is printed.
+# Anything else, and no offer is kept: `changed`.
+guard_site_back_form() {   # <offer file> <the mode loaded>
+  guard_record_says "${1-}" "${2-}" "bind=$GBR_BIND" "started_utc=$GBR_STARTED" && return 0
+  guard_record_says "${1-}" name-drift "from=$GBR_FROM" "to=$GBR_TO" && return 0
+  printf 'changed\n'
+}
 guard_site_unrestored() {   # <offer file> <the mode loaded>
   if guard_record_says "${1-}" "${2-}" "bind=$GBR_BIND" "started_utc=$GBR_STARTED"; then
     note "…and the offer could not be restored in ${1-}, so this prompt's answer is the same as the last one's until it can: the record still says ${2-} for that attempt."
@@ -22645,7 +22672,9 @@ EOF
       guard_triple
       note "THE BIND TO LANE $GBR_TO FAILED (exit $GBR_RC): ${GBR_WHY:-the record gives no reason}${GBR_OUT:+ — its output is kept in $GBR_OUT}."
       # CASES 6 AND 7 RENAME THE WINDOW BACK (Y:5502; ERR-23 for the third).
-      guard_window_back "$GBR_FROM" "$GBR_TO" || :
+      gbt_wf=""
+      [ "$gbt_back" = 0 ] || gbt_wf="$(guard_site_back_form "$gbt_f" bind-failed)"
+      guard_window_back "$GBR_FROM" "$GBR_TO" ${gbt_wf:+"$gbt_wf"} || :
       if [ "$gbt_back" = 1 ]; then
         guard_site_unrestored "$gbt_f" bind-failed
       elif [ "$gbt_k" -ge 3 ]; then
@@ -22741,7 +22770,9 @@ EOF
     guard_triple
     note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} (attempt $gbt_k) IS NO LONGER RUNNING AND LEFT NO OUTCOME: $gbt_why. What it wrote is not known; the next \`2\` finds out first."
     # CASE 9 RENAMES THE WINDOW BACK TOO (ERR-23); case 10, above, does not.
-    guard_window_back "$GBR_FROM" "$GBR_TO" || :
+    gbt_wf=""
+    [ "$gbt_back" = 0 ] || gbt_wf="$(guard_site_back_form "$gbt_f" binding)"
+    guard_window_back "$GBR_FROM" "$GBR_TO" ${gbt_wf:+"$gbt_wf"} || :
     if [ "$gbt_back" = 1 ]; then
       guard_site_unrestored "$gbt_f" binding
     else
@@ -22809,7 +22840,8 @@ guard_answer_match() {   # <from> <to> <session> <utc>
 #                                (`guard_offer_site`) passes an allowance that
 #                                still fits, with its warning, or drops one that
 #                                does not and asks once; a window this answer
-#                                renamed is renamed back first. Inside
+#                                renamed is renamed back first, in `none`'s
+#                                words, since no offer is kept. Inside
 #                                `guard_offer_site`, which calls `guard_answer`
 #                                itself, that 3 is read again there (NIT 3): an
 #                                allowance that fits passes, any other record is
@@ -22825,7 +22857,9 @@ guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 whe
       guard_bind_site "$gam_f" "$gam_pane"
       return 2 ;;
     allow)
-      [ "$gam_ren" = 0 ] || guard_window_back "$gam_from" "$gam_to" || :
+      # NO OFFER IS KEPT: another prompt's choice 1 made it an allowance, and
+      # this answer started no bind, so the note says so (`none`; part 48).
+      [ "$gam_ren" = 0 ] || guard_window_back "$gam_from" "$gam_to" none || :
       return 3 ;;
   esac
   if [ "$gam_m" = name-drift ]; then
