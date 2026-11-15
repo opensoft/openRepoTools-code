@@ -8106,14 +8106,46 @@ def register_serve_timer_ms(cfg: dict) -> int:
     return rtt + 100 if rtt > 100 else 200
 
 
+#: THE LAUNCHER'S MODULE (T124; FR-064): once `lanes-index`'s body is moved
+#: out, it is this file, beside the launcher, found in the directory of
+#: `os.path.realpath(__file__)`, as the launcher finds it. Before T124 no tree
+#: has it.
+REGISTER_SERVE_MODULE = "lanes_index_main.py"
+
+
 def register_serve_install() -> tuple:
-    """THE INSTALL'S IDENTITY (Y:3915-3916): this `lanes-index` file's size,
-    mtime and inode, or () where it cannot be read."""
+    """THE INSTALL'S IDENTITY (Y:3915-3916; lane 5's choice (a) on lane 1's
+    T124 prototype, #165 6890257498 and lane 5's answer, #165 6890303231):
+    the size, mtime in nanoseconds and inode of `__file__`'s file (the
+    launcher, once T124 has moved the body; `stat` follows a symbolic link),
+    and then, where `REGISTER_SERVE_MODULE` is in the directory of
+    `os.path.realpath(__file__)`, the same three of that module: six numbers
+    in all, the launcher's first.
+
+    - Where there is no module file (`FileNotFoundError` for it: every tree
+      before T124), it is the first three alone, as it was, so this change
+      can land before T124.
+    - Where either file cannot be `stat`ed for any other reason, it is (),
+      and `install=` is written with nothing after it, which
+      `_REGISTER_SERVE_INSTALL_RE` refuses, so the file is unusable by rule
+      (OP-19 (b), rule 7): every client reads directly and starts none.
+
+    The client's test is as it was: the owner file's `install=` against
+    this value, as text. An owner file of three numbers read by a client of
+    six is another install, which starts a service."""
     try:
         st = os.stat(os.path.abspath(__file__))
     except OSError:
         return ()
-    return st.st_size, st.st_mtime_ns, st.st_ino
+    ident = (st.st_size, st.st_mtime_ns, st.st_ino)
+    module = os.path.join(os.path.dirname(os.path.realpath(__file__)), REGISTER_SERVE_MODULE)
+    try:
+        mst = os.stat(module)
+    except FileNotFoundError:
+        return ident
+    except OSError:
+        return ()
+    return ident + (mst.st_size, mst.st_mtime_ns, mst.st_ino)
 
 
 def register_serve_host() -> dict:
@@ -9492,9 +9524,14 @@ def register_serve_state(paths: dict) -> str:
 #: THE OWNER FILE'S KNOWN KEYS, each on one line at most (OP-19 (b), rule 3).
 _REGISTER_SERVE_OWNER_KEYS = ("pid", "started", "install", "pidns", "boot")
 
-#: `install=`'s one form (OP-19 (b), rule 4): three runs of ASCII digits, one
-#: space between each, and nothing else.
-_REGISTER_SERVE_INSTALL_RE = re.compile(r"[0-9]+ [0-9]+ [0-9]+")
+#: `install=`'s one form (OP-19 (b), rule 4; lane 5's choice (a) on T124's
+#: two files): three runs of ASCII digits, or six, one space between each, and
+#: nothing else. Three are the launcher's alone, as every tree before T124
+#: writes them; six are the launcher's and then the module's
+#: (`register_serve_install`). It is applied with `fullmatch`, so no trailing
+#: newline, space or other character passes, and `[0-9]` takes ASCII digits
+#: only.
+_REGISTER_SERVE_INSTALL_RE = re.compile(r"[0-9]+ [0-9]+ [0-9]+(?: [0-9]+ [0-9]+ [0-9]+)?")
 
 
 def register_serve_owner_read(paths: dict) -> dict | None:
@@ -9684,8 +9721,9 @@ def register_serve_ask(data: bytes, deadline: float) -> tuple:
         # 2.4, draft 13) adds, with the same outcome, a file that
         # `register_serve_owner_read` refuses, longer than 4,096 bytes, not
         # ending in `\n`, or with a known key twice; and an `install=` that is
-        # not three runs of ASCII digits with one space between, such as the
-        # empty value a service writes where it cannot `stat` its own file.
+        # not three runs of ASCII digits, or six (the launcher's and the
+        # module's, T124), with one space between, such as the empty value a
+        # service writes where it cannot `stat` its own file or its module.
         owner = register_serve_owner_read(paths)
         if (owner is None or "install" not in owner
                 or not _REGISTER_SERVE_INSTALL_RE.fullmatch(owner["install"])):
