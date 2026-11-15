@@ -567,9 +567,14 @@
 #      AND `guard-bind` (feature 007, T502), the internal verb answer 2 starts
 #      detached, refuses with 2 too: its usage, a uuid that is not one, or a
 #      bind record that does not say `mode=binding` or already names its
-#      outer. Its outer otherwise exits 0 once it has written the bind's
+#      outer, or that is gone or no longer says it when the outer comes to
+#      write its start (part 21; nothing is written and nothing runs). Its
+#      outer otherwise exits 0 once it has written the bind's
 #      outcome, whose own code is the record's `rc`, or 1 where it could not
-#      rewrite the record at its start and so ran nothing; its body,
+#      rewrite the record at its start and so ran nothing, or could not write
+#      the outcome, which is then in the attempt's `.out` alone (the bind
+#      record's contract, draft 11, section 7; lane 3's rulings, #165
+#      6879754335); its body,
 #      `guard-bind --body`, exits `lane-start`'s own code, which the outer
 #      reads as that `rc`. Before `lane-start` (T510, phase 2's rerun step,
 #      `guard_bind_rerun`), the body ends with 2 or 3 of its own where the
@@ -20339,8 +20344,11 @@ guard_offer_file() {   # <session uuid>
 #
 # ITS FILES: the record, `<offers>/<uuid>`; each attempt's output,
 # `<uuid>.bind.<n>.out`, which the record's `out=` names; and the body's facts,
-# `<uuid>.bind.<n>.facts`, beside it, which the outer folds into the record and
-# removes. `<n>` is the files' index, one above the highest already there, and
+# `<uuid>.bind.<n>.facts`, beside it, whose `why=` and `note=` the outer folds
+# into its outcome only where the body ended on its own (where the bound or a
+# signal stopped it, the file is not read), and which it removes after each of
+# the outcome's rewrite's three results. `<n>` is the files' index, one above the
+# highest already there, and
 # not the attempt, which `bind=` counts 1 to 3 per offer (lane 3's rulings on
 # the contract's point 18, opensoft/openRepoTools#165 6751772589 and
 # 6751818233). Every write is under `umask 077`, so
@@ -20456,29 +20464,118 @@ guard_bind_readable() {
 # 10, which drops them. A written `mode=` goes first, where a person reading
 # the file looks for it. A record that exists and cannot be read is not
 # rewritten.
-#   0 written · 1 not, and the record is as it was
-guard_bind_rewrite() {   # <offer file> <keys to drop, space-separated> [<key>=<value> …]
+# WITH `--own`, THE OUTER'S OUTCOME: the rewrite makes the outer's own test,
+# `guard_bind_own`, on the very lines it copies, the first `mode`, `pid`,
+# `pidstart`, `host` and `container` lines as `guard_bind_load` takes them, and
+# where they are not the outer's own, or there is no record, it writes nothing
+# and returns 2. So a record changed after the outer's read and before this
+# one is still left as it is; one changed after this read can still be
+# overwritten, and the window left is this read to the `mv` (lane 3's ruling on
+# spec#47's point 21, #165 6879754335; the contract, draft 11, sections 1
+# and 8; lane 3's Codex code review of `12eddddf`, #165 6882203066, finding 8).
+# WITH `--binding`, THE OUTER'S START (lane 3's ruling on open point 26, #165
+# 6885378657, ruling 4(a): `guard_offer`'s write is the record's only creation,
+# so a rewrite never makes one; lane 5's ruling on lane 2's reader's window,
+# #165 6885568373): the rewrite runs only on a record that is there and whose
+# first `mode` line, as `guard_bind_load` takes it, says `binding`. Where the
+# record is gone at the existence test or at the open, or says anything else, it
+# writes nothing and returns 2, so the outer that asked runs nothing. The test
+# is made on the very lines it copies, as `--own`'s is, and has its window.
+# WITH `--exist`, `guard_bind_site`'S REWRITES (lane 3's ruling on lane 5's rule
+# "No rewrite creates a record", #165 6885771975, ruling 5, which takes it from
+# #165 6885751796): the rewrite runs only on a record that is there, whatever
+# its mode, and where it is gone, at the existence test or at the open, it
+# writes nothing and returns 2. `guard_offer`'s write stays the only creation.
+# WITH `--offer`, THE HOOK'S OWN WRITES ON THE OFFER THE PERSON ANSWERED (the
+# head copy and the rewrite to `binding`; lane 5's rule for them, which lane 3
+# confirmed in #165 6886113842, as point 26's): the rewrite runs only on a record that
+# is there AND whose first `mode` line, as `guard_bind_load` takes it, still
+# says `name-drift`, the offer that was read. Where it is gone, or says anything
+# else, it writes nothing and returns 2, and the caller reads the record's mode
+# once and answers for what is there (`guard_answer_moved`). The test is made
+# on the very lines it copies, and has its window: from this read to the `mv`.
+#   0 written · 1 not: this rewrite did not change the record, which is as
+#   another writer may have left it · 2 (`--own`, `--binding`, `--exist` or
+#   `--offer` only) not the outer's own, or no record, or not `binding` (not
+#   `name-drift` under `--offer`), so not written: this rewrite did not change
+#   the record either
+guard_bind_rewrite() {   # [--own | --binding | --exist | --offer] <offer file> <keys to drop, space-separated> [<key>=<value> …]
+  gbw_own=0; gbw_bd=0; gbw_ex=0; gbw_of=0
+  case "${1-}" in
+    --own) gbw_own=1; shift ;;
+    --binding) gbw_bd=1; shift ;;
+    --exist) gbw_ex=1; shift ;;
+    --offer) gbw_of=1; shift ;;
+  esac
+  gbw_two=0
+  [ "$gbw_own" = 0 ] && [ "$gbw_bd" = 0 ] && [ "$gbw_ex" = 0 ] && [ "$gbw_of" = 0 ] || gbw_two=1
   gbw_f="${1-}"; gbw_drop=" ${2-} "
   [ -n "$gbw_f" ] && [ "$#" -ge 2 ] || return 1
   shift 2
   for gbw_a in "$@"; do gbw_drop="$gbw_drop${gbw_a%%=*} "; done
   gbw_t="$(umask 077; mktemp "${gbw_f%/*}/.${gbw_f##*/}.XXXXXX" 2>/dev/null || printf '')"
   [ -n "$gbw_t" ] || return 1
-  if ! ( umask 077
-         { for gbw_a in "$@"; do
-             case "$gbw_a" in mode=*) printf '%s\n' "$gbw_a"; break ;; esac
-           done
-           if [ -e "$gbw_f" ]; then
-             while IFS= read -r gbw_l || [ -n "$gbw_l" ]; do
-               case "$gbw_drop" in *" ${gbw_l%%=*} "*) continue ;; esac
-               printf '%s\n' "$gbw_l"
-             done < "$gbw_f" || exit 1
-           fi
-           for gbw_a in "$@"; do
-             case "$gbw_a" in mode=*) : ;; *) printf '%s\n' "$gbw_a" ;; esac
-           done
-         } > "$gbw_t" ) 2>/dev/null; then
+  gbw_rc=0
+  ( umask 077
+    # EVERY READ AND EVERY WRITE IS CHECKED BEFORE THE `mv` (lane 3's Codex code
+    # review of `12eddddf`, #165 6882203066, finding 1): each `printf` is `||
+    # exit 1`, so one that fails is a 1 and not a record that lost a line while
+    # a later write succeeded; the input is opened by the group's own `8<`, so
+    # a failure to open it is a 1 of its own, and not the status of whatever
+    # the loop ran last; and a `read` is the end of the file only where it says
+    # 1, any other status being a 1 here. (Bash cannot tell a read error from
+    # the end of the file, since `read` answers 1 to both: what it can check,
+    # this checks.)
+    { for gbw_a in "$@"; do
+        case "$gbw_a" in mode=*) printf '%s\n' "$gbw_a" || exit 1; break ;; esac
+      done
+      if [ -e "$gbw_f" ]; then
+        gbw_seen=" "; gbw_m=""; gbw_p=""; gbw_ps=""; gbw_h=""; gbw_c=""
+        {
+        while { gbw_st=0; IFS= read -r gbw_l <&8 || gbw_st=$?; [ "$gbw_st" = 0 ] || [ -n "$gbw_l" ]; }; do
+          if [ "$gbw_two" = 1 ]; then
+            case "$gbw_l" in
+              mode=*|pid=*|pidstart=*|host=*|container=*)
+                case "$gbw_seen" in
+                  *" ${gbw_l%%=*} "*) : ;;
+                  *)
+                    gbw_seen="$gbw_seen${gbw_l%%=*} "
+                    case "$gbw_l" in
+                      mode=*)      gbw_m="${gbw_l#*=}" ;;
+                      pid=*)       gbw_p="${gbw_l#*=}" ;;
+                      pidstart=*)  gbw_ps="${gbw_l#*=}" ;;
+                      host=*)      gbw_h="${gbw_l#*=}" ;;
+                      container=*) gbw_c="${gbw_l#*=}" ;;
+                    esac ;;
+                esac ;;
+            esac
+          fi
+          case "$gbw_drop" in *" ${gbw_l%%=*} "*) continue ;; esac
+          printf '%s\n' "$gbw_l" || exit 1
+        done
+        [ "$gbw_st" = 1 ] || exit 1
+        } 8< "$gbw_f" || {
+          # A RECORD THAT WENT BETWEEN THE `-e` ABOVE AND THIS OPEN (lane 3's
+          # Codex code review of `12eddddf`, #165 6882203066, finding 4): under
+          # `--own` it is the 2 it is where it was never there, not the outer's
+          # own, and the 1 is for a record that is still there and cannot be
+          # read. Without `--own` it stays a 1. The same under `--binding`.
+          [ "$gbw_two" = 0 ] || [ -e "$gbw_f" ] || exit 2
+          exit 1
+        }
+        [ "$gbw_own" = 0 ] || guard_bind_own "$gbw_m" "$gbw_p" "$gbw_ps" "$gbw_h" "$gbw_c" || exit 2
+        [ "$gbw_bd" = 0 ] || [ "$gbw_m" = binding ] || exit 2
+        [ "$gbw_of" = 0 ] || [ "$gbw_m" = name-drift ] || exit 2
+      elif [ "$gbw_two" = 1 ]; then
+        exit 2
+      fi
+      for gbw_a in "$@"; do
+        case "$gbw_a" in mode=*) : ;; *) printf '%s\n' "$gbw_a" || exit 1 ;; esac
+      done
+    } > "$gbw_t" ) 2>/dev/null || gbw_rc=$?
+  if [ "$gbw_rc" != 0 ]; then
     rm -f -- "$gbw_t"
+    [ "$gbw_two" = 1 ] && [ "$gbw_rc" = 2 ] && return 2
     return 1
   fi
   mv -f -- "$gbw_t" "$gbw_f" 2>/dev/null || { rm -f -- "$gbw_t"; return 1; }
@@ -20557,7 +20654,10 @@ guard_bind_bound_s() {   # <offer file>
 # whole number; a missing `.head` (files mode, `mode index`, the mirror path)
 # writes nothing, and the defaults give 500 s. Through `guard_bind_rewrite`, so
 # every later rewrite keeps them.
-#   0 copied, or nothing to copy · 1 the record could not be rewritten
+#   0 copied, or nothing to copy · 1 the record could not be rewritten · 2 the
+#   record is gone, or no longer says `name-drift`, and nothing was written
+#   (`--offer`: lane 3's ruling on lane 5's rule "No rewrite creates a record",
+#   #165 6885771975, ruling 5, and lane 5's rule for the hook's own writes)
 guard_bind_head_copy() {   # <offer file>
   [ -n "${SE_CACHE_FILE:-}" ] && [ -f "$SE_CACHE_FILE.head" ] || return 0
   ghc_kv=()
@@ -20567,7 +20667,7 @@ guard_bind_head_copy() {   # <offer file>
     ghc_kv+=("$ghc_k=$ghc_v")
   done
   [ "${#ghc_kv[@]}" -gt 0 ] || return 0
-  guard_bind_rewrite "${1-}" "" "${ghc_kv[@]}"
+  guard_bind_rewrite --offer "${1-}" "" "${ghc_kv[@]}"
 }
 
 # FEATURE 007, T510 - THE OFFER'S `act` (W:5378, the bind record's keys;
@@ -20804,7 +20904,7 @@ guard_refuse() {
 # A refusal is printed here, by `guard_refuse`, and returns 2 for `guard_run`
 # to pass on; every other end is 0, and `REG_MODE` says which way to read on.
 reg_guard_prefetch() {
-  REG_STORE=files; RG_WHY=""; RG_SAID=""
+  REG_STORE=files; RG_SAID=""
   if ! reg_config_present; then REG_MODE=files; return 0; fi
   rgp_bin="$(lanes_index_bin)"
   if [ -z "$rgp_bin" ]; then
@@ -20820,10 +20920,19 @@ reg_guard_prefetch() {
   rgp_rc=0
   ( "$rgp_bin" "${rgp_argv[@]}" </dev/null >"$SE_CACHE_FILE.door-out" 2>"$SE_CACHE_FILE.door-err"; exit "$?" ) 2>/dev/null || rgp_rc=$?
   rgp_out="$(cat -v -- "$SE_CACHE_FILE.door-out" 2>/dev/null; printf .)"; rgp_out="${rgp_out%.}"
-  # WHAT IT SAID: its first line, the cause (contract 3.6: under `--for guard`
-  # a 69's first stderr line is the cause the guard quotes), and all of it as
-  # one line for a refusal or a warning, control characters dropped, at most
-  # 1000 bytes, as `reg_prefetch` keeps them.
+  # WHAT IT SAID: all of it as one line for a refusal or a warning, the cause
+  # first (contract 3.6: under `--for guard` a 69's first stderr line is the
+  # cause the guard quotes). Its first 1000 bytes, newline, CR and tab made
+  # spaces and every other C0 byte dropped, as `reg_prefetch` keeps them, and
+  # then CUT ON A CHARACTER BOUNDARY (lane 3's ruling on item 31, (a), #165
+  # 6826938656; lane 1's 4.23, register-cli.md:768). Where the 1000th byte
+  # falls inside a UTF-8 character, `rgp_cut` leaves that character out whole:
+  # a lead byte at the end with fewer continuation bytes after it than its
+  # character takes (C0 to DF starts two bytes, E0 to EF three, F0 and up
+  # four). So the quote is the longest prefix of at most 1000 bytes that ends
+  # where a character ends, and ASCII is quoted as before. `tr` and `sed` run
+  # under `LC_ALL=C`, on bytes: under a UTF-8 locale the `tr` of macOS refuses
+  # a split character ("Illegal byte sequence").
   # THE FALLBACK LINE (svc:104: with the service unavailable the hook "SHALL
   # print `guard: direct (service unavailable)` on stderr, with the same exit
   # code"; contract 5.4 and 11.2; AT-10). Form 2 prints it once, on a line of
@@ -20834,13 +20943,12 @@ reg_guard_prefetch() {
   # warning carries it a second time. Where form 2 printed none, the service
   # having answered or not been asked, the guard prints nothing more.
   rgp_fb='guard: direct (service unavailable)'; rgp_fell=0
+  rgp_cut=$'s/([\xc0-\xff]|[\xe0-\xff][\x80-\xbf]|[\xf0-\xff][\x80-\xbf][\x80-\xbf])$//'
   if LC_ALL=C grep -a -q -x -F -- "$rgp_fb" "$SE_CACHE_FILE.door-err" 2>/dev/null; then rgp_fell=1; fi
   if [ "$rgp_fell" = 1 ]; then
-    RG_WHY="$(LC_ALL=C grep -a -v -x -F -- "$rgp_fb" "$SE_CACHE_FILE.door-err" 2>/dev/null | head -n 1 | head -c 300 | tr -d '\000-\037' || :)"
-    RG_SAID="$(LC_ALL=C grep -a -v -x -F -- "$rgp_fb" "$SE_CACHE_FILE.door-err" 2>/dev/null | head -c 1000 | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
+    RG_SAID="$(LC_ALL=C grep -a -v -x -F -- "$rgp_fb" "$SE_CACHE_FILE.door-err" 2>/dev/null | head -c 1000 | LC_ALL=C tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037' | LC_ALL=C sed -E -e "$rgp_cut" || :)"
   else
-    RG_WHY="$(head -n 1 -- "$SE_CACHE_FILE.door-err" 2>/dev/null | head -c 300 | tr -d '\000-\037' || :)"
-    RG_SAID="$(head -c 1000 -- "$SE_CACHE_FILE.door-err" 2>/dev/null | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
+    RG_SAID="$(head -c 1000 -- "$SE_CACHE_FILE.door-err" 2>/dev/null | LC_ALL=C tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037' | LC_ALL=C sed -E -e "$rgp_cut" || :)"
   fi
   while [ "${RG_SAID% }" != "$RG_SAID" ]; do RG_SAID="${RG_SAID% }"; done
   rm -f -- "$SE_CACHE_FILE.door-out" "$SE_CACHE_FILE.door-err"
@@ -21545,16 +21653,15 @@ EOF
     # transcript, a uuid in no row, an ambiguous register and an unreadable
     # read have all been refused above it, allowance or no allowance.
     if [ "$gr_mode" = allow ] && guard_allow_active "$gr_off"; then
-      guard_triple "THE NAME GUARD ALLOWS THIS PROMPT ON AN EXPLICIT CHOICE (lane-collision-protocol Amendment 12). The three names:"
-      note "WARNING: this lane/session name mismatch was explicitly allowed for this transcript. It will remain allowed only while the lane and session names stay unchanged."
+      guard_allow_pass
       return 0
     fi
     # AN ALLOWANCE THAT NO LONGER FITS IS DROPPED RATHER THAN CARRIED: either
     # name having changed is exactly what invalidates it, and the person is
     # asked again below.
     [ "$gr_mode" = allow ] && guard_offer_drop "$gr_off"
-    guard_offer "$gr_off" "$gr_pane"
-    return 2
+    guard_offer_site "$gr_off" "$gr_pane" "$gr_prompt"
+    return $?
   fi
 
   if [ -n "$gr_ids" ] && printf '%s\n' "$gr_ids" | grep -qx -F -- "$G_ID"; then
@@ -21658,12 +21765,23 @@ guard_refuse_start() {   # <why> <lane> [--no-launch]
   return 2
 }
 
+# THE ALLOWANCE THAT STILL FITS PASSES THE PROMPT, with its warning, from the
+# one place that says so: `guard_run`'s row for the mismatch, and
+# `guard_offer_site` where an allowance is there when the offer is made.
+guard_allow_pass() {
+  guard_triple "THE NAME GUARD ALLOWS THIS PROMPT ON AN EXPLICIT CHOICE (lane-collision-protocol Amendment 12). The three names:"
+  note "WARNING: this lane/session name mismatch was explicitly allowed for this transcript. It will remain allowed only while the lane and session names stay unchanged."
+  return 0
+}
+
 # ------------------------------------------------------------ (h)2: THE OFFER
 #
 # *"if the user does a rename, then we should offer to move to that lane or
 # create a new lane if we do not have one as that name"* (D5, verbatim). The
 # one thing the guard never does silently is decide, with nobody acting, which
 # of two disagreeing LANES a window belongs to.
+#   2 the offer is made and asked · 3 a record is there already, so nothing was
+#   written and nothing was said (`guard_offer_site` answers it)
 guard_offer() {   # <offer file> <pane>
   go_f="${1-}"; go_pane="${2-}"
   # UNDER `umask 077` (feature 007, lane 3's ruling on the bind record, point
@@ -21671,18 +21789,48 @@ guard_offer() {   # <offer file> <pane>
   # and a new `offers/` is 0700. An existing `offers/` is not `chmod`'d.
   # FEATURE 007, T510: the offer's `act`, on primary only (`guard_offer_act`).
   go_act="$(guard_offer_act || :)"
-  ( umask 077
-    mkdir -p -- "${go_f%/*}" 2>/dev/null || :
-    { printf 'mode=name-drift\n'
-      printf 'from=%s\n' "$G_LANE"
-      printf 'to=%s\n'   "$G_SES_LANE"
-      printf 'session=%s\n' "$G_NAME"
-      printf 'uuid=%s\n' "$G_ID"
-      printf 'utc=%s\n'  "$(utc_now)"
-      printf 'window=%s\n' "$G_WINREF"
-      printf 'pane=%s\n'   "$go_pane"
-      [ -z "$go_act" ] || printf 'act=%s\n' "$go_act"
-    } > "$go_f" ) 2>/dev/null || :
+  # THE ONE CREATION OF THE RECORD, AND IT NEVER WRITES OVER ONE (lane 3's
+  # ruling on point 26, reopened, #165 6885771975, after Codex's review of
+  # spec#47's draft 16: another invocation can install `binding`, and its outer
+  # `bound` or `bind-failed`, between `guard_run`'s read of the mode and this
+  # write, and the offer then overwrote that record). The offer is written whole
+  # to a temporary file in `offers/`, every write checked as part 16 checks
+  # them, and made THE RECORD BY `ln`, which is atomic and fails where the name
+  # exists, a bind record, an allowance or an offer alike: so no record is ever
+  # written over, and no reader sees half of one. Where hard links are refused
+  # the fallback is bash's `noclobber`, whose `>` opens with `O_EXCL` and fails
+  # the same way, though it creates the record before its content is whole. The
+  # temporary file is removed after, which is best effort (a name left in
+  # `offers/` holds only this offer). No window is left between the test and the
+  # create: they are one call.
+  go_made=0
+  ( umask 077; mkdir -p -- "${go_f%/*}" 2>/dev/null || : ) 2>/dev/null
+  go_t="$(umask 077; mktemp "${go_f%/*}/.${go_f##*/}.XXXXXX" 2>/dev/null || printf '')"
+  if [ -n "$go_t" ]; then
+    if ( umask 077
+         { printf 'mode=name-drift\n' || exit 1
+           printf 'from=%s\n' "$G_LANE" || exit 1
+           printf 'to=%s\n'   "$G_SES_LANE" || exit 1
+           printf 'session=%s\n' "$G_NAME" || exit 1
+           printf 'uuid=%s\n' "$G_ID" || exit 1
+           printf 'utc=%s\n'  "$(utc_now)" || exit 1
+           printf 'window=%s\n' "$G_WINREF" || exit 1
+           printf 'pane=%s\n'   "$go_pane" || exit 1
+           [ -z "$go_act" ] || printf 'act=%s\n' "$go_act" || exit 1
+         } > "$go_t" ) 2>/dev/null; then
+      if ln -- "$go_t" "$go_f" 2>/dev/null; then
+        go_made=1
+      elif [ -e "$go_f" ] || [ -L "$go_f" ]; then
+        go_made=there
+      elif ( set -C; umask 077; cat -- "$go_t" > "$go_f" ) 2>/dev/null; then
+        go_made=1
+      elif [ -e "$go_f" ] || [ -L "$go_f" ]; then
+        go_made=there
+      fi
+    fi
+    rm -f -- "$go_t" 2>/dev/null || :
+  fi
+  [ "$go_made" != there ] || return 3
   guard_triple
   note "WARNING: the lane and Claude session names disagree. This prompt is paused until you choose how to repair or explicitly allow this lane."
   note "1) explicitly allow this lane for this transcript (future prompts warn but do not block while both names stay unchanged)"
@@ -21708,6 +21856,55 @@ guard_offer() {   # <offer file> <pane>
   fi
   note "Reply \`1\`, \`2\` or \`3\`. The answer is the NEXT prompt, it is consumed here and never reaches the model; anything else asks again."
   [ -f "$go_f" ] || note "(the offer could not be written to $go_f, so the answer will be read as a fresh prompt and this question asked again — which is the safe direction)"
+  return 2
+}
+
+# THE OFFER, MADE ONLY WHERE NO RECORD IS THERE, AND ANSWERED AS THE FIRST READ
+# WOULD HAVE where one is (lane 3's ruling on point 26, reopened, #165
+# 6885771975). `guard_run` read the record's mode before it came here; another
+# invocation may have made a record since, and `guard_offer` writes over none.
+# Where its create fails because a record is there, this reads that record's
+# mode once and answers as `guard_run`'s own first read would for it, returning
+# what `guard_run` returns:
+#   binding, bound, bind-failed   `guard_bind_site`, as at the first read: the
+#                                 bind record is answered, never overwritten
+#   allow                         passed with its warning where it still fits,
+#                                 else dropped, and the offer made once more
+#   name-drift, or no mode        `guard_answer`, with this prompt as its answer,
+#                                 as at the first read; where that drops a stale
+#                                 offer (its 3), the offer is made once more
+# THE ONE RETRY is the whole of the loop: where its create fails too, nothing is
+# written, and the prompt is refused with the question to be asked afresh.
+# Where a drop cannot remove a leftover (a failed `rm`), the leftover is no
+# longer written over, as it was: the prompt is refused here, and the next one
+# meets the same record and the same refusal, until the drop works. Nothing is
+# lost: the record is as it was, and the person's prompt is theirs to send again.
+guard_offer_site() {   # <offer file> <pane> <the prompt>
+  gos_f="${1-}"; gos_pane="${2-}"; gos_prompt="${3-}"
+  gos_rc=0
+  guard_offer "$gos_f" "$gos_pane" || gos_rc=$?
+  [ "$gos_rc" = 3 ] || return 2
+  gos_m=""
+  [ -f "$gos_f" ] && gos_m="$(sed -n -e 's/^mode=//p' "$gos_f" 2>/dev/null | head -n1)"
+  case "$gos_m" in
+    binding|bound|bind-failed)
+      guard_bind_site "$gos_f" "$gos_pane"
+      return 2 ;;
+    allow)
+      if guard_allow_active "$gos_f"; then
+        guard_allow_pass
+        return 0
+      fi
+      guard_offer_drop "$gos_f" ;;
+    *)
+      gos_arc=0
+      guard_answer "$gos_f" "$gos_prompt" "$gos_pane" || gos_arc=$?
+      [ "$gos_arc" = 3 ] || return 2 ;;
+  esac
+  gos_rc=0
+  guard_offer "$gos_f" "$gos_pane" || gos_rc=$?
+  [ "$gos_rc" = 3 ] || return 2
+  guard_refuse "the pending offer could not be recorded: a record of this transcript's is at $gos_f and could not be replaced, so nothing was written to it. Send your prompt again and the question will be asked afresh."
   return 2
 }
 
@@ -21891,28 +22088,53 @@ guard_bind_child_env() {
 # live outer's `.out` may be — and the fork's `>` never empties one. `bind`
 # stays the attempt, 1 to 3 per offer; the record's `out=` names the attempt's
 # own file, and the facts file sits beside it.
+# EVERY CANONICAL INDEX IS COMPARED, AT ANY LENGTH, AND THERE IS NO MAXIMUM
+# (S4 of lane 3's Codex re-review of spec#47 at `746e931c`, lane 5's choice of
+# its two ways, #165 6880414089): an index past six digits was passed over, so
+# after `.bind.1000000.out` the next name could be one still there. An index
+# is `guard_bind_index_ok`'s, `[1-9][0-9]*`, and is compared as a decimal
+# string, the longer the larger and an equal length digit by digit, so no
+# value overflows the shell's integers; one above it is made the same way. A
+# name whose index is not canonical is never one this makes, so it is passed
+# over.
 guard_bind_next_index() {   # <offer file>
   gbx_f="${1-}"; gbx_n=0
   for gbx_x in "$gbx_f".bind.*; do
     [ -e "$gbx_x" ] || continue
     gbx_i="${gbx_x#"$gbx_f".bind.}"; gbx_i="${gbx_i%%.*}"
-    case "$gbx_i" in ''|*[!0-9]*) continue ;; esac
-    [ "${#gbx_i}" -le 6 ] || continue
-    [ "$((10#$gbx_i))" -le "$gbx_n" ] || gbx_n=$((10#$gbx_i))
+    guard_bind_index_ok "$gbx_i" || continue
+    if [ "${#gbx_i}" -gt "${#gbx_n}" ] ||
+       { [ "${#gbx_i}" = "${#gbx_n}" ] && [ "$gbx_i" \> "$gbx_n" ]; }; then
+      gbx_n="$gbx_i"
+    fi
   done
-  printf '%s\n' "$((gbx_n + 1))"
+  # ONE ABOVE IT: trailing 9s become 0s, and the digit before them goes up
+  # by one, or a 1 leads where every digit was a 9.
+  gbx_z=""
+  while [ -n "$gbx_n" ] && [ "${gbx_n%9}" != "$gbx_n" ]; do gbx_n="${gbx_n%9}"; gbx_z="${gbx_z}0"; done
+  if [ -z "$gbx_n" ]; then printf '1%s\n' "$gbx_z"; return 0; fi
+  gbx_d="${gbx_n#"${gbx_n%?}"}"
+  printf '%s%s%s\n' "${gbx_n%?}" "$((gbx_d + 1))" "$gbx_z"
 }
 
 # THE ATTEMPT'S FACTS FILE, BESIDE THE `out=` THE RECORD NAMES (the same
 # rulings): found there, never recomputed from `bind`. An `out` that is not this
 # offer's own `<offer file>.bind.<n>.out` names no facts file, so nothing is
 # read from, written to or removed at a path the record could point anywhere.
+# `<n>` IS CANONICAL, `[1-9][0-9]*`, by the one predicate below, which the
+# facts file's derivation, the body's three read-backs and the files' index
+# all take: no 0, and no leading 0 (S3 of lane 3's Codex re-review of
+# spec#47 at `746e931c`, #165 6880414089).
+guard_bind_index_ok() {   # <index>
+  case "${1-}" in ''|0*|*[!0123456789]*) return 1 ;; esac
+  return 0
+}
 guard_bind_facts_of() {   # <offer file> <the record's out>
   gbfo_f="${1-}"; gbfo_o="${2-}"
   [ -n "$gbfo_f" ] || return 1
   case "$gbfo_o" in "$gbfo_f".bind.*.out) : ;; *) return 1 ;; esac
   gbfo_i="${gbfo_o#"$gbfo_f".bind.}"; gbfo_i="${gbfo_i%.out}"
-  case "$gbfo_i" in ''|*[!0-9]*) return 1 ;; esac
+  guard_bind_index_ok "$gbfo_i" || return 1
   printf '%s\n' "${gbfo_o%.out}.facts"
 }
 
@@ -22026,6 +22248,18 @@ guard_bind_pidstart_ok() {   # <pidstart>
   return 0
 }
 
+# NO REWRITE CREATES A RECORD (lane 3's ruling on lane 5's rule, #165
+# 6885771975, ruling 5, "as lane 5 proposes"): where `guard_bind_site`'s own
+# rewrite of the record finds it gone (`--exist`, 2), nothing is written, and the
+# answer is the one for a record that is not the site's, which it cannot load:
+# the refusal, the prompt not sent, the question asked afresh. Nothing is
+# removed, since there is nothing there, and nothing else is done for a record
+# that is gone: it was dropped by another prompt, which has done its own part.
+guard_bind_gone() {   # <offer file>
+  guard_refuse "the pending offer at ${1-} was gone when it came to be answered, so nothing was written to it. Send your prompt again and the question will be asked afresh."
+  return 2
+}
+
 guard_bind_site() {   # <offer file> <pane>
   gbt_f="${1-}"
   if ! guard_bind_load "$gbt_f" || ! guard_bind_readable; then
@@ -22054,8 +22288,10 @@ EOF
       note "This prompt was NOT sent: it is the one that hears how the bind ended. Send your work again."
       return 2 ;;
     bind-failed)
-      gbt_back=0
-      guard_bind_rewrite "$gbt_f" "" mode=name-drift || gbt_back=1
+      gbt_back=0; gbt_wrc=0
+      guard_bind_rewrite --exist "$gbt_f" "" mode=name-drift || gbt_wrc=$?
+      [ "$gbt_wrc" != 2 ] || { guard_bind_gone "$gbt_f"; return 2; }
+      [ "$gbt_wrc" = 0 ] || gbt_back=1
       guard_triple
       note "THE BIND TO LANE $GBR_TO FAILED (exit $GBR_RC): ${GBR_WHY:-the record gives no reason}${GBR_OUT:+ — its output is kept in $GBR_OUT}."
       # CASES 6 AND 7 RENAME THE WINDOW BACK (Y:5502; ERR-23 for the third).
@@ -22085,7 +22321,10 @@ EOF
     gbt_back=0
     # CASE 10 IS STALE WITH NO COPIES (W:5458's row; tasks.md T510): the
     # pending record is that host's, so the five keys are dropped.
-    guard_bind_rewrite "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" || gbt_back=1
+    gbt_wrc=0
+    guard_bind_rewrite --exist "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" || gbt_wrc=$?
+    [ "$gbt_wrc" != 2 ] || { guard_bind_gone "$gbt_f"; return 2; }
+    [ "$gbt_wrc" = 0 ] || gbt_back=1
     guard_triple
     note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} ON $GBR_HOST/$GBR_CONTAINER IS NO LONGER RUNNING AND LEFT NO OUTCOME by 60 s past its deadline, $gbt_dlu, so what it wrote is not known; the next \`2\` finds out first. This window is not renamed: that bind ran on another host or container."
     if [ "$gbt_back" = 1 ]; then
@@ -22143,7 +22382,10 @@ EOF
     # and container that holds a `call=` line, `not_after` the largest among
     # them, and none where there is no such record (`guard_bind_copies`).
     guard_bind_copies "$G_ID"
-    guard_bind_rewrite "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" ${GBC_KV[@]+"${GBC_KV[@]}"} || gbt_back=1
+    gbt_wrc=0
+    guard_bind_rewrite --exist "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" ${GBC_KV[@]+"${GBC_KV[@]}"} || gbt_wrc=$?
+    [ "$gbt_wrc" != 2 ] || { guard_bind_gone "$gbt_f"; return 2; }
+    [ "$gbt_wrc" = 0 ] || gbt_back=1
     guard_triple
     note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} (attempt $gbt_k) IS NO LONGER RUNNING AND LEFT NO OUTCOME: $gbt_why. What it wrote is not known; the next \`2\` finds out first."
     # CASE 9 RENAMES THE WINDOW BACK TOO (ERR-23); case 10, above, does not.
@@ -22184,6 +22426,57 @@ EOF
   fi
   note "Waiting costs nothing, and the next prompt reads its outcome. \`kill $GBR_PID\` stops it, at a cost. If it is inside a register write, that write is left in doubt. On primary the record keeps its write id, and the next \`2\` looks it up before it binds again. In files mode a commit it made may stay local until the next write from that checkout pushes it, a push it started may still land, and the next writer takes over its lock at once. Your prompt was NOT sent."
   return 2
+}
+
+# THE OFFER THE PERSON ANSWERED IS NOT THE OFFER ANY MORE (lane 3's ruling on lane
+# 5's rule "No rewrite creates a record", #165 6885771975, ruling 5, (A); lane 5's
+# rule for the hook's own writes, which lane 3 confirmed, #165 6886113842): one of the
+# hook's writes on it, the head copy, the rewrite to `binding` or choice 1's
+# allow, found it gone or no longer `mode=name-drift`, and wrote nothing. The
+# record's mode is read ONCE, here, and answered for as the guard's first read
+# answers it, and no step is repeated:
+#   binding, bound, bind-failed  `guard_bind_site`'s answer (2), as `guard_run`
+#                                gives for a bind mode: nothing is written, and
+#                                the window is left as that answer leaves it
+#   allow                        3, the answer that does not consume the prompt:
+#                                `guard_run` judges it afresh, and its offer site
+#                                (`guard_offer_site`) passes an allowance that
+#                                still fits, with its warning, or drops one that
+#                                does not and asks once; a window this answer
+#                                renamed is renamed back first
+#   gone, or any other mode      (A), K4's path: the refusal, a window this
+#                                answer renamed renamed back, and 2
+guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 where this answer renamed the window>
+  gam_f="${1-}"; gam_pane="${2-}"; gam_what="${3-}"; gam_from="${4-}"; gam_to="${5-}"; gam_ren="${6-0}"
+  gam_m=""
+  [ -f "$gam_f" ] && gam_m="$(sed -n -e 's/^mode=//p' "$gam_f" 2>/dev/null | head -n1)"
+  case "$gam_m" in
+    binding|bound|bind-failed)
+      guard_bind_site "$gam_f" "$gam_pane"
+      return 2 ;;
+    allow)
+      [ "$gam_ren" = 0 ] || guard_window_back "$gam_from" "$gam_to" || :
+      return 3 ;;
+  esac
+  if [ -f "$gam_f" ]; then
+    gam_why="the offer at $gam_f was changed before the $gam_what could be recorded (it says mode=${gam_m:-none} now)"
+  else
+    gam_why="the offer was dropped before the $gam_what could be recorded"
+  fi
+  if [ "$gam_what" = bind ]; then
+    guard_refuse "$gam_why, so the bind was NOT started: this window has NOT moved to $gam_to (a rename this answer made is undone just below), NOTHING has been written to the register or to $gam_f, and no outer was started. Send your prompt again and the question will be asked afresh."
+    [ "$gam_ren" = 0 ] || guard_window_back "$gam_from" "$gam_to" || :
+  else
+    guard_refuse "$gam_why, so the mismatch remains unapproved. Nothing was renamed or written; send your prompt again and the question will be asked afresh."
+  fi
+  return 2
+}
+
+# THE OFFER IS STILL THERE AND STILL SAYS `name-drift` (the first `mode` line,
+# as `guard_bind_load` takes it): choice 1's test, made just before its `mv`.
+guard_offer_still() {   # <offer file>
+  [ -f "${1-}" ] || return 1
+  [ "$(sed -n -e 's/^mode=//p' "${1-}" 2>/dev/null | head -n1)" = name-drift ]
 }
 
 # The answer, and it is the whole of clause (h) rule 2's second half.
@@ -22243,16 +22536,46 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     # under `umask 077`, and the offer's `.bind.*` files go with the question
     # it stops being (feature 007, lane 3's ruling on the bind record, points
     # 1, 2 and 13).
+    # EVERY WRITE IS CHECKED BEFORE THE `mv`, as `guard_bind_rewrite`'s are (lane
+    # 3's Codex code review of `12eddddf`, #165 6882203066, finding 1, which part
+    # 16 closed there alone; T501's check of draft 15 against parts 16 to 19,
+    # which found this block still a `printf` group whose status is the last
+    # one's): each `printf` is `|| exit 1`, so one that fails ends the subshell
+    # with 1, the `if` takes its refusal below, and no `mv` runs, where before a
+    # later write that worked hid it and the record lost the line.
+    # NO REWRITE CREATES A RECORD (lane 3's ruling on lane 5's rule, #165
+    # 6885771975, ruling 5; lane 5's rule for the hook's own writes, which lane 3
+    # confirmed, #165 6886113842): this is a rewrite of the offer the person answered,
+    # so just before its `mv` it requires that offer to be there and to say
+    # `name-drift` still (`guard_offer_still`), and where it is not it writes
+    # nothing, removes its temporary file, and answers for what is there, once
+    # (`guard_answer_moved`): the refusal where it is gone, `guard_bind_site`'s
+    # answer for a bind mode, 3 for an allowance. THE WINDOW LEFT is the test to
+    # the `mv`: bash has no rename that replaces only an existing file, so a
+    # record made or changed in between is still replaced, as it is in
+    # `guard_bind_rewrite`'s.
     ga_t="$(umask 077; mktemp "${ga_f%/*}/.${ga_f##*/}.XXXXXX" 2>/dev/null || printf '')"
+    ga_wrc=0
     if [ -z "$ga_t" ] || ! ( umask 077
-         { printf 'mode=allow\n'
-           printf 'from=%s\n' "$ga_from"
-           printf 'to=%s\n' "$ga_to"
-           printf 'session=%s\n' "$ga_session"
-           printf 'uuid=%s\n' "$G_ID"
-           printf 'utc=%s\n' "$(utc_now)"
-         } > "$ga_t" ) 2>/dev/null || ! mv -f -- "$ga_t" "$ga_f" 2>/dev/null; then
+         { printf 'mode=allow\n' || exit 1
+           printf 'from=%s\n' "$ga_from" || exit 1
+           printf 'to=%s\n' "$ga_to" || exit 1
+           printf 'session=%s\n' "$ga_session" || exit 1
+           printf 'uuid=%s\n' "$G_ID" || exit 1
+           printf 'utc=%s\n' "$(utc_now)" || exit 1
+         } > "$ga_t" ) 2>/dev/null; then
+      ga_wrc=1
+    elif ! guard_offer_still "$ga_f"; then
+      ga_wrc=2
+    elif ! mv -f -- "$ga_t" "$ga_f" 2>/dev/null; then
+      ga_wrc=1
+    fi
+    if [ "$ga_wrc" != 0 ]; then
       [ -z "$ga_t" ] || rm -f -- "$ga_t"
+      if [ "$ga_wrc" = 2 ]; then
+        guard_answer_moved "$ga_f" "$ga_pane" allow "$ga_from" "$ga_to" 0
+        return $?
+      fi
       guard_refuse "the explicit allow could not be recorded at $ga_f, so the mismatch remains unapproved. Nothing was renamed or written; answer 1 again after the session state is writable."
       return 2
     fi
@@ -22329,7 +22652,25 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     ga_out="$ga_f.bind.$(guard_bind_next_index "$ga_f").out"
     # THE PREFETCH'S `c`, `n_a` AND `w_s_ms` FIRST (feature 007, T507;
     # `guard_bind_head_copy`), so this bound and the outer's are summed from them.
-    if ! guard_bind_head_copy "$ga_f"; then
+    # NO REWRITE CREATES A RECORD (lane 3's ruling on lane 5's rule, #165
+    # 6885771975, ruling 5, (A); lane 5's rule for the hook's own writes, which
+    # lane 3 confirmed, #165 6886113842): `guard_bind_head_copy` and the rewrite to
+    # `binding` below act on the offer this hook read, so each runs only on a
+    # record that is there and still says `name-drift` (`--offer`). Where it does
+    # not, nothing is written (2) and the record's mode is read once and answered
+    # for (`guard_answer_moved`): where the offer was dropped, K4's path, the
+    # failed-write path's, with its own words (exit 2, the window renamed back
+    # where this hook renamed it, no BINDING, no outer started); where another
+    # invocation made it a bind record, `guard_bind_site`'s answer, the bind
+    # record untouched; where it is an allowance, 3. THE WINDOW LEFT is the
+    # rewrite's: its read to its `mv`.
+    ga_hrc=0
+    guard_bind_head_copy "$ga_f" || ga_hrc=$?
+    if [ "$ga_hrc" = 2 ]; then
+      guard_answer_moved "$ga_f" "$ga_pane" bind "$ga_from" "$ga_to" "$ga_ren"
+      return $?
+    fi
+    if [ "$ga_hrc" != 0 ]; then
       guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and the offer is KEPT. Answer \`2\` again once that directory is writable, or choose \`1\` or \`3\`."
       [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
       return 2
@@ -22350,10 +22691,16 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     fi
     ga_now="$(date -u '+%s %Y-%m-%dT%H:%M:%SZ')"
     ga_ep="${ga_now%% *}"
-    if ! guard_bind_rewrite "$ga_f" "rc why note pid pidstart out started_utc bound_s bounded deadline_epoch" \
-         mode=binding "bind=$ga_k" "started_utc=${ga_now#* }" "bound_s=$ga_bs" "bounded=$ga_bd" \
-         "deadline_epoch=$((ga_ep + ga_bs + 5))" "host=$WS" "container=$LANES_CONTAINER_NAME" \
-         "out=$ga_out" "detach=$ga_dn"; then
+    ga_wrc=0
+    guard_bind_rewrite --offer "$ga_f" "rc why note pid pidstart out started_utc bound_s bounded deadline_epoch" \
+      mode=binding "bind=$ga_k" "started_utc=${ga_now#* }" "bound_s=$ga_bs" "bounded=$ga_bd" \
+      "deadline_epoch=$((ga_ep + ga_bs + 5))" "host=$WS" "container=$LANES_CONTAINER_NAME" \
+      "out=$ga_out" "detach=$ga_dn" || ga_wrc=$?
+    if [ "$ga_wrc" = 2 ]; then
+      guard_answer_moved "$ga_f" "$ga_pane" bind "$ga_from" "$ga_to" "$ga_ren"
+      return $?
+    fi
+    if [ "$ga_wrc" != 0 ]; then
       guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and the offer is KEPT. Answer \`2\` again once that directory is writable, or choose \`1\` or \`3\`."
       [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
       return 2
@@ -22379,8 +22726,18 @@ guard_answer() {   # <offer file> <the prompt> <pane>
         # NO CHILD, SO NO ATTEMPT: the offer goes back to the question it was.
         ga_back=(mode=name-drift)
         [ "$ga_k" -le 1 ] || ga_back+=("bind=$((ga_k - 1))")
-        guard_bind_rewrite "$ga_f" "bind started_utc bound_s bounded deadline_epoch host container out detach" "${ga_back[@]}" || :
-        guard_refuse "the bind's child could not be started, so this window has NOT moved to $ga_to and NOTHING has been written. The offer is KEPT: answer \`2\` again, or choose \`1\` or \`3\`."
+        # NO REWRITE CREATES A RECORD (#165 6885771975, ruling 5): the back-out
+        # undoes this answer's own `binding`, so it runs only on a record that
+        # still says `binding` (part 21's `--binding`); where it is gone, or
+        # another invocation has changed it, there is nothing of this answer's to
+        # back out, and nothing is written.
+        ga_brc=0
+        guard_bind_rewrite --binding "$ga_f" "bind started_utc bound_s bounded deadline_epoch host container out detach" "${ga_back[@]}" || ga_brc=$?
+        if [ "$ga_brc" = 2 ]; then
+          guard_refuse "the bind's child could not be started, so this window has NOT moved to $ga_to and NOTHING has been written; the offer was dropped or changed meanwhile, so there is none of this answer's to keep. Send your prompt again and the question will be asked afresh."
+        else
+          guard_refuse "the bind's child could not be started, so this window has NOT moved to $ga_to and NOTHING has been written. The offer is KEPT: answer \`2\` again, or choose \`1\` or \`3\`."
+        fi
         [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
         return 2 ;;
     esac
@@ -22448,9 +22805,13 @@ guard_answer() {   # <offer file> <the prompt> <pane>
 # detached `lanes-index sync` among them.
 #
 # Exits: 0 once the outcome is written (its own code is the record's `rc`);
-# 1 where the record could not be rewritten at the start, and nothing ran; 2
-# where it refuses.
-GBO_CPID=""; GBO_BD=yes; GBO_TRAPS=0
+# 1 where the record could not be rewritten at the start, and nothing ran, or
+# where the outcome could not be written, which is then in the attempt's
+# `.out` alone (lane 3's rulings, #165 6879754335; the bind record's
+# contract, draft 11, section 7); 2 where it refuses, which includes a record
+# that is gone or no longer `binding` at its start, with nothing written and
+# nothing run (T502's part 21).
+GBO_CPID=""; GBO_BD=yes; GBO_TRAPS=0; GBO_MYPS=""
 
 # THE OUTER'S `TERM` TRAP: a person's `kill <p>`, forwarded — to `timeout`,
 # which passes it to the body's group and sends `KILL` 10 s later (probe P2),
@@ -22492,6 +22853,27 @@ guard_bind_uuid_ok() {   # <uuid>
   return 0
 }
 
+# THE OUTER'S OWN `binding`, ONE TEST for its read before the outcome and for
+# that outcome's rewrite, on the very lines it copies (`guard_bind_rewrite
+# --own`; lane 3's ruling on spec#47's point 21, #165 6879754335): `mode` is
+# `binding`; `pid` is its own `$$`; `pidstart` is the token it wrote at its
+# start, `GBO_MYPS`, or none where it wrote `pid` alone (lane 3's ruling on the
+# contract's point 18, #165 6751772589, with point 15, 6747528875, and spec#47's
+# point 19); and `host` and `container` are its own, `WS` and
+# `LANES_CONTAINER_NAME`, without regard to case, as the guard's own test of
+# them is (spec#47's point 20, (a)). `out` is not matched. `lower_into` and not
+# `lc`, so the test forks no process inside the window (the contract, draft
+# 11, section 1).
+#   0 its own · 1 not
+guard_bind_own() {   # <mode> <pid> <pidstart> <host> <container>
+  [ "${1-}" = binding ] && [ "${2-}" = "$$" ] && [ "${3-}" = "$GBO_MYPS" ] || return 1
+  lower_into "${4-}"; gbm_v="$LOWER_OUT"; lower_into "$WS"
+  [ "$gbm_v" = "$LOWER_OUT" ] || return 1
+  lower_into "${5-}"; gbm_v="$LOWER_OUT"; lower_into "$LANES_CONTAINER_NAME"
+  [ "$gbm_v" = "$LOWER_OUT" ] || return 1
+  return 0
+}
+
 guard_bind_outer() {   # <session uuid>
   gbo_u="${1-}"
   if ! guard_bind_uuid_ok "$gbo_u"; then
@@ -22526,8 +22908,8 @@ guard_bind_outer() {   # <session uuid>
   # no pid: running until `deadline_epoch`, then stale with no session test.
   gbo_ps=""; gbo_psrc=0
   gbo_ps="$(pid_start_of "$$" 2>/dev/null)" || gbo_psrc=$?
-  gbo_pid=("pid=$$"); gbo_myps=""
-  if [ "$gbo_psrc" = 0 ] && [ -n "$gbo_ps" ]; then gbo_myps="$gbo_ps"; gbo_pid+=("pidstart=$gbo_ps"); fi
+  gbo_pid=("pid=$$"); GBO_MYPS=""
+  if [ "$gbo_psrc" = 0 ] && [ -n "$gbo_ps" ]; then GBO_MYPS="$gbo_ps"; gbo_pid+=("pidstart=$gbo_ps"); fi
   # THE ATTEMPT'S OWN FILES, FROM THE RECORD'S `out=`, never recomputed from
   # `bind`, which counts attempts and is not the files' index (lane 3's rulings
   # on the contract's point 18, #165 6751772589 and 6751818233). The facts file
@@ -22540,8 +22922,22 @@ guard_bind_outer() {   # <session uuid>
   command -v timeout >/dev/null 2>&1 && GBO_BD=yes
   gbo_now="$(date -u '+%s %Y-%m-%dT%H:%M:%SZ')"
   gbo_ep="${gbo_now%% *}"
-  if ! guard_bind_rewrite "$gbo_f" "pid pidstart" "started_utc=${gbo_now#* }" "bound_s=$gbo_bs" \
-       "bounded=$GBO_BD" "deadline_epoch=$((gbo_ep + gbo_bs + 5))" "${gbo_pid[@]}"; then
+  # THE START REWRITE RUNS ONLY ON A RECORD THAT STILL SAYS `binding` (lane 3's
+  # ruling on open point 26, #165 6885378657, ruling 4(a); lane 5's ruling on
+  # lane 2's reader's window, #165 6885568373): `guard_offer`'s write is the
+  # only one that creates the record, and the record is the bind's authority.
+  # Where it has gone since the load above, or an offer has taken its place,
+  # `--binding` writes nothing and answers 2, and this outer runs nothing and
+  # returns 2, as its load does for no record and for one that is not
+  # `binding`. Where it cannot be rewritten it is as it was: a 1.
+  gbo_src=0
+  guard_bind_rewrite --binding "$gbo_f" "pid pidstart" "started_utc=${gbo_now#* }" "bound_s=$gbo_bs" \
+    "bounded=$GBO_BD" "deadline_epoch=$((gbo_ep + gbo_bs + 5))" "${gbo_pid[@]}" || gbo_src=$?
+  if [ "$gbo_src" = 2 ]; then
+    note "guard-bind: the record at $gbo_f is gone or no longer says mode=binding, so nothing was written to it and the bind was NOT run: only the record an answer 2 wrote is a bind's authority (Y:5396)."
+    return 2
+  fi
+  if [ "$gbo_src" != 0 ]; then
     note "guard-bind: the record at $gbo_f could not be rewritten with this outer's pid, so the bind was NOT run. The guard reads a binding record with no pid as running until its deadline, and then restores the offer."
     return 1
   fi
@@ -22649,21 +23045,6 @@ guard_bind_outer() {   # <session uuid>
       fi ;;
   esac
   gbo_out+=("ended_utc=$(utc_now)")
-  # WRITTEN ONLY OVER ITS OWN RECORD (lane 3's ruling on the contract's point
-  # 18, question 2, #165 6751772589): just before the write the record is read
-  # again, and the outcome goes in only where it is still this outer's own
-  # `binding`, with its own `pid` and its own `pidstart` (none, where it wrote
-  # `pid` alone). One that is not has been answered by the guard since (its
-  # stale row), dropped (case 11) or replaced by a new offer's attempt, and an
-  # outcome written over it would contradict what the person was told; it is
-  # left as it is, and the outcome stays in this attempt's `.out`, where these
-  # words go. The write itself is still a temporary file and `mv -f`.
-  if ! guard_bind_load "$gbo_f" || [ "$GBR_MODE" != binding ] || [ "$GBR_PID" != "$$" ] ||
-     [ "$GBR_PIDSTART" != "$gbo_myps" ]; then
-    note "guard-bind: the record at $gbo_f is no longer this bind's own (mode=${GBR_MODE:-none}, pid ${GBR_PID:-none}, pidstart ${GBR_PIDSTART:-none}), so it is left as it is and the outcome is not written over it: ${gbo_out[*]}"
-    [ -z "$gbo_facts" ] || rm -f -- "$gbo_facts"
-    return 0
-  fi
   # FEATURE 007, T510 - THE FIVE COPIES MIRROR `start-record`'s PENDING RECORD
   # (W:5380, the bind record's keys; tasks.md T510, "The five copies"): on
   # every outcome but 0 they are copied from this transcript's newest
@@ -22671,14 +23052,66 @@ guard_bind_outer() {   # <session uuid>
   # `call=` line (`guard_bind_copies`), and on every outcome they are in the
   # drop list. So a record kept by a 3 or by LR007 `generation` keeps them; a
   # record removed, by `absent`, LR007 `another-write`, a 0 or a refusal, takes
-  # them away; and a bound record holds none.
+  # them away; and a bound record holds none. THEY ARE GATHERED HERE, BEFORE
+  # THE READ BELOW, and not between that read and the `mv` (lane 3's ruling on
+  # spec#47's point 21, #165 6879754335).
   gbo_copies=()
   if [ "${gbo_out[0]}" != mode=bound ]; then
     guard_bind_copies "$gbo_u"
     gbo_copies=(${GBC_KV[@]+"${GBC_KV[@]}"})
   fi
-  if ! guard_bind_rewrite "$gbo_f" "mode rc why note ended_utc $GBC_KEYS" "${gbo_out[@]}" ${gbo_copies[@]+"${gbo_copies[@]}"}; then
+  # WRITTEN ONLY OVER ITS OWN RECORD (lane 3's ruling on the contract's point
+  # 18, question 2, #165 6751772589): just before the write the record is read
+  # again, and the outcome goes in only where it is still this outer's own
+  # `binding`, with its own `pid` and its own `pidstart` (none, where it wrote
+  # `pid` alone), AND ITS OWN `host` AND `container`, compared without regard
+  # to case, as the guard's own test of them is: a pid and its start time name
+  # a process only inside one pid namespace, so a record from another host or
+  # container whose outer had the same pid, and also wrote `pid` alone, is not
+  # this one's. `out` is not matched (lane 3's ruling on spec#47's point 20,
+  # (a), #165 6879754335; the contract, draft 11, section 1). That test is
+  # `guard_bind_own`. One that is not has been answered by the guard since
+  # (its stale row), dropped (case 11) or replaced by a new offer's attempt,
+  # and an outcome written over it would contradict what the person was told;
+  # it is left as it is, and the outcome stays in this attempt's `.out`, where
+  # these words go. The write itself is still a temporary file and `mv -f`.
+  # THE WINDOW IS KEPT, AND NARROWED IN CODE (lane 3's ruling on spec#47's
+  # point 21, #165 6879754335; the contract, draft 11, sections 1 and 8): the
+  # five copies are gathered above, before this read, and the rewrite makes
+  # the same test on the very lines it copies (`guard_bind_rewrite --own`), so
+  # a record changed after this read and before the rewrite's own is still left
+  # as it is. What is left is the rewrite's own read to its `mv`, in which a
+  # change can still be overwritten (lane 3's Codex code review of `12eddddf`,
+  # #165 6882203066, finding 8). No lock per record: it would put a new stuck
+  # state on every prompt's path.
+  # THE REWRITE'S THREE RESULTS, AND THE OUTER'S EXIT FOR EACH (lane 3's
+  # ruling on the Codex re-review of spec#47 at `746e931c`, S1, #165
+  # 6880414089: the report's three-way result as written): 0, written, exit
+  # 0; 2, not its own (or no record), exit 0, nothing written by this rewrite;
+  # 1, an I/O failure, exit 1: this rewrite did not change the record, which is as
+  # another writer may have left it, and not necessarily still its `binding`
+  # (lane 3's ruling on S1 of its Codex delta review of spec#47's draft 13,
+  # #165 6880978929). ON EVERY ONE the facts file goes. Its `why=` and `note=`
+  # lines are in the outcome only where the body ended on its own, and are not
+  # read where the bound or a signal stopped it; and the outcome is in the record
+  # only on the rewrite's 0, and in this attempt's `.out` alone on a 1 or a 2
+  # (Codex's review of `ae702c74`, on spec#47's draft 16, #165 6885771975).
+  gbo_wrc=2
+  if guard_bind_load "$gbo_f" &&
+     guard_bind_own "$GBR_MODE" "$GBR_PID" "$GBR_PIDSTART" "$GBR_HOST" "$GBR_CONTAINER"; then
+    gbo_wrc=0
+    guard_bind_rewrite --own "$gbo_f" "mode rc why note ended_utc $GBC_KEYS" "${gbo_out[@]}" ${gbo_copies[@]+"${gbo_copies[@]}"} || gbo_wrc=$?
+    # A RECORD THAT CHANGED BETWEEN THE TWO READS is named as it now stands.
+    [ "$gbo_wrc" != 2 ] || guard_bind_load "$gbo_f" || :
+  fi
+  if [ "$gbo_wrc" = 2 ]; then
+    note "guard-bind: the record at $gbo_f is no longer this bind's own (mode=${GBR_MODE:-none}, pid ${GBR_PID:-none}, pidstart ${GBR_PIDSTART:-none}, host ${GBR_HOST:-none}, container ${GBR_CONTAINER:-none}), so it is left as it is and the outcome is not written over it: ${gbo_out[*]}"
+    [ -z "$gbo_facts" ] || rm -f -- "$gbo_facts"
+    return 0
+  fi
+  if [ "$gbo_wrc" != 0 ]; then
     note "guard-bind: the outcome could not be written to $gbo_f: ${gbo_out[*]}"
+    [ -z "$gbo_facts" ] || rm -f -- "$gbo_facts"
     return 1
   fi
   [ -z "$gbo_facts" ] || rm -f -- "$gbo_facts"
@@ -22686,8 +23119,9 @@ guard_bind_outer() {   # <session uuid>
   return 0
 }
 
-# THE BODY'S FACTS, which the outer folds into the record (lane 3's ruling,
-# point 6): `why=` and `note=` lines, written once, at 0600.
+# THE BODY'S FACTS, which the outer folds into its outcome where the body ended
+# on its own (lane 3's ruling, point 6): `why=` and `note=` lines, written once,
+# at 0600.
 guard_bind_facts() {   # <facts file> [<line> …]
   gbf_f="${1-}"; shift || :
   [ -n "$gbf_f" ] || return 1
@@ -22752,15 +23186,22 @@ guard_bind_settle() {
 #                 nothing. The record is kept, so the copies are
 #      LR007 `another-write`
 #                 the record settled, then 2 with the server's message: the
-#                 copies go with it
+#                 copies go with it. A record that cannot be settled is kept,
+#                 and so are the copies; the 2 is the same, and its message
+#                 says the record could not be settled (lane 3's ruling on S3
+#                 of its Codex delta review of spec#47's draft 13, #165
+#                 6880978929)
 #      LR007 `generation`
 #                 2 with a plain rerun's refusal of a record of another
 #                 generation (T412's text); the record and the copies are kept
 # A 2 or a 3 RETURNS, never `die`s (the exit-3 rule): its `why=` is in the
-# facts file, and the body exits with it.
+# facts file, and the body exits with it. The found rerun's own words are read
+# back only from <out>, which the body passes only where the record's `out` has
+# the record's own form, and empty otherwise (lane 3's ruling on spec#47's
+# point 25, #165 6879754335; the contract, draft 11, section 3).
 #   0 go on to `lane-start` · 2 or 3, or the found rerun's own code
-guard_bind_rerun() {   # <facts file>
-  gbe_facts="${1-}"
+guard_bind_rerun() {   # <facts file> <out, of the record's own form, or empty>
+  gbe_facts="${1-}"; gbe_out="${2-}"
   wr_is_uuid "$GBR_WRITE_ID" || return 0
   guard_bind_copies "$G_ID" "$GBR_WRITE_ID"
   [ -n "$GBC_FILE" ] || return 0
@@ -22817,8 +23258,8 @@ guard_bind_rerun() {   # <facts file>
         gbe_rr[0]="${LANES_EDIT:-$RESOLVED}"
         note "guard-bind --body: F3's lookup found write $WR_ID at seq $PW_LK_SEQ, so its pending record's command runs once under that id, for its tail."
         gbe_size=0
-        if [ -n "${GBR_OUT:-}" ] && [ -f "$GBR_OUT" ]; then
-          gbe_size="$(wc -c < "$GBR_OUT" 2>/dev/null | tr -d ' ' || :)"
+        if [ -n "$gbe_out" ] && [ -f "$gbe_out" ]; then
+          gbe_size="$(wc -c < "$gbe_out" 2>/dev/null | tr -d ' ' || :)"
           case "$gbe_size" in ''|*[!0-9]*) gbe_size=0 ;; esac
         fi
         LANES_WRITE_ID="$WR_REC_WRITE_ID" LANES_WRITE_GENERATION="$WR_REC_GENERATION" \
@@ -22826,8 +23267,8 @@ guard_bind_rerun() {   # <facts file>
           "${gbe_rr[@]}" </dev/null >&2 || gbe_rc=$?
         if [ "$gbe_rc" != 0 ]; then
           gbe_said=""
-          if [ -n "${GBR_OUT:-}" ] && [ -f "$GBR_OUT" ]; then
-            gbe_said="$(tail -c +"$((gbe_size + 1))" "$GBR_OUT" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 || :)"
+          if [ -n "$gbe_out" ] && [ -f "$gbe_out" ]; then
+            gbe_said="$(tail -c +"$((gbe_size + 1))" "$gbe_out" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 || :)"
           fi
           gbe_why="F3's lookup found write $WR_ID at seq $PW_LK_SEQ, and the rerun of its pending record for its tail exited $gbe_rc${gbe_said:+: $gbe_said}"
         fi
@@ -22846,8 +23287,22 @@ guard_bind_rerun() {   # <facts file>
         gbe_why="$(wr_text_other_generation)"
         gbe_rc=2
       else
-        guard_bind_settle || note "guard-bind --body: the pending record $gbe_rec could not be removed after LR007 another-write; the next \`2\` looks it up again."
-        gbe_why="${gbe_msg:-ERROR:  LR007: another-write} (F3's lookup of write $WR_ID: that id is another write's in the register's journal, so no call of this bind's write can commit under it; its pending record is removed, and the next \`2\` binds anew)"
+        # THE WORDS SAY WHAT THE SETTLE DID (lane 3's ruling on S3 of its Codex
+        # delta review of spec#47's draft 13, #165 6880978929; the contract,
+        # section 3): the pending record and its copies go only where
+        # `guard_bind_settle` succeeds, and stay where it fails (the outer
+        # gathers them again, so they stay in the outcome too). The 2 is the
+        # same on both, and so is the behaviour: only the diagnostic was wrong.
+        # THE PATH COMES LAST, after the words that matter: `guard_bind_oneline`
+        # cuts the `why=` at 400 characters, and a long state path must not
+        # take "kept" with it.
+        if guard_bind_settle; then
+          gbe_end="its pending record is removed, and the next \`2\` binds anew"
+        else
+          note "guard-bind --body: the pending record $gbe_rec could not be removed after LR007 another-write; the next \`2\` looks it up again."
+          gbe_end="its pending record could not be settled, so it and its copies are kept, and the next \`2\` looks it up again; the record is $gbe_rec"
+        fi
+        gbe_why="${gbe_msg:-ERROR:  LR007: another-write} (F3's lookup of write $WR_ID: that id is another write's in the register's journal, so no call of this bind's write can commit under it; $gbe_end)"
         gbe_rc=2
       fi ;;
     *)
@@ -22902,6 +23357,13 @@ guard_bind_body() {   # <session uuid>
     return 2
   fi
   gbb_from="$GBR_FROM"; gbb_to="$GBR_TO"; gbb_out="$GBR_OUT"; gbb_act="$GBR_ACT"
+  # ITS OWN WORDS ARE READ BACK ONLY FROM AN `out` OF THE RECORD'S OWN FORM,
+  # `<record>.bind.<n>.out`, as its facts file is found (lane 3's ruling on
+  # spec#47's point 25, #165 6879754335; the contract, draft 11, section 3):
+  # any other `out` names no file the body reads, around `lane-start`, the lane
+  # left's `set-row-state` or the found rerun, so one rule holds for every
+  # path the record names.
+  guard_bind_facts_of "$gbb_f" "$gbb_out" >/dev/null || gbb_out=""
   # WHERE THE OUTER HANDED NO PATH, the body finds it beside `out=` itself.
   if [ -z "$gbb_facts" ]; then
     gbb_facts="$(guard_bind_facts_of "$gbb_f" "$gbb_out" || :)"
@@ -22911,7 +23373,7 @@ guard_bind_body() {   # <session uuid>
   # still in doubt, is looked up before anything binds again
   # (`guard_bind_rerun`). Its 2 or 3 ends the bind, with its `why=` written.
   gbb_lrc=0
-  guard_bind_rerun "$gbb_facts" || gbb_lrc=$?
+  guard_bind_rerun "$gbb_facts" "$gbb_out" || gbb_lrc=$?
   [ "$gbb_lrc" = 0 ] || return "$gbb_lrc"
   gbb_start="$(guard_lane_start)"
   [ -n "$gbb_start" ] || gbb_start=lane-start
