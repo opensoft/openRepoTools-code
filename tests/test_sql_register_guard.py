@@ -90,7 +90,9 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: (:2419), tasks.md at lane 3's commit 17 `204145ae`, each row's owner and
 #: cite beside it. T214n's five rows, lane 5's five cases of
 #: `bind-record.md`'s section 8, are from T214's Order at the follow-up's
-#: commit 24 `f9d6069e` (tasks:2013), which keeps that line number. T213r's
+#: commit 24 `f9d6069e` (tasks:2013), which keeps that line number. T214t's
+#: row, for T502's part 21 (lane 5, opensoft/openRepoTools#165 6885608994),
+#: is keyed by the same Order: its case fails until T502 lands. T213r's
 #: row for `test_no_session_environment_carries_a_database_url_or_password`
 #: adds T512 to T213's Order: its `PGPASSFILE` assertions read the
 #: service's own held `psql` child (TP:1952 at `f9d6069e`), which only
@@ -165,6 +167,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_the_outcome_rewrite_has_three_results": ("T502",),  # T214; tasks:2013
     "test_the_outer_gathers_its_copies_before_its_last_ownership_read": ("T502",),  # T214; tasks:2013
     "test_the_outer_matches_host_and_container_without_regard_to_case": ("T502",),  # T214; tasks:2013
+    "test_the_outer_runs_nothing_where_its_record_is_not_binding_at_its_start": ("T502",),  # T214; tasks:2013
     "test_the_post_bind_refill_is_one_register_read_and_never_git": ("T502", "T507"),  # T214; tasks:2013
     "test_the_service_reaches_the_database_only_through_psql": ("T512", "T513"),  # T237; tasks:2302
     "test_the_service_stops_after_its_idle_time_and_unlinks_its_socket": ("T512", "T513"),  # T237; tasks:2302
@@ -2425,6 +2428,78 @@ def test_the_outcome_rewrite_has_three_results(estate, result):
     assert [line for line in ends if NOT_ITS_OWN in line and NO_FACTS_NOTE not in line], \
         f"the outcome, its facts folded in, is not in the .out alone: {said}"
     assert not facts.exists(), f"the outer left its facts file after its rewrite's 2: {facts}"
+
+
+@pytest.mark.parametrize("case", ["gone-before-its-start", "no-longer-binding-at-its-start"])
+def test_the_outer_runs_nothing_where_its_record_is_not_binding_at_its_start(estate, case):
+    """T502's part 21 (T214t; lane 5, #165 6885608994): the outer's start
+    rewrite, which writes its `pid`, `pidstart` and the start's keys, runs
+    only on a record that still says `mode=binding`. Where the record is
+    gone, or reads otherwise, it writes nothing, and the outer runs nothing
+    and exits 2, as it does where its own load finds no record or one that
+    is not `binding`. A rewrite never creates a record: `guard_offer`'s
+    write is its only creation (lane 3's ruling on spec#47's point 26), and
+    the record is the bind's authority.
+
+    A test-only copy (`_bind_copy`, point 23) holds the outer after its load
+    and before its start rewrite, at its own start token
+    (`ANCHOR_PIDSTART`). At the hold the record is the `binding` the outer
+    loaded, with no `pid` yet; then the case changes it and releases:
+
+    - `[gone-before-its-start]`: the record is removed. No record is made.
+    - `[no-longer-binding-at-its-start]`: the record is replaced, by a
+      temporary file and a rename, with a `name-drift` offer the guard made
+      in this estate. It is left byte for byte.
+
+    In both, the outer exits 2, no temporary file is left, and the bind does
+    not run: the stand-in `lane-start` logs no start, and no facts file is
+    made. Red at every T502 head through `ae702c74`, whose start rewrite has
+    no `--own`: it makes a record of the start's keys alone, or writes them
+    into the offer, and the bind runs (lane 2's reader AF6-27, #165
+    6885568373, "Not one of the four")."""
+    est = estate()
+    drift = None
+    if case == "no-longer-binding-at-its-start":
+        est.make_offer()
+        drift = est.offer.read_bytes()
+    out = _direct_record(est)
+    facts = Path(f"{est.offer}.bind.1.facts")
+    program = _bind_copy(est, [(ANCHOR_PIDSTART, f"{_hold_sh(est, 'start')}\n{ANCHOR_PIDSTART}")])
+    proc = _outer(est, program, out)
+    held = _until(lambda: (est.ctl / "start.held").exists(), 60)
+    mine = est.record()
+    try:
+        if held and drift is None:
+            est.offer.unlink()
+        elif held:
+            tmp = est.offer.parent / f".{est.offer.name}.t214t"
+            tmp.write_bytes(drift)
+            tmp.chmod(0o600)
+            os.replace(tmp, est.offer)
+    finally:
+        est.set("start.release")
+    assert held, f"the outer never came to its start rewrite: {out.read_text()}"
+    assert mine.get("mode") == "binding" and "pid" not in mine, \
+        f"the record at the outer's start was not the binding it loaded, with no pid yet: {mine}"
+    code = proc.wait(60)
+    said = out.read_text(encoding="utf-8", errors="replace")
+    record = est.record()
+    temporaries = [p.name for p in est.offer.parent.iterdir() if p.name.startswith(f".{est.sid}.")]
+    was = "gone" if drift is None else "a name-drift offer"
+    assert code == 2, \
+        (f"guard-bind exited {code}, not 2, where its record was {was} at its start rewrite "
+         f"(through T502's ae702c74 that rewrite has no --own, writes the start's keys, and "
+         f"the bind runs): {record}\n{said}")
+    if drift is None:
+        assert not est.offer.exists(), \
+            f"the outer's start rewrite made a record where it found none: {record}\n{said}"
+    else:
+        assert est.offer.read_bytes() == drift, \
+            f"the outer's start rewrite wrote over the name-drift offer: {record}\n{said}"
+    assert not temporaries, f"the start rewrite left its temporary file: {temporaries}"
+    assert not est.starts(), \
+        f"the bind ran, though its record was {was} at its start: {est.starts()}\n{said}"
+    assert not facts.exists(), f"the bind's body made its facts file: {facts}"
 
 
 #: S2's records: the key each case gives the record, and its value, the
