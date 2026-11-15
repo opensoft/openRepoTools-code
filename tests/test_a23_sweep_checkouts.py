@@ -2423,6 +2423,76 @@ def test_a_signal_while_the_noted_line_is_written_on_primary_relays_the_writers_
     assert "exited 3 on primary" not in result.stderr, result.stderr
 
 
+def test_a_signal_while_the_noted_line_is_written_on_primary_keeps_ints_130(sweep):
+    """THE SIGNAL'S OWN CODE IS KEPT FOR INT TOO (lane 2's SHOULD 1, #165
+    6898032113). The case above sends TERM and holds 143. Here the writer
+    ends 3 in the in-doubt form and the sweep's process group is sent INT,
+    as a terminal's Ctrl-C is and as the removal case sends it. The sweep
+    relays the writer's words once, prints no command of its own, and exits
+    130, not 143."""
+    box = sweep.box
+    words = _PRIMARY_3["in-doubt"]
+    said = box.root / "primary-3-words.txt"
+    said.write_text(words + "\n", encoding="utf-8")
+    stopped = _wrapped(box, "lanes-edit-interrupted-primary-3-log", "log", (
+        f"  cat {said} >&2\n"
+        "  trap '' INT; kill -INT 0\n"
+        "  exit 3\n"))
+    result, rows = _run_own_group(box, "--yes", LANES_LANE=RUNNER, LANES_EDIT=stopped)
+    assert result.returncode == 130, (result.stdout, result.stderr)
+    assert _tagged(rows, "removed") == {str(box.checkout(CLOSED))}, rows
+    assert not _noted_on_origin(box)
+    assert result.stderr.count(words) == 1, result.stderr
+    assert "`lanes-edit.sh log` ended 3 on primary (its words are above)" in result.stderr, result.stderr
+    assert _remedies(result.stderr) == [], result.stderr
+    assert "lanes-edit.sh commit" not in result.stderr, result.stderr
+    assert "may be on origin already" not in result.stderr, result.stderr
+
+
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0,
+                    reason="root removes what a read-only directory holds")
+def test_a_signal_while_the_noted_line_is_written_on_primary_after_a_partial_removal_names_it_once(sweep):
+    """A REMOVAL THAT DID NOT FINISH IS NAMED ONCE WHEN A SIGNAL STOPS A
+    PRIMARY WRITE (lane 2's NIT 1, #165 6898032113). One checkout is half
+    removed, so the sweep names its aside before the NOTED write (SHOULD
+    372). The writer then ends 3 in the in-doubt form, and the sweep is sent
+    TERM. The run exits 143 and relays the words once, with no command of
+    its own, and "the removal of ... did not finish" is said exactly once,
+    before them. The arm's own `sc_say_partial` then finds it said already,
+    so dropping that call changes nothing a run shows. The guard below
+    holds the call itself, as the arm's tail."""
+    box = sweep.box
+    c = box.checkout(CLOSED)
+    (c / ".git" / "info" / "exclude").write_text("scratch/\n", encoding="utf-8")
+    box.write(c, "scratch/kept.txt", "an ignored file in a read-only directory\n")
+    (c / "scratch").chmod(0o555)
+    words = _PRIMARY_3["in-doubt"]
+    said = box.root / "primary-3-words.txt"
+    said.write_text(words + "\n", encoding="utf-8")
+    stopped = _wrapped(box, "lanes-edit-stopped-partial-primary-3-log", "log", (
+        f"  cat {said} >&2\n"
+        "  trap '' TERM; kill -TERM 0\n"
+        "  exit 3\n"))
+    try:
+        result, rows = _run_own_group(box, "--yes", LANES_LANE=RUNNER, LANES_EDIT=stopped)
+        asides = list(box.lanes_root.glob(f".{CLOSED}.removing-*"))
+        assert rows[str(c)][0] == "PARTLY", rows[str(c)]
+        assert result.returncode == 143, (result.stdout, result.stderr)
+        assert len(asides) == 1, asides
+        partial = f"the removal of {asides[0]} did not finish"
+        assert result.stderr.count(partial) == 1, result.stderr
+        assert result.stderr.count(words) == 1, result.stderr
+        assert result.stderr.index(partial) < result.stderr.index(words), result.stderr
+        assert "`lanes-edit.sh log` ended 3 on primary (its words are above)" in result.stderr, result.stderr
+        assert not [r for r in _remedies(result.stderr) if "lanes-edit.sh" in r], result.stderr
+        assert not _noted_on_origin(box)
+    finally:
+        for aside in box.lanes_root.glob(f".{CLOSED}.removing-*"):
+            (aside / "scratch").chmod(0o755)
+        if (c / "scratch").is_dir():
+            (c / "scratch").chmod(0o755)
+
+
 #: The note a signal during the NOTED write has always printed off primary,
 #: byte for byte, before its two commands.
 _SIGNAL_NOTE = (
@@ -2467,7 +2537,12 @@ def test_a_signal_on_primary_reads_the_noted_3_arms_two_patterns():
     kept against the same two openings as the NOTED `3)` arm, which the
     guard above ties to the writer's five exit-3 `die`s. This reads both
     pattern lines from `lane-end` and holds them equal, so a reword of one
-    of them alone fails here."""
+    of them alone fails here. It also holds that arm's tail to the
+    function's own, `sc_say_partial` and then `exit "$1"` (lane 2's NIT 1
+    and SHOULD 1, #165 6898032113): a removal left unfinished is named
+    however the run got here, and the signal's own code, 130 or 143, is
+    kept. A run cannot show the first: the sweep names that removal before
+    its NOTED write, so the arm's call finds it said already."""
     lines = [line.strip() for line in (REPO / "lane-end").read_text(encoding="utf-8").splitlines()]
     at = lines.index('case "$sc_noted_rc" in')
     assert lines[at + 1:at + 3] == ["3)", 'case "$sc_log_err" in'], lines[at:at + 4]
@@ -2476,6 +2551,9 @@ def test_a_signal_on_primary_reads_the_noted_3_arms_two_patterns():
     cases = [n for n, line in enumerate(body) if line == 'case "$sc_sig_err" in']
     assert len(cases) == 1, cases
     assert body[cases[0] + 1] == lines[at + 3], (body[cases[0] + 1], lines[at + 3])
+    arm_end = next(n for n in range(cases[0] + 2, len(body)) if body[n].endswith(";;"))
+    assert body[arm_end - 1:arm_end + 1] == ["sc_say_partial", 'exit "$1" ;;'], body[cases[0]:arm_end + 1]
+    assert body[-2:] == ["sc_say_partial", 'exit "$1"'], body[-2:]
 
 
 def test_noted_line_kept_unpublished_is_published_not_written_again(sweep):
@@ -2605,6 +2683,65 @@ def test_noted_line_whose_git_add_fails_with_the_line_left_is_put_back_then_writ
         f"LANES_LANE={RUNNER} LANES_SESSION={UUID[RUNNER]} lanes-edit.sh log NOTED "), remedies
     _run_in_order(box, remedies)
     assert len(_noted_on_origin(box)) == 1, _noted_on_origin(box)
+
+
+def test_noted_line_whose_git_add_fails_where_the_checkout_is_no_repository_keeps_the_restore(sweep):
+    """WHERE THE CHECKOUT CANNOT BE READ, THE 6 KEEPS ITS `restore` (lane 2's
+    NIT 3, #165 6898032113). The arm puts nothing back only where `git
+    status` answered 0 with nothing. Here the checkout the line goes through
+    is no repository when the 6 comes: the wrapper moves its `.git` aside
+    before it says "git add failed". So the read fails, and the note and its
+    two commands are as before."""
+    box = sweep.box
+    runner = box.checkout(RUNNER)
+    away = runner / ".git.n3g-away"
+    failing = _wrapped(box, "lanes-edit-unreadable-add-6-log", "log", (
+        f"  mv {runner / '.git'} {away}\n"
+        "  printf 'lanes-edit: git add failed\\n' >&2\n"
+        "  exit 6\n"))
+    try:
+        result, rows = sweep("--yes", LANES_LANE=RUNNER, LANES_EDIT=failing)
+    finally:
+        if away.exists():
+            away.rename(runner / ".git")
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert _tagged(rows, "removed") == {str(box.checkout(CLOSED))}, rows
+    assert (f"git could not add or commit it in {runner} (`lanes-edit.sh log` exited 6, above), so "
+            "it is left there, staged or in the working tree") in result.stderr, result.stderr
+    assert "nothing of it is left there to put back" not in result.stderr, result.stderr
+    remedies = _remedies(result.stderr)
+    assert len(remedies) == 2, remedies
+    assert remedies[0] == f"git -C {runner} restore --staged --worktree -- lanes/log/{RUNNER}.md", remedies
+    assert remedies[1].startswith(
+        f"LANES_LANE={RUNNER} LANES_SESSION={UUID[RUNNER]} lanes-edit.sh log NOTED "), remedies
+
+
+def test_noted_line_whose_git_add_fails_beside_an_unrelated_untracked_file_puts_nothing_back(sweep):
+    """THE 6 ASKS THE LOG'S OWN PATH, NOT THE WHOLE CHECKOUT (lane 2's NIT
+    3, #165 6898032113). On primary the checkout the line goes through may
+    hold a person's files that have nothing to do with the write. Here an
+    untracked file sits beside the runner's clean log when `git add` fails
+    on primary, in the write's own scratch tree. The sweep still says
+    nothing is left there to put back, prints the line by hand alone and no
+    `restore`, and leaves the person's file as it was."""
+    box = sweep.box
+    runner = box.checkout(RUNNER)
+    beside = runner / "lanes" / "log" / "a-persons-note.txt"
+    failing = _wrapped(box, "lanes-edit-beside-add-6-log", "log", (
+        f"  printf 'a note of a person, untracked\\n' > {beside}\n"
+        "  printf 'lanes-edit: git add failed\\n' >&2\n"
+        "  exit 6\n"))
+    result, rows = sweep("--yes", LANES_LANE=RUNNER, LANES_EDIT=failing)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert _tagged(rows, "removed") == {str(box.checkout(CLOSED))}, rows
+    assert (f"lanes/log/{RUNNER}.md in {runner} is as its HEAD has it, so nothing of it is left "
+            "there to put back") in result.stderr, result.stderr
+    assert "restore --staged --worktree" not in result.stderr, result.stderr
+    remedies = _remedies(result.stderr)
+    assert len(remedies) == 1, remedies
+    assert remedies[0].startswith(
+        f"LANES_LANE={RUNNER} LANES_SESSION={UUID[RUNNER]} lanes-edit.sh log NOTED "), remedies
+    assert beside.read_text(encoding="utf-8") == "a note of a person, untracked\n"
 
 
 def test_noted_line_that_loses_six_push_races_is_archived_then_written_by_hand(sweep):

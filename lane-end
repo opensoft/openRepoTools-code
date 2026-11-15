@@ -337,7 +337,10 @@
 #   THAT IS A v1.3 LIMIT (lane 3, #165 6897110551): a signal to `lane-end`
 #   alone, after a write that committed, still gets that note, and its line
 #   by hand records the sweep a second time: a duplicate sweep line in the
-#   register, with nothing lost.
+#   register, with nothing lost. So does a signal that comes after the
+#   write's words were read back and before the `3)` arm prints them, when
+#   `LE_TMP` is already empty: the same consequence, a second sweep line,
+#   from another window (lane 2, #165 6898032113, NIT 2).
 #   A `git add` THAT FAILS ON PRIMARY fails in the write's own scratch tree,
 #   and its 6 carries files mode's words, so the sweep asks the checkout the
 #   line goes through: where the runner's log there is as its HEAD has it,
@@ -2902,7 +2905,11 @@ SLU
   # after a write that committed, still gets the note below, whose line by
   # hand records the sweep a second time: a duplicate sweep line in the
   # register, with nothing lost. Giving the trap the writer's `$?`, which
-  # would tell that 0, is a follow-up after v1.3.0.
+  # would tell that 0, is a follow-up after v1.3.0. The same limit has a
+  # second window (lane 2, #165 6898032113, NIT 2): a signal that comes
+  # after the capture below was read back and `LE_TMP` emptied, and before
+  # the `3)` arm prints, finds no words here and gets the note below too:
+  # the same consequence, a second sweep line.
   sc_sig=""; sc_noting=0; sc_text=""
   sc_on_signal() {   # <the exit code, 128 plus the signal>
     trap '' INT TERM
