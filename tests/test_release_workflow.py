@@ -4345,26 +4345,58 @@ def test_release_upload_the_approval_recheck_refuses_a_run_its_environment_did_n
         assert "::error::" in done.stderr, transcript(done)
 
 
-#: THE TAG RE-CHECK, RUN: `(what the forge says of v1.1.0's tag object, or
-#: None where it answers a 404 for the tag's ref, or "no-tag-object" where it
-#: answers one for the tag object alone; the one line its refusal is, or None
-#: where the step passes)`, the run's commit being `c` * 40 and the tag
-#: object `7a` * 20. A read the forge refuses is named on that one line, and
-#: gh's own report of it never reaches the log (feature 006's contract: each
-#: `asset` refusal is one `::error::` line that names its cause).
+#: THE TAG RE-CHECK, RUN: `(what the forge says of v1.1.0's tag object, with
+#: `object` for what its ref names in place of `7a` * 20, or None where it
+#: answers a 404 for the tag's ref, or "no-tag-object" where it answers one
+#: for the tag object alone, or a key of TAG_AGAIN_OWN_GH where a gh of the
+#: test's own refuses every read; the one line its refusal is, or None where
+#: the step passes)`, the run's commit being `c` * 40. A read the forge
+#: refuses is named on that one line, gh's first line of it written as a
+#: workflow command's data (any NUL dropped, and each `%`, CR and LF as
+#: `%25`, `%0D` and `%0A`), and gh's own report of it never reaches the log;
+#: an answer that is neither an object id nor nothing is refused in a line
+#: of its own, and never printed (feature 006's contract: each `asset`
+#: refusal is one `::error::` line that names its cause).
 TAG_AGAIN_MOVED = ("::error::the annotated tag v1.1.0 no longer names {commit} (it names "
                    "'{names}'), so nothing is uploaded")
-TAG_AGAIN_UNREAD = ("::error::the {what} cannot be read (gh: Not Found (HTTP 404)), so "
+TAG_AGAIN_UNREAD = ("::error::the {what} cannot be read ({said}), so "
                     "whether it still names {commit} is not known, and nothing is uploaded")
+TAG_AGAIN_NOT_AN_ID = ("::error::the forge's answer for the {what} is not an object id, so "
+                       "whether it still names {commit} is not known, and nothing is uploaded")
+#: gh's of the test's own, each refusing every read: in a first line holding
+#: a raw CR, a forged `::error::` after it and a `%0A`, which a runner would
+#: read as a new line; and in a line holding a NUL byte, which bash drops
+#: from a command substitution with a warning line of its own.
+TAG_AGAIN_OWN_GH = {
+    "gh-says-a-carriage-return": ('import sys\nsys.stderr.write("gh: first\\r::error::forged %0A\\n")\n'
+                                  'sys.exit(1)\n'),
+    "gh-says-a-nul": ('import sys\nsys.stderr.buffer.write(b"gh: Not Found\\x00 (HTTP 404)\\n")\n'
+                      'sys.exit(1)\n'),
+}
 TAG_AGAIN_CASES = {
     "it-still-names-this-commit": ({}, None),
     "it-was-moved-to-another-commit": ({"names": "d" * 40},
                                        TAG_AGAIN_MOVED.replace("{names}", "d" * 40)),
-    "it-was-deleted": (None, TAG_AGAIN_UNREAD.replace("{what}", "tag v1.1.0")),
+    "it-was-deleted": (None, TAG_AGAIN_UNREAD.replace("{what}", "tag v1.1.0").replace(
+        "{said}", "gh: Not Found (HTTP 404)")),
     "its-tag-object-cannot-be-read": (
-        "no-tag-object", TAG_AGAIN_UNREAD.replace("{what}", f"tag object {'7a' * 20} of v1.1.0")),
+        "no-tag-object", TAG_AGAIN_UNREAD.replace("{what}", f"tag object {'7a' * 20} of v1.1.0")
+        .replace("{said}", "gh: Not Found (HTTP 404)")),
     "it-is-a-lightweight-tag-now": ({"lightweight": True}, TAG_AGAIN_MOVED.replace("{names}", "")),
     "its-object-names-a-tag": ({"type": "tag"}, TAG_AGAIN_MOVED.replace("{names}", "")),
+    "gh-says-a-carriage-return-and-a-percent": (
+        "gh-says-a-carriage-return", TAG_AGAIN_UNREAD.replace("{what}", "tag v1.1.0").replace(
+            "{said}", "gh: first%0D::error::forged %250A")),
+    "gh-says-a-nul": ("gh-says-a-nul", TAG_AGAIN_UNREAD.replace("{what}", "tag v1.1.0").replace(
+        "{said}", "gh: Not Found (HTTP 404)")),
+    "its-ref-answers-a-carriage-return": (
+        {"object": "7a" * 20 + "\r::error::forged"},
+        TAG_AGAIN_NOT_AN_ID.replace("{what}", "tag v1.1.0")),
+    "its-ref-answers-a-nul": (
+        {"object": "7a" * 20 + "\x00"}, TAG_AGAIN_NOT_AN_ID.replace("{what}", "tag v1.1.0")),
+    "its-tag-object-answers-a-new-line-and-a-percent": (
+        {"names": "d" * 40 + "\n::error::forged %0A"},
+        TAG_AGAIN_NOT_AN_ID.replace("{what}", f"tag object {'7a' * 20} of v1.1.0")),
 }
 
 
@@ -4380,18 +4412,27 @@ def test_release_upload_the_tag_recheck_refuses_a_tag_moved_while_the_run_waited
     `v$VERSION` still names the run's commit, so it passes; a tag moved to
     another commit, deleted, whose tag object cannot be read, made
     lightweight, or whose object names a tag is refused, since an upload
-    cannot be taken back. A refusal exits 1, and the step's whole output,
-    stdout and stderr, is exactly its one `::error::` line."""
+    cannot be taken back; so is a read gh refuses in a line holding a raw CR
+    and a `%`, which the refusal names escaped, or a NUL, which it drops, on
+    its one line; and so is an answer, the ref's or the tag object's, that
+    is neither an object id nor nothing (a CR, a NUL, a new line and a `%0A`
+    in it), in a line of its own. A refusal exits 1, and the step's whole
+    output, stdout and stderr, is exactly its one `::error::` line."""
     lie, refusal = TAG_AGAIN_CASES[which]
     commit = "c" * 40
-    if lie is None:
-        answers = {}
-    elif lie == "no-tag-object":
-        answers = annotated_tag(CODE_LEG, "v1.1.0", "7a" * 20, commit)
-        answers.pop(f"repos/{CODE_LEG}/git/tags/{'7a' * 20}")
+    if isinstance(lie, str) and lie in TAG_AGAIN_OWN_GH:
+        forge, values = python_tool(tmp_path / "own-gh", "gh", TAG_AGAIN_OWN_GH[lie]), {}
     else:
-        answers = annotated_tag(CODE_LEG, "v1.1.0", "7a" * 20, commit, **lie)
-    forge, values = api_forge(tmp_path, answers)
+        if lie is None:
+            answers = {}
+        elif lie == "no-tag-object":
+            answers = annotated_tag(CODE_LEG, "v1.1.0", "7a" * 20, commit)
+            answers.pop(f"repos/{CODE_LEG}/git/tags/{'7a' * 20}")
+        else:
+            lie = dict(lie)
+            answers = annotated_tag(CODE_LEG, "v1.1.0", lie.pop("object", "7a" * 20), commit,
+                                    **lie)
+        forge, values = api_forge(tmp_path, answers)
     values.update(GITHUB_REPOSITORY=CODE_LEG, GITHUB_SHA=commit, VERSION="1.1.0")
     workflow = release()
     runner = Runner(tmp_path / "work", workflow, name, values, forge)
@@ -4866,6 +4907,9 @@ LIST_CASES = {
         {"openRepoTools-1.2.0.sha256": LIST_TEXT},
         f"::error::list holds 'openRepoTools-1.2.0.sha256', and the build job wrote {LISTED}"),
     "nothing": ({}, f"::error::list holds '', and the build job wrote {LISTED}"),
+    "a-name-holding-a-carriage-return-and-a-percent": (
+        {LISTED + "\r%0A": LIST_TEXT},
+        f"::error::list holds '{LISTED}%0D%250A', and the build job wrote {LISTED}"),
 }
 
 
@@ -4878,11 +4922,12 @@ LIST_CASES = {
 def test_release_asset_the_list_step_passes_the_recorded_list_alone(tmp_path, which):
     """THE LIST STEP, RUN: `list/` holding the one file the build named, at
     the sha256 it recorded, passes, and says so in one line; other bytes, a
-    folder under its name, a second file, another name and nothing each
-    refuse. A refusal exits 1, and all it prints is its one `::error::` line,
-    which names its cause (contracts/workflows.md's `asset` section): never
-    `sha256sum`'s own report, which names no cause in an `::error::` line,
-    and never a name list that runs onto a second line."""
+    folder under its name, a second file, another name, nothing and a name
+    holding a raw CR and a `%` each refuse. A refusal exits 1, and all it
+    prints is its one `::error::` line, which names its cause
+    (contracts/workflows.md's `asset` section): never `sha256sum`'s own
+    report, which names no cause in an `::error::` line, and never a name
+    list that runs onto a second line, or that a runner would read as two."""
     files, refusal = LIST_CASES[which]
     workflow = release()
     runner = Runner(tmp_path / "run", workflow, "asset", {
@@ -4911,7 +4956,11 @@ def test_release_asset_the_list_step_passes_the_recorded_list_alone(tmp_path, wh
 #: bytes; `faults`, the calls that fail and the line each says; and `serve`,
 #: bytes a download hands back in place of the asset's. A fault is named by
 #: its call: `list`, `list-page` (a page in place of the API's JSON),
-#: `create`, `upload` or `download`. It answers `api
+#: `list-deep` (a line of JSON nested past what Python reads), `list-assets`
+#: (each release's `assets` given as the fault's value), `create`, `upload`,
+#: `download` or `download-again` (each download after the first, which
+#: `downloads` in the state counts). A refused call's line is written in
+#: UTF-8, a lone surrogate in it as the byte it escapes. It answers `api
 #: --paginate repos/<R>/releases?per_page=100 --jq .[]` and `release create`,
 #: `release upload` and `release download` as gh does, drafts among them,
 #: writes every call to `FORGE_LOG`, and answers anything else as an error, so
@@ -4931,7 +4980,8 @@ repo = os.environ["GITHUB_REPOSITORY"]
 
 
 def refuse(line):
-    sys.stderr.write(line + "\n")
+    sys.stderr.flush()
+    sys.stderr.buffer.write((line + "\n").encode("utf-8", "surrogateescape"))
     sys.exit(1)
 
 
@@ -4967,10 +5017,14 @@ if args[:1] == ["api"]:
     if "list-page" in faults:
         print("<html><body>a page, not the API</body></html>")
         sys.exit(0)
+    if "list-deep" in faults:
+        print("[" * 100000 + "]" * 100000)
+        sys.exit(0)
     for release in state["releases"]:
+        assets = ([{"name": a["name"]} for a in release["assets"]]
+                  if "list-assets" not in faults else faults["list-assets"])
         print(json.dumps({"tag_name": release["tag_name"], "draft": release["draft"],
-                          "name": release.get("name"),
-                          "assets": [{"name": a["name"]} for a in release["assets"]]}))
+                          "name": release.get("name"), "assets": assets}))
     sys.exit(0)
 if args[:1] != ["release"] or len(args) < 3:
     refuse("fake forge: it answers no such call")
@@ -5002,8 +5056,12 @@ if verb == "upload":
     save()
     sys.exit(0)
 if verb == "download":
+    state["downloads"] = state.get("downloads", 0) + 1
+    save()
     if "download" in faults:
         refuse(faults["download"])
+    if "download-again" in faults and state["downloads"] > 1:
+        refuse(faults["download-again"])
     name, there = rest[rest.index("--pattern") + 1], rest[rest.index("--dir") + 1]
     held = [a for a in ours[0]["assets"] if a["name"] == name]
     if not held:
@@ -5019,10 +5077,16 @@ refuse("fake forge: it answers no such call")
 '''
 
 
+#: The sha256 of the other bytes the forge holds or serves under the list's name.
+OTHER_ASSET_SHA256 = hashlib.sha256(b"other\n").hexdigest()
+#: The read-back refusal, as the last step says it when a download fails.
+NOT_READ_BACK = (f"::error::the release v1.3.0 serves {LISTED} as nothing that can be read "
+                 f"(HTTP 502: Bad Gateway), and the build wrote {LIST_SHA256}")
 #: THE LAST STEP'S CASES: `(the releases there before, each `(tag, draft,
 #: {asset name: its text})`, the forge's faults, the bytes a download serves
-#: in place of the asset's, whether the step passes, what it says, and the
-#: `gh release` verbs it calls, in order)`.
+#: in place of the asset's, whether the step passes, what it says (where it
+#: refuses, the one line that is its whole output), and the `gh release`
+#: verbs it calls, in order)`. contracts/workflows.md names each id.
 ASSET_CASES = {
     "no-release-yet": ([], {}, None, True, "had no release, so a draft is made",
                        ("create", "download")),
@@ -5039,54 +5103,118 @@ ASSET_CASES = {
     "the-list-already-there": ([("v1.3.0", True, {LISTED: LIST_TEXT})], {}, None, True,
                                "a re-run, and nothing new is published",
                                ("download", "download")),
-    "another-file-under-its-name": ([("v1.3.0", False, {LISTED: "other\n"})], {}, None,
-                                    False, "an asset is never replaced", ("download",)),
-    "two-releases-on-the-tag": ([("v1.3.0", True, {}), ("v1.3.0", False, {})], {}, None,
-                                False, "2 releases name the tag v1.3.0", ()),
+    "another-file-under-its-name": (
+        [("v1.3.0", False, {LISTED: "other\n"})], {}, None, False,
+        f"::error::the published release v1.3.0 already holds {LISTED} at sha256 "
+        f"{OTHER_ASSET_SHA256}, and the build wrote {LIST_SHA256}: an asset is never replaced, "
+        "so nothing is published", ("download",)),
+    "two-releases-on-the-tag": (
+        [("v1.3.0", True, {}), ("v1.3.0", False, {})], {}, None, False,
+        "::error::2 releases name the tag v1.3.0, so which one is its release is not known, "
+        "and nothing is published", ()),
     "the-forge-cannot-list-its-releases": (
         [], {"list": "gh: Server Error (HTTP 500)"}, None, False,
-        "failed, so whether v1.3.0 has a release is not known", ()),
-    "the-forge-answers-a-page": ([], {"list-page": ""}, None, False, "is not its JSON", ()),
-    "the-draft-cannot-be-made": ([], {"create": "HTTP 422: Validation Failed"}, None,
-                                 False, "the draft release v1.3.0 could not be made",
-                                 ("create",)),
+        f"::error::`gh api repos/{CODE_LEG}/releases` failed, so whether v1.3.0 has a release "
+        "is not known, and nothing is published: gh: Server Error (HTTP 500)", ()),
+    "the-forge-answers-a-page": (
+        [], {"list-page": ""}, None, False,
+        "::error::the forge's list of releases is not its JSON (Expecting value: line 1 "
+        "column 1 (char 0)), so nothing is published", ()),
+    "the-draft-cannot-be-made": (
+        [], {"create": "HTTP 422: Validation Failed"}, None, False,
+        f"::error::the draft release v1.3.0 could not be made, so {LISTED} is not published: "
+        "HTTP 422: Validation Failed", ("create",)),
     "the-upload-is-refused": (
         [("v1.3.0", True, {})], {"upload": "HTTP 422: Validation Failed"}, None, False,
-        f"{LISTED} could not be uploaded to the draft release v1.3.0: "
+        f"::error::{LISTED} could not be uploaded to the draft release v1.3.0: "
         "HTTP 422: Validation Failed", ("upload",)),
     "an-existing-list-that-cannot-be-read": (
         [("v1.3.0", False, {LISTED: LIST_TEXT})], {"download": "HTTP 404: Not Found"}, None,
-        False, f"the published release v1.3.0 holds a {LISTED} that cannot be read "
+        False, f"::error::the published release v1.3.0 holds a {LISTED} that cannot be read "
         "(HTTP 404: Not Found), so whether it is the build's is not known", ("download",)),
     "the-list-cannot-be-read-back": (
-        [], {"download": "HTTP 502: Bad Gateway"}, None, False,
-        f"serves {LISTED} as nothing that can be read (HTTP 502: Bad Gateway)",
+        [], {"download": "HTTP 502: Bad Gateway"}, None, False, NOT_READ_BACK,
         ("create", "download")),
-    "the-release-serves-other-bytes": ([], {}, "other\n", False, "and the build wrote",
-                                       ("create", "download")),
+    "the-release-serves-other-bytes": (
+        [], {}, "other\n", False,
+        f"::error::the release v1.3.0 serves {LISTED} as sha256 {OTHER_ASSET_SHA256}, and the "
+        f"build wrote {LIST_SHA256}", ("create", "download")),
 }
+
+#: THE LAST STEP'S LATE READ-BACK REFUSALS, in ASSET_CASES' form: the read-back
+#: fails after an upload that went through, and after a re-run that found the
+#: list already there. They are held apart from ASSET_CASES, whose ids the
+#: contract lists, and the same test runs them.
+LATE_READ_BACK_CASES = {
+    "the-list-cannot-be-read-back-after-the-upload": (
+        [("v1.3.0", True, {})], {"download": "HTTP 502: Bad Gateway"}, None, False,
+        NOT_READ_BACK, ("upload", "download")),
+    "the-list-cannot-be-read-back-after-a-re-run": (
+        [("v1.3.0", True, {LISTED: LIST_TEXT})], {"download-again": "HTTP 502: Bad Gateway"},
+        None, False, NOT_READ_BACK, ("download", "download")),
+}
+#: THE LAST STEP'S REFUSAL OF A FORGE THAT SAYS A `%0A` AND A RAW CR, in
+#: ASSET_CASES' form: gh's first line goes on the one `::error::` line as a
+#: workflow command's data, each `%` written `%25`, and what follows the CR
+#: is not its first line. It is held apart from ASSET_CASES too.
+FORGE_TEXT_CASES = {
+    "the-upload-is-refused-in-a-line-holding-a-percent-and-a-carriage-return": (
+        [("v1.3.0", True, {})], {"upload": "HTTP 422: %0A::error::forged\r::error::second"},
+        None, False,
+        f"::error::{LISTED} could not be uploaded to the draft release v1.3.0: "
+        "HTTP 422: %250A::error::forged", ("upload",)),
+}
+#: THE LAST STEP'S REFUSALS OF WHAT THE FORGE'S SCHEMA DOES NOT ALLOW, in
+#: ASSET_CASES' form: a release whose `assets` is a number or a boolean, a
+#: releases line nested past what Python reads, and gh's report of a refused
+#: upload in bytes that are not UTF-8, which the line gives as `\xNN`. Each is
+#: one line, never a traceback. They are held apart from ASSET_CASES too.
+NOT_A_RELEASE = ("::error::the forge's list of releases holds an entry that is not a release, "
+                 "so nothing is published")
+FORGE_SHAPE_CASES = {
+    "a-release-whose-assets-is-a-number": (
+        [("v1.3.0", True, {})], {"list-assets": 7}, None, False, NOT_A_RELEASE, ()),
+    "a-release-whose-assets-is-a-boolean": (
+        [("v1.3.0", True, {})], {"list-assets": True}, None, False, NOT_A_RELEASE, ()),
+    "the-forge-answers-json-nested-past-what-python-reads": (
+        [], {"list-deep": ""}, None, False,
+        "::error::the forge's list of releases nests deeper than it can be read, so nothing is "
+        "published", ()),
+    "the-upload-is-refused-in-bytes-that-are-not-utf-8": (
+        [("v1.3.0", True, {})], {"upload": "HTTP 422: \udcff bad byte"}, None, False,
+        f"::error::{LISTED} could not be uploaded to the draft release v1.3.0: "
+        "HTTP 422: \\xff bad byte", ("upload",)),
+}
+ASSET_RUNS = {**ASSET_CASES, **LATE_READ_BACK_CASES, **FORGE_TEXT_CASES, **FORGE_SHAPE_CASES}
 
 
 @NEEDS_UPSTREAM
 @NEEDS_BASH
 @WINDOWS_SKIP
-@pytest.mark.parametrize("which", ASSET_CASES)
+@pytest.mark.parametrize("which", ASSET_RUNS)
 def test_release_asset_the_release_holds_the_list_at_the_recorded_sha256(tmp_path, which):
     """THE LAST STEP, RUN UNDER A FAKE FORGE (007 T346): with no release on the
     tag it makes a DRAFT on the tag that exists (`--verify-tag`), titled as
     v1.2.0's was, holding the list; a release without the list gets it,
     beside what it has; a release already holding the list at the recorded
     sha256 gets nothing; and then the release's own copy must be the build's.
+    A pass prints two lines: what it did, then that the release holds the
+    list at the build's sha256.
     Another file under its name, two releases on the tag, a forge that
-    cannot list or answers a page, a draft that cannot be made, an upload
-    the forge refuses, a list already there that cannot be read, a copy that
-    cannot be read back and a copy of other bytes each refuse in one
-    `::error::` line that names the cause, with no traceback, after exactly
-    the `gh release` calls the case names, and nothing is ever replaced.
-    The refusal is the whole of stderr, and no other line of the output is
-    an `::error::` line, so gh's own report never reaches the log (feature
-    006's contract: each `asset` refusal is one `::error::` line)."""
-    before, faults, serve, passes, said, expected = ASSET_CASES[which]
+    cannot list or answers a page, a release whose `assets` is not a list,
+    a releases line nested past what Python reads, a draft that cannot be
+    made, an upload the forge refuses (in bytes that are not UTF-8 too), a
+    list already there that cannot be read, a copy that cannot be read back
+    (after a draft is made, after an upload and after a re-run that found
+    the list there) and a copy of other bytes each refuse
+    after exactly the `gh release` calls the case names, and nothing a
+    release held is ever replaced. A refusal exits 1, and the step's whole
+    output, stdout and stderr, is exactly its one `::error::` line, which
+    names the cause: no line of what went through before it, no gh report
+    and no traceback, and gh's first line is on it escaped, as a workflow
+    command's data (feature 006's contract: each `asset` refusal is one
+    `::error::` line)."""
+    before, faults, serve, passes, said, expected = ASSET_RUNS[which]
     workflow = release()
     store = tmp_path / "before"
     store.mkdir()
@@ -5115,7 +5243,6 @@ def test_release_asset_the_release_holds_the_list_at_the_recorded_sha256(tmp_pat
     done = runner.run(named(workflow, "asset", ASSET_STEP))
     out = done.stdout + done.stderr
     assert "Traceback" not in out, transcript(done)
-    assert said in out, transcript(done)
     calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     verbs = [call[1] for call in calls if call[:1] == ["release"]]
     assert verbs == list(expected), calls
@@ -5123,14 +5250,18 @@ def test_release_asset_the_release_holds_the_list_at_the_recorded_sha256(tmp_pat
     after = json.loads(state.read_text(encoding="utf-8"))["releases"]
     if not passes:
         assert done.returncode == 1, transcript(done)
-        errors = [line for line in out.splitlines() if line.startswith("::error::")]
-        assert len(errors) == 1 and said in errors[0], transcript(done)
-        assert done.stderr.splitlines() == errors, transcript(done)
+        assert out.splitlines() == [said], transcript(done)
         for found, (tag, _, assets) in zip(after, before):
-            assert {a["name"]: Path(a["path"]).read_text(encoding="utf-8")
-                    for a in found["assets"]} == assets, f"{tag} was changed: {found}"
+            held = {a["name"]: Path(a["path"]).read_text(encoding="utf-8")
+                    for a in found["assets"]}
+            assert {name: held.get(name) for name in assets} == assets, (
+                f"{tag} was changed: {found}")
         return
     assert done.returncode == 0, transcript(done)
+    lines = out.splitlines()
+    assert len(lines) == 2 and said in lines[0] and lines[1] == (
+        f"the release v{LIST_VERSION} holds {LISTED} at sha256 {LIST_SHA256}, the build's"
+    ), transcript(done)
     ours = [r for r in after if r["tag_name"] == f"v{LIST_VERSION}"]
     assert len(ours) == 1, after
     lists = [a for a in ours[0]["assets"] if a["name"] == LISTED]

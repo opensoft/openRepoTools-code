@@ -1526,31 +1526,48 @@ jobs:
       # THE TAG, AGAIN, RIGHT BEFORE THE UPLOAD. The run may have waited on
       # an approval, and a tag can be moved or deleted meanwhile; an upload
       # cannot be taken back. A read the forge refuses is named on the
-      # refusal's one `::error::` line, and gh's own report of it is kept
-      # off the log, in $RUNNER_TEMP.
+      # refusal's one `::error::` line, with gh's first line of it written
+      # as a workflow command's data (any NUL dropped, and each `%`, CR and
+      # LF as `%25`, `%0D` and `%0A`), and gh's own report of it is kept off
+      # the log, in $RUNNER_TEMP. Each answer must be an object id or
+      # nothing: any other is refused in a line of its own, never printed,
+      # and a NUL in it is read as `?`, so it can never pass as one.
       - name: the tag v<version> still names this commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           read_tag() {   # <path> <jq>: the answer in $answer, or why the read failed in $why
-            if answer="$(gh api "$1" --jq "$2" 2>"$RUNNER_TEMP/tag-again.err")"; then
+            if gh api "$1" --jq "$2" >"$RUNNER_TEMP/tag-again.out" 2>"$RUNNER_TEMP/tag-again.err"; then
+              answer="$(tr '\000' '?' <"$RUNNER_TEMP/tag-again.out")"
               return 0
             fi
-            why="$(head -n 1 "$RUNNER_TEMP/tag-again.err")"
+            why="$(head -n 1 "$RUNNER_TEMP/tag-again.err" | tr -d '\000')"
             why="${why:-gh api exited non-zero, and said nothing}"
+            why=${why//%/%25}
+            why=${why//$'\r'/%0D}
+            why=${why//$'\n'/%0A}
             return 1
           }
+          oid='^[0123456789abcdef]{40}$'   # an object id, as git spells it: each answer is one, or nothing
           commit=
           if ! read_tag "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" \
               'select(.object.type == "tag") | .object.sha'; then
-            echo "::error::the tag v$VERSION cannot be read (${why//%/%25}), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+            echo "::error::the tag v$VERSION cannot be read ($why), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+            exit 1
+          fi
+          if [ -n "$answer" ] && ! [[ "$answer" =~ $oid ]]; then
+            echo "::error::the forge's answer for the tag v$VERSION is not an object id, so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
             exit 1
           fi
           if [ -n "$answer" ]; then
             object="$answer"
             if ! read_tag "repos/$GITHUB_REPOSITORY/git/tags/$object" \
                 'select(.object.type == "commit") | .object.sha'; then
-              echo "::error::the tag object $object of v$VERSION cannot be read (${why//%/%25}), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+              echo "::error::the tag object $object of v$VERSION cannot be read ($why), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+              exit 1
+            fi
+            if [ -n "$answer" ] && ! [[ "$answer" =~ $oid ]]; then
+              echo "::error::the forge's answer for the tag object $object of v$VERSION is not an object id, so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
               exit 1
             fi
             commit="$answer"
@@ -2154,24 +2171,37 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           read_tag() {   # <path> <jq>: the answer in $answer, or why the read failed in $why
-            if answer="$(gh api "$1" --jq "$2" 2>"$RUNNER_TEMP/tag-again.err")"; then
+            if gh api "$1" --jq "$2" >"$RUNNER_TEMP/tag-again.out" 2>"$RUNNER_TEMP/tag-again.err"; then
+              answer="$(tr '\000' '?' <"$RUNNER_TEMP/tag-again.out")"
               return 0
             fi
-            why="$(head -n 1 "$RUNNER_TEMP/tag-again.err")"
+            why="$(head -n 1 "$RUNNER_TEMP/tag-again.err" | tr -d '\000')"
             why="${why:-gh api exited non-zero, and said nothing}"
+            why=${why//%/%25}
+            why=${why//$'\r'/%0D}
+            why=${why//$'\n'/%0A}
             return 1
           }
+          oid='^[0123456789abcdef]{40}$'   # an object id, as git spells it: each answer is one, or nothing
           commit=
           if ! read_tag "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" \
               'select(.object.type == "tag") | .object.sha'; then
-            echo "::error::the tag v$VERSION cannot be read (${why//%/%25}), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+            echo "::error::the tag v$VERSION cannot be read ($why), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+            exit 1
+          fi
+          if [ -n "$answer" ] && ! [[ "$answer" =~ $oid ]]; then
+            echo "::error::the forge's answer for the tag v$VERSION is not an object id, so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
             exit 1
           fi
           if [ -n "$answer" ]; then
             object="$answer"
             if ! read_tag "repos/$GITHUB_REPOSITORY/git/tags/$object" \
                 'select(.object.type == "commit") | .object.sha'; then
-              echo "::error::the tag object $object of v$VERSION cannot be read (${why//%/%25}), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+              echo "::error::the tag object $object of v$VERSION cannot be read ($why), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+              exit 1
+            fi
+            if [ -n "$answer" ] && ! [[ "$answer" =~ $oid ]]; then
+              echo "::error::the forge's answer for the tag object $object of v$VERSION is not an object id, so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
               exit 1
             fi
             commit="$answer"
@@ -2316,14 +2346,18 @@ jobs:
       # THE ARTIFACT AGAINST THE BUILD'S RECORD: `list` holds the one file the
       # build named, at the sha256 it recorded. Each refusal is one
       # `::error::` line that names its cause, and the step prints nothing
-      # else: the names found are put on that one line, and the sha256 is
-      # read here and compared, since `sha256sum -c` reports a mismatch in
-      # two lines of its own and no `::error::`. A file that cannot be read
-      # gives no digest, and no digest is ever the recorded one.
+      # else: the names found are put on that one line, each `%` and CR in
+      # them written `%25` and `%0D`, as a workflow command's data, and each
+      # new line a space; and the sha256 is read here and compared, since
+      # `sha256sum -c` reports a mismatch in two lines of its own and no
+      # `::error::`. A file that cannot be read gives no digest, and no
+      # digest is ever the recorded one.
       - name: list holds check 1's digest list the build job wrote, and nothing else
         run: |
           found="$(ls -A list)"
           if [ "$found" != "$DIGEST_LIST" ]; then
+            found=${found//%/%25}
+            found=${found//$'\r'/%0D}
             found=${found//$'\n'/ }
             echo "::error::list holds '$found', and the build job wrote $DIGEST_LIST"
             exit 1
@@ -2343,30 +2377,48 @@ jobs:
       # THE TAG, AGAIN, as each upload job reads it right before its upload:
       # a release names its tag, and the tag must still name this commit. A
       # read the forge refuses is named on the refusal's one `::error::`
-      # line, and gh's own report of it is kept off the log.
+      # line, gh's first line of it written as a workflow command's data
+      # (any NUL dropped, and each `%`, CR and LF as `%25`, `%0D` and `%0A`),
+      # and gh's own report of it is kept off the log. Each answer must be
+      # an object id or nothing: any other is refused in a line of its own,
+      # never printed, and a NUL in it is read as `?`, so it can never pass
+      # as one.
       - name: the tag v<version> still names this commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           read_tag() {   # <path> <jq>: the answer in $answer, or why the read failed in $why
-            if answer="$(gh api "$1" --jq "$2" 2>"$RUNNER_TEMP/tag-again.err")"; then
+            if gh api "$1" --jq "$2" >"$RUNNER_TEMP/tag-again.out" 2>"$RUNNER_TEMP/tag-again.err"; then
+              answer="$(tr '\000' '?' <"$RUNNER_TEMP/tag-again.out")"
               return 0
             fi
-            why="$(head -n 1 "$RUNNER_TEMP/tag-again.err")"
+            why="$(head -n 1 "$RUNNER_TEMP/tag-again.err" | tr -d '\000')"
             why="${why:-gh api exited non-zero, and said nothing}"
+            why=${why//%/%25}
+            why=${why//$'\r'/%0D}
+            why=${why//$'\n'/%0A}
             return 1
           }
+          oid='^[0123456789abcdef]{40}$'   # an object id, as git spells it: each answer is one, or nothing
           commit=
           if ! read_tag "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" \
               'select(.object.type == "tag") | .object.sha'; then
-            echo "::error::the tag v$VERSION cannot be read (${why//%/%25}), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+            echo "::error::the tag v$VERSION cannot be read ($why), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+            exit 1
+          fi
+          if [ -n "$answer" ] && ! [[ "$answer" =~ $oid ]]; then
+            echo "::error::the forge's answer for the tag v$VERSION is not an object id, so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
             exit 1
           fi
           if [ -n "$answer" ]; then
             object="$answer"
             if ! read_tag "repos/$GITHUB_REPOSITORY/git/tags/$object" \
                 'select(.object.type == "commit") | .object.sha'; then
-              echo "::error::the tag object $object of v$VERSION cannot be read (${why//%/%25}), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+              echo "::error::the tag object $object of v$VERSION cannot be read ($why), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+              exit 1
+            fi
+            if [ -n "$answer" ] && ! [[ "$answer" =~ $oid ]]; then
+              echo "::error::the forge's answer for the tag object $object of v$VERSION is not an object id, so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
               exit 1
             fi
             commit="$answer"
@@ -2392,7 +2444,15 @@ jobs:
       #     refused, and never replaced (no `--clobber`).
       # Then the release's own copy is downloaded, and its sha256 must be
       # the one the build recorded. Each refusal is one `::error::` line
-      # that names its cause, never a traceback.
+      # that names its cause, never a traceback, and it is the step's whole
+      # output: what went through before it (a draft made, an upload, a
+      # re-run) is said only once the release's copy is read back as the
+      # build's. gh's output is read as UTF-8, a byte that is not as `\xNN`,
+      # and its first line goes on the refusal with each `%` written `%25`,
+      # as a workflow command's data needs: read as text, a CR ends a line
+      # as an LF does, so that line holds neither. A releases list outside
+      # the forge's schema (an entry that is not a release, `assets` that is
+      # not a list, JSON nested past what Python reads) is refused too.
       - name: the GitHub Release v<version> holds check 1's digest list, at the recorded sha256
         env:
           GH_TOKEN: ${{ github.token }}
@@ -2411,12 +2471,17 @@ jobs:
 
 
           def gh(*args):
-              return subprocess.run(["gh", *args], capture_output=True, text=True)
+              return subprocess.run(["gh", *args], capture_output=True, text=True,
+                                    encoding="utf-8", errors="backslashreplace")
 
 
           def said(done):
+              """gh's first line, each `%` written `%25`, as a workflow command's data
+              needs. Read as text, a CR ends a line as an LF does, so the first line
+              holds neither, and the CR and LF replacements below are a guard alone."""
               text = done.stderr.strip() or done.stdout.strip() or f"exit {done.returncode}"
-              return text.splitlines()[0]
+              line = text.splitlines()[0]
+              return line.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
           def releases():
@@ -2427,10 +2492,15 @@ jobs:
                            f"a release is not known, and nothing is published: {said(done)}")
               try:
                   found = [json.loads(line) for line in done.stdout.splitlines() if line.strip()]
+              except RecursionError:
+                  sys.exit("::error::the forge's list of releases nests deeper than it can be read, "
+                           "so nothing is published")
               except ValueError as error:
                   sys.exit(f"::error::the forge's list of releases is not its JSON ({error}), so "
                            "nothing is published")
-              if not all(isinstance(entry, dict) for entry in found):
+              if not all(isinstance(entry, dict)
+                         and isinstance(entry.get("assets"), (list, type(None)))
+                         for entry in found):
                   sys.exit("::error::the forge's list of releases holds an entry that is not a "
                            "release, so nothing is published")
               return found
@@ -2456,13 +2526,14 @@ jobs:
           if len(ours) > 1:
               sys.exit(f"::error::{len(ours)} releases name the tag {tag}, so which one is its "
                        "release is not known, and nothing is published")
+          went = []   # what went through, said once the release's copy is read back
           if not ours:
               done = gh("release", "create", tag, "--repo", repo, "--draft", "--verify-tag",
                         "--title", f"openRepoTools {tag}", "--notes", notes, local)
               if done.returncode != 0:
                   sys.exit(f"::error::the draft release {tag} could not be made, so {name} is "
                            f"not published: {said(done)}")
-              print(f"{tag} had no release, so a draft is made, holding {name}")
+              went.append(f"{tag} had no release, so a draft is made, holding {name}")
           else:
               kind = "draft" if ours[0].get("draft") else "published"
               assets = [entry.get("name") for entry in ours[0].get("assets") or []
@@ -2476,19 +2547,21 @@ jobs:
                       sys.exit(f"::error::the {kind} release {tag} already holds {name} at sha256 "
                                f"{digest}, and the build wrote {want}: an asset is never "
                                "replaced, so nothing is published")
-                  print(f"the {kind} release {tag} already holds {name} at the build's sha256: "
-                        "a re-run, and nothing new is published")
+                  went.append(f"the {kind} release {tag} already holds {name} at the build's "
+                              "sha256: a re-run, and nothing new is published")
               else:
                   done = gh("release", "upload", tag, local, "--repo", repo)
                   if done.returncode != 0:
                       sys.exit(f"::error::{name} could not be uploaded to the {kind} release "
                                f"{tag}: {said(done)}")
-                  print(f"{name} uploaded to the {kind} release {tag}, beside its "
-                        f"{len(assets)} other assets")
+                  went.append(f"{name} uploaded to the {kind} release {tag}, beside its "
+                              f"{len(assets)} other assets")
           digest, why = held()
           if digest != want:
               shown = f"sha256 {digest}" if digest else f"nothing that can be read ({why})"
               sys.exit(f"::error::the release {tag} serves {name} as {shown}, and the build "
                        f"wrote {want}")
+          for line in went:
+              print(line)
           print(f"the release {tag} holds {name} at sha256 {want}, the build's")
           PY
