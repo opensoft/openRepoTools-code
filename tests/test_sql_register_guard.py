@@ -513,6 +513,88 @@ def _argv(pid) -> list:
     return [a.decode("utf-8", "replace") for a in raw.split(b"\0")[:-1]]
 
 
+def _homed(state_home) -> dict:
+    """THIS ESTATE'S PROCESSES (T237zzd), `{pid: start}`: the live processes
+    of this uid whose environment's `XDG_STATE_HOME` is exactly `state_home`.
+    Each estate's state home is a `mkdtemp` of its own (`_state_home`) that
+    only its `env()` passes on, and a child inherits it; every service of the
+    estate carries it, whether `_Service` started it with `est.env()` or the
+    client did (`register_serve_launch` keeps every `XDG_*`). Neither pytest
+    nor another estate's process holds it.
+
+    - Only this uid's (`/proc/<pid>`'s owner), so a run as root never takes
+      another user's process.
+    - The variable's FIRST entry, the one `getenv` answers, decides, where a
+      process has two; and it must equal `state_home` byte for byte, so a
+      trailing `/`, a longer name, a subdirectory and a symlink's spelling
+      are never this estate's.
+    - The start time is read before and after the environment, and kept only
+      where both agree, so the start recorded is that process's: the
+      teardown signals a pid only while it still has it (`_kill_same`)."""
+    want = os.fsencode(str(state_home))
+    uid = os.getuid()
+    found = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        before = _stat(entry.name)
+        if not before or before["state"] in ("Z", "X", "x"):
+            continue
+        try:
+            if entry.stat().st_uid != uid:
+                continue
+            environ = (entry / "environ").read_bytes()
+        except OSError:
+            continue
+        home = next((pair[len(b"XDG_STATE_HOME="):] for pair in environ.split(b"\0")
+                     if pair.startswith(b"XDG_STATE_HOME=")), None)
+        if home != want:
+            continue
+        if _stat(entry.name).get("start") == before["start"]:
+            found[int(entry.name)] = before["start"]
+    return found
+
+
+def _kill_same(pid, start, sig=signal.SIGKILL) -> bool:
+    """`sig` to `pid` only while it is the process its scan saw, by the start
+    time read then (T237zzd; T214u's `_record_pid` test), and never to a
+    member of pytest's own session, whatever its number (rule 2): such a pid
+    is printed and left. True where it was sent, through `_kill` alone. A
+    pidfd would close the gap between the check and the signal, but
+    `signals_recorded` (T214o) records `os.kill` and `os.killpg` only, and a
+    `pidfd_send_signal` would pass it by, so the check is `_record_pid`'s."""
+    st = _stat(pid)
+    if start is None or not st or st.get("start") != start:
+        return False
+    if st.get("sid") == os.getsid(0):
+        print(f"Estate.close: pid {pid} is in pytest's own session, so it is not signalled: "
+              f"{_argv(pid)}")
+        return False
+    _kill(pid, sig)
+    return True
+
+
+#: THE TEARDOWN'S LAST SWEEP (T237zzd): passes, and the seconds between them.
+SWEEP_PASSES, SWEEP_STEP_S = 20, 0.1
+
+
+def _teardown_round(targets: dict, own: set) -> None:
+    """One round of `Estate.close` (T237zzd): each of `targets`, `{pid:
+    start}`, and the members of the session and of the group each one leads,
+    each member's start read as it is found, signalled through `_kill_same`;
+    never a pid of 1 or less, nor one of `own` (this process, its group, its
+    session). A leader already gone still names the members that keep its
+    number (T214u)."""
+    every = dict(targets)
+    for pid in targets:
+        if pid > 1 and pid not in own:
+            for member in (*_members("sid", pid), *_members("pgid", pid)):
+                every.setdefault(member, _stat(member).get("start"))
+    for pid, start in every.items():
+        if pid > 1 and pid not in own:
+            _kill_same(pid, start)
+
+
 def _kill(pid, sig=signal.SIGKILL) -> None:
     """`sig` to the one process `pid`, and never to more (T214u). A pid of 1
     or less is refused, and so is this process's own: `os.kill(0, ...)`
@@ -1046,8 +1128,40 @@ class Estate:
         """Every process the bind left, ended: the case's own (`spare`), the
         record's outer (`_record_pid`: only a value a bind's pid can take),
         the stand-ins' logged pids, and the members of each one's session and
-        group; never this process, its group or its session (T214u)."""
+        group; never this process, its group or its session (T214u).
+
+        AND EVERY PROCESS OF THIS ESTATE (T237zzd), whoever started it: each
+        live process whose environment's `XDG_STATE_HOME` is this estate's
+        own state home (`_homed`), the estate's services among them and an
+        outer a case held and never released, with the members of the session
+        and group it leads. So a service a client of the case started, which
+        no case puts in `spare`, ends with its estate even where the case
+        fails first, and no process of the estate is left to start one once
+        the state home is gone. A service left running outlived its estate,
+        and a later case's look for "another service" saw it: merge 151's and
+        158's c2 runs, `[namespace|boot]`'s four leftover pids.
+
+        - The selector is the state home alone, which only this estate's
+          `env()` passes on; never the path of `Estate.index`, which a
+          files-mode estate shares with every other (`REPO/lanes-index`).
+        - Nothing in pytest's own session is signalled, however it was
+          reached (`_kill_same` prints it and leaves it). A case that runs an
+          estate command in pytest's session, a `subprocess.run` with
+          `est.env()` and no new session, leaves any process that outlives
+          the command to end on its own. Any service such a command starts
+          is in a session of its own (`register_serve_launch` starts it with
+          `start_new_session=True`), which the sweep takes; what it leaves in
+          pytest's session, such as `lane-checkout --create`'s heartbeat
+          `sleep 60`, starts none.
+        - Every target is signalled only while it has the start time read at
+          its scan (`_kill_same`; `_homed` reads it in the same pass).
+        - The sessions are closed first. Then the sweep is repeated, at most
+          `SWEEP_PASSES` times `SWEEP_STEP_S` apart, until no process of the
+          estate is left outside pytest's session, and only then is the
+          state home removed, so nothing forked meanwhile outlives it."""
         self.release()
+        mine = os.getsid(0)
+        own = {os.getpid(), os.getpgrp(), mine}
         pids = set(self.spare)
         record = self.record()
         outer = _record_pid(record)
@@ -1060,16 +1174,21 @@ class Estate:
             for key in ("pid", "fork", "grandchild"):
                 if isinstance(entry.get(key), int):
                     pids.add(entry[key])
-        own = {os.getpid(), os.getpgrp(), os.getsid(0)}
-        for pid in list(pids):
-            if pid > 1 and pid not in own:
-                pids.update(_members("sid", pid))
-                pids.update(_members("pgid", pid))
-        for pid in pids:
-            if pid > 1 and pid not in own:
-                _kill(pid)
+        targets = {pid: _stat(pid).get("start") for pid in pids}
+        targets.update(_homed(self.state_home))
+        _teardown_round(targets, own)
         for session in self.sessions:
             session.close()
+        for _ in range(SWEEP_PASSES):
+            left = {pid: start for pid, start in _homed(self.state_home).items()
+                    if _stat(pid).get("sid") != mine}
+            if not left:
+                break
+            _teardown_round(left, own)
+            time.sleep(SWEEP_STEP_S)
+        else:
+            print(f"Estate.close: after {SWEEP_PASSES} sweeps, still live in {self.state_home}: "
+                  f"{sorted(_homed(self.state_home))}")
         shutil.rmtree(self.state_home, ignore_errors=True)
 
 
@@ -3215,73 +3334,82 @@ def test_a_malformed_bind_pid_waits_for_the_deadline_then_is_stale(signals_recor
     what it runs is logged by a stub (`T214O_BASH_ENV` and the stand-ins
     first on `PATH`), and the stubs send no signal; so the case reads that
     no call is made with the record's `pid`. The pytest process sends none
-    either (`signals_recorded`), and the live process the values name ends
-    when its stdin closes, with no signal."""
+    either (`signals_recorded`). The live process the values name is left
+    for the estate's teardown, whose SIGKILL to it is the one the stubs
+    record, and it ends on its own, with no signal, once that teardown has
+    removed the estate's state home, or after 300 s, `_sleeper`'s bound,
+    whichever is first (T237zzd)."""
     est = estate()
-    holder = subprocess.Popen([sys.executable, "-I", "-c", "import sys; sys.stdin.buffer.read()"],
-                              stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+    # T237zzd: THE HOLDER IS LIVE AT THE ESTATE'S TEARDOWN, which signals
+    # only a live process with the start it had at the scan (`_kill_same`).
+    # The case ended and reaped it first, so T214u's teardown signalled a
+    # reaped pid by its number alone, and v3's signalled nothing, which
+    # `signals_recorded` fails. Not `est.env()`: it is not of the estate's
+    # state home, so the sweep never waits on it; it ends once that home is
+    # gone, or after 300 s, `_sleeper`'s bound, whichever is first.
+    holder = subprocess.Popen([sys.executable, "-I", "-c",
+                               "import os, sys, time\n"
+                               "end = time.monotonic() + 300\n"
+                               "while os.path.isdir(sys.argv[1]) and time.monotonic() < end:\n"
+                               "    time.sleep(0.05)\n", str(est.state_home)],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL, start_new_session=True)
     est.spare.append(holder.pid)
-    try:
-        start = _stat(holder.pid)["start"]
-        pid, pidstart = (v.format(live=holder.pid, start=start) for v in MALFORMED_PIDS[case])
-        calls = est.ctl / "calls.log"
-        where = shlex.quote(str(calls))
-        est.guard = _bind_copy(est, [(ANCHOR_LOAD, (
-            "# T214o's copy: each pid_start_of logged\n"
-            "eval \"$(declare -f pid_start_of | sed '1s/^pid_start_of /t214o_pid_start_of_shipped /')\"\n"
-            f"pid_start_of() {{ {{ printf 'pid_start_of'; printf ' %s' \"$@\"; printf '\\n'; }} >> {where}; "
-            't214o_pid_start_of_shipped "$@"; }\n'
-            f"{ANCHOR_LOAD}"))])
-        bash_env = _script(est.ctl / "t214o-bash-env.sh", T214O_BASH_ENV, LOG=where)
-        est.extra["BASH_ENV"] = str(bash_env)
-        for name in ("kill", "pkill", "killall"):
-            _script(est.bin / name, T214O_NO_SIGNAL, LOG=where, NAME=shlex.quote(name))
-        _script(est.bin / "timeout", T214O_TIMEOUT, LOG=where)
-        index = est.guard.parent / "lanes-index"
-        if index.exists():
-            real_index = index.rename(est.guard.parent / "lanes-index.t214o-real")
-            _script(index, T214O_INDEX, LOG=where, PY=shlex.quote(sys.executable),
-                    REAL=shlex.quote(str(real_index)))
-        real = shutil.which("pgrep")
-        if real:
-            _script(est.bin / "pgrep", "#!/bin/sh\n"
-                    f"{{ printf 'pgrep'; printf ' %s' \"$@\"; printf '\\n'; }} >> {where}\n"
-                    f"exec {shlex.quote(real)} \"$@\"\n")
-        now = time.time()
-        write_record(est.offer, _binding(est, started=now - 30, deadline=int(now) + 100,
-                                         pid=pid, pidstart=pidstart))
-        before = est.offer.read_bytes()
-        hook = est.hook("hello")
-        assert hook.code == 2 and IN_PROGRESS in hook.err and "its outer's pid not recorded" \
-            in hook.err, f"[{case}] pid={pid!r} pidstart={pidstart!r}: {hook!r}"
-        assert est.offer.read_bytes() == before, "the record changed before its deadline"
-        write_record(est.offer, _binding(est, started=now - 600, deadline=int(now) - 1,
-                                         pid=pid, pidstart=pidstart))
-        hook = est.hook("hello")
-        assert hook.code == 2 and NO_OUTCOME in hook.err \
-            and "it recorded no well-formed pid and start for its outer" in hook.err, \
-            f"[{case}] pid={pid!r} pidstart={pidstart!r}: {hook!r}"
-        record = est.record()
-        assert record.get("mode") == "name-drift" and record.get("rc") == "unknown", record
-        logged = calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
-        print(f"[{case}] pid={pid!r} pidstart={pidstart!r}; the stubs logged "
-              f"{len(logged)} call(s), none sent:")
-        for line in logged:
-            print(f"  {line}")
-        made = []
-        for line in logged:
-            words = line.split(" ")
-            if words[0] not in T214O_PID_CALLS:
-                continue
-            tail = words[words.index("--") + 1:] if "--" in words else []
-            if pid in words[1:] or f"-{pid}" in tail:
-                made.append(line)
-        assert not made, f"a kill, pgrep or pid_start_of call was made with pid {pid!r}: {made}"
-    finally:
-        if holder.stdin is not None and not holder.stdin.closed:
-            holder.stdin.close()
-        holder.wait(10)
+    start = _stat(holder.pid)["start"]
+    pid, pidstart = (v.format(live=holder.pid, start=start) for v in MALFORMED_PIDS[case])
+    calls = est.ctl / "calls.log"
+    where = shlex.quote(str(calls))
+    est.guard = _bind_copy(est, [(ANCHOR_LOAD, (
+        "# T214o's copy: each pid_start_of logged\n"
+        "eval \"$(declare -f pid_start_of | sed '1s/^pid_start_of /t214o_pid_start_of_shipped /')\"\n"
+        f"pid_start_of() {{ {{ printf 'pid_start_of'; printf ' %s' \"$@\"; printf '\\n'; }} >> {where}; "
+        't214o_pid_start_of_shipped "$@"; }\n'
+        f"{ANCHOR_LOAD}"))])
+    bash_env = _script(est.ctl / "t214o-bash-env.sh", T214O_BASH_ENV, LOG=where)
+    est.extra["BASH_ENV"] = str(bash_env)
+    for name in ("kill", "pkill", "killall"):
+        _script(est.bin / name, T214O_NO_SIGNAL, LOG=where, NAME=shlex.quote(name))
+    _script(est.bin / "timeout", T214O_TIMEOUT, LOG=where)
+    index = est.guard.parent / "lanes-index"
+    if index.exists():
+        real_index = index.rename(est.guard.parent / "lanes-index.t214o-real")
+        _script(index, T214O_INDEX, LOG=where, PY=shlex.quote(sys.executable),
+                REAL=shlex.quote(str(real_index)))
+    real = shutil.which("pgrep")
+    if real:
+        _script(est.bin / "pgrep", "#!/bin/sh\n"
+                f"{{ printf 'pgrep'; printf ' %s' \"$@\"; printf '\\n'; }} >> {where}\n"
+                f"exec {shlex.quote(real)} \"$@\"\n")
+    now = time.time()
+    write_record(est.offer, _binding(est, started=now - 30, deadline=int(now) + 100,
+                                     pid=pid, pidstart=pidstart))
+    before = est.offer.read_bytes()
+    hook = est.hook("hello")
+    assert hook.code == 2 and IN_PROGRESS in hook.err and "its outer's pid not recorded" \
+        in hook.err, f"[{case}] pid={pid!r} pidstart={pidstart!r}: {hook!r}"
+    assert est.offer.read_bytes() == before, "the record changed before its deadline"
+    write_record(est.offer, _binding(est, started=now - 600, deadline=int(now) - 1,
+                                     pid=pid, pidstart=pidstart))
+    hook = est.hook("hello")
+    assert hook.code == 2 and NO_OUTCOME in hook.err \
+        and "it recorded no well-formed pid and start for its outer" in hook.err, \
+        f"[{case}] pid={pid!r} pidstart={pidstart!r}: {hook!r}"
+    record = est.record()
+    assert record.get("mode") == "name-drift" and record.get("rc") == "unknown", record
+    logged = calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
+    print(f"[{case}] pid={pid!r} pidstart={pidstart!r}; the stubs logged "
+          f"{len(logged)} call(s), none sent:")
+    for line in logged:
+        print(f"  {line}")
+    made = []
+    for line in logged:
+        words = line.split(" ")
+        if words[0] not in T214O_PID_CALLS:
+            continue
+        tail = words[words.index("--") + 1:] if "--" in words else []
+        if pid in words[1:] or f"-{pid}" in tail:
+            made.append(line)
+    assert not made, f"a kill, pgrep or pid_start_of call was made with pid {pid!r}: {made}"
 
 
 @pytest.mark.parametrize("case", ["was-0644", "new-offers-dir", "failed-write",
@@ -6601,8 +6729,12 @@ def _estate_servers(est: Estate) -> list:
     copy (`Estate.index`), with `serve` among the words after it: a start,
     `serve --start`, or the service one starts, whose argv is that path and
     `serve` (`register_serve_launch`). The path is compared by its real
-    path, as the guard resolves its own directory (`readlink -f`); it is
-    under the estate's own root, so no other estate's process carries it."""
+    path, as the guard resolves its own directory (`readlink -f`). For a
+    primary estate on the module's own guard it is the estate's own copy,
+    under its root, so no other estate's process carries it; a files-mode
+    estate's `Estate.index` is the checkout's `lanes-index`, which every
+    such estate shares. So it is a lookup for the primary cases that call
+    it, and never what the teardown signals by (T237zzd)."""
     index = os.path.realpath(est.index)
     found = []
     for entry in Path("/proc").iterdir():
@@ -7166,11 +7298,16 @@ def test_an_owner_file_from_another_namespace_or_boot_is_no_service(estate, case
                                   "00000000-0000-0000-0000-000000000000"), encoding="utf-8")
     # A SOCKET THAT ANSWERS (section 2.4, 13.8): the client treats the service
     # as unavailable, reads directly and starts none.
+    # T237zzd: ONLY THIS ESTATE'S OWN SERVICES ARE COUNTED (`_estate_servers`,
+    # the `serve` its client would start), as T237zzc counts them. The look
+    # took every process on the workstation whose argv ended in `serve`, so a
+    # service an earlier case left, or another lane's, failed this case as
+    # one its client started: merge 151's and 158's c2 runs, four leftover
+    # pids, the same four in both ids.
     try:
         hook = est.hook("hello")
-        serves = [int(e.name) for e in Path("/proc").iterdir() if e.name.isdigit()
-                  and _argv(e.name)[-1:] == ["serve"] and int(e.name) != svc.proc.pid
-                  and _stat(e.name).get("sid") != _stat(svc.proc.pid).get("sid")]
+        serves = [p for p in _estate_servers(est) if _argv(p)[-1:] == ["serve"]
+                  and p != svc.proc.pid and _stat(p).get("sid") != _stat(svc.proc.pid).get("sid")]
     finally:
         svc.stop()
     assert hook.err.count(FALLBACK) == 1 and not hook.killed, repr(hook)
