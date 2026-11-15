@@ -22734,16 +22734,31 @@ guard_site_match() {
 # more (`GBT_MOVED` is the whole of the loop: a second change is refused); any
 # other record is refused as changed, and the next prompt answers it as the first
 # read does.
+# A WINDOW `guard_answer_moved` RENAMED (`GBT_REN_FROM`, part 59, on lane 5's
+# word) is renamed back here only for an offer or an allowance whose `from`,
+# read with its mode, is that answer's `<from>`: no bind holds the window then,
+# and the answer started none. Every other refusal here keeps the window, since
+# the bind record this prompt loaded may have ended `bound` and been heard by
+# another prompt (case 5's MOVED, the lane now `<to>`): gone, unreadable, a bind
+# record after the one round, an offer from another lane, or any other mode.
+# THE WINDOW LEFT, AND ITS COST, where that bind did not succeed: the window
+# keeps `<to>`'s name though no bind of this answer's ran, and the next prompt
+# is judged in a window named for `<to>` while the register still holds this
+# transcript under `<from>`, so it is refused or asked on that state until the
+# window is renamed by hand.
 guard_site_moved() {   # <offer file> <pane>
-  gsm2_f="${1-}"; gsm2_m=""; gsm2_read=0
+  gsm2_f="${1-}"; gsm2_m=""; gsm2_from=""; gsm2_read=0
   if [ ! -e "$gsm2_f" ] && [ ! -L "$gsm2_f" ]; then
     guard_bind_gone "$gsm2_f"
     return 2
   fi
   # A RECORD THERE THAT COULD NOT BE READ AGAIN (part 50's audit of part 49's
-  # NIT-3) is said to be just that, never "mode=none".
-  if [ -f "$gsm2_f" ] && gsm2_all="$(sed -n -e 's/^mode=//p' "$gsm2_f" 2>/dev/null)"; then
-    gsm2_read=1; gsm2_m="${gsm2_all%%$'\n'*}"
+  # NIT-3) is said to be just that, never "mode=none". Its first `mode` and
+  # first `from` lines are taken from the one read (part 59).
+  if [ -f "$gsm2_f" ] && gsm2_all="$(sed -n -e '/^mode=/p' -e '/^from=/p' "$gsm2_f" 2>/dev/null)"; then
+    gsm2_read=1; gsm2_x=$'\n'"$gsm2_all"
+    case "$gsm2_x" in *$'\n'mode=*) gsm2_m="${gsm2_x#*$'\n'mode=}"; gsm2_m="${gsm2_m%%$'\n'*}" ;; esac
+    case "$gsm2_x" in *$'\n'from=*) gsm2_from="${gsm2_x#*$'\n'from=}"; gsm2_from="${gsm2_from%%$'\n'*}" ;; esac
   fi
   if [ "$gsm2_read" = 0 ]; then
     guard_refuse "the pending offer at $gsm2_f was changed while it was being answered, and the record there could not be read again, so nothing was written to it. Send your prompt again and it will be read afresh."
@@ -22756,6 +22771,10 @@ guard_site_moved() {   # <offer file> <pane>
         guard_bind_site "$gsm2_f" "${2-}"
         return 2
       fi ;;
+    name-drift|allow)
+      guard_triple
+      [ -z "${GBT_REN_FROM-}" ] || [ "$gsm2_from" != "$GBT_REN_FROM" ] ||
+        guard_window_back "$GBT_REN_FROM" "${GBT_REN_TO-}" none || : ;;
   esac
   guard_refuse "the pending offer at $gsm2_f was changed while it was being answered (it says mode=${gsm2_m:-none} now), so nothing was written to it. Send your prompt again and it will be read afresh."
   return 2
@@ -22914,17 +22933,32 @@ guard_bind_site() {   # <offer file> <pane>
     # load finds an offer or an allowance instead, no bind of anyone's holds the
     # window, and the answer started none, so it is renamed back in `none`'s
     # words, as that function's own offer branch does. Left named for `<to>`, the
-    # next prompt would drop the offer as one about another window.
+    # next prompt would drop the offer as one about another window. BUT ONLY
+    # WHERE ITS `from` IS THIS ANSWER'S `<from>` (part 59, on lane 5's word),
+    # read by this same load: the bind record the caller read can have ended
+    # `bound`, been heard by another prompt (case 5's MOVED, the lane now
+    # `<to>`) and been followed by a new offer from `<to>`. That window is rightly
+    # named for `<to>`, and renaming it back would undo the bind's own rename.
     case "${GBR_MODE-}" in
       name-drift|allow)
         guard_triple
-        [ -z "${GBT_REN_FROM-}" ] || guard_window_back "$GBT_REN_FROM" "${GBT_REN_TO-}" none || :
+        [ -z "${GBT_REN_FROM-}" ] || [ "${GBR_FROM-}" != "$GBT_REN_FROM" ] ||
+          guard_window_back "$GBT_REN_FROM" "${GBT_REN_TO-}" none || :
         guard_refuse "the pending offer at $gbt_f was changed while it was being answered (it says mode=$GBR_MODE now), so nothing was written to it. Send your prompt again and it will be read afresh."
         return 2 ;;
     esac
     # A RECORD GONE BY NOW WAS NEITHER READ NOR DROPPED (NIT 1): the caller read
     # a bind mode, and another prompt removed the record since. It is
     # `guard_bind_gone`'s, in its words, and nothing is removed.
+    # A WINDOW `guard_answer_moved` RENAMED IS KEPT HERE (part 59, on lane 5's
+    # word): a bind record is removed mostly by case 5, where another prompt
+    # heard it `bound` and said MOVED, so the lane is `<to>` now and the window is
+    # rightly named for it; renaming it back would undo the bind's own rename.
+    # THE WINDOW LEFT, AND ITS COST: where the record went otherwise (case 11 on
+    # a malformed one), the window keeps `<to>`'s name though no bind of this
+    # answer's ran, and the next prompt is judged in a window named for `<to>`
+    # while the register still holds this transcript under `<from>`, so it is
+    # refused or asked on that state until the window is renamed by hand.
     if [ ! -e "$gbt_f" ] && [ ! -L "$gbt_f" ]; then
       guard_bind_gone "$gbt_f"
       return 2
