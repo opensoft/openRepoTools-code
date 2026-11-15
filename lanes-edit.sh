@@ -21898,12 +21898,14 @@ guard_offer() {   # <offer file> <pane>
         go_made=there
       elif ln -- "$go_t" "$go_f" 2>/dev/null; then
         # AND THE LINK MUST BE THE RECORD (NIT 1): a status of 0 with `$go_f` not
-        # the very file written (an NFS retransmit that reports EEXIST after the
-        # link was made, or one that reports success for a name another invocation
+        # the very file written (success reported for a name another invocation
         # holds) is not this writer's create.
         if [ "$go_f" -ef "$go_t" ]; then go_made=1; else go_made=there; fi
       elif [ -e "$go_f" ] || [ -L "$go_f" ]; then
-        go_made=there
+        # AND THE OTHER WAY ROUND (lane 5's re-check, NIT 1): an `ln` that reports
+        # failure after the link was made, as an NFS retransmit does with EEXIST,
+        # is this writer's create where `$go_f` is the very file written.
+        if [ "$go_f" -ef "$go_t" ]; then go_made=1; else go_made=there; fi
       elif go_nc=0
            ( set -C; umask 077; { cat -- "$go_t" >&3 || exit 4; } 3>"$go_f" ) 2>/dev/null || go_nc=$?
            [ "$go_nc" != 1 ]; then
