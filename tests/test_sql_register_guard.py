@@ -7979,4 +7979,3 @@ def test_the_service_stops_after_its_idle_time_and_unlinks_its_socket(estate, ca
     sock = svc.dir / "register.sock"
     assert _until(lambda: svc.proc.poll() is not None, 15), "the service did not stop"
     assert not sock.exists(), "the stopped service left its socket"
-
