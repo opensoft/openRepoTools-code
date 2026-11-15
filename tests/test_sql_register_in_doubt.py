@@ -796,7 +796,7 @@ def until_seen(what: str, ready, w: Optional[Writer] = None, deadline: float = 9
         if said:
             return said
         if w is not None:
-            assert w.ended is None, f"{w.name} exited {w.code} before {what}: {w.err[-400:]}"
+            assert w.ended is None, f"{w.name} exited {w.code} before {what}: {w.err}"
         assert time.monotonic() < end_at, f"not seen within {deadline:.0f} s: {what}"
         time.sleep(0.05)
 
