@@ -88,11 +88,22 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: landed, and the skip names them. The rows are from the Orders of T213
 #: (tasks:1992), T214 (:2013), T226 (:2177), T237 (:2302, with :2297) and T254
 #: (:2419), tasks.md at lane 3's commit 17 `204145ae`, each row's owner and
-#: cite beside it. T214's two cases that pass today,
+#: cite beside it. T214n's five rows, lane 5's five cases of
+#: `bind-record.md`'s section 8, are from T214's Order at the follow-up's
+#: commit 24 `f9d6069e` (tasks:2013), which keeps that line number. T213r's
+#: row for `test_no_session_environment_carries_a_database_url_or_password`
+#: adds T512 to T213's Order: its `PGPASSFILE` assertions read the
+#: service's own held `psql` child (TP:1952 at `f9d6069e`), which only
+#: T512's `serve` starts, and T512's verify runs it (tasks:1604). T214's
+#: two cases that pass today,
 #: `test_the_hook_string_and_guard_timeout_are_unchanged` and
 #: `test_an_unreadable_bind_record_is_dropped_with_exit_2` (tasks:2013), have
-#: no row, so they always run. No task is common to every row, so there is
-#: no "*" row.
+#: no row, so they always run. T237zzb's row, for its `session-start` cases
+#: off primary, is keyed by analogy with T513's verify case's,
+#: `test_the_session_start_block_reads_the_mirror_and_only_starts_the_service`
+#: (T237's Order, tasks:2302 at commit 24 `f9d6069e`: its tests fail until
+#: L5-S1 lands, lane 5's T511 to T513). No task is common to every row, so
+#: there is no "*" row.
 SQL_REGISTER_GATE_TABLE = {
     "test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither": ("T512", "T513"),  # T237; tasks:2302
     "test_a_bind_body_past_its_bound_ends_with_the_bounds_code_and_leaves_no_process": ("T502",),  # T214; tasks:2013
@@ -110,6 +121,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_failed_bind_renames_back_keeps_the_offer_and_allows_three_attempts": ("T502",),  # T214; tasks:2013
     "test_a_guard_that_starts_too_late_refuses_2_without_a_read": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_a_live_bind_past_its_bound_that_timeout_has_not_ended_answers_2_and_names_the_pid_to_kill": ("T502",),  # T214; tasks:2013
+    "test_a_noncanonical_out_names_no_facts_file_and_no_words": ("T502",),  # T214; tasks:2013
     "test_a_prompt_mid_bind_is_not_passed_and_leaves_the_record": ("T502",),  # T214; tasks:2013
     "test_a_rerun_after_a_failed_stamp_push_writes_one_stamp": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
     "test_a_reused_bind_pid_gives_no_outcome_with_no_session_test": ("T502",),  # T214; tasks:2013
@@ -127,10 +139,11 @@ SQL_REGISTER_GATE_TABLE = {
     "test_each_service_request_is_one_query": ("T229", "T512", "T513"),  # T237; tasks:2302
     "test_guard_bind_computes_bound_s_from_c_n_a_and_the_service": ("T502", "T507"),  # T214; tasks:2013
     "test_kill_of_the_bind_outer_ends_the_record_with_the_signals_code": ("T502",),  # T214; tasks:2013
-    "test_no_session_environment_carries_a_database_url_or_password": ("T103", "T113", "T502", "T507"),  # T213; tasks:1992
+    "test_no_session_environment_carries_a_database_url_or_password": ("T103", "T113", "T502", "T507", "T512"),  # T213; tasks:1992, and T512 (T213r)
     "test_one_instance_holds_register_lock_and_a_second_starter_exits_0": ("T512", "T513"),  # T237; tasks:2302
     "test_pid_start_of_answers_live_dead_and_unreadable": ("T502",),  # T214; tasks:2013
     "test_serve_refuses_unless_the_mode_answer_is_primary": ("T512", "T513"),  # T237; tasks:2302
+    "test_session_start_starts_no_service_outside_primary": ("T512", "T513"),  # T237; tasks:2302
     "test_status_prints_the_services_lines_and_its_failure_stamp": ("T512", "T513"),  # T237; tasks:2302
     "test_the_bind_child_environment_is_as_lane_4_lists_it": ("T502",),  # T214; tasks:2013
     "test_the_bind_child_reaches_tmux_through_tmux_pane": ("T502",),  # T214; tasks:2013
@@ -141,6 +154,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_the_bind_resume_path_makes_at_most_n_r_read_calls": ("T502",),  # T214; tasks:2013
     "test_the_database_unreachable_with_the_service_up_is_2_never_a_cached_ok": ("T512", "T513"),  # T237; tasks:2302
     "test_the_direct_read_connects_as_its_engineers_reader_login": ("T103", "T113", "T507"),  # T213; tasks:1992
+    "test_the_files_index_passes_six_digits": ("T502",),  # T214; tasks:2013
     "test_the_first_call_starts_the_service_with_no_supervisor": ("T512", "T513"),  # T237; tasks:2302
     "test_the_guard_answer_time_is_recorded_beside_todays_direct_guard": ("T512", "T513"),  # T237; tasks:2302
     "test_the_guard_maps_69_75_and_3_to_2": ("T103", "T113", "T507"),  # T213; tasks:1992
@@ -148,6 +162,9 @@ SQL_REGISTER_GATE_TABLE = {
     "test_the_guards_last_budget_line_is_below_guard_timeout": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_the_guards_register_parse_is_timed_on_a_real_sized_register_beside_todays_six_reads_through_git": ("T111", "T112", "T507"),  # T226; tasks:2177
     "test_the_guards_request_carries_only_file_names": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_outcome_rewrite_has_three_results": ("T502",),  # T214; tasks:2013
+    "test_the_outer_gathers_its_copies_before_its_last_ownership_read": ("T502",),  # T214; tasks:2013
+    "test_the_outer_matches_host_and_container_without_regard_to_case": ("T502",),  # T214; tasks:2013
     "test_the_post_bind_refill_is_one_register_read_and_never_git": ("T502", "T507"),  # T214; tasks:2013
     "test_the_service_reaches_the_database_only_through_psql": ("T512", "T513"),  # T237; tasks:2302
     "test_the_service_stops_after_its_idle_time_and_unlinks_its_socket": ("T512", "T513"),  # T237; tasks:2302
@@ -230,7 +247,11 @@ REGISTER_HEADER = ["# LANES.md", "",
 #: given code, or forks a `( ... & )` child as `index_nudge` does). It logs one
 #: JSON line at its start and one at its end to `<ctl>/lane-start.log`, with
 #: its argv, its process's ids, the variables lane 4's table names, and where
-#: its stdin points. The files in `<ctl>` steer it: `hold` (wait for
+#: its stdin points. Before that line it writes its whole environment, what
+#: the bind hands `lane-start` and so a session, to
+#: `<ctl>/lane-start.environ.<pid>.json`, whole, by a temporary file and a
+#: rename (T213r reads it for a URL or a password), so the log's lines stay
+#: as short as they were. The files in `<ctl>` steer it: `hold` (wait for
 #: `release`, at most that many seconds), `sleep` (that many seconds),
 #: `rc`, `ignore-term`, `tmux` (make one untargeted `tmux` call) and `fork`
 #: (leave a child that ignores TERM, living that many seconds).
@@ -260,6 +281,10 @@ def ids():
 def log(entry):
     with open(os.path.join(CTL, "lane-start.log"), "a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, sort_keys=True) + "\n")
+environ_file = os.path.join(CTL, "lane-start.environ.%d.json" % os.getpid())
+with open(environ_file + ".tmp", "w", encoding="utf-8") as handle:
+    json.dump(dict(os.environ), handle, sort_keys=True)
+os.replace(environ_file + ".tmp", environ_file)
 entry = dict(event="start", argv=sys.argv[1:], pid=os.getpid(), t=time.time(),
              env={k: os.environ.get(k) for k in KEYS}, **ids())
 try:
@@ -1890,6 +1915,23 @@ def _record_with(est: Estate, keys) -> None:
 #: `register_rtt_ms` + 200 where it is over 100, with the service's socket;
 #: 0 without), and the `bound_s` each gives (Y:5459, Y:5462; contract
 #: section 4).
+#:
+#: THE 540 s BAND (T214m; the follow-up's commit 24, Z3, from Codex's
+#: re-review of spec#47 at `746e931c`, its SHOULD 8; tasks:2008, TP:6409,
+#: map row 442): with one address and `c` = 3, `w_s_ms` 473 gives 530 s and
+#: 474 gives 540 s, (437000 + 84000 + 19 * w_s_ms + 9999) // 10000 * 10, so
+#: a bound clamped to 530 fails `[c3-w474]` (`bind-record.md` section 4 at
+#: draft 13 `cd578400`). The two ids are lane 3's names from that fold.
+#:
+#: THE 510 s BAND AT `c` = 2 (T214p; Codex's r8 of spec#17 at commit 25
+#: `d1a66b2e`, its BLOCKING: `register-cli.md` draft 4.31's K12, :303, gives
+#: 510 s at `c` = 2 where `w_s_ms` passes 368; lane 3's fix for its commit
+#: 26, #165 6882323446, at TP:6258-6265 and :6408-6409, tasks:2008 and map
+#: row 442; lane 2 confirmed it, 6882513333): with one address and `c` = 2,
+#: `w_s_ms` 368 gives 500 s and 369 gives 510 s,
+#: (437000 + 56000 + 19 * w_s_ms + 9999) // 10000 * 10, so a bound clamped
+#: to 500 at `c` = 2 fails `[c2-w369]`. The two ids are lane 3's names, on
+#: the `[c3-w473]` pattern.
 BOUND_CASES = {
     "c2": ({"c": 2, "n_a": 1, "w_s_ms": 0}, 500),
     "c3": ({"c": 3, "n_a": 1, "w_s_ms": 0}, 530),
@@ -1901,6 +1943,10 @@ BOUND_CASES = {
     "a2-c3-socket": ({"c": 3, "n_a": 2, "w_s_ms": 300}, 620),
     "c2-rtt120": ({"c": 2, "n_a": 1, "w_s_ms": 320}, 500),
     "c3-rtt270": ({"c": 3, "n_a": 1, "w_s_ms": 470}, 530),
+    "c3-w473": ({"c": 3, "n_a": 1, "w_s_ms": 473}, 530),
+    "c3-w474": ({"c": 3, "n_a": 1, "w_s_ms": 474}, 540),
+    "c2-w368": ({"c": 2, "n_a": 1, "w_s_ms": 368}, 500),
+    "c2-w369": ({"c": 2, "n_a": 1, "w_s_ms": 369}, 510),
 }
 
 #: Case 22's `[answer-2]`: the contract stub's constants line as T207 writes
@@ -2118,6 +2164,352 @@ def test_the_post_bind_refill_is_one_register_read_and_never_git(estate, tmp_pat
     after = [line for line in logged if float(line.split(" ", 1)[0]) > done_at]
     assert not after, f"git was called after lane-start's end, by the refill: {after}"
     assert stub.exists()
+
+
+# ------------------------------------------------ T214: lane 5's five of section 8
+#
+# LANE 5's FIVE CASES OF `bind-record.md`'s SECTION 8 (T214n; spec#47's draft
+# 13 `cd578400`; the follow-up's commit 24 `f9d6069e`, S9: tasks:2009 and
+# :2013, TP:6413, map rows 610 to 614; lane 5's names, #165 6880616998; lane
+# 3's Codex re-review of spec#47, #165 6880414089, S1 to S4 and S6). Each
+# binds through the stand-in `lane-start` (`LANES_LANE_START`) and the real
+# body, so the body makes and fills its facts file, with no `start-record`
+# and no mode id (tasks:2005). Each fails until L5-A1, lane 5's T502 (its
+# round 2, `12eddddf`), and waits for no other task (tasks:2013). Where a case
+# needs the outer to do what the shipped script will not do on its own, it
+# runs the outer from a test-only copy of `lanes-edit.sh` (`_bind_copy`), and
+# no seam goes into the shipped script (lane 3's ruling, #165 6879754335,
+# point 23).
+
+#: What the outer says, as T502 writes it: the 16(d) `note=` where its body
+#: left no facts file, so an outcome without it shows the facts file was
+#: there and was read; the 16(c) `why` where the body ended 1 and gave no
+#: reason; its words where it leaves a record that is not its own; and where
+#: its outcome could not be written. And the stand-in `lane-start`'s refusal.
+NO_FACTS_NOTE = "whatever the bind's body left undone is not known"
+NO_REASON_WHY = "the bind's body ended with exit 1 and gave no reason"
+NOT_ITS_OWN = "is no longer this bind's own"
+NOT_WRITTEN = "the outcome could not be written to"
+STAND_IN_REFUSES = "the stand-in refuses with 1"
+
+#: THE TEST-ONLY COPY'S ANCHORS: each is text that `lanes-edit.sh` holds once,
+#: at line R's merge106 and at T502's round 2 `12eddddf` alike, so a copy made
+#: from either makes the edit the case means. The outer's own start token
+#: (`guard_bind_outer`); the rewrite's `mv` and its drop list, made before it
+#: opens the record (`guard_bind_rewrite`); the outer's gathering of the five
+#: copies; and the record's one reader.
+ANCHOR_PIDSTART = 'gbo_ps="$(pid_start_of "$$" 2>/dev/null)" || gbo_psrc=$?'
+ANCHOR_MV = 'mv -f -- "$gbw_t" "$gbw_f" 2>/dev/null || { rm -f -- "$gbw_t"; return 1; }'
+ANCHOR_DROP = 'for gbw_a in "$@"; do gbw_drop="$gbw_drop${gbw_a%%=*} "; done'
+ANCHOR_COPIES = 'guard_bind_copies "$gbo_u"'
+ANCHOR_LOAD = 'guard_bind_load() {   # <offer file>'
+#: The outcome's rewrite is the one whose drop list holds `mode` (the outer's
+#: start drops `pid` and `pidstart`, and the body rewrites nothing).
+OUTCOME_REWRITE = 'case "$gbw_drop" in *" mode "*)'
+
+
+def _bind_copy(est: Estate, edits) -> Path:
+    """POINT 23's TEST-ONLY COPY (lane 3's ruling, #165 6879754335): the
+    checkout's `lanes-edit.sh`, with `repos.tsv`, `lane-start` and
+    `lanes-index` beside it as the checkout has them (the copy rule,
+    CLI4.5:885), and each of `edits`, an (anchor, text) pair, made once, as
+    `[answer-2]` edits its stub (`_bound_through_answer_2_on_the_stub`): an
+    anchor found other than once fails the case there, so a copy never runs
+    without the edit it was made for. The shipped script is never changed."""
+    code = est.root / "bind-copy"
+    code.mkdir()
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start", "lanes-index"):
+        if (REPO / name).exists():
+            shutil.copy2(REPO / name, code / name)
+    copy = code / "lanes-edit.sh"
+    text = copy.read_text(encoding="utf-8")
+    for anchor, new in edits:
+        text, made = re.subn(re.escape(anchor), lambda _found, new=new: new, text)
+        assert made == 1, f"the test-only copy's anchor was found {made} times, not once: {anchor}"
+    copy.write_text(text, encoding="utf-8")
+    return copy
+
+
+def _hold_sh(est: Estate, name: str) -> str:
+    """Bash for the test-only copy: make `<ctl>/<name>.held`, then wait for
+    `<ctl>/<name>.release`, 30 s at most, so a case that fails never leaves
+    the outer held."""
+    held = shlex.quote(str(est.ctl / f"{name}.held"))
+    release = shlex.quote(str(est.ctl / f"{name}.release"))
+    return (f': > {held}; t214n_n=0; while [ ! -e {release} ] && [ "$t214n_n" -lt 600 ]; '
+            f'do sleep 0.05; t214n_n=$((t214n_n + 1)); done')
+
+
+def _direct_record(est: Estate, index="1", **keys) -> Path:
+    """A `binding` record as the hook leaves it before the outer's start
+    (`_binding`, less `pid` and `pidstart`), written directly as case 22's
+    are (`_record_with`), with `keys` (`host`, `container`) in place of the
+    estate's own and its `out` at the files' index `index`. Returns that
+    `out`'s path."""
+    out = Path(f"{est.offer}.bind.{index}.out")
+    lines = _binding(est, started=time.time(), bound_s=500, **keys)
+    write_record(est.offer, [f"out={out}" if line.startswith("out=") else line
+                             for line in lines if not line.startswith(("pid=", "pidstart="))])
+    return out
+
+
+def _outer(est: Estate, program: Path, out: Path) -> subprocess.Popen:
+    """`guard-bind <uuid>` from `program`, the shipped script or a test-only
+    copy, as the hook's fork starts it (Y:5394; contract section 1): its
+    stdout and stderr in the record's `out`, 0600, so its words are where
+    the contract puts them, and in a session of its own, as `detach=setsid`
+    says. No `LANES_BIND_BODY`: the real body runs, and reaches the stand-in
+    `lane-start`. `$$` in the outer is the process's pid."""
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        proc = subprocess.Popen(["bash", str(program), "guard-bind", est.sid],
+                                stdin=subprocess.DEVNULL, stdout=fd, stderr=fd, env=est.env(),
+                                cwd=str(est.wip), start_new_session=True)
+    finally:
+        os.close(fd)
+    est.spare.append(proc.pid)
+    return proc
+
+
+@pytest.mark.parametrize("result", ["written", "io-failure", "not-its-own"])
+def test_the_outcome_rewrite_has_three_results(estate, result):
+    """S1, the outcome's rewrite gives three results, and the outer's exit
+    and its facts file follow each. The stand-in `lane-start` exits 0, so
+    the real body makes its facts file and fills it, and the outer reads it:
+    its outcome holds no 16(d) `note=` (`NO_FACTS_NOTE`).
+
+    - `[written]`, the rewrite's 0: the record is written, `bound`, the facts
+      file is removed, and the outer exits 0.
+    - `[io-failure]`, its 1: a test-only copy fails the outcome's rewrite at
+      its `mv`, as an I/O failure would. The record is as the rewrite found
+      it, the outer's own `binding`; no temporary file is left; the outcome
+      is in the `.out` alone; the outer exits 1; and its facts file is
+      REMOVED, as T502's round 2 does (`12eddddf`, part 11) and lane 3 ruled
+      on S1 (#165 6880978929: "the facts file is removed on all three
+      results"). Commit 24's words, "its facts file left for the next
+      removal to sweep" (tasks:2009, TP:6413), predate that ruling, and lane
+      2 sends lane 3 the correction.
+    - `[not-its-own]`, its 2: a test-only copy holds the outer at its
+      outcome's rewrite, after the outer's own read and before the rewrite
+      reads the record (section 8's narrowed window), and the case installs a
+      record that is not the outer's own, a `binding` of another `pid`. The
+      rewrite's own test leaves it byte for byte; the outcome is in the
+      `.out` alone; the facts file, there at the hold, is removed; and the
+      outer exits 0."""
+    est = estate()
+    out = _direct_record(est)
+    facts = Path(f"{est.offer}.bind.1.facts")
+    program = GUARD
+    if result == "io-failure":
+        program = _bind_copy(est, [(ANCHOR_MV, (
+            f'{OUTCOME_REWRITE} rm -f -- "$gbw_t"; return 1 ;; esac; {ANCHOR_MV}'))])
+    elif result == "not-its-own":
+        program = _bind_copy(est, [(ANCHOR_DROP, (
+            f"{ANCHOR_DROP}\n{OUTCOME_REWRITE} {_hold_sh(est, 'rewrite')} ;; esac"))])
+    proc = _outer(est, program, out)
+    installed = None
+    if result == "not-its-own":
+        held = _until(lambda: (est.ctl / "rewrite.held").exists(), 60)
+        mine, had_facts = est.record(), facts.exists()
+        if held:
+            # ANOTHER OUTER'S `binding`: a live process of its own session,
+            # with its own start token, which the estate stops at its close.
+            other = _sleeper()
+            est.spare.append(other.pid)
+            write_record(est.offer, _binding(est, started=time.time(), pid=other.pid,
+                                             pidstart=_stat(other.pid)["start"]))
+            installed = est.offer.read_bytes()
+        est.set("rewrite.release")
+        assert held, f"the outer never came to its outcome's rewrite: {out.read_text()}"
+        assert mine.get("mode") == "binding" and mine.get("pid") == str(proc.pid), \
+            f"the record at the outer's rewrite was not its own binding: {mine}"
+        assert had_facts, "the body's facts file was not there when the outer came to write"
+    code = proc.wait(60)
+    said = out.read_text(encoding="utf-8", errors="replace")
+    record = est.record()
+    ends = [line for line in said.splitlines() if "mode=bound rc=0" in line]
+    if result == "written":
+        assert code == 0 and record.get("mode") == "bound" and record.get("rc") == "0", \
+            f"guard-bind {code}: {record}\n{said}"
+        assert not any(note.startswith(NO_FACTS_NOTE) for note in record.get("note", [])), \
+            f"the outer found no facts file to fold in: {record}"
+        assert not facts.exists(), f"the outer left its facts file after its rewrite's 0: {facts}"
+        return
+    if result == "io-failure":
+        assert code == 1, f"guard-bind exited {code}, not 1, where its outcome's mv failed: {said}"
+        assert record.get("mode") == "binding" and record.get("pid") == str(proc.pid) \
+            and "rc" not in record, f"the record is not as the failed rewrite found it: {record}"
+        assert not [p.name for p in est.offer.parent.iterdir()
+                    if p.name.startswith(f".{est.sid}.")], "the failed rewrite left its temporary file"
+        assert [line for line in ends if NOT_WRITTEN in line and NO_FACTS_NOTE not in line], \
+            f"the outcome, its facts folded in, is not in the .out alone: {said}"
+        assert not facts.exists(), \
+            (f"the outer left its facts file after its rewrite's 1, where lane 3's ruling on S1 "
+             f"(#165 6880978929) removes it on all three results: {facts}")
+        return
+    assert code == 0, f"guard-bind exited {code}, not 0, after its rewrite's 2: {said}"
+    assert est.offer.read_bytes() == installed, \
+        f"the outer's outcome was written over a record that is not its own: {record}\n{said}"
+    assert [line for line in ends if NOT_ITS_OWN in line and NO_FACTS_NOTE not in line], \
+        f"the outcome, its facts folded in, is not in the .out alone: {said}"
+    assert not facts.exists(), f"the outer left its facts file after its rewrite's 2: {facts}"
+
+
+#: S2's records: the key each case gives the record, and its value, the
+#: outer's own (`HOST`, `CONTAINER`) in other case, or another host or
+#: container. ASCII case, since `lower_into` maps A to Z alone.
+OWNER_CASES = {
+    "case-only-host": ("host", HOST.upper()),
+    "case-only-container": ("container", CONTAINER.upper()),
+    "other-host": ("host", "Kestrel"),
+    "other-container": ("container", "h-box"),
+}
+
+
+@pytest.mark.parametrize("case", list(OWNER_CASES))
+def test_the_outer_matches_host_and_container_without_regard_to_case(estate, case):
+    """S2, the outer's test of its own `binding` matches the record's `host`
+    and `container` with its own, `WS` and `LANES_CONTAINER_NAME` (`HOST` and
+    `CONTAINER`, through `LANES_WORKSTATION` and `LANES_CONTAINER`), without
+    regard to case, as the guard's site does (contract section 1).
+
+    - `[case-only-host]` and `[case-only-container]` differ from the outer's
+      own in case alone, and the outer writes its outcome, `bound`.
+    - `[other-host]` and `[other-container]` are real mismatches, with the
+      outer's own `pid` and no `pidstart`: a test-only copy makes its own
+      `pid_start_of $$` exit 2, so it writes `pid` alone, as an outer on
+      another host with the same pid would. The outer leaves the record as
+      its own start left it, `binding`, and its outcome goes to its `.out`
+      alone."""
+    key, value = OWNER_CASES[case]
+    est = estate()
+    out = _direct_record(est, **{key: value})
+    program = GUARD
+    if case.startswith("other-"):
+        program = _bind_copy(est, [(ANCHOR_PIDSTART, 'gbo_ps=""; gbo_psrc=2')])
+    proc = _outer(est, program, out)
+    code = proc.wait(60)
+    said = out.read_text(encoding="utf-8", errors="replace")
+    record = est.record()
+    assert code == 0 and record.get(key) == value, f"guard-bind {code}: {record}\n{said}"
+    if case.startswith("case-only-"):
+        assert record.get("mode") == "bound" and record.get("rc") == "0", \
+            (f"the outer did not write its outcome over its own binding, whose {key} differs "
+             f"from its own in case alone: {record}\n{said}")
+        return
+    assert record.get("pid") == str(proc.pid) and "pidstart" not in record, \
+        f"the record does not hold the outer's own pid and no pidstart: {record}"
+    assert record.get("mode") == "binding" and "rc" not in record, \
+        f"the outer wrote its outcome over a binding of another {key}: {record}\n{said}"
+    assert NOT_ITS_OWN in said, f"the outer's outcome is not in its .out: {said}"
+
+
+@pytest.mark.parametrize("index", ["0", "01"], ids=["bind-0", "bind-01"])
+def test_a_noncanonical_out_names_no_facts_file_and_no_words(estate, index):
+    """S3, an `out` whose index is not canonical, `[1-9][0-9]*` (contract
+    section 3's `out` row), names no facts file: nothing is read from,
+    written to or removed at `.bind.<index>.facts`, and the body reads none
+    of its own words back from the `out`. A sentinel `.facts` file stands
+    where a derivation would put it, and the stand-in `lane-start` refuses
+    1, its words in the `out`. The sentinel is left byte for byte, no other
+    file is made beside the `out`, and the record ends `bind-failed` with
+    point 16(c)'s `why`, not the stand-in's line."""
+    est = estate()
+    est.set("rc", 1)
+    out = _direct_record(est, index=index)
+    sentinel = Path(f"{est.offer}.bind.{index}.facts")
+    write_record(sentinel, ["why=a sentinel, where an out of this form names no facts file"])
+    planted = sentinel.read_bytes()
+    proc = _outer(est, GUARD, out)
+    code = proc.wait(60)
+    said = out.read_text(encoding="utf-8", errors="replace")
+    record = est.record()
+    assert sentinel.exists() and sentinel.read_bytes() == planted, \
+        f"{sentinel.name} was removed or written, though .bind.{index}.out names no facts file"
+    beside = sorted(p.name for p in est.offer.parent.glob(f"{est.sid}.bind.*"))
+    assert beside == sorted([out.name, sentinel.name]), f"a file was made beside the out: {beside}"
+    assert code == 0 and record.get("mode") == "bind-failed" and record.get("rc") == "1", \
+        f"guard-bind {code}: {record}\n{said}"
+    assert STAND_IN_REFUSES in said, f"the stand-in lane-start's words are not in the out: {said}"
+    why = record.get("why", "")
+    assert why.startswith(NO_REASON_WHY) and STAND_IN_REFUSES not in why, \
+        f"the body read its words back from .bind.{index}.out: {record}"
+
+
+@pytest.mark.parametrize("leftovers", [("999999",), ("999999", "1000000")],
+                         ids=["999999", "1000000"])
+def test_the_files_index_passes_six_digits(estate, leftovers):
+    """S4, every canonical index counts, compared as a number at any length
+    (contract section 1's files' index). An earlier offer's `.out` files,
+    left as a case 11 leaves them, stand before the `2`: `[999999]` leaves
+    `<uuid>.bind.999999.out`, and the attempt's `out` is `.bind.1000000.out`;
+    `[1000000]` leaves `.bind.999999.out` and `.bind.1000000.out`, and the
+    attempt's `out` is `.bind.1000001.out`. So an index over six digits
+    passed over, or compared as a string, fails `[1000000]`, which a lone
+    `.bind.1000000.out` would not show. Each leftover is as it was: the
+    hook's `>` never met it."""
+    est = estate()
+    est.make_offer()
+    left = {}
+    for index in leftovers:
+        path = Path(f"{est.offer}.bind.{index}.out")
+        path.write_text(f"attempt {index}'s output, left by an earlier offer\n", encoding="utf-8")
+        left[path] = path.read_bytes()
+    est.answer_2()
+    record = est.ended()
+    want = f"{est.sid}.bind.{int(leftovers[-1]) + 1}.out"
+    assert Path(record.get("out", "")).name == want, \
+        f"the attempt's out is {record.get('out')}, not {want}, one above the leftovers {leftovers}"
+    for path, data in left.items():
+        assert path.read_bytes() == data, f"the leftover {path.name} was changed"
+
+
+def test_the_outer_gathers_its_copies_before_its_last_ownership_read(estate):
+    """S6, the outer gathers what its outcome writes, the five copies among
+    them (`guard_bind_copies`), BEFORE it reads the record again, and never
+    between that read and its write (contract section 1). The bind ends
+    non-0, the stand-in `lane-start` refusing 1, since the outer gathers the
+    copies only for an outcome other than `bound`. A test-only copy logs each
+    of the outer's reads of the record (`guard_bind_load`) and its call of
+    `guard_bind_copies`, and holds the outer after its second read, the one
+    before its outcome: at that hold the log already names the copies, and
+    that read is the outer's last."""
+    est = estate()
+    est.set("rc", 1)
+    out = _direct_record(est)
+    log = est.ctl / "outer.log"
+    where = shlex.quote(str(log))
+    program = _bind_copy(est, [
+        (ANCHOR_COPIES, f"printf 'copies\\n' >> {where}; {ANCHOR_COPIES}"),
+        (ANCHOR_LOAD, (
+            "guard_bind_load() {   # T214n's copy: the outer's reads, logged, and held at its 2nd\n"
+            '  if [ -n "${gbo_u-}" ]; then T214N_READS=$(( ${T214N_READS:-0} + 1 )); '
+            f"printf 'read %s\\n' \"$T214N_READS\" >> {where}; fi\n"
+            '  t214n_rc=0; guard_bind_load_shipped "$@" || t214n_rc=$?\n'
+            '  if [ -n "${gbo_u-}" ] && [ "$T214N_READS" = 2 ]; then '
+            f"{_hold_sh(est, 'read')}; fi\n"
+            '  return "$t214n_rc"\n'
+            "}\n"
+            "guard_bind_load_shipped() {   # <offer file>")),
+    ])
+    proc = _outer(est, program, out)
+    held = _until(lambda: (est.ctl / "read.held").exists(), 60)
+    at_hold = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    est.set("read.release")
+    code = proc.wait(60)
+    said = out.read_text(encoding="utf-8", errors="replace")
+    record = est.record()
+    lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    assert held and at_hold[:1] == ["read 1"] and at_hold[-1:] == ["read 2"], \
+        f"the outer never made its read before its outcome: {lines}\n{said}"
+    assert "copies" in at_hold, \
+        (f"guard_bind_copies had not run when the outer held after its read before its "
+         f"outcome: {at_hold}")
+    reads = [line for line in lines if line.startswith("read ")]
+    assert reads[-1] == "read 2" and lines.index("copies") < lines.index("read 2"), \
+        f"the outer read its record again after it gathered the copies: {lines}"
+    assert code == 0 and record.get("mode") == "bind-failed" and record.get("rc") == "1", \
+        f"guard-bind {code}: {record}\n{said}"
 
 
 # ============================================================ T254: AT-F6's writes, primary
@@ -3109,18 +3501,185 @@ def test_the_direct_read_connects_as_its_engineers_reader_login(estate):
     assert all("writer" not in (c.get("pg", {}).get("PGUSER") or "") for c in calls), calls
 
 
+#: How long the case waits for the service's held `psql` child to start: the
+#: service starts its connect as it listens (`begin`, lane 3's ruling, #165
+#: 6827356485, point 3), so the child is there almost at once.
+HELD_CHILD_S = 10.0
+
+
+def _role_passfiles(est: Estate) -> dict:
+    """EACH REGISTER ROLE'S OWN PASSWORD FILE (TP:1952 at `f9d6069e`;
+    `contracts/config.md`'s password-file row; contract section 2.2), as
+    T220's case configures them (`b8785b8b:tests/test_sql_register_bounds.py:316-323`):
+    the estate's configuration gains `reader_passfile=`, the READER's 0600
+    file, which the guard's direct read and the service both connect with
+    (each a `PostgresStore(cfg, "register_reader")`), and
+    `register_passfile=`, the REGISTER-WRITER's, which no read may carry.
+    Each file is one libpq line, `*:*:*:*:<password>`, its password a new
+    uuid's hex, so the case can look for it in any variable. The cluster
+    trusts its own socket, so libpq never sends either. Returns
+    {key: (path, password)}."""
+    made = {}
+    for key, role in (("reader_passfile", "reader"), ("register_passfile", "writer")):
+        path = est.root / "conf" / f"{role}.pgpass"
+        password = f"{role}-{uuid.uuid4().hex}"
+        handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(handle, "w", encoding="utf-8") as out:
+            out.write(f"*:*:*:*:{password}\n")
+        path.chmod(0o600)
+        made[key] = (path, password)
+    _db_config(est, est.pg.url(), **{key: path for key, (path, _) in made.items()})
+    return made
+
+
+def _json_file(path: Path):
+    """A JSON file a stand-in wrote whole, by a temporary file and a rename,
+    or None where it is not there."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+
+
+def _held_children(stream) -> list:
+    """The service's held `psql` children whose start `stream` (a
+    `_StreamPsql`) logged, by their `VERBOSITY=sqlstate`; none yet where the
+    log's last line is still being written."""
+    try:
+        return [r for r in stream.log("stream-begin.log") if r.get("held")]
+    except ValueError:
+        return []
+
+
+def _carried(where: str, env: dict, secrets) -> list:
+    """Each variable of `env` whose value holds a secret of `secrets`, each
+    (what, text), or a `postgresql://` or `postgres://` URL (libpq's two
+    schemes), one line each, naming `where`."""
+    found = []
+    for key, value in sorted(env.items()):
+        value = value or ""
+        found += [f"{where}: {key} carries {what}" for what, text in secrets if text in value]
+        if "postgresql://" in value or "postgres://" in value:
+            found.append(f"{where}: {key} carries a URL, {value!r}")
+    return found
+
+
+def _child_findings(where: str, argv, passfile: str, pgpassword: bool, variables: dict,
+                    role_file: Path, secrets) -> list:
+    """TP:1952-1953 FOR ONE `psql` CHILD, the service's or a direct read's:
+    its `PGPASSFILE` is its role's configured file, `PGPASSWORD` is not set,
+    and no variable or argument carries a password, the other role's file,
+    a configured URL or any `postgresql://` string, since the connection is
+    the URL's mapping into `PGHOST`, `PGPORT`, `PGDATABASE` and `PGUSER`
+    alone (contract section 2.2). One line per finding."""
+    found = []
+    if passfile != str(role_file):
+        found.append(f"{where}: PGPASSFILE is {passfile!r}, not its role's file {role_file}")
+    if pgpassword:
+        found.append(f"{where}: PGPASSWORD is set")
+    found += _carried(where, variables, secrets)
+    found += [f"{where}: an argument carries {what}" for what, text in secrets
+              if any(text in arg for arg in argv)]
+    found += [f"{where}: an argument is a URL, {arg!r}" for arg in argv if "://" in arg]
+    return found
+
+
 def test_no_session_environment_carries_a_database_url_or_password(estate):
-    """AT-10: no variable of the session's environment, as the guard and the
-    bind's child see it, carries a database URL or a password."""
+    """AT-10 (TP:1949-1953 at `f9d6069e`; tasks:1979): no variable of an
+    environment a session inherits carries a database URL or a password,
+    while each `psql` child, the service's own and each direct read's,
+    carries its role's 0600 password file as `PGPASSFILE` and no password,
+    URL or `PGPASSWORD`.
+
+    THE ORACLE ASSERTED, NOT ONLY OWNED (T213r; RC-26's section A, whose four
+    gaps lane 2's post opensoft/openRepoTools#165 6881947623 names): the
+    estate configures each role's own file (`_role_passfiles`), so a call
+    that drops it, or carries the writer's, differs from the role's file,
+    which the empty `lanes-index.nopass` never could; and the case reads
+    four records:
+
+    - THE SERVICE'S OWN HELD `psql` CHILD, through `_StreamPsql` on the
+      service's `PATH` alone, as SVC-10 does: the stand-in records the
+      child's whole environment, `PGPASSWORD` written `*`, and the child is
+      the one call that carries the service's `VERBOSITY=sqlstate`
+      (`REGISTER_SERVE_PSQL_ARGS`). The service starts it by its connect at
+      listen, so no request is needed. PSQL_SHIM never runs that child,
+      since it reads its stdin to the end first. The service is stopped
+      before the first prompt, so the hook's own first call starts the next
+      one, with PSQL_SHIM as its `psql`, which never connects.
+    - EACH DIRECT READ'S `psql`, through PSQL_SHIM's log: its `passfile`,
+      `pgpassword`, `pg` (the call's `PG*` variables) and `url` (the shim's
+      own `postgresql://` rendering of those variables, which may hold no
+      second URL).
+    - THE SESSION'S ENVIRONMENT, which the runner hands the hook
+      (`Estate.env`), with no `PG*` variable at all, as before.
+    - WHAT THE BIND HANDS `lane-start`, and so a session: the stand-in's
+      whole environment (`lane-start.environ.<pid>.json`). The test plan's
+      fake `claude` records what `lane-start` hands a session (TP:1916); the
+      bind's `lane-start --no-launch` starts none, so the stand-in in its
+      place records it.
+
+    Neither session environment may hold either role's password or file's
+    path, either configured URL or any `postgresql://` string. Every finding
+    is gathered first and asserted once, so one red run names every record
+    a fault reaches. Fails until T512, whose `serve` starts the held child
+    and whose verify runs this case (tasks:1604), besides T502 and T507."""
     est = estate(mode="primary")
+    files = _role_passfiles(est)
+    (reader_file, reader_pw), (writer_file, writer_pw) = (files["reader_passfile"],
+                                                          files["register_passfile"])
+    conf = dict(line.split("=", 1) for line in Path(est.extra["LANES_INDEX_CONFIG"]).read_text(
+        encoding="utf-8").splitlines() if "=" in line)
+    urls = [("register_url='s value", conf["register_url"])]
+    if conf["reader_url"] != conf["register_url"]:
+        urls.append(("reader_url='s value", conf["reader_url"]))
+    passwords = [("the reader's password", reader_pw), ("the writer's password", writer_pw)]
+    child_secrets = passwords + urls + [("the writer's password file's path", str(writer_file))]
+    session_secrets = child_secrets + [("the reader's password file's path", str(reader_file))]
+    est.shim()
+    stream = _StreamPsql(est, est.root / "service-bin")
+    svc = _Service(est, PATH=stream.path(est))
+    try:
+        _until(lambda: _held_children(stream), HELD_CHILD_S, 0.1)
+    finally:
+        svc.stop()
+    held = _held_children(stream)
+    assert held, (f"the service started no held psql child in {HELD_CHILD_S:.0f} s: "
+                  f"{stream.log('stream-begin.log')}")
+    envs = {r["pid"]: _json_file(stream.dir / f"stream-env.{r['pid']}.json") for r in held}
+    assert None not in envs.values(), f"a held child recorded no environment: {envs}"
     est.make_offer()
     est.answer_2()
     est.ended()
-    env = est.starts()[0]["env"]
-    leaked = {k: v for k, v in env.items() if v and ("postgresql://" in v or "PGPASSWORD" in k)}
-    assert not leaked, leaked
-    child = est.session.env(est.base, **est.extra)
-    assert not [k for k, v in child.items() if k.startswith("PG") or "postgresql://" in v]
+    calls = est.shim_calls()
+    assert calls, "the guard made no direct read"
+    starts = est.starts()
+    assert starts, "the bind never started lane-start"
+    handed = _json_file(est.ctl / f"lane-start.environ.{starts[0]['pid']}.json")
+    assert handed, f"the lane-start stand-in recorded no environment: {starts[0]}"
+    found = []
+    for record in held:
+        env = envs[record["pid"]]
+        found += _child_findings(f"the service's held psql child (pid {record['pid']})",
+                                 record["argv"], env.get("PGPASSFILE", ""), "PGPASSWORD" in env,
+                                 env, reader_file, child_secrets)
+    for call in calls:
+        where = f"direct read call {call['call']}"
+        found += _child_findings(where, call["argv"], call.get("passfile", ""),
+                                 call.get("pgpassword", False), call.get("pg") or {},
+                                 reader_file, child_secrets)
+        rendered = call.get("url") or ""
+        rest = rendered.split("://", 1)[1] if rendered.startswith("postgresql://") else rendered
+        found += _carried(f"{where}'s url", {"url": rest}, passwords + urls)
+    session = est.env()
+    found += [f"the session's environment: {key} is set" for key in session
+              if key.startswith("PG")]
+    found += _carried("the session's environment", session, session_secrets)
+    found += [f"what the bind hands lane-start: {key} is set" for key in handed
+              if "PGPASSWORD" in key]
+    found += _carried("what the bind hands lane-start", handed, session_secrets)
+    assert not found, "\n".join([f"{len(found)} finding(s), over {len(held)} held child(ren) "
+                                 f"and {len(calls)} direct read(s):"] + found)
 
 
 def test_claude_no_lane_still_skips_before_any_input(estate):
@@ -3731,7 +4290,11 @@ def _both(est: Estate) -> tuple:
 #: read as each chunk comes) after it was read where the call is the service's
 #: held child, known by its own argv's `VERBOSITY=sqlstate` (d8:229), and at
 #: once for every other call, the guard's direct reads among them. It logs
-#: each call's argv in `stream-begin.log`, and each chunk as it reads it, with
+#: each call's argv in `stream-begin.log`, after it has written the call's
+#: whole environment, `PGPASSWORD`'s value written `*` as PSQL_SHIM writes
+#: it, to `stream-env.<pid>.json` beside it, by a temporary file and a rename
+#: (T213r reads the held child's `PGPASSFILE`, `PGPASSWORD` and any URL
+#: there, since PSQL_SHIM never runs that child); and each chunk as it reads it, with
 #: its monotonic time, the hold in force and whether the call is the held
 #: child, in `stream-chunks.log`, so a chunk that the service's SIGINT
 #: overtakes is logged all the same. SIGINT and SIGTERM go on to the real
@@ -3757,6 +4320,11 @@ def hold_ms():
         return 0.0
 
 
+env_file = os.path.join(HERE, "stream-env.%d.json" % os.getpid())
+with open(env_file + ".tmp", "w", encoding="utf-8") as handle:
+    json.dump({k: "*" if k == "PGPASSWORD" else v for k, v in os.environ.items()}, handle,
+              sort_keys=True)
+os.replace(env_file + ".tmp", env_file)
 log("stream-begin.log", {"argv": args, "pid": os.getpid(), "held": held, "t": time.monotonic()})
 if args == ["--version"]:
     os.execv(REAL, [REAL] + args)
@@ -4419,17 +4987,183 @@ def test_the_session_start_block_reads_the_mirror_and_only_starts_the_service(es
     assert _until(lambda: _service_dir(est), 10), "the block did not start the service"
 
 
+#: T237zzb: HOW LONG A CASE WAITS FOR A START IT MUST NOT MAKE, from its
+#: `session-start`'s exit: past the start's own limit, `timeout -k 1 1`
+#: (`reg_service_start`, at most 2 s), and past the 10 s in which the
+#: control, `test_the_session_start_block_reads_the_mirror_and_only_starts_the_service`,
+#: finds the socket its start made.
+NO_START_S = 12.0
+
+#: T237zzb's STAND-IN `lanes-index`, beside a copy of the estate's
+#: `lanes-edit.sh`, where `lanes_index_bin` looks first. It logs each call's
+#: words to @LOG@; answers `mode`, the block's one mode question
+#: (`reg_mode_query`), as the case's state says, `index` with "index" and 0,
+#: `78` with 78, EX_CONFIG, the code of a build that refuses `mode=primary`;
+#: answers `serve` 0, starting nothing, while @OFF@ exists (the case's twin,
+#: with T513's start disabled); and hands every other call, `serve --start`
+#: included, to the estate's flipped `lanes-index`, @REAL@, on its primary
+#: configuration.
+_SESSION_SEAM = r'''#!/bin/sh
+printf '%s\n' "$*" >> @LOG@
+case "${1-}" in
+  mode)
+    case @STATE@ in
+      index) printf 'index\n'; exit 0 ;;
+      78) printf 'lanes-index: REFUSED: mode=primary in this build (T237zzb stand-in)\n' >&2
+          exit 78 ;;
+    esac ;;
+  serve)
+    if [ -e @OFF@ ]; then exit 0; fi ;;
+esac
+exec @REAL@ "$@"
+'''
+
+#: The block's last line (`ssb_tail`), whose age is the one word two runs
+#: of one state can differ in (`fetch_age`: seconds, under 90 s).
+AS_OF = re.compile(r"^as of .+ \(no fetch\)$", re.M)
+
+
+def _estate_servers(est: Estate) -> list:
+    """The live processes of this estate's own `lanes-index`, its flipped
+    copy (`Estate.index`), with `serve` among the words after it: a start,
+    `serve --start`, or the service one starts, whose argv is that path and
+    `serve` (`register_serve_launch`). The path is compared by its real
+    path, as the guard resolves its own directory (`readlink -f`); it is
+    under the estate's own root, so no other estate's process carries it."""
+    index = os.path.realpath(est.index)
+    found = []
+    for entry in Path("/proc").iterdir():
+        if entry.name.isdigit() and _alive(entry.name):
+            argv = _argv(entry.name)
+            at = [i for i, word in enumerate(argv) if word.startswith("/")
+                  and os.path.realpath(word) == index]
+            if at and "serve" in argv[at[0] + 1:]:
+                found.append(int(entry.name))
+    return found
+
+
+@pytest.mark.parametrize("state", ["index", "78", "compact"])
+def test_session_start_starts_no_service_outside_primary(estate, state):
+    """T513's start runs only where the block's one mode answer is primary:
+    the `session-start` arm runs it after `session_start_block` returns,
+    keyed on that answer (lane 1's U5 review of T513, which asks for these
+    three cases, opensoft/openRepoTools#165 6882025131; lane 5, #165
+    6882048675, which gives them to lane 2 as T237zzb). `[index]`: the
+    answer `mode index`. `[78]`: `lanes-index mode` exits 78, EX_CONFIG,
+    which the block reads as a refused mode and a failed read
+    (`reg_mode_query`'s `78:*` arm, under `mirror`). `[compact]`: a
+    `SessionStart` whose `source` is `compact`, which returns before the
+    mode question. Each runs `session-start` and gets exit 0 and no register
+    call; after `NO_START_S` no `register.sock` exists and no `serve` of the
+    estate's `lanes-index` runs; the stand-in's log holds no `serve` call
+    and the block's one `mode` call, none for `[compact]`; and its stdout is
+    the bytes of the same state with T513's start disabled, the fetch's age
+    aside (`AS_OF`).
+
+    THE CONTROL'S ESTATE, WITH ONE ANSWER CHANGED. Each case is the
+    control's primary estate, flipped build and configuration, with
+    `_SESSION_SEAM` beside a copy of its `lanes-edit.sh`: the block's one
+    mode question gets the case's answer, and every other call, `serve
+    --start` included, reaches the flipped `lanes-index` on that primary
+    configuration. A real index configuration or a refusing build is
+    refused again by `serve --start` (`register_serve_start_only`, which
+    refuses any mode but primary) and by `serve`, so a start there makes no
+    socket either, and a case run there would pass with the arm's mode test
+    gone. Here any start makes the control's socket, so "no socket" is
+    measured against a start that would make one."""
+    est = estate(mode="primary")
+    est.shim()
+    seam = est.root / "seam"
+    seam.mkdir()
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        if (est.guard.parent / name).exists():
+            shutil.copy2(est.guard.parent / name, seam / name)
+    calls, off = seam / "lanes-index.calls", seam / "start-off"
+    _script(seam / "lanes-index", _SESSION_SEAM, LOG=shlex.quote(str(calls)),
+            STATE=shlex.quote(state), OFF=shlex.quote(str(off)),
+            REAL=shlex.quote(str(est.index)))
+    hook_input = est.session.hook_input()
+    if state == "compact":
+        hook_input = json.dumps(dict(json.loads(hook_input), hook_event_name="SessionStart",
+                                     source="compact"), separators=(",", ":"))
+
+    def block() -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", str(seam / "lanes-edit.sh"), "session-start"],
+                              input=hook_input, capture_output=True, text=True,
+                              env=est.env(), cwd=str(est.wip), timeout=60)
+
+    proc = block()
+    assert proc.returncode == 0 and not est.shim_calls(), \
+        (proc.returncode, est.shim_calls(), proc.stderr)
+    started = _until(lambda: _service_dir(est) or _estate_servers(est), NO_START_S, 0.25)
+    servers = _estate_servers(est)
+    est.spare.extend(servers)
+    assert not started and not servers and not (_run_dir(est) / "register.sock").exists(), \
+        f"session-start [{state}] started the service: {started} {servers}\n{proc.stderr}"
+    words = [line.split(" ", 1)[0] for line in
+             calls.read_text(encoding="utf-8").splitlines()] if calls.exists() else []
+    assert words.count("mode") == (0 if state == "compact" else 1) and "serve" not in words, words
+    off.write_text("", encoding="utf-8")
+    twin = block()
+    assert twin.returncode == 0, twin.stderr
+    assert AS_OF.sub("as of <age> (no fetch)", proc.stdout) == \
+        AS_OF.sub("as of <age> (no fetch)", twin.stdout), (proc.stdout, twin.stdout)
+
+
 def test_the_first_call_starts_the_service_with_no_supervisor(estate):
     """A7: the first guard call starts the service detached, with no
-    supervisor: its parent is init or a subreaper, not the hook."""
+    supervisor: its parent is init or a subreaper, not the hook.
+
+    AND ITS OWN REQUEST IS ANSWERED, by the direct read, since the guard
+    never waits for a start (TP:2051-2053, SVC-4; lane 3's erratum, on lane
+    5's SHOULD 3, row 1). Since T237zza (lane 5, opensoft/openRepoTools#165
+    6881986067) the case asserts that answer, not only the start: the
+    estate's first prompt gets what `Estate.make_offer` asserts of it, exit 2
+    with the name offer and the offer's record, from `FROM` to the session's
+    name; inside the guard's budget and not stopped by the runner; and with
+    the fallback line on stderr exactly once, the client's own word that the
+    service was unavailable and it read directly (`FALLBACK`). A first call
+    that started the service and then dropped its own request, or answered
+    it otherwise, passed the start's assertions alone."""
     est = estate(mode="primary")
-    hook = est.hook("hello")
-    assert _until(lambda: _service_dir(est), 10), "the first call started no service"
-    servers = [p for p in _members("sid", 0) if "serve" in " ".join(_argv(p))] or [
-        int(e.name) for e in Path("/proc").iterdir() if e.name.isdigit()
-        and _argv(e.name)[-1:] == ["serve"]]
+    # T237zzc: ONLY THIS ESTATE'S OWN SERVICE IS TAKEN, AND STOPPED AT THE
+    # TEARDOWN. The lookup took any process on the workstation whose argv
+    # ended in `serve`, another lane's service included, and `spare` stopped
+    # it. It now takes the processes of this estate's own `lanes-index`
+    # (`_estate_servers`, the `serve` its client starts); any other `serve`
+    # is printed and left alone, never signalled. A decoy this case starts,
+    # whose argv ends in `serve` as a service's does, shows it each run: it
+    # must be left out. It ends on its own when its stdin closes (or after
+    # 60 s), and nothing here signals it.
+    decoy = subprocess.Popen([sys.executable, "-c",
+                              "import select, sys; select.select([sys.stdin], [], [], 60)",
+                              "serve"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+    try:
+        hook = est.hook("hello")
+        assert _until(lambda: _service_dir(est), 10), "the first call started no service"
+        servers = [p for p in _estate_servers(est) if _argv(p)[-1:] == ["serve"]]
+        foreign = [int(e.name) for e in Path("/proc").iterdir() if e.name.isdigit()
+                   and _argv(e.name)[-1:] == ["serve"] and int(e.name) not in servers]
+        for pid in foreign:
+            print(f"T237zzc: a serve not this estate's, left alone: pid {pid} {_argv(pid)}")
+        assert decoy.poll() is None and decoy.pid in foreign and decoy.pid not in servers, \
+            f"the lookup took a serve that is not this estate's (the decoy {decoy.pid}): {servers}"
+    finally:
+        decoy.stdin.close()
+        decoy.wait(10)
     assert servers and all(_stat(p).get("ppid") != hook.pgid for p in servers), servers
     est.spare.extend(servers)
+    # T237zza: THE FIRST CALL'S OWN ANSWER, after the start's assertions, so
+    # the service it started is already in `spare` when one of these fails.
+    record = est.record()
+    assert not hook.killed and hook.t_exit - hook.t0 < BUDGET, repr(hook)
+    assert hook.code == 2 and OFFER in hook.text, \
+        f"the first call's own request was not answered with the name offer: {hook!r}"
+    assert record.get("mode") == "name-drift" and record.get("from") == FROM \
+        and record.get("to") == est.to, f"the first call wrote no offer: {record}\n{hook!r}"
+    assert hook.err.splitlines().count(FALLBACK) == 1, \
+        f"the first call was not answered by the direct read, once: {hook.err}"
 
 
 @pytest.mark.parametrize("case", ["start-fails", "psql-14"])
