@@ -9085,11 +9085,15 @@ class RegisterService:
             # changed back, wakes it as a step does. Where the worker is in a
             # job (`busy`: a request's query, the idle check, or a whole-file
             # fetch of up to 11 s), it takes no change before that job ends,
-            # so the wait is held to the request's own timer, which ends
-            # inside the client's wait (`register_serve_wait_ms`, the timer
-            # plus 100 ms), and the client hears `unavailable` rather than
-            # giving up. The change stays asked of the worker; no connection
-            # thread re-reads it, runs `git` or waits on a kill (M1).
+            # so the wait is held to the request's own timer. That is 100 ms
+            # shorter than the client's wait (`register_serve_wait_ms`), but
+            # it starts later, at the request's arrival, while the client's
+            # starts before its checks and its connect: so the client
+            # normally hears `unavailable`, and where more than 100 ms passed
+            # before the request arrived, its wait ends first, and it reads
+            # directly (socket API 6.2). The change stays asked of the
+            # worker; no connection thread re-reads it, runs `git` or waits
+            # on a kill (M1).
             with self.cond:
                 self.config_checking -= 1
                 self.asks += 1
@@ -9299,8 +9303,9 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     for the service's life, where a second starter exits 0; under it, the
     socket tried: one that answers the
     connect is a live service, and this starter exits 0; `ECONNREFUSED` is a
-    stale socket, which it unlinks; then the temporary sockets an earlier
-    start left removed (`register_serve_sweep`; N5), the bind, under
+    stale socket, which it replaces, renaming its own new socket over it,
+    and never unlinks (socket API 2.5 and 8.3); then the temporary sockets
+    an earlier start left removed (`register_serve_sweep`; N5), the bind, under
     `umask 077`, the owner file, the listen, and the stamp removed
     (Y:3936-3938). `stamps`
     are the install's and the configuration's, as `serve` took them before
@@ -9457,7 +9462,7 @@ def register_serve_state(paths: dict) -> str:
         return f"not running - no socket at {paths['sock']}; the next read starts one"
     except ConnectionRefusedError:
         return (f"not running - a stale socket at {paths['sock']}, which the next start "
-                f"unlinks under its lock")
+                f"replaces under its lock")
     except OSError as exc:
         return f"unknown - the socket {paths['sock']} could not be reached ({exc.strerror or exc})"
     finally:
@@ -10021,8 +10026,10 @@ def register_read_ask(cfg: dict, opts: dict) -> tuple:
     directly; None with False: the client reads directly by its own
     decision, writing no `.direct` (N5). A `.direct` already there is a
     fallback with no ask. `refuse db` raises `RegisterServiceRefused`. The
-    wait is `w_s` from the connect, and under `--for guard` no later than
-    the guard's cut (N4)."""
+    wait is one deadline, `w_s` from the moment the request is built, set
+    before `register_serve_ask`'s checks and its connect, so it covers them
+    (socket API 13.8, step 4), and under `--for guard` no later than the
+    guard's cut (N4)."""
     cache = opts["cache"]
     if os.path.lexists(f"{cache}.direct"):
         return None, True
