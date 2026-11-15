@@ -21885,8 +21885,17 @@ guard_offer() {   # <offer file> <pane>
            printf 'pane=%s\n'   "$go_pane" || exit 1
            [ -z "$go_act" ] || printf 'act=%s\n' "$go_act" || exit 1
          } > "$go_t" ) 2>/dev/null; then
-      if ln -- "$go_t" "$go_f" 2>/dev/null; then
-        go_made=1
+      if [ -d "$go_f" ]; then
+        # A DIRECTORY, OR A LINK TO ONE, AT THE RECORD'S PATH (NIT 1): `ln` would
+        # make the link INSIDE it and report success. It is a record that is there
+        # and not a create, and nothing is left inside it.
+        go_made=there
+      elif ln -- "$go_t" "$go_f" 2>/dev/null; then
+        # AND THE LINK MUST BE THE RECORD (NIT 1): a status of 0 with `$go_f` not
+        # the very file written (an NFS retransmit that reports EEXIST after the
+        # link was made, or one that reports success for a name another invocation
+        # holds) is not this writer's create.
+        if [ "$go_f" -ef "$go_t" ]; then go_made=1; else go_made=there; fi
       elif [ -e "$go_f" ] || [ -L "$go_f" ]; then
         go_made=there
       elif ( set -C; umask 077; cat -- "$go_t" > "$go_f" ) 2>/dev/null; then
@@ -21963,6 +21972,13 @@ guard_offer_site() {   # <offer file> <pane> <the prompt>
   guard_offer "$gos_f" "$gos_pane" || gos_rc=$?
   [ "$gos_rc" = 3 ] || return 2
   gos_m=""
+  # A RECORD THAT IS NOT A FILE (NIT 1: a directory, or a link to one) is a
+  # record that is there and that cannot be answered or replaced: refused, with
+  # nothing written, and `guard_answer` is never called on it.
+  if { [ -e "$gos_f" ] || [ -L "$gos_f" ]; } && [ ! -f "$gos_f" ]; then
+    guard_refuse "the pending offer could not be recorded: a record of this transcript's is at $gos_f and could not be replaced, so nothing was written to it. Send your prompt again and the question will be asked afresh."
+    return 2
+  fi
   # A RECORD THAT HAS GONE SINCE THE FAILED CREATE (F3): neither `-e` nor `-L`
   # holds, so this invocation read nothing and has nothing to answer or drop (a
   # `guard_answer` on a missing file would call it unreadable, say it was
