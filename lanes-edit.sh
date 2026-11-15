@@ -21653,6 +21653,20 @@ EOF
   return 2
 }
 
+# THE OFFER AS THE ANSWER READ IT (lane 5's adversarial review, NIT 2): the hook's
+# own writes require the record to still be THE OFFER THAT WAS ANSWERED, so
+# `--match` also carries its `from`, `to`, `session` and `utc` (where it has them),
+# and an offer re-made since, for another `to` say, is not the answered offer: it
+# takes the same path as a changed record, and an outer is never started for a
+# `to` that nobody answered 2 to.
+guard_answer_match() {   # <from> <to> <session> <utc>
+  GAM_MATCH=(--offer)
+  [ -z "${1-}" ] || GAM_MATCH+=(--match "from=$1")
+  [ -z "${2-}" ] || GAM_MATCH+=(--match "to=$2")
+  [ -z "${3-}" ] || GAM_MATCH+=(--match "session=$3")
+  [ -z "${4-}" ] || GAM_MATCH+=(--match "utc=$4")
+}
+
 # THE OFFER THE PERSON ANSWERED IS NOT THE OFFER ANY MORE (lane 3's ruling on lane
 # 5's rule "No rewrite creates a record", #165 6885771975, ruling 5, (A); lane 5's
 # rule for the hook's own writes, which lane 3 confirmed, #165 6886113842): one of the
@@ -21683,7 +21697,9 @@ guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 whe
       [ "$gam_ren" = 0 ] || guard_window_back "$gam_from" "$gam_to" || :
       return 3 ;;
   esac
-  if [ -f "$gam_f" ]; then
+  if [ "$gam_m" = name-drift ]; then
+    gam_why="the offer at $gam_f was changed before the $gam_what could be recorded (it is another offer now, not the one that was answered)"
+  elif [ -f "$gam_f" ]; then
     gam_why="the offer at $gam_f was changed before the $gam_what could be recorded (it says mode=${gam_m:-none} now)"
   else
     gam_why="the offer was dropped before the $gam_what could be recorded"
@@ -21708,11 +21724,19 @@ guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 whe
   return 2
 }
 
-# THE OFFER IS STILL THERE AND STILL SAYS `name-drift` (the first `mode` line,
-# as `guard_bind_load` takes it): choice 1's test, made just before its `mv`.
-guard_offer_still() {   # <offer file>
-  [ -f "${1-}" ] || return 1
-  [ "$(sed -n -e 's/^mode=//p' "${1-}" 2>/dev/null | head -n1)" = name-drift ]
+# THE OFFER IS STILL THERE, STILL SAYS `name-drift` (the first `mode` line, as
+# `guard_bind_load` takes it) AND IS STILL THE OFFER THAT WAS ANSWERED, by its
+# `from`, `to`, `session` and `utc` where it has them (NIT 2): choice 1's test,
+# made just before its `mv`.
+guard_offer_still() {   # <offer file> <from> <to> <session> <utc>
+  gos2_f="${1-}"
+  [ -f "$gos2_f" ] || return 1
+  [ "$(sed -n -e 's/^mode=//p' "$gos2_f" 2>/dev/null | head -n1)" = name-drift ] || return 1
+  [ -z "${2-}" ] || [ "$(sed -n -e 's/^from=//p' "$gos2_f" 2>/dev/null | head -n1)" = "$2" ] || return 1
+  [ -z "${3-}" ] || [ "$(sed -n -e 's/^to=//p' "$gos2_f" 2>/dev/null | head -n1)" = "$3" ] || return 1
+  [ -z "${4-}" ] || [ "$(sed -n -e 's/^session=//p' "$gos2_f" 2>/dev/null | head -n1)" = "$4" ] || return 1
+  [ -z "${5-}" ] || [ "$(sed -n -e 's/^utc=//p' "$gos2_f" 2>/dev/null | head -n1)" = "$5" ] || return 1
+  return 0
 }
 
 # The answer, and it is the whole of clause (h) rule 2's second half.
@@ -21722,6 +21746,8 @@ guard_answer() {   # <offer file> <the prompt> <pane>
   ga_from="$(sed -n -e 's/^from=//p' "$ga_f" 2>/dev/null | head -n1)"
   ga_to="$(sed -n -e 's/^to=//p' "$ga_f" 2>/dev/null | head -n1)"
   ga_session="$(sed -n -e 's/^session=//p' "$ga_f" 2>/dev/null | head -n1)"
+  ga_utc="$(sed -n -e 's/^utc=//p' "$ga_f" 2>/dev/null | head -n1)"
+  guard_answer_match "$ga_from" "$ga_to" "$ga_session" "$ga_utc"
   # FEATURE 007, T502 — THE ATTEMPTS THIS OFFER HAS SPENT ON CHOICE 2: `bind=k`,
   # which the hook sets at each `2` and the offer keeps after a failure (the
   # contract's section 3). No key is none spent; a key that is not 1 to 3 is an
@@ -21801,7 +21827,7 @@ guard_answer() {   # <offer file> <the prompt> <pane>
            printf 'utc=%s\n' "$(utc_now)" || exit 1
          } > "$ga_t" ) 2>/dev/null; then
       ga_wrc=1
-    elif ! guard_offer_still "$ga_f"; then
+    elif ! guard_offer_still "$ga_f" "$ga_from" "$ga_to" "$ga_session" "$ga_utc"; then
       ga_wrc=2
     elif ! mv -f -- "$ga_t" "$ga_f" 2>/dev/null; then
       ga_wrc=1
@@ -21903,7 +21929,7 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     ga_now="$(date -u '+%s %Y-%m-%dT%H:%M:%SZ')"
     ga_ep="${ga_now%% *}"
     ga_wrc=0
-    guard_bind_rewrite --offer "$ga_f" "rc why note pid pidstart out started_utc bound_s bounded deadline_epoch" \
+    guard_bind_rewrite "${GAM_MATCH[@]}" "$ga_f" "rc why note pid pidstart out started_utc bound_s bounded deadline_epoch" \
       mode=binding "bind=$ga_k" "started_utc=${ga_now#* }" "bound_s=$ga_bs" "bounded=$ga_bd" \
       "deadline_epoch=$((ga_ep + ga_bs + 5))" "host=$WS" "container=$LANES_CONTAINER_NAME" \
       "out=$ga_out" "detach=$ga_dn" || ga_wrc=$?
