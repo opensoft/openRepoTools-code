@@ -876,15 +876,13 @@ act_69_again_note() {
 # it printed, except that on primary, under a seq base, where it says to run a
 # command, the act is run again from step 1 instead (D9; lane 3's base clause,
 # narrowed to primary by the delta review's B2), as `lane-handoff`'s `d8_text`
-# does. `@files` keeps its hand commands (Y:5596). THE REGISTER'S FILE-LEVEL
-# LINE IS THE EXCEPTION to the exception: it carries a UTC of its own (Y:5224),
-# so the act run again would append a second one, and its line says to follow
-# what the writer printed and not to run the act again (`d8_text_w11`).
-act_in_doubt() {   # act_in_doubt <which write> [<what to do where the writer printed no rerun>]
+# does. `@files` keeps its hand commands (Y:5596). ONE TEXT FOR ALL THREE WRITES
+# (lane 3's ruling (a), #165 6902458081): where the register's file-level line
+# was sent, the act run again appends a second one, since its text carries a UTC
+# of its own (Y:5224), and lane 3 accepts that cost.
+act_in_doubt() {   # act_in_doubt <which write>
   act_d3=1
-  ai_none="${2-}"
-  [[ -n "$ai_none" ]] || ai_none="follow what it printed, except that on primary, under this act's base, where it says to run a command, you run /handoff again from step 1 instead"
-  echo "IN DOUBT: $1 exited 3 (the writer's own code, above). On primary it may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun, ${ai_none}; off primary, the commit is local and may already be on origin."
+  echo "IN DOUBT: $1 exited 3 (the writer's own code, above). On primary it may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun, follow what it printed, except that on primary, under this act's base, where it says to run a command, you run /handoff again from step 1 instead; off primary, the commit is local and may already be on origin."
 }
 # NO HAND COMMAND AFTER A WRITE THAT DID NOT END 0, UNDER A SEQ BASE (lane 3, #165
 # 6779688808, Q11; Y:5587, Y:5601). A hand re-run of a write that left out the act's two
@@ -1371,7 +1369,7 @@ act_w9_rc="$wr_rc"
 # write with no lane.
 wr_rc=0
 LANES_ACT="$act_line" LANES_EXPECT="$act_scopes" LANES_LANE="$lane" "$L" append-line "PAUSED — lane $lane, session $uuid@$ws, $(date -u +%Y-%m-%dT%H:%M:%SZ), $why_text; $hf_record" || wr_rc=$?
-[[ "$wr_rc" != 3 ]] || act_in_doubt "the register's PAUSED line" "follow what it printed, and do not run /handoff again for it: that run would append a second file-level line, which carries a UTC of its own (Y:5224)"
+[[ "$wr_rc" != 3 ]] || act_in_doubt "the register's PAUSED line"
 [[ "$wr_rc" != 3 ]] || act_also3=1
 act_again_say "the register's PAUSED line" "$wr_rc"
 [[ "$wr_rc" != 69 ]] || act_w69=1
@@ -1513,15 +1511,14 @@ ends the block 1 and the identity's (its own `REFUSED` line, or Amendment 15(d)'
 or may not have committed, so the block goes on to the next write, as it does after any write that did not land, and
 prints one line after the write: it exited 3, it may not be written, and the printed `LANES_WRITE_ID` rerun, which writes
 it once or finds it, is what to run (where the writer printed no such rerun, follow what it printed, except that on
-primary, under a seq base, where it says to run a command, you run `/handoff` again from step 1 instead, and except for
-the register's file-level line, which that run would append a second time (Y:5224): follow what the writer printed for it;
-off primary, the commit is local and may already be on origin). The writers' own stderr is kept, so what the writer
-printed, its rerun where it printed one, is above the line, and the block adds no hint of its own beside it. Say in the
-report which of the three exited 3, and relay what the writer printed. A 3 from the row write also sets
-`row_write_refused`, so that step 5 names the lane in the restart command, and step 5 then says the row write may not be
-written, never that it was refused (Y:5700; lane 3, #165 6774499606, T431's question 1). Where any write of the act exited
-3 and a later one exits 69, the 69 note names that rerun first, where the writer printed one (below): the object log's own
-in `act_69_doubt_note`, the register's line's or the row's in the sentence every note then ends with.
+primary, under a seq base, where it says to run a command, you run `/handoff` again from step 1 instead; off primary, the
+commit is local and may already be on origin). The writers' own stderr is kept, so what the writer printed, its rerun
+where it printed one, is above the line, and the block adds no hint of its own beside it. Say in the report which of the
+three exited 3, and relay what the writer printed. A 3 from the row write also sets `row_write_refused`, so that step 5
+names the lane in the restart command, and step 5 then says the row write may not be written, never that it was refused
+(Y:5700; lane 3, #165 6774499606, T431's question 1). Where any write of the act exited 3 and a later one exits 69, the 69
+note names that rerun first, where the writer printed one (below): the object log's own in `act_69_doubt_note`, the
+register's line's or the row's in the sentence every note then ends with.
 
 **A write that exits 69 prints the note, once** (spec:692: the three writes "SHALL exit 69 and then print a note"). The
 block goes on to the next write, as after any write that did not land, and after the third prints the note of how
@@ -1735,19 +1732,22 @@ One before the `READY` line (an identity or ownership refusal, a restart that an
 rename that did not take) prints no restart line, and nothing of the `PAUSED` record had been written: its line says what
 to fix, and to read `lane-handoff --restart-status --lane <lane>` where a restart owns the lane, or to run the same
 command again. A gate after the `READY` line leaves the pane as it is and has printed the restart line, but the record is
-not always written. **Run every rerun the line names first, in the order it names them, and follow what the writer printed
-where it printed none** (under a seq base the gate that refuses first names the printed rerun of every write of the act
-that exited 3, W9's, W11's and W12's in that order, since the gates behind it never run; lane 3, #165 6837908956, T429's
-questions 1 to 3), and then take the way out it gives: where it says the `PAUSED` record is in doubt or was NOT written,
-settle that, as it says, and where it says the row or the handoff was not set, or that the file-level line was NOT
-appended (its write exited 69), settle that, then run `--restart` again or restart by hand with the printed line, as it
-says. **Where it says the file-level line may not be written (its write exited 3), run the rerun the writer printed for
-it, where it printed one (where it printed none, follow what it printed), and then restart by hand with the printed line,
-never `--restart` again:** that run would append a second line, since the line carries a UTC of its own (Y:5224), and the
-printed rerun, where there is one, is the only one that finds the first (Y:5222). Only where the record, the row and the
-handoff are written and the pane was still not taken (the restart intent could not be written or read back, the supervisor
-could not be found, tmux refused the pane) is the printed restart line the fallback, and never a second `--restart`; a
-restart already in flight is read with `lane-handoff --restart-status --lane <lane>` first.
+not always written. **Run every rerun the line names first, in the order it names them; for a write the writer printed
+none for, follow what it printed, except that on primary, under a seq base, where it says to run a command, run
+`lane-handoff --restart` again from its start (the same flag) instead, once it says the other write has ended, in place of
+the way out the line gives** (under a seq base the gate that refuses first names the printed rerun of every write of the
+act that exited 3, W9's, W11's and W12's in that order, since the gates behind it never run; lane 3, #165 6837908956,
+T429's questions 1 to 3), and then take the way out it gives: where it says the `PAUSED` record is in doubt or was NOT
+written, settle that, as it says, and where it says the row or the handoff was not set, or that the file-level line was
+NOT appended (its write exited 69), settle that, then run `--restart` again or restart by hand with the printed line, as
+it says. **Where it says the file-level line may not be written (its write exited 3), run the rerun the writer printed for
+it, and then restart by hand with the printed line:** a second `--restart` would append a second line, since the line
+carries a UTC of its own (Y:5224), and the printed rerun is the only one that finds the first (Y:5222). On primary that 3
+always prints a rerun; where a write printed none, the way above stands, at the cost of a second file-level line (ruling
+(a), lane 3, #165 6902458081). Only where the record, the row and the handoff are written and the pane was still not taken
+(the restart intent could not be written or read back, the supervisor could not be found, tmux refused the pane) is the
+printed restart line the fallback, and never a second `--restart`; a restart already in flight is read with `lane-handoff
+--restart-status --lane <lane>` first.
 
 **`lane <name>` IS STILL A PERSON'S DOOR AND IS NO LONGER THIS ONE** (Amendment 18 Addendum 2 (i-8) names
 two doors: `lane <name>`, *"or through the launcher directly"*). The supervisor takes the second, because
