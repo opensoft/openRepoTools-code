@@ -1201,6 +1201,9 @@ def missed_estate(pg_cluster, tmp_path_factory):
         shared = SimpleNamespace(problem=None, estate=estate, ws2=ws2, cached_mode=cached)
     except AssertionError as exc:
         shared = SimpleNamespace(problem=f"test 8's estate after a whole rollback: {exc}")
+    except BaseException:  # any other end of the build: drop, then re-raise
+        pg_cluster.drop_database(name)
+        raise
     try:
         yield shared
     finally:
@@ -1371,6 +1374,9 @@ def partitioned_estate(pg_cluster, tmp_path_factory):
                                  last=estate.journal()[-1][0])
     except AssertionError as exc:
         shared = SimpleNamespace(problem=f"section 4.2's estate: {exc}")
+    except BaseException:  # any other end of the build: drop, then re-raise
+        pg_cluster.drop_database(name)
+        raise
     try:
         yield shared
     finally:
