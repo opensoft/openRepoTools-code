@@ -6872,10 +6872,15 @@ def register_guard_fetch(opts: dict, paths: list) -> dict:
     be another launcher's file or none, so the child would run a file this
     read does not; the un-normalized path opens the real file, since the
     kernel resolves `link/..` physically."""
-    argv = [sys.executable or "python3", register_serve_launch_file(), "register", "guard-fetch"]
-    for path in paths:
-        argv += ["--path-hex", os.fsencode(path).hex()]
     try:
+        # THE ARGV IS BUILT INSIDE THE TRY (lane 1's D3, #165 6896841050):
+        # `register_serve_launch_file()` calls `os.getcwd()` where `__file__` is
+        # relative, and its `OSError` is then a start that failed, a
+        # `RegisterGuardFetchMissed`, as `register_serve_launch`'s is.
+        argv = [sys.executable or "python3", register_serve_launch_file(),
+                "register", "guard-fetch"]
+        for path in paths:
+            argv += ["--path-hex", os.fsencode(path).hex()]
         child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                  stderr=subprocess.DEVNULL, close_fds=True,
                                  start_new_session=True)
