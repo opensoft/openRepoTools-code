@@ -7796,11 +7796,21 @@ def register_serve_launch(paths: dict) -> str | None:
     through a directory link (`cd dirlink; ./lanes-index`) does not see a
     repoint of that link (lane 1's U5, #165 6895008151).
 
-    THE REMEDY (lane 3's ruling, #165 6894714082): after an upgrade by
-    repointing a link, stop the old service, whose `pid=` is in the owner
-    file (`register.owner`). That a client which finds another install reads
-    directly, and starts no `serve`, is a named follow-up after v1.3.0, in its
-    own PR; it is not built here."""
+    A SECOND LIVE INSTALL IS THE SAME LIMIT (lane 3's ruling, #165
+    6895062857): option 1 covers any second live install at another real
+    path, whatever put it there. The four cases are: a checkout run by hand;
+    a link-estates RELINK; a changed `OPENREPOTOOLS_BIN_DIR`; and a link
+    repointed above the path, as above. Each has the same consequence: the
+    other install's service answers, and a client of this install reads
+    "another install" and starts a futile `serve`.
+
+    THE REMEDY (lane 3's ruling, #165 6895062857, on #165 6894714082):
+    "stop the other install's service, whose `pid=` is in the owner file, or
+    do not run two installs against one register at once". After an upgrade
+    by repointing a link, the other install's service is the old service,
+    whose `pid=` is in the owner file (`register.owner`). That a client which
+    finds another install reads directly, and starts no `serve`, is a named
+    follow-up after v1.3.0, in its own PR; it is not built here."""
     try:
         log = os.open(paths["log"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
                       | os.O_CLOEXEC, 0o600)
@@ -8164,11 +8174,16 @@ def register_serve_launch_file() -> str:
     kernel resolves physically, through `link`, to the real launcher.
     `os.path.abspath` would collapse it lexically to `a/lanes-index`, which
     can be another launcher or none. (On Python 3.9 and later the main
-    script's `__file__` is always absolute, so the join to the working
-    directory is a fallback.) The link stays in `__file__`, and a repoint is
-    seen, only where the launcher was invoked through that link; a launcher
-    invoked by its real path, as `lanes-edit.sh` does, has the real path
-    (see `register_serve_launch`, and lane 5's correction, #165 6894693645).
+    script's `__file__` is absolute, so the join to the working directory is
+    a fallback. In a working directory longer than `PATH_MAX`, `__file__`
+    stays relative (lane 1's U5, #165 6895008151, NIT 2), and the join then
+    gives a path the kernel refuses, "File name too long": `Popen` succeeds,
+    and the started `serve` fails, logging to `register.log`. So there the
+    join cannot yield a usable path.) The link stays in `__file__`, and a
+    repoint is seen, only where the launcher was invoked through that link;
+    a launcher invoked by its real path, as `lanes-edit.sh` does, has the
+    real path (see `register_serve_launch`, and lane 5's correction, #165
+    6894693645).
     On a tree of T124's form this module's code runs in the launcher's
     namespace, so `__file__` is the launcher's, as it was invoked."""
     return __file__ if os.path.isabs(__file__) else os.path.join(os.getcwd(), __file__)
