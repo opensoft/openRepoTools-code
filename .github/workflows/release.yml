@@ -1525,17 +1525,35 @@ jobs:
 
       # THE TAG, AGAIN, RIGHT BEFORE THE UPLOAD. The run may have waited on
       # an approval, and a tag can be moved or deleted meanwhile; an upload
-      # cannot be taken back.
+      # cannot be taken back. A read the forge refuses is named on the
+      # refusal's one `::error::` line, and gh's own report of it is kept
+      # off the log, in $RUNNER_TEMP.
       - name: the tag v<version> still names this commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" \
-              --jq 'select(.object.type == "tag") | .object.sha')" || object=
+          read_tag() {   # <path> <jq>: the answer in $answer, or why the read failed in $why
+            if answer="$(gh api "$1" --jq "$2" 2>"$RUNNER_TEMP/tag-again.err")"; then
+              return 0
+            fi
+            why="$(head -n 1 "$RUNNER_TEMP/tag-again.err")"
+            why="${why:-gh api exited non-zero, and said nothing}"
+            return 1
+          }
           commit=
-          if [ -n "$object" ]; then
-            commit="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object" \
-                --jq 'select(.object.type == "commit") | .object.sha')" || commit=
+          if ! read_tag "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" \
+              'select(.object.type == "tag") | .object.sha'; then
+            echo "::error::the tag v$VERSION cannot be read (${why//%/%25}), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+            exit 1
+          fi
+          if [ -n "$answer" ]; then
+            object="$answer"
+            if ! read_tag "repos/$GITHUB_REPOSITORY/git/tags/$object" \
+                'select(.object.type == "commit") | .object.sha'; then
+              echo "::error::the tag object $object of v$VERSION cannot be read (${why//%/%25}), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+              exit 1
+            fi
+            commit="$answer"
           fi
           if [ "$commit" != "$GITHUB_SHA" ]; then
             echo "::error::the annotated tag v$VERSION no longer names $GITHUB_SHA (it names '$commit'), so nothing is uploaded"
@@ -2057,13 +2075,15 @@ jobs:
       # tag v<version>, and nothing else, ever. So in opensoft/openRepoTools
       # this step refuses outright, in case the job's condition is ever
       # loosened; that repository's missing pypi.org publisher is the second
-      # line of defence.
+      # line of defence. A refusal is one `::error::` line, with a refused
+      # version quoted on it (`printf %q`, each `%` written `%25`, as a
+      # workflow command's message needs), never on a second line.
       - name: the repository guard (FR-048) again, before anything else, and v<version> is a final from opensoft/openRepoTools-code
         run: |
           final='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           if ! [[ "$VERSION" =~ $final ]] || [ "$VERSION" = 0.0.0 ]; then
-            echo "::error::PyPI takes a final release X.Y.Z alone, never a pre-release, so nothing is uploaded"
-            printf 'the input, quoted: %q\n' "$VERSION"
+            quoted="$(printf '%q' "$VERSION")"
+            echo "::error::PyPI takes a final release X.Y.Z alone, never a pre-release, so nothing is uploaded (the input, quoted: ${quoted//%/%25})"
             exit 1
           fi
           if [ "$GITHUB_REF" != "refs/tags/v$VERSION" ]; then
@@ -2133,12 +2153,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" \
-              --jq 'select(.object.type == "tag") | .object.sha')" || object=
+          read_tag() {   # <path> <jq>: the answer in $answer, or why the read failed in $why
+            if answer="$(gh api "$1" --jq "$2" 2>"$RUNNER_TEMP/tag-again.err")"; then
+              return 0
+            fi
+            why="$(head -n 1 "$RUNNER_TEMP/tag-again.err")"
+            why="${why:-gh api exited non-zero, and said nothing}"
+            return 1
+          }
           commit=
-          if [ -n "$object" ]; then
-            commit="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object" \
-                --jq 'select(.object.type == "commit") | .object.sha')" || commit=
+          if ! read_tag "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" \
+              'select(.object.type == "tag") | .object.sha'; then
+            echo "::error::the tag v$VERSION cannot be read (${why//%/%25}), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+            exit 1
+          fi
+          if [ -n "$answer" ]; then
+            object="$answer"
+            if ! read_tag "repos/$GITHUB_REPOSITORY/git/tags/$object" \
+                'select(.object.type == "commit") | .object.sha'; then
+              echo "::error::the tag object $object of v$VERSION cannot be read (${why//%/%25}), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+              exit 1
+            fi
+            commit="$answer"
           fi
           if [ "$commit" != "$GITHUB_SHA" ]; then
             echo "::error::the annotated tag v$VERSION no longer names $GITHUB_SHA (it names '$commit'), so nothing is uploaded"
@@ -2251,13 +2287,15 @@ jobs:
       # THE REPOSITORY GUARD AGAIN, ON ITS OWN, FIRST (FR-048): `pypi`'s own
       # first step, line for line. A release's GitHub Release, like its file
       # on PyPI, is a final X.Y.Z from opensoft/openRepoTools-code, made from
-      # its own tag v<version>, and nothing else, ever.
+      # its own tag v<version>, and nothing else, ever. A refusal is one
+      # `::error::` line, with a refused version quoted on it (`printf %q`,
+      # each `%` written `%25`), never on a second line.
       - name: the repository guard (FR-048) again, before anything else, and v<version> is a final from opensoft/openRepoTools-code
         run: |
           final='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           if ! [[ "$VERSION" =~ $final ]] || [ "$VERSION" = 0.0.0 ]; then
-            echo "::error::PyPI takes a final release X.Y.Z alone, never a pre-release, so nothing is uploaded"
-            printf 'the input, quoted: %q\n' "$VERSION"
+            quoted="$(printf '%q' "$VERSION")"
+            echo "::error::PyPI takes a final release X.Y.Z alone, never a pre-release, so nothing is uploaded (the input, quoted: ${quoted//%/%25})"
             exit 1
           fi
           if [ "$GITHUB_REF" != "refs/tags/v$VERSION" ]; then
@@ -2303,17 +2341,35 @@ jobs:
           echo "list holds $DIGEST_LIST at sha256 $digest, the build job's"
 
       # THE TAG, AGAIN, as each upload job reads it right before its upload:
-      # a release names its tag, and the tag must still name this commit.
+      # a release names its tag, and the tag must still name this commit. A
+      # read the forge refuses is named on the refusal's one `::error::`
+      # line, and gh's own report of it is kept off the log.
       - name: the tag v<version> still names this commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" \
-              --jq 'select(.object.type == "tag") | .object.sha')" || object=
+          read_tag() {   # <path> <jq>: the answer in $answer, or why the read failed in $why
+            if answer="$(gh api "$1" --jq "$2" 2>"$RUNNER_TEMP/tag-again.err")"; then
+              return 0
+            fi
+            why="$(head -n 1 "$RUNNER_TEMP/tag-again.err")"
+            why="${why:-gh api exited non-zero, and said nothing}"
+            return 1
+          }
           commit=
-          if [ -n "$object" ]; then
-            commit="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object" \
-                --jq 'select(.object.type == "commit") | .object.sha')" || commit=
+          if ! read_tag "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" \
+              'select(.object.type == "tag") | .object.sha'; then
+            echo "::error::the tag v$VERSION cannot be read (${why//%/%25}), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+            exit 1
+          fi
+          if [ -n "$answer" ]; then
+            object="$answer"
+            if ! read_tag "repos/$GITHUB_REPOSITORY/git/tags/$object" \
+                'select(.object.type == "commit") | .object.sha'; then
+              echo "::error::the tag object $object of v$VERSION cannot be read (${why//%/%25}), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+              exit 1
+            fi
+            commit="$answer"
           fi
           if [ "$commit" != "$GITHUB_SHA" ]; then
             echo "::error::the annotated tag v$VERSION no longer names $GITHUB_SHA (it names '$commit'), so nothing is uploaded"
