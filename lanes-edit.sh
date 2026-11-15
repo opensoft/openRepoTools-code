@@ -21904,14 +21904,23 @@ guard_offer() {   # <offer file> <pane>
         if [ "$go_f" -ef "$go_t" ]; then go_made=1; else go_made=there; fi
       elif [ -e "$go_f" ] || [ -L "$go_f" ]; then
         go_made=there
-      elif ( set -C; umask 077; : > "$go_f" ) 2>/dev/null; then
-        # THIS WRITER MADE THE FILE (NIT 4), empty, exclusively: the content
-        # follows. THE EMPTY INSTANT IS THE WINDOW LEFT on this path alone: a
-        # reader that meets the empty record calls it unreadable (case 11 drops
-        # it), and the `cat` then writes to the name again. A `cat` that fails is
-        # this writer's own partial file, which is removed, not another's record.
-        if cat -- "$go_t" > "$go_f" 2>/dev/null; then
+      elif go_nc=0
+           ( set -C; umask 077; { cat -- "$go_t" >&3 || exit 4; } 3>"$go_f" ) 2>/dev/null || go_nc=$?
+           [ "$go_nc" != 1 ]; then
+        # THE CONTENT IS WRITTEN THROUGH THE DESCRIPTOR THAT WAS OPENED
+        # EXCLUSIVELY (NIT 4; lane 5's re-check of parts 27 to 34, C): `3>` under
+        # `set -C` is the `O_EXCL` create, under `umask 077`, and the `cat` writes
+        # to that descriptor and never reopens the name. A status of 1 is "not
+        # made": the open failed, and no file of this writer's is there. A 4 is
+        # this writer's own partial file, and only then is the name removed. THE
+        # EMPTY INSTANT IS THE WINDOW LEFT on this path alone: a reader that meets
+        # the empty record calls it unreadable (case 11 drops it), and the write
+        # then goes to the unlinked file, so nothing is recreated at another mode
+        # and no other record is written over. The record is then not there, and
+        # the question is asked with its note that it could not be written.
+        if [ "$go_nc" = 0 ]; then
           go_made=1
+          [ -e "$go_f" ] || go_made=0
         else
           rm -f -- "$go_f" 2>/dev/null || :
         fi
