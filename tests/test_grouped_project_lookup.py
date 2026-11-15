@@ -28,7 +28,7 @@ def rows(root):
 
 
 def test_bounds_support_collections_and_repository_boundaries(tmp_path):
-    for group in ("workTrees", "laneWorkspaces", "brett-wip-lanes", "wip-lanes", "personal-register-lanes", "worktrees"):
+    for group in ("workTrees", "laneWorkspaces", "brett-wip-lanes", "wip-lanes", "personal-register-lanes", "brett-wip-lane-registers", "worktrees"):
         probe_project(tmp_path / group, "Hidden")
     target = probe_project(tmp_path / "business" / "Company space", "Visible")
     probe_project(tmp_path / "business" / "Company space" / "too-deep", "Deep")

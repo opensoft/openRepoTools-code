@@ -393,10 +393,10 @@ project_directory_walk() {
         [ -d "$child" ] || continue
         name="${child##*/}"
         # Per-lane register clones live beside any workspace as <workspace>-lanes.
-        case "$name" in workTrees|worktrees|laneWorkspaces|*-lanes) continue ;; esac
+        case "$name" in workTrees|worktrees|laneWorkspaces|*-lanes|*-lane-registers) continue ;; esac
         case "$child" in *$'\t'*|*$'\n'*) continue ;; esac
         physical="$(cd -- "$child" 2>/dev/null && pwd -P)" || continue
-        case "${physical##*/}" in workTrees|worktrees|laneWorkspaces|*-lanes) continue ;; esac
+        case "${physical##*/}" in workTrees|worktrees|laneWorkspaces|*-lanes|*-lane-registers) continue ;; esac
         case "$physical" in *$'\t'*|*$'\n'*) continue ;; esac
         boundary=0; family_container=0
         if [ -e "$child/$name/family.yaml" ] || [ -e "$physical/${physical##*/}/family.yaml" ]; then
