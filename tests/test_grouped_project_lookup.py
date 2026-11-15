@@ -346,3 +346,21 @@ def test_workspace_lane_collections_are_not_swept(tmp_path):
     assert f"PROBE park in {root}" in result.stdout
     assert str(lane) not in result.stdout + result.stderr
     assert "1 estate(s) parked" in result.stdout
+
+
+@pytest.mark.parametrize("physical_name", ["Atlas", "estate-data"])
+def test_family_container_alias_does_not_expose_members(tmp_path, physical_name):
+    home = tmp_path / "home"; home.mkdir()
+    alias, holder = logical_family_aliases(home, tmp_path / "storage", "Atlas")
+    physical = holder.parent
+    if physical_name != physical.name:
+        renamed = physical.with_name(physical_name)
+        physical.rename(renamed)
+        for link in (home / "projects" / "Atlas", home / "projects" / "000-invalid", home / "projects" / "group" / "Atlas"):
+            link.unlink()
+            link.symlink_to(renamed, target_is_directory=True)
+        physical = renamed
+    probe_project(physical, "Alpha")
+    found = rows(home / "projects")
+    assert "Atlas" in [row[0] for row in found]
+    assert "Alpha" not in [row[0] for row in found]
