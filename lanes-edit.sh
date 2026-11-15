@@ -20370,6 +20370,33 @@ guard_offer_drop() {   # <offer file>
   return 0
 }
 
+# DROP ONLY WHAT IS STILL THERE AS IT WAS READ (lane 5's adversarial review of
+# T502 parts 22 to 26, F1): `guard_run` reads the record's mode once, before it
+# works through clauses (d) and (e) and the table, and a drop made on that read
+# removed a bind record, and its live outer's `.out`, that another invocation had
+# made in the meantime. So a drop that follows other work reads the first `mode`
+# line NOW, and removes the record only where it still says <mode>. With
+# `record` it removes the record alone and never the `.bind.*` files: an
+# allowance has none (choice 1 removes them as it writes it), so even in the
+# window left, this read to the `rm`, a drop never unlinks a live outer's `.out`,
+# which the contract allows case 11 alone to meet (`bind-record.md`, section 1).
+#   0 the record said <mode> and was removed (best effort) · 1 it did not, or is
+#   not there, so nothing was removed
+guard_drop_if() {   # <mode> <offer file> [record]
+  gdi_f="${2-}"
+  [ -f "$gdi_f" ] || return 1
+  [ "$(sed -n -e 's/^mode=//p' "$gdi_f" 2>/dev/null | head -n1)" = "${1-}" ] || return 1
+  if [ "${3-}" = record ]; then
+    rm -f -- "$gdi_f" 2>/dev/null || :
+  else
+    guard_offer_drop "$gdi_f"
+  fi
+  return 0
+}
+guard_allow_drop() {   # <offer file>: an allowance, only while it still says `allow`
+  guard_drop_if allow "${1-}" record
+}
+
 # THE RECORD, READ ONCE, into `GBR_*`. The FIRST line of a key wins, as the
 # offer site's own `sed … | head -n1` read of `mode` has always taken it; the
 # `note=` lines are all kept, newline-separated, in their order.
@@ -21634,7 +21661,10 @@ EOF
       # own condition for it no longer applying. Leaving the file would let a
       # rename back to the allowed spelling pass silently on a decision the
       # person made about a state they have since left.
-      [ -f "$gr_off" ] && [ "$gr_mode" = allow ] && guard_offer_drop "$gr_off"
+      # THE DROP READS THE MODE AGAIN (F1): `gr_mode` is the first read, made
+      # before (d), (e) and this table, and a bind record that another invocation
+      # made since must not be removed on it.
+      [ "$gr_mode" != allow ] || guard_allow_drop "$gr_off" || :
       # AMENDMENT 16(f): the window may still have carried a former name a
       # moment ago, in which case it has just been renamed and that is said
       # here — the one thing this guard does that is not a refusal.
@@ -21658,8 +21688,13 @@ EOF
     fi
     # AN ALLOWANCE THAT NO LONGER FITS IS DROPPED RATHER THAN CARRIED: either
     # name having changed is exactly what invalidates it, and the person is
-    # asked again below.
-    [ "$gr_mode" = allow ] && guard_offer_drop "$gr_off"
+    # asked again below. THE DROP IS `guard_offer_site`'S, NOT THIS LINE'S (lane
+    # 5's adversarial review, F1): this function read `gr_mode` before (d), (e) and
+    # the table, and a drop on that read removed a bind record another invocation
+    # had made since, and its live outer's `.out`. The site's `ln` fails where a
+    # record is there, and its allow branch reads that record fresh: it passes an
+    # allowance that fits, drops one that does not (while it still says `allow`)
+    # and asks once, and answers any other record as the first read would.
     guard_offer_site "$gr_off" "$gr_pane" "$gr_prompt"
     return $?
   fi
@@ -21868,8 +21903,10 @@ guard_offer() {   # <offer file> <pane>
 # what `guard_run` returns:
 #   binding, bound, bind-failed   `guard_bind_site`, as at the first read: the
 #                                 bind record is answered, never overwritten
-#   allow                         passed with its warning where it still fits,
-#                                 else dropped, and the offer made once more
+#   allow                         read fresh: passed with its warning where it
+#                                 still fits, else dropped (while it still says
+#                                 `allow`: `guard_allow_drop`), and the offer made
+#                                 once more
 #   name-drift, or no mode        `guard_answer`, with this prompt as its answer,
 #                                 as at the first read; where that drops a stale
 #                                 offer (its 3), the offer is made once more
@@ -21895,7 +21932,7 @@ guard_offer_site() {   # <offer file> <pane> <the prompt>
         guard_allow_pass
         return 0
       fi
-      guard_offer_drop "$gos_f" ;;
+      guard_allow_drop "$gos_f" || : ;;
     *)
       gos_arc=0
       guard_answer "$gos_f" "$gos_prompt" "$gos_pane" || gos_arc=$?
@@ -22526,7 +22563,7 @@ guard_answer() {   # <offer file> <the prompt> <pane>
   # mismatch still stands and refuses where the state has become one of the
   # unsafe ones. 3 is that status, and `guard_run` is its only caller.
   if [ "$ga_from" != "$G_LANE" ] || [ "$ga_session" != "$G_NAME" ]; then
-    guard_offer_drop "$ga_f"
+    guard_drop_if name-drift "$ga_f" || :
     note "the pending question was about lane $ga_from and session '${ga_session:-none}', and this window is now lane ${G_LANE:-none} with session '${G_NAME:-none}' — so the offer has been DROPPED rather than answered on a state you were never shown. Nothing was renamed or written. This prompt is judged afresh below."
     return 3
   fi
@@ -22753,7 +22790,7 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     guard_type "$ga_pane" "/rename $ga_from" || ga_trc=$?
     guard_triple
     case "$ga_trc" in
-      0) guard_offer_drop "$ga_f"; note "ADJUSTED SESSION TO LANE $ga_from: \`/rename $ga_from\` was typed into this pane ($ga_pane). The prompt that answered the question is consumed; send your work again." ;;
+      0) guard_drop_if name-drift "$ga_f" || :; note "ADJUSTED SESSION TO LANE $ga_from: \`/rename $ga_from\` was typed into this pane ($ga_pane). The prompt that answered the question is consumed; send your work again." ;;
       *) note "the rename could NOT be typed into this pane, so the session is still named '${ga_session:-none}'. NOTHING was written; the offer is kept. Type it yourself: /rename $ga_from" ;;
     esac
     return 2 ;;
