@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess
 import shutil
 import pytest
-from conftest import REPO, WINDOWS_SKIP
+from conftest import NEEDS_UPSTREAM, REPO, WINDOWS_SKIP
 from test_park_resume_commands import (FAMILY, WORKSPACE_SLUG, git, home, estate, remotes, offline,
                                       probe_project, probe_family, sweepable_project, run)
 from test_lane_start_claude_current import Sandbox
@@ -54,6 +54,7 @@ def test_named_grouped_estate(tmp_path, family):
 
 
 @pytest.mark.parametrize("command", ["park", "resume", "status"])
+@NEEDS_UPSTREAM
 def test_distinct_matching_estates_refuse(tmp_path, command, remotes):
     home = tmp_path / "home"; home.mkdir()
     name = FAMILY if command == "resume" else "Atlas"
@@ -180,6 +181,7 @@ def test_supporting_git_checkout_is_not_a_default_candidate(tmp_path, kind):
     assert str(box.lane_dir) in box.lane_log()
 
 
+@NEEDS_UPSTREAM
 def test_resume_grouped_existing_family(home, remotes, estate):
     target = home / "projects" / "group" / FAMILY
     target.parent.mkdir()
@@ -192,6 +194,7 @@ def test_resume_grouped_existing_family(home, remotes, estate):
     assert not estate["folder"].exists()
 
 
+@NEEDS_UPSTREAM
 def test_resume_grouped_existing_standalone(home, remotes):
     target = home / "projects" / "group" / "Alpha"
     target.parent.mkdir()
@@ -251,6 +254,7 @@ def aliased_real_family(home, remotes, estate, tmp_path):
 
 
 @pytest.mark.parametrize("by_id", [False, True])
+@NEEDS_UPSTREAM
 def test_logical_family_alias_resume_name_and_family_id(home, remotes, estate, tmp_path, by_id):
     alias, physical = aliased_real_family(home, remotes, estate, tmp_path)
     result = run(REPO / "resume", FAMILY.lower() if by_id else FAMILY,
@@ -262,6 +266,7 @@ def test_logical_family_alias_resume_name_and_family_id(home, remotes, estate, t
 
 
 @pytest.mark.parametrize("command", ["park", "status"])
+@NEEDS_UPSTREAM
 def test_logical_family_alias_origin_lookup(home, remotes, estate, tmp_path, command):
     alias, physical = aliased_real_family(home, remotes, estate, tmp_path)
     slug = "testorg/" + FAMILY
