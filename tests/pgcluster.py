@@ -891,10 +891,14 @@ class Database:
 #: whose name differs from its lane's in case, and a lane with no log).
 def _test7_seed() -> Dict[str, str]:
     """C'S FILES BEFORE THE OPERATOR'S WRITE (T227b): T211's `SEED`, copied
-    from `tests/test_sql_register_import.py` at line W3a's `4bfef75c` byte
-    for byte (its lines 97-104, 112-115, 118-164 and 185-226), so that the
-    template holds test 7's register on a branch without that module. Each
-    copy must stay equal to the other until one imports it from here."""
+    from `tests/test_sql_register_import.py` at line W3a's `4bfef75c` (its
+    lines 97-104, 112-115, 118-164 and 185-226), so that the template holds
+    test 7's register on a branch without that module. It is that `SEED`
+    byte for byte but for one line, which T227c adds after
+    `TAKE_LINES["hold-no-utc"]`: its holder's `HOLD RELEASED`, which T211n's
+    `CutoverRegister` appends by `append-line` before its import instead
+    (`HOLD_NO_UTC_RELEASE`). Each copy must stay equal to the other, but for
+    that line, until one imports it from here."""
     UUID_A1 = "aaaaaaaa-0001-4000-8000-00000000a001"
     UUID_A2 = "aaaaaaaa-0003-4000-8000-00000000a003"
     UUID_B1 = "bbbbbbbb-0001-4000-8000-00000000b001"
