@@ -7789,7 +7789,12 @@ def register_serve_launch(paths: dict) -> str | None:
     `register.lock` held (`register_serve_run`) and exits 0; the client goes
     on using the old service's answer, and every request spawns one more
     futile `serve`, until the old service stops for another cause. An
-    upgrade that replaces the files at the same real path is seen.
+    upgrade that replaces the files at the same real path is seen. A link in
+    the working directory's path is not kept either: Python joins a relative
+    path (`./lanes-index`) to the PHYSICAL working directory, giving
+    `<real>/./lanes-index`, so a service started from a directory reached
+    through a directory link (`cd dirlink; ./lanes-index`) does not see a
+    repoint of that link (lane 1's U5, #165 6895008151).
 
     THE REMEDY (lane 3's ruling, #165 6894714082): after an upgrade by
     repointing a link, stop the old service, whose `pid=` is in the owner
