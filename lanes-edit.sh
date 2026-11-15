@@ -22374,6 +22374,12 @@ GBT_REN_FROM=""; GBT_REN_TO=""; GWB_CALLED=0; GBT_REN_SAID=0
 # prompt put there meanwhile, the retry's refusal names the failed `rm` on the
 # path though the record there is that newer one; the next prompt reads it.
 GA_DROP_FAILED=0
+# `guard_record_says`'S RESULTS (lane 1's check of part 62, #165 6899534219, a
+# NIT on lane 3's SHOULD-1): reset here, as `guard_record_says` resets them, so
+# that values the environment carries (`GRS_THERE=1 GRS_MODE=binding`, which
+# lane 1 measured keeping the window on the back-out's 0) are never read as a
+# read this prompt made.
+GRS_THERE=0; GRS_MODE=""; GRS_OUT=""; GRS_GOT=""; GRS_SEEN=" "
 guard_bind_refill() {
   [ "$GB_REFILLED" = 0 ] || return 0
   reg_flush
@@ -23892,9 +23898,11 @@ guard_answer() {   # <offer file> <the prompt> <pane>
         # `GRS_MODE` would hold whatever an earlier `guard_record_says` left in the
         # same hook run (`guard_drop_if`'s, in a first `guard_answer`'s stale drop
         # or in `guard_allow_drop`, before `guard_offer_site` calls `guard_answer`
-        # again), and a bind mode there would keep the window, with a false note.
-        # So `GRS_THERE` is 0 before the `case`, and the keep test below reads
-        # only what a read made here left, whatever the back-out returned.
+        # again), or what the environment carried in (lane 1's check of part 62,
+        # #165 6899534219, now also reset at file scope), and a bind mode there
+        # would keep the window, with a false note. So `GRS_THERE` is 0 before
+        # the `case`, and the keep test below reads only what a read made here
+        # left, whatever the back-out returned.
         ga_bstill=0; ga_bform=""; ga_bunread=0; ga_bkeep=0; GRS_THERE=0
         case "$ga_brc" in
           2) ga_bform=none
