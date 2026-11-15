@@ -22353,9 +22353,12 @@ guard_offer_choices() {   # <from> <the lane choice 2 moves to> <binds spent>
 # start, where their restore of the offer failed (an I/O 1) and the record, read
 # again, is neither the one they loaded nor an offer between the same two lanes
 # (`guard_site_back_form`): no offer is kept there either.
+# WITH `unread` (part 49's NIT-3, carried to this note in part 50): the same
+# cases where the record, read again, is there and could not be read; the words
+# say only that, and that the next prompt reads whatever is there.
 # The first clause is the same in every form.
 #   0 renamed · 1 not, and the person is told the one command
-guard_window_back() {   # <from> <to> [none | changed]
+guard_window_back() {   # <from> <to> [none | changed | unread]
   gwb_from="${1-}"; gwb_to="${2-}"; gwb_form="${3-}"
   [ -n "$gwb_from" ] || return 1
   if command -v tmux >/dev/null 2>&1 && tmux rename-window "$gwb_from" 2>/dev/null; then
@@ -22363,6 +22366,8 @@ guard_window_back() {   # <from> <to> [none | changed]
       note "This window has been renamed back to $gwb_from, the lane it was before the answer \`2\`, which started no bind."
     elif [ "$gwb_form" = changed ]; then
       note "This window has been renamed back to $gwb_from, the lane it was before the answer \`2\`; the record no longer holds that answer's offer, so the next prompt reads whatever is there."
+    elif [ "$gwb_form" = unread ]; then
+      note "This window has been renamed back to $gwb_from, the lane it was before the answer \`2\`; the record could not be read again, so the next prompt reads whatever is there."
     else
       note "This window has been renamed back to $gwb_from, the lane it was before the answer \`2\`, so the offer it keeps is still this window's."
     fi
@@ -22372,6 +22377,8 @@ guard_window_back() {   # <from> <to> [none | changed]
     note "This window could NOT be renamed back to $gwb_from, so it still carries ${gwb_to:-the other lane}'s name, though the answer \`2\` started no bind. Rename it yourself: tmux rename-window -t ${G_WINREF:-<this window>} $gwb_from"
   elif [ "$gwb_form" = changed ]; then
     note "This window could NOT be renamed back to $gwb_from, so it still carries ${gwb_to:-the other lane}'s name, and the record no longer holds that answer's offer. Rename it yourself: tmux rename-window -t ${G_WINREF:-<this window>} $gwb_from"
+  elif [ "$gwb_form" = unread ]; then
+    note "This window could NOT be renamed back to $gwb_from, so it still carries ${gwb_to:-the other lane}'s name, and the record could not be read again. Rename it yourself: tmux rename-window -t ${G_WINREF:-<this window>} $gwb_from"
   else
     note "This window could NOT be renamed back to $gwb_from, so it still carries ${gwb_to:-the other lane}'s name, and the next prompt would drop the kept offer as one about another window. Rename it first: tmux rename-window -t ${G_WINREF:-<this window>} $gwb_from"
   fi
@@ -22594,12 +22601,20 @@ guard_site_match() {
 # other record is refused as changed, and the next prompt answers it as the first
 # read does.
 guard_site_moved() {   # <offer file> <pane>
-  gsm2_f="${1-}"; gsm2_m=""
+  gsm2_f="${1-}"; gsm2_m=""; gsm2_read=0
   if [ ! -e "$gsm2_f" ] && [ ! -L "$gsm2_f" ]; then
     guard_bind_gone "$gsm2_f"
     return 2
   fi
-  [ -f "$gsm2_f" ] && gsm2_m="$(sed -n -e 's/^mode=//p' "$gsm2_f" 2>/dev/null | head -n1)"
+  # A RECORD THERE THAT COULD NOT BE READ AGAIN (part 50's audit of part 49's
+  # NIT-3) is said to be just that, never "mode=none".
+  if [ -f "$gsm2_f" ] && gsm2_all="$(sed -n -e 's/^mode=//p' "$gsm2_f" 2>/dev/null)"; then
+    gsm2_read=1; gsm2_m="${gsm2_all%%$'\n'*}"
+  fi
+  if [ "$gsm2_read" = 0 ]; then
+    guard_refuse "the pending offer at $gsm2_f was changed while it was being answered, and the record there could not be read again, so nothing was written to it. Send your prompt again and it will be read afresh."
+    return 2
+  fi
   case "$gsm2_m" in
     binding|bound|bind-failed)
       if [ "${GBT_MOVED:-0}" = 0 ]; then
@@ -22637,10 +22652,14 @@ guard_site_unrestored() {   # <offer file> <the mode loaded>
 # first. Still the record loaded (its mode, `bind` and `started_utc`), the next
 # prompt restores the offer; an offer between the same two lanes, another prompt
 # restored it; either way the offer is kept, and the default form is printed.
-# Anything else, and no offer is kept: `changed`.
+# Anything else, and no offer is kept: `changed`. WHERE THE RECORD IS THERE AND
+# COULD NOT BE READ AGAIN (part 49's NIT-3, carried to this note in part 50), the
+# note claims no more than that: `unread`.
 guard_site_back_form() {   # <offer file> <the mode loaded>
   guard_record_says "${1-}" "${2-}" "bind=$GBR_BIND" "started_utc=$GBR_STARTED" && return 0
+  guard_record_unread "${1-}" && { printf 'unread\n'; return 0; }
   guard_record_says "${1-}" name-drift "from=$GBR_FROM" "to=$GBR_TO" && return 0
+  guard_record_unread "${1-}" && { printf 'unread\n'; return 0; }
   printf 'changed\n'
 }
 
@@ -22884,8 +22903,10 @@ guard_answer_match() {   # <from> <to> <session> <utc>
 #                                answer renamed renamed back, and 2
 guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 where this answer renamed the window>
   gam_f="${1-}"; gam_pane="${2-}"; gam_what="${3-}"; gam_from="${4-}"; gam_to="${5-}"; gam_ren="${6-0}"
-  gam_m=""
-  [ -f "$gam_f" ] && gam_m="$(sed -n -e 's/^mode=//p' "$gam_f" 2>/dev/null | head -n1)"
+  gam_m=""; gam_read=0; gam_tail=" and the question will be asked afresh"
+  if [ -f "$gam_f" ] && gam_all="$(sed -n -e 's/^mode=//p' "$gam_f" 2>/dev/null)"; then
+    gam_read=1; gam_m="${gam_all%%$'\n'*}"
+  fi
   case "$gam_m" in
     binding|bound|bind-failed)
       guard_bind_site "$gam_f" "$gam_pane"
@@ -22896,8 +22917,14 @@ guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 whe
       [ "$gam_ren" = 0 ] || guard_window_back "$gam_from" "$gam_to" none || :
       return 3 ;;
   esac
+  # A RECORD THERE THAT COULD NOT BE READ AGAIN (part 50's audit of part 49's
+  # NIT-3): a file that cannot be read, or a path that is not a regular file, is
+  # said to be just that, never "mode=none" and never "dropped".
   if [ "$gam_m" = name-drift ]; then
     gam_why="the offer at $gam_f was changed before the $gam_what could be recorded (it is another offer now, not the one that was answered)"
+  elif [ "$gam_read" = 0 ] && { [ -e "$gam_f" ] || [ -L "$gam_f" ]; }; then
+    gam_why="the offer at $gam_f was changed before the $gam_what could be recorded, and the record there could not be read again"
+    gam_tail=": the next prompt reads whatever is there"
   elif [ -f "$gam_f" ]; then
     gam_why="the offer at $gam_f was changed before the $gam_what could be recorded (it says mode=${gam_m:-none} now)"
   else
@@ -22917,9 +22944,9 @@ guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 whe
         gam_win="this window was renamed to $gam_to by this answer and could NOT be renamed back to $gam_from (see the note above)"
       fi
     fi
-    guard_refuse "$gam_why, so the bind was NOT started: $gam_win, NOTHING has been written to the register or to $gam_f, and no outer was started. Send your prompt again and the question will be asked afresh."
+    guard_refuse "$gam_why, so the bind was NOT started: $gam_win, NOTHING has been written to the register or to $gam_f, and no outer was started. Send your prompt again$gam_tail."
   else
-    guard_refuse "$gam_why, so the mismatch remains unapproved. Nothing was renamed or written; send your prompt again and the question will be asked afresh."
+    guard_refuse "$gam_why, so the mismatch remains unapproved. Nothing was renamed or written; send your prompt again$gam_tail."
   fi
   return 2
 }
