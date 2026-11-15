@@ -1347,8 +1347,14 @@ def cached_module(state: Refusing) -> Path:
 def bytecode_path(module: Path) -> Path:
     """Where the launcher reads the module's bytecode: the interpreter's own
     `__pycache__` name for it (PEP 3147), as lane 1 measured "a launcher
-    importing from `__pycache__`" (tasks:2853). The place is lane 1's to fix."""
-    return Path(importlib.util.cache_from_source(str(module)))
+    importing from `__pycache__`" (tasks:2853). The place is lane 1's to fix.
+    It is built here as `lanes-index` builds it, never by `cache_from_source`,
+    which follows `sys.pycache_prefix`: `tests/run.sh` exports
+    `PYTHONPYCACHEPREFIX`, and under it that name is in the run's bytecode
+    cache, where no launcher reads, so the cached runs ran the source."""
+    tag = sys.implementation.cache_tag
+    assert tag is not None, "this interpreter has no cache tag, so no launcher reads bytecode"
+    return module.parent / "__pycache__" / f"{module.stem}.{tag}.pyc"
 
 
 def checked_hash_pyc(code, source: bytes) -> bytes:
