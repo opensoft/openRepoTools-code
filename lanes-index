@@ -7753,27 +7753,35 @@ def register_serve_launch(paths: dict) -> str | None:
     working directory `/`; and the reduced environment. Returns None where it
     was started, else why not.
 
-    THE LAUNCHER IS STARTED BY ITS REAL PATH (lane 3's ruling, #165
-    6894116246, which closes this line; lane 1's R2, #165 6892234131,
-    NIT 1): `register_serve_launcher()`, the path `register_serve_install`
-    stats for the `install=` it writes. With `os.path.abspath(__file__)`, a
-    launcher called as `a/link/../lanes-index` is joined lexically, so the
-    path can name another launcher or none: the service it starts would run
-    another install, or none, and its `install=` would differ from every
-    client's, so every client would read "another install" and start another
-    service. THE COST: the service's `__file__` is then the real path, so its
-    own install check (`register_serve_install`, which follows `__file__` as
-    it is) no longer notices a repoint of an install symbolic link by
-    itself. A client still does: its own `install=` then differs, so it
-    starts a replacement, whose `rename` takes the socket, and the old
-    service ends once its socket is no longer its own (`ours`)."""
+    THE LAUNCHER IS STARTED BY `__file__` AS PYTHON GIVES IT, NEVER
+    NORMALIZED (lane 3's ruling, #165 6894116246, which closes this line;
+    lane 1's R2, #165 6892234131, NIT 1): `register_serve_launch_file()`.
+    With `os.path.abspath(__file__)`, a launcher called as
+    `a/link/../lanes-index` is joined lexically to `a/lanes-index`, which can
+    be another launcher or none: the service it starts would run another
+    install, or none, and its `install=` would differ from every client's,
+    so every client would read "another install". The un-normalized path
+    opens the real file, since the kernel resolves `link/..` physically, and
+    it keeps the symbolic link in the service's own `__file__`, so the
+    service's install check, which takes `register_serve_install`'s
+    `realpath` on each request, still sees a repoint of an install link.
+
+    THE ALTERNATIVE, `os.path.realpath(__file__)`, was built and given up
+    (T512's commit e2212236), for its cost: a service started by the real
+    path has that path as its `__file__`, so after the install link is
+    repointed its install check never notices. A client run by the link
+    reads "another install" and starts a `serve`, which finds `register.lock`
+    held (`register_serve_run`) and exits 0; the client goes on using the old
+    service's answer, and every request spawns one more futile `serve`, until
+    the old service stops for another cause. That breaks an upgrade by
+    repointing a symbolic link, which this launch handles."""
     try:
         log = os.open(paths["log"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
                       | os.O_CLOEXEC, 0o600)
     except OSError as exc:
         return f"{paths['log']} could not be opened ({exc.strerror or exc})"
     try:
-        subprocess.Popen([sys.executable or "python3", register_serve_launcher(), "serve"],
+        subprocess.Popen([sys.executable or "python3", register_serve_launch_file(), "serve"],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
                          cwd="/", env=register_serve_env(), close_fds=True,
                          start_new_session=True)
@@ -8121,13 +8129,18 @@ def register_serve_timer_ms(cfg: dict) -> int:
     return rtt + 100 if rtt > 100 else 200
 
 
-def register_serve_launcher() -> str:
-    """THE LAUNCHER'S REAL PATH, `os.path.realpath(__file__)`, from this one
-    place: `register_serve_install` stats it and looks for the module in its
-    directory, and `register_serve_launch` starts it, so the service runs the
-    very file its `install=` names (lane 3's ruling on choice (a), #165
-    6894116246; lane 1's R2, #165 6892234131, NIT 1)."""
-    return os.path.realpath(__file__)
+def register_serve_launch_file() -> str:
+    """THE FILE `register_serve_launch` STARTS: `__file__` as Python gives
+    it, where it is absolute, else joined to the working directory, and
+    NEVER NORMALIZED: no `abspath`, `normpath` or `realpath`. Python makes
+    the main script's `__file__` absolute but leaves a `..` in it, so a
+    launcher called as `a/link/../lanes-index` keeps that path, which the
+    kernel resolves physically, through `link`, to the real launcher.
+    `os.path.abspath` would collapse it lexically to `a/lanes-index`, which
+    can be another launcher or none. On a tree of T124's form this module's
+    code runs in the launcher's namespace, so `__file__` is the launcher's,
+    as it was invoked (see `register_serve_launch`)."""
+    return __file__ if os.path.isabs(__file__) else os.path.join(os.getcwd(), __file__)
 
 
 #: THE LAUNCHER'S MODULE (T124; FR-064): once `lanes-index`'s body is moved
@@ -8141,9 +8154,9 @@ def register_serve_install() -> tuple:
     """THE INSTALL'S IDENTITY (Y:3915-3916; lane 5's choice (a) on lane 1's
     T124 prototype, #165 6890257498 and lane 5's answer, #165 6890303231):
     the size, mtime in nanoseconds and inode of the file
-    `os.path.realpath(__file__)` names (`register_serve_launcher`: the
-    launcher, once T124 has moved the body), taken once and used for the
-    `stat` and for the module's directory alike, and then, where
+    `os.path.realpath(__file__)` names (the launcher, once T124 has moved
+    the body), taken once and used for the `stat` and for the module's
+    directory alike, and then, where
     `REGISTER_SERVE_MODULE` is in that directory, the same three of that
     module: six numbers in all, the launcher's first. (`abspath` would join
     `a/link/../lanes-index` lexically, and name the wrong file or none;
@@ -8160,7 +8173,7 @@ def register_serve_install() -> tuple:
     The client's test is as it was: the owner file's `install=` against
     this value, as text. An owner file of three numbers read by a client of
     six is another install, which starts a service."""
-    launcher = register_serve_launcher()
+    launcher = os.path.realpath(__file__)
     try:
         st = os.stat(launcher)
     except OSError:
