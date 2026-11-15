@@ -6245,8 +6245,9 @@ def _owner_lines(index: Path) -> list:
     """`register.owner`'s lines as the service writes them (T237zz; socket
     API section 2.4, "Its bytes", at draft 13 `fa613b9d`; T512's
     `register_serve_owner_text`, `register_serve_install` and
-    `register_serve_host`, `88b50886:lanes-index:8064-8097`), for a socket
-    of the case's own (`_Listener`), in the contract's order:
+    `register_serve_host` at `23cb3799:lanes-index:8116-8177`, with
+    `register_serve_install` at :8116-8151), for a socket of the case's own
+    (`_Listener`), in the contract's order:
 
     - `pid=` and `started=` name this process, the listener's, where the
       contract names the service's, its start UTC in whole seconds;
@@ -6264,13 +6265,25 @@ def _owner_lines(index: Path) -> list:
       the client reads its own, so the client finds its own boot and pid
       namespace.
 
+    A `stat` that fails raises. T512's `register_serve_install` writes an
+    empty `install=` instead, which `_REGISTER_SERVE_INSTALL_RE` refuses, so
+    the file is unusable by rule (OP-19 (b), rule 7) and a client reads
+    directly and starts no service. Raising is sound here: the only caller
+    passes `est.index`, and no guard estate removes or blocks it, so no
+    case meets a failing `stat`, and one that did would end on the
+    exception, not on a file a client reads as another install. A missing
+    module (`FileNotFoundError`) is no failure, as before T124. `index` is
+    resolved once, as `register_serve_install` does: its `realpath` serves
+    the `stat` and the module's directory alike.
+
     Each key once, each line ending in `\\n`, and `install=` three decimals,
     or six with T124's module (rule 4's three or six runs, lane 5's T512
     follow-up): so the file is one a client can use under lane 3's OP-19 (b)
     too (opensoft/openRepoTools#165 6880543448), not only under T512's reader."""
-    found = [os.stat(index)]
+    real = Path(os.path.realpath(index))
+    found = [os.stat(real)]
     try:
-        found.append(os.stat(Path(os.path.realpath(index)).with_name("lanes_index_main.py")))
+        found.append(os.stat(real.with_name("lanes_index_main.py")))
     except FileNotFoundError:
         pass
     lines = [f"pid={os.getpid()}", f"started={_utc(time.time())}",
