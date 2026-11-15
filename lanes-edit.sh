@@ -20441,7 +20441,11 @@ guard_record_now() {   # <offer file>
 }
 
 # THE RECORD AND ITS ATTEMPTS' FILES, `.out` and `.facts`, removed together
-# (point 13).
+# (point 13). ONLY THE PROOF CALLS IT NOW (lane 3's review of
+# `12eddddf..00e2c92e`, NIT 6): no line of this file does, since the drops
+# became `guard_drop_if`'s. The scratch proof's rounds 7 to 12 call it, from
+# their test-only arm's `--drop-first` (round 8's peer, the F1 cases), so it
+# stays while those rounds stand; removing it removes their cases with it.
 guard_offer_drop() {   # <offer file>
   [ -n "${1-}" ] || return 0
   rm -f -- "$1" "$1".bind.* 2>/dev/null
@@ -20634,7 +20638,10 @@ guard_bind_readable() {
 # 2. `guard_offer`'s write stays the only creation. NO CALLER USES IT NOW
 # (Codex's NIT 3 on spec#47's draft 17): it was `guard_bind_site`'s at part 22,
 # and since part 30 those rewrites require what they loaded, by `--mode` or
-# `--binding` with `--match`; the flag is kept for its direct proof cases.
+# `--binding` with `--match`; the flag is kept for its direct proof cases. Only
+# the proof calls it (lane 3's review of `12eddddf..00e2c92e`, NIT 6): the
+# scratch proof's `r7-flag-exist-*` cases, in rounds 7 to 12, so it stays while
+# those rounds stand, and goes with those cases.
 # WITH `--mode <m>` AND `--match <key>=<value>` (lane 5's adversarial review of T502
 # parts 22 to 26, F4; each may be given more than once, with any flag above): the
 # first line of that key, as `guard_bind_load` takes it, must be exactly that, or
@@ -22033,6 +22040,17 @@ guard_offer() {   # <offer file> <pane>
   # directory moved away, or removed and made again, in between keeps the link
   # inside it, a second name of this offer's temporary file (0600, this offer's
   # lines alone), and no record is written over.
+  # `link` IN PLACE OF `ln` WOULD CLOSE THAT WINDOW, AND IS NOT TAKEN (lane 3's
+  # review of `12eddddf..00e2c92e`, NIT 4, answered so on lane 5's word): `link`
+  # calls `link(2)` with exactly two names and never takes the second as a
+  # directory, so a directory there is EEXIST and nothing is made inside it.
+  # GNU coreutils' `link` does so (checked: `link t d` fails "File exists" for a
+  # directory and for a link to one). It is not taken because (a) macOS's
+  # `/bin/link` is not verified here, and (b) the scratch proof's rounds 7 to 12
+  # put a stand-in `ln` in place to reach the `noclobber` fallback, and round
+  # 10's test-only copy is made by an anchor on the `ln` line below, so a
+  # change to that line would break those rounds. So the window above stays,
+  # as stated, until `link` is checked on macOS and the proof is moved with it.
   go_made=0
   ( umask 077; mkdir -p -- "${go_f%/*}" 2>/dev/null || : ) 2>/dev/null
   go_t="$(umask 077; mktemp "${go_f%/*}/.${go_f##*/}.XXXXXX" 2>/dev/null || printf '')"
@@ -22518,6 +22536,21 @@ guard_bind_child_env() {
 # value overflows the shell's integers; one above it is made the same way. A
 # name whose index is not canonical is never one this makes, so it is passed
 # over.
+# THE INDEX IS REUSED AFTER A SWEEP, AND THAT WINDOW IS POINT 27's (lane 3's
+# review of `12eddddf..00e2c92e`, NIT 5, which puts it under lane 3's point 27
+# ruling; no code changes here). "One above the highest present" counts only
+# the files that are there, so once a prompt has swept every `.bind.*` file of
+# the uuid (case 5's drop, choice 1's sweep, a stale offer's drop), the next
+# attempt takes index 1 again. A removal that listed `.bind.1.*` before that
+# sweep (case 5's drop, choice 1's sweep, `guard_drop_if`'s listing) or an old
+# outer's removal of its own facts file can then meet the newer attempt's live
+# `.bind.1.out` or `.bind.1.facts` and remove it, so that attempt's output, or
+# its facts, are lost (the comments at case 5's drop, at choice 1's sweep and at
+# the facts file state each such window and what follows from it). It needs a
+# stalled hook and further
+# prompts of the same transcript inside that hook's window. An index that never
+# repeats (one above the larger of the highest present and a counter kept in
+# the record) would close it; that is for point 27's ruling.
 guard_bind_next_index() {   # <offer file>
   gbx_f="${1-}"; gbx_n=0
   for gbx_x in "$gbx_f".bind.*; do
@@ -22671,9 +22704,11 @@ guard_bind_pidstart_ok() {   # <pidstart>
 
 # NO REWRITE CREATES A RECORD (lane 3's ruling on lane 5's rule, #165
 # 6885771975, ruling 5, "as lane 5 proposes"): where `guard_bind_site`'s own
-# rewrite of the record finds it gone (`--exist`, 2), nothing is written, and the
-# answer is the one for a record that is not the site's, which it cannot load:
-# the refusal, the prompt not sent, the question asked afresh. Nothing is
+# rewrite of the record finds it gone (`--mode`, or `--binding` with `--match`,
+# 2, since part 30; lane 3's review of `12eddddf..00e2c92e`, NIT 6), nothing is
+# written, and the answer is the one for a record that is not the site's, which
+# it cannot load: the refusal, the prompt not sent, and the prompt read afresh
+# when it is sent again (the words since part 34). Nothing is
 # removed, since there is nothing there, and nothing else is done for a record
 # that is gone: it was dropped by another prompt, which has done its own part.
 guard_bind_gone() {   # <offer file>
@@ -22816,7 +22851,7 @@ guard_site_back_form() {   # after `guard_site_reread`
 # and the note says so. Every other form is `guard_window_back`'s.
 guard_site_window_back() {   # <from> <to> <form, from `guard_site_back_form`, or empty>
   if [ "${3-}" = bind ]; then
-    note "This window is left as it is and NOT renamed back to ${1-}: the record now holds a bind record that is not this prompt's (${GSR_NOW:-it is gone now}), so the window is left as that bind leaves it."
+    note "This window is left as it is and NOT renamed back to ${1-}: the record now holds a bind record that is not the one this prompt loaded (${GSR_NOW:-it is gone now}), so the window is left as that bind leaves it."
     return 0
   fi
   guard_window_back "${1-}" "${2-}" ${3:+"$3"} || :
@@ -22933,7 +22968,15 @@ EOF
       return 2 ;;
     bind-failed)
       gbt_back=0; gbt_wrc=0
-      guard_bind_rewrite --mode bind-failed --match "bind=$GBR_BIND" "$gbt_f" "" mode=name-drift || gbt_wrc=$?
+      # THE RESTORE REQUIRES THE ATTEMPT IT LOADED, `bind` AND `started_utc`, as
+      # cases 9 and 10 do (`guard_site_match`; lane 3's review of
+      # `12eddddf..00e2c92e`, NIT 2, which finishes lane 5's re-check, D): a
+      # `bind-failed` of a re-made offer's attempt with the same `bind`, put in
+      # place of the loaded one, is not restored and spoken of with the loaded
+      # attempt's `rc` and `why`; it is read once more (`guard_site_moved`) and
+      # answered with its own. `guard_site_match` skips an empty `started_utc`.
+      guard_site_match
+      guard_bind_rewrite --mode bind-failed "${GBT_MATCH[@]}" "$gbt_f" "" mode=name-drift || gbt_wrc=$?
       [ "$gbt_wrc" != 2 ] || { guard_site_moved "$gbt_f" "$gbt_pane"; return 2; }
       [ "$gbt_wrc" = 0 ] || gbt_back=1
       guard_triple
@@ -23168,7 +23211,15 @@ guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 whe
         gam_win="this window was renamed to $gam_to by this answer and could NOT be renamed back to $gam_from (see the note above)"
       fi
     fi
-    guard_refuse "$gam_why, so the bind was NOT started: $gam_win, NOTHING has been written to the register or to $gam_f, and no outer was started. Send your prompt again$gam_tail."
+    # AFTER A HEAD COPY THAT WROTE (lane 3's review of `12eddddf..00e2c92e`,
+    # NIT 3, as part 49 words it for the I/O path in `guard_answer_unrecorded`):
+    # on primary the head copy may have rewritten the offer with the prefetch's
+    # `c`, `n_a` and `w_s_ms` before the rewrite to `binding` found it changed,
+    # and "NOTHING has been written … to <file>" is then false: the words name
+    # that one write.
+    gam_wrote="NOTHING has been written to the register or to $gam_f"
+    [ "${GHC_WROTE:-0}" != 1 ] || gam_wrote="NOTHING has been written to the register, and this answer's one write at $gam_f was its copy of the prefetch's \`c\`, \`n_a\` and \`w_s_ms\` into the offer"
+    guard_refuse "$gam_why, so the bind was NOT started: $gam_win, $gam_wrote, and no outer was started. Send your prompt again$gam_tail."
   else
     guard_refuse "$gam_why, so the mismatch remains unapproved. Nothing was renamed or written; send your prompt again$gam_tail."
   fi
@@ -23605,9 +23656,14 @@ guard_answer() {   # <offer file> <the prompt> <pane>
         # undoes this answer's own `binding`, so it runs only on a record that
         # still says `binding` (part 21's `--binding`); where it is gone, or
         # another invocation has changed it, there is nothing of this answer's to
-        # back out, and nothing is written.
+        # back out, and nothing is written. AND IT MUST BE THIS ANSWER'S OWN
+        # `binding` (lane 3's review of `12eddddf..00e2c92e`, NIT 1): its `bind`,
+        # `started_utc` and `out`, by `--match`, as the I/O failure's re-read
+        # below requires them, so another prompt's newer `binding` in its place
+        # is never backed out by this one.
         ga_brc=0
-        guard_bind_rewrite --binding "$ga_f" "bind started_utc bound_s bounded deadline_epoch host container out detach" "${ga_back[@]}" || ga_brc=$?
+        guard_bind_rewrite --binding --match "bind=$ga_k" --match "started_utc=${ga_now#* }" --match "out=$ga_out" \
+          "$ga_f" "bind started_utc bound_s bounded deadline_epoch host container out detach" "${ga_back[@]}" || ga_brc=$?
         # AN I/O FAILURE OF THE BACK-OUT (its 1; Codex's S6 on spec#47's draft
         # 17) proves only that it did not change the record: so the record is read
         # again, and "it still says binding" is said only where it is still this
