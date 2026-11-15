@@ -28,7 +28,7 @@ def rows(root):
 
 
 def test_bounds_support_collections_and_repository_boundaries(tmp_path):
-    for group in ("workTrees", "laneWorkspaces", "brett-wip-lanes", "worktrees"):
+    for group in ("workTrees", "laneWorkspaces", "brett-wip-lanes", "wip-lanes", "personal-register-lanes", "worktrees"):
         probe_project(tmp_path / group, "Hidden")
     target = probe_project(tmp_path / "business" / "Company space", "Visible")
     probe_project(tmp_path / "business" / "Company space" / "too-deep", "Deep")
@@ -313,3 +313,36 @@ def test_recorded_home_without_directory_keeps_origin_proof(tmp_path, matching_h
     else:
         assert result.returncode == 2, result.stderr
         assert "nothing was started" in result.stderr
+
+
+@pytest.mark.parametrize("workspace", ["wip", "brett-wip", "personal-register"])
+@pytest.mark.parametrize("command", ["park", "resume", "status"])
+def test_workspace_lane_collections_do_not_ambiguate_origin_lookup(tmp_path, workspace, command):
+    home = tmp_path / "home"; home.mkdir()
+    projects = home / "projects"
+    root = probe_project(projects, workspace)
+    lane = probe_project(projects / (workspace + "-lanes"), "repoA-1")
+    (projects / "register-checkouts").symlink_to(lane.parent, target_is_directory=True)
+    slug = "tester/" + workspace
+    for checkout in (root, lane):
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+        subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin", "https://github.com/" + slug + ".git"], check=True)
+    result = run(REPO / command, "--repo", slug, home=home)
+    assert "multiple development checkouts" not in result.stderr
+    assert str(lane) not in result.stdout + result.stderr
+    if command == "park":
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert f"PROBE park in {root}" in result.stdout
+
+
+def test_workspace_lane_collections_are_not_swept(tmp_path):
+    home = tmp_path / "home"; home.mkdir()
+    projects = home / "projects"
+    root = sweepable_project(projects, "wip")
+    lane = sweepable_project(projects / "wip-lanes", "repoA-1")
+    (projects / "register-checkouts").symlink_to(lane.parent, target_is_directory=True)
+    result = run(REPO / "park", "--all", home=home)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert f"PROBE park in {root}" in result.stdout
+    assert str(lane) not in result.stdout + result.stderr
+    assert "1 estate(s) parked" in result.stdout
