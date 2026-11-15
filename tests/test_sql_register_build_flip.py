@@ -1455,18 +1455,38 @@ def hexes(vector: list) -> list:
     return [os.fsencode(str(item)).hex() for item in vector]
 
 
+#: WHETHER T124'S LAUNCHER READS THE MODULE'S BYTECODE AT ALL: on Python 3.11
+#: and later. Lane 1's gate (#165 6894131980) adds `sys.version_info >= (3, 11)`
+#: beside the launcher's cache-tag and `-O` tests, so on 3.9 and 3.10 it reads
+#: no bytecode and runs the source, as tasks:2876 and TP:2660 state (lane 3's
+#: ruling 2, #165 6885378657).
+LAUNCHER_READS_BYTECODE = sys.version_info >= (3, 11)
+
+
 def test_a_start_runs_the_cached_module_whose_checked_hash_matches_its_source(estate):
     """T282's first case (AT-14; tasks:2876): with a checked-hash `.pyc` built
     from a marker module that prints `cached-marker` and exits 0, carrying the
     hash of the real module's bytes, where the launcher reads the module's
     bytecode, the refusing copy's `lanes-index mode` prints `cached-marker`
-    and exits 0, which only the cached bytecode can do."""
+    and exits 0, which only the cached bytecode can do, on Python 3.11 and
+    later. On 3.9 and 3.10, where lane 1's gate has the launcher read no
+    bytecode (`LAUNCHER_READS_BYTECODE`; #165 6894131980), it never prints
+    `cached-marker`, and exits 78 with the text, as the source does
+    (tasks:2876, TP:2660)."""
     state = Refusing(estate)
     module = cached_module(state)
     place_bytecode(module, module_code(module, MARKER_SOURCE))
     proc = state.index(state.copy, "mode")
-    assert (proc.returncode, proc.stdout) == (0, MARKER_LINE + "\n"), (
-        "the start did not run the module's checked-hash cached bytecode", shown(proc))
+    if LAUNCHER_READS_BYTECODE:
+        assert (proc.returncode, proc.stdout) == (0, MARKER_LINE + "\n"), (
+            "the start did not run the module's checked-hash cached bytecode", shown(proc))
+        return
+    assert MARKER_LINE not in proc.stdout + proc.stderr, (
+        "the start ran the module's cached bytecode below Python 3.11, where lane 1's gate "
+        "has the launcher read none", shown(proc))
+    assert proc.returncode == exit_code("EXIT_CONFIG"), shown(proc)
+    assert REFUSED_TEXT in proc.stderr, shown(proc)
+    assert proc.stdout == "", shown(proc)
 
 
 def test_a_start_never_runs_cached_bytecode_whose_source_has_changed(estate):
@@ -1516,8 +1536,11 @@ def test_each_subcommand_answers_alike_from_the_cached_module_and_from_its_sourc
     the exact vector given to the launcher, `argv[0]` included, byte for
     byte, never the interpreter or its options; the cached run compiles no
     module and the source run does; and each pair's argv, stdout, stderr and
-    exit are equal, byte for byte. The list is read from the usage, so a
-    subcommand added later is covered."""
+    exit are equal, byte for byte. On Python 3.9 and 3.10, where lane 1's gate
+    has the launcher read no bytecode (`LAUNCHER_READS_BYTECODE`; #165
+    6894131980), both runs are the source's, so both compile the module, and
+    the equalities still hold (tasks:2876, TP:2660). The list is read from the
+    usage, so a subcommand added later is covered."""
     state = Refusing(estate)
     module = cached_module(state)
     pyc = bytecode_path(module)
@@ -1546,7 +1569,7 @@ def test_each_subcommand_answers_alike_from_the_cached_module_and_from_its_sourc
         assert len(seen["entry"]) == 1 and len(seen["dispatch"]) == 1, (form, vector, seen)
         assert seen["entry"][0] == given, (form, "entry", vector, seen)
         assert seen["dispatch"][0] == given, (form, "dispatch", vector, seen)
-        assert seen["compiled"] is (form == "source"), (
+        assert seen["compiled"] is (form == "source" or not LAUNCHER_READS_BYTECODE), (
             f"{form}: the module was {'' if seen['compiled'] else 'not '}compiled", vector)
         return seen["entry"][0], code, out, err
 
