@@ -655,15 +655,16 @@
 #  69  EX_UNAVAILABLE — THE REGISTER IS IN A MODE THIS WRITER CANNOT WRITE IN,
 #      AND NOTHING WAS WRITTEN (feature 007, T409; FR-002, FR-003). The write
 #      guard's verbs ask `lanes-index mode` once, where a configuration
-#      exists, before any routing, clone, fetch or lock, and exit 69 on two
-#      answers: 78, `lanes-index`'s refusal of `mode=primary` while the
+#      exists, before any routing, clone, fetch or lock, and exit 69 on one
+#      answer: 78, `lanes-index`'s refusal of `mode=primary` while the
 #      renderer's git half is not installed, whose text they repeat (agreement
-#      test 14); and `primary` itself for a form that writes nothing, a dry
-#      run, which has no primary path yet (`pw_checkout`); every other
-#      write runs the primary branch (T415), but `commit`, which T420
-#      exempts from it and which never exits 69 on `primary` (2 over a hand
-#      edit of any rendered file, its carry form included, and its publish
-#      act outside the loop, R16). Never files mode instead.
+#      test 14). On `primary` every write runs the primary branch (T415), a
+#      dry run included (`request-handoff <lane> --dry-run`, and `archive-rows`
+#      and `migrate-state-cells` without `--yes`), which takes one attempt and
+#      ends before its commit call (`pw_checkout`'s `PW_DRY`), but `commit`,
+#      which T420 exempts from it and which never exits 69 on `primary` (2
+#      over a hand edit of any rendered file, its carry form included, and its
+#      publish act outside the loop, R16). Never files mode instead.
 #      Every other failure of the question — a configuration `lanes-index`
 #      refuses, a `lanes-index` too old to know `mode`, none to run, a crash,
 #      no answer within 2 s — runs the verb in files mode with one warning,
