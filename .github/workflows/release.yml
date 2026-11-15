@@ -1527,28 +1527,36 @@ jobs:
       # an approval, and a tag can be moved or deleted meanwhile; an upload
       # cannot be taken back. A read the forge refuses is named on the
       # refusal's one `::error::` line, with gh's first line of it written
-      # as a workflow command's data (each `%`, CR and LF as `%25`, `%0D`
-      # and `%0A`), and gh's own report of it is kept off the log, in
-      # $RUNNER_TEMP.
+      # as a workflow command's data (any NUL dropped, and each `%`, CR and
+      # LF as `%25`, `%0D` and `%0A`), and gh's own report of it is kept off
+      # the log, in $RUNNER_TEMP. Each answer must be an object id or
+      # nothing: any other is refused in a line of its own, never printed,
+      # and a NUL in it is read as `?`, so it can never pass as one.
       - name: the tag v<version> still names this commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           read_tag() {   # <path> <jq>: the answer in $answer, or why the read failed in $why
-            if answer="$(gh api "$1" --jq "$2" 2>"$RUNNER_TEMP/tag-again.err")"; then
+            if gh api "$1" --jq "$2" >"$RUNNER_TEMP/tag-again.out" 2>"$RUNNER_TEMP/tag-again.err"; then
+              answer="$(tr '\000' '?' <"$RUNNER_TEMP/tag-again.out")"
               return 0
             fi
-            why="$(head -n 1 "$RUNNER_TEMP/tag-again.err")"
+            why="$(head -n 1 "$RUNNER_TEMP/tag-again.err" | tr -d '\000')"
             why="${why:-gh api exited non-zero, and said nothing}"
             why=${why//%/%25}
             why=${why//$'\r'/%0D}
             why=${why//$'\n'/%0A}
             return 1
           }
+          oid='^[0123456789abcdef]{40}$'   # an object id, as git spells it: each answer is one, or nothing
           commit=
           if ! read_tag "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" \
               'select(.object.type == "tag") | .object.sha'; then
             echo "::error::the tag v$VERSION cannot be read ($why), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+            exit 1
+          fi
+          if [ -n "$answer" ] && ! [[ "$answer" =~ $oid ]]; then
+            echo "::error::the forge's answer for the tag v$VERSION is not an object id, so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
             exit 1
           fi
           if [ -n "$answer" ]; then
@@ -1556,6 +1564,10 @@ jobs:
             if ! read_tag "repos/$GITHUB_REPOSITORY/git/tags/$object" \
                 'select(.object.type == "commit") | .object.sha'; then
               echo "::error::the tag object $object of v$VERSION cannot be read ($why), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+              exit 1
+            fi
+            if [ -n "$answer" ] && ! [[ "$answer" =~ $oid ]]; then
+              echo "::error::the forge's answer for the tag object $object of v$VERSION is not an object id, so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
               exit 1
             fi
             commit="$answer"
@@ -2159,20 +2171,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           read_tag() {   # <path> <jq>: the answer in $answer, or why the read failed in $why
-            if answer="$(gh api "$1" --jq "$2" 2>"$RUNNER_TEMP/tag-again.err")"; then
+            if gh api "$1" --jq "$2" >"$RUNNER_TEMP/tag-again.out" 2>"$RUNNER_TEMP/tag-again.err"; then
+              answer="$(tr '\000' '?' <"$RUNNER_TEMP/tag-again.out")"
               return 0
             fi
-            why="$(head -n 1 "$RUNNER_TEMP/tag-again.err")"
+            why="$(head -n 1 "$RUNNER_TEMP/tag-again.err" | tr -d '\000')"
             why="${why:-gh api exited non-zero, and said nothing}"
             why=${why//%/%25}
             why=${why//$'\r'/%0D}
             why=${why//$'\n'/%0A}
             return 1
           }
+          oid='^[0123456789abcdef]{40}$'   # an object id, as git spells it: each answer is one, or nothing
           commit=
           if ! read_tag "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" \
               'select(.object.type == "tag") | .object.sha'; then
             echo "::error::the tag v$VERSION cannot be read ($why), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+            exit 1
+          fi
+          if [ -n "$answer" ] && ! [[ "$answer" =~ $oid ]]; then
+            echo "::error::the forge's answer for the tag v$VERSION is not an object id, so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
             exit 1
           fi
           if [ -n "$answer" ]; then
@@ -2180,6 +2198,10 @@ jobs:
             if ! read_tag "repos/$GITHUB_REPOSITORY/git/tags/$object" \
                 'select(.object.type == "commit") | .object.sha'; then
               echo "::error::the tag object $object of v$VERSION cannot be read ($why), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+              exit 1
+            fi
+            if [ -n "$answer" ] && ! [[ "$answer" =~ $oid ]]; then
+              echo "::error::the forge's answer for the tag object $object of v$VERSION is not an object id, so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
               exit 1
             fi
             commit="$answer"
@@ -2356,27 +2378,36 @@ jobs:
       # a release names its tag, and the tag must still name this commit. A
       # read the forge refuses is named on the refusal's one `::error::`
       # line, gh's first line of it written as a workflow command's data
-      # (each `%`, CR and LF as `%25`, `%0D` and `%0A`), and gh's own report
-      # of it is kept off the log.
+      # (any NUL dropped, and each `%`, CR and LF as `%25`, `%0D` and `%0A`),
+      # and gh's own report of it is kept off the log. Each answer must be
+      # an object id or nothing: any other is refused in a line of its own,
+      # never printed, and a NUL in it is read as `?`, so it can never pass
+      # as one.
       - name: the tag v<version> still names this commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           read_tag() {   # <path> <jq>: the answer in $answer, or why the read failed in $why
-            if answer="$(gh api "$1" --jq "$2" 2>"$RUNNER_TEMP/tag-again.err")"; then
+            if gh api "$1" --jq "$2" >"$RUNNER_TEMP/tag-again.out" 2>"$RUNNER_TEMP/tag-again.err"; then
+              answer="$(tr '\000' '?' <"$RUNNER_TEMP/tag-again.out")"
               return 0
             fi
-            why="$(head -n 1 "$RUNNER_TEMP/tag-again.err")"
+            why="$(head -n 1 "$RUNNER_TEMP/tag-again.err" | tr -d '\000')"
             why="${why:-gh api exited non-zero, and said nothing}"
             why=${why//%/%25}
             why=${why//$'\r'/%0D}
             why=${why//$'\n'/%0A}
             return 1
           }
+          oid='^[0123456789abcdef]{40}$'   # an object id, as git spells it: each answer is one, or nothing
           commit=
           if ! read_tag "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" \
               'select(.object.type == "tag") | .object.sha'; then
             echo "::error::the tag v$VERSION cannot be read ($why), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+            exit 1
+          fi
+          if [ -n "$answer" ] && ! [[ "$answer" =~ $oid ]]; then
+            echo "::error::the forge's answer for the tag v$VERSION is not an object id, so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
             exit 1
           fi
           if [ -n "$answer" ]; then
@@ -2384,6 +2415,10 @@ jobs:
             if ! read_tag "repos/$GITHUB_REPOSITORY/git/tags/$object" \
                 'select(.object.type == "commit") | .object.sha'; then
               echo "::error::the tag object $object of v$VERSION cannot be read ($why), so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
+              exit 1
+            fi
+            if [ -n "$answer" ] && ! [[ "$answer" =~ $oid ]]; then
+              echo "::error::the forge's answer for the tag object $object of v$VERSION is not an object id, so whether it still names $GITHUB_SHA is not known, and nothing is uploaded"
               exit 1
             fi
             commit="$answer"
@@ -2412,8 +2447,12 @@ jobs:
       # that names its cause, never a traceback, and it is the step's whole
       # output: what went through before it (a draft made, an upload, a
       # re-run) is said only once the release's copy is read back as the
-      # build's, and gh's first line goes on the refusal as a workflow
-      # command's data (each `%`, CR and LF as `%25`, `%0D` and `%0A`).
+      # build's. gh's output is read as UTF-8, a byte that is not as `\xNN`,
+      # and its first line goes on the refusal with each `%` written `%25`,
+      # as a workflow command's data needs: read as text, a CR ends a line
+      # as an LF does, so that line holds neither. A releases list outside
+      # the forge's schema (an entry that is not a release, `assets` that is
+      # not a list, JSON nested past what Python reads) is refused too.
       - name: the GitHub Release v<version> holds check 1's digest list, at the recorded sha256
         env:
           GH_TOKEN: ${{ github.token }}
@@ -2432,11 +2471,14 @@ jobs:
 
 
           def gh(*args):
-              return subprocess.run(["gh", *args], capture_output=True, text=True)
+              return subprocess.run(["gh", *args], capture_output=True, text=True,
+                                    encoding="utf-8", errors="backslashreplace")
 
 
           def said(done):
-              """gh's first line, as a workflow command's data."""
+              """gh's first line, each `%` written `%25`, as a workflow command's data
+              needs. Read as text, a CR ends a line as an LF does, so the first line
+              holds neither, and the CR and LF replacements below are a guard alone."""
               text = done.stderr.strip() or done.stdout.strip() or f"exit {done.returncode}"
               line = text.splitlines()[0]
               return line.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
@@ -2450,10 +2492,15 @@ jobs:
                            f"a release is not known, and nothing is published: {said(done)}")
               try:
                   found = [json.loads(line) for line in done.stdout.splitlines() if line.strip()]
+              except RecursionError:
+                  sys.exit("::error::the forge's list of releases nests deeper than it can be read, "
+                           "so nothing is published")
               except ValueError as error:
                   sys.exit(f"::error::the forge's list of releases is not its JSON ({error}), so "
                            "nothing is published")
-              if not all(isinstance(entry, dict) for entry in found):
+              if not all(isinstance(entry, dict)
+                         and isinstance(entry.get("assets"), (list, type(None)))
+                         for entry in found):
                   sys.exit("::error::the forge's list of releases holds an entry that is not a "
                            "release, so nothing is published")
               return found
