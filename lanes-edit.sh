@@ -22456,7 +22456,7 @@ EOF
       return 2 ;;
     bind-failed)
       gbt_back=0; gbt_wrc=0
-      guard_bind_rewrite --mode bind-failed "$gbt_f" "" mode=name-drift || gbt_wrc=$?
+      guard_bind_rewrite --mode bind-failed --match "bind=$GBR_BIND" "$gbt_f" "" mode=name-drift || gbt_wrc=$?
       [ "$gbt_wrc" != 2 ] || { guard_site_moved "$gbt_f" "$gbt_pane"; return 2; }
       [ "$gbt_wrc" = 0 ] || gbt_back=1
       guard_triple
