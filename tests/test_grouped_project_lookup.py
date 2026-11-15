@@ -24,7 +24,7 @@ def test_discovery_copies_match():
 
 def rows(root):
     result = subprocess.run(["bash", "-c", block("park") + '\nproject_directory_rows "$1"', "lookup", str(root)], text=True, capture_output=True, check=True)
-    return [line.split("\t") for line in result.stdout.splitlines()]
+    return [[parts[0], parts[-1]] for parts in (line.split("\t") for line in result.stdout.splitlines())]
 
 
 def test_bounds_support_collections_and_repository_boundaries(tmp_path):
@@ -202,3 +202,73 @@ def test_resume_grouped_existing_standalone(home, remotes):
     assert str(target) in result.stdout
     assert "Alpha.sh ran with:" in result.stdout
     assert not (home / "projects" / "Alpha").exists()
+
+
+def logical_family_aliases(home, storage, name):
+    """A logical holder name unrelated to its physical container basename."""
+    projects = home / "projects"; projects.mkdir(parents=True, exist_ok=True)
+    physical = storage / "estate-data"
+    holder = probe_family(storage, name)
+    holder.parent.rename(physical)
+    alias = projects / name
+    alias.symlink_to(physical, target_is_directory=True)
+    (projects / "000-invalid").symlink_to(physical, target_is_directory=True)
+    group = projects / "group"; group.mkdir()
+    (group / name).symlink_to(physical, target_is_directory=True)
+    return alias, physical / name
+
+
+@pytest.mark.parametrize("sweep", [False, True])
+def test_logical_family_alias_park_dispatch_and_dedup(tmp_path, sweep):
+    home = tmp_path / "home"
+    alias, holder = logical_family_aliases(home, tmp_path / "storage", "Atlas")
+    result = run(REPO / "park", "--all" if sweep else "Atlas", home=home)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert result.stdout.count(f"PROBE park in {holder}") == 1
+    assert alias.is_symlink()
+
+
+@pytest.mark.parametrize("sweep", [False, True])
+def test_logical_family_alias_status_recognition(tmp_path, sweep):
+    home = tmp_path / "home"
+    alias, holder = logical_family_aliases(home, tmp_path / "storage", "Atlas")
+    result = run(REPO / "status", "--all" if sweep else "Atlas", home=home)
+    assert result.returncode in (0, 1), result.stderr + result.stdout
+    assert "Atlas" in result.stdout
+    assert "no estate" not in result.stderr
+    assert alias.is_symlink()
+
+
+def aliased_real_family(home, remotes, estate, tmp_path):
+    physical = tmp_path / "storage" / "estate-data"; physical.parent.mkdir()
+    estate["folder"].rename(physical)
+    estate["folder"].symlink_to(physical, target_is_directory=True)
+    (home / "projects" / "000-invalid").symlink_to(physical, target_is_directory=True)
+    config = home / ".agents" / "workspace.yaml"; config.parent.mkdir()
+    config.write_text(f"repository: {WORKSPACE_SLUG}\npath: ~/projects/wip\n")
+    git("clone", "-q", str(remotes["workspace"]), str(home / "projects" / "wip"), cwd=home)
+    return estate["folder"], physical
+
+
+@pytest.mark.parametrize("by_id", [False, True])
+def test_logical_family_alias_resume_name_and_family_id(home, remotes, estate, tmp_path, by_id):
+    alias, physical = aliased_real_family(home, remotes, estate, tmp_path)
+    result = run(REPO / "resume", FAMILY.lower() if by_id else FAMILY,
+                 "--dry-run", home=home, env=offline(remotes))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert f"present         {alias} (family)" in result.stdout
+    assert "would clone" not in result.stdout
+    assert alias.is_symlink()
+
+
+@pytest.mark.parametrize("command", ["park", "status"])
+def test_logical_family_alias_origin_lookup(home, remotes, estate, tmp_path, command):
+    alias, physical = aliased_real_family(home, remotes, estate, tmp_path)
+    slug = "testorg/" + FAMILY
+    git("-C", str(alias / FAMILY), "remote", "set-url", "origin", "https://github.com/" + slug + ".git", cwd=home)
+    args = ["--repo", slug]
+    if command == "park": args.append("--dry-run")
+    result = run(REPO / command, *args, home=home, env=offline(remotes))
+    assert result.returncode in (0, 1), result.stderr + result.stdout
+    assert "nothing at or above" not in result.stderr
+    assert alias.is_symlink()
