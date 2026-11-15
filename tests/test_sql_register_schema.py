@@ -64,6 +64,13 @@ WHAT IT CHECKS, by the test plan's entries and lane 2's task T221:
     22's post): an edit-free `stray-revert` whose one `files` row is
     `lanes/STORE`, which is not rendered, is LR004 at `commit_write`, by a
     direct call.
+  * `test_a_final_newline_only_change_on_a_render_set_path_commits` and
+    `test_a_final_newline_only_change_to_lanes_store_is_refused_lr004_at_commit`,
+    new since spec#17's re-review r9 (lane 3's ruling 3, #165 6885378657; its
+    commit 27): a change of only a final newline is an edit, so a `write`'s or a
+    `stray-import`'s present `files` row that only flips `lanes/aliases.tsv`'s
+    stored final newline commits, while the same row for `lanes/STORE` is LR004
+    at `commit_write`, by direct calls.
 
 REAL ENGINE. Every case but the one-number rule and DEC-23's test asks for
 `pg`, one database cloned from the session's template, so its fixture closure
@@ -128,6 +135,8 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_client_outside_the_version_window_is_refused_lr003": ("T107", "T108", "T109", "T110", "T111", "T113", "T119", "T120"),  # T221; tasks:2127
     "test_a_failed_pass_record_leaves_the_divergence_as_it_was": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
     "test_a_file_without_a_final_newline_renders_back_byte_identical": ("T107", "T108", "T111", "T112"),  # T231; tasks:2231
+    "test_a_final_newline_only_change_on_a_render_set_path_commits": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231, lane 3's ruling 3 (#165 6885378657), spec#17's re-review r9 (lane 3's commit 27, 07a40aef)
+    "test_a_final_newline_only_change_to_lanes_store_is_refused_lr004_at_commit": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231, spec#17's re-review r9 and its delta review 7i (lane 3's commit 27, 07a40aef)
     "test_a_migration_against_an_older_snapshot_ends_69": ("T107", "T108", "T109", "T110", "T111", "T119", "T120"),  # T221; tasks:2127
     "test_a_migration_out_of_order_is_refused_lr003": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
     "test_a_released_claims_spellings_block_nothing": ("T107", "T108", "T111", "T112"),  # T231; tasks:2231
@@ -3069,3 +3078,132 @@ def test_a_stray_revert_with_a_files_row_for_lanes_store_is_refused_lr004_at_com
     assert "lanes/STORE" in message, f"LR004, but not for lanes/STORE: {message}"
     assert head(pg) == n, f"the head moved from {n} to {head(pg)}"
     assert state(pg) == before, "a refused stray-revert changed the register"
+
+
+# =================================================================== a final newline's change
+#: Lane 3's ruling 3 on lane 1's #165 6882354358 (6885378657), as spec#17's re-review r9
+#: and its delta review 7i sharpened it (lane 3's commit 27 `07a40aef`; design:1604-1605,
+#: :2058 and :2065 at a227bea9): a change of only a file's final newline is an edit. So
+#: step 8's third check takes, for a `write` or a `stray-import`, a present `files` row for
+#: a path the entry does not edit, when that path is a render-set path other than
+#: `lanes/STORE`, already in `files`, whose `final_newline` differs from the stored one; a
+#: `lanes/STORE` row with no edit stays LR004, since only cutover and rollback may name it.
+#: AT-LR4's fixture stores `lanes/aliases.tsv` with no final newline and `lanes/STORE` with
+#: one, so each case's row flips its path's stored `final_newline`, with the digest of the
+#: file so rendered. No `import` form, since an import empties `files` first (design:1725),
+#: and no `stray-revert` form, since a stray revert is outside the third check (TP:4642).
+FINAL_NEWLINE_FORMS = ("write", "stray-import")
+#: Step 8's third check's message (design:2065).
+NOT_EDITED = "a files row names a path the entry does not edit"
+
+
+def files_row(db, path: str):
+    """`path`'s `files` row, whole, or None where `files` holds no such path."""
+    out = sql(db, f"SELECT to_jsonb(f) FROM {SCHEMA}.files f WHERE f.path = {sql_text(path)};")
+    return json.loads(out) if out else None
+
+
+def render_of(db, path: str) -> bytes:
+    """`render_file(path)`'s bytes, as REGISTER-WRITER."""
+    return bytes.fromhex(sql(db, f"SELECT encode({SCHEMA}.render_file({sql_text(path)}), 'hex');",
+                             WRITER))
+
+
+def journal_files_at(db, seq: int) -> list:
+    """`journal_files`' rows at `seq`, each as an entry's `files` row, by path."""
+    return json.loads(sql(db, (
+        f"SELECT coalesce(jsonb_agg(jsonb_build_object('path', j.path, 'present', j.present, "
+        f"'sha256', j.sha256, 'final_newline', j.final_newline) ORDER BY j.path), '[]') "
+        f"FROM {SCHEMA}.journal_files j WHERE j.seq = {seq};")))
+
+
+def flipped_row(path: str, lines, stored_final_newline: bool) -> dict:
+    """A present `files` row for `path`, whose `lines` are stored with the final newline
+    `stored_final_newline`: the opposite final newline, and the digest of the file so
+    rendered."""
+    return {"path": path, "present": True, "sha256": rendered(lines, not stored_final_newline),
+            "final_newline": not stored_final_newline}
+
+
+def final_newline_entry(form: str, row: dict) -> dict:
+    """`[write]`: `lr4_body`'s write, with `row` as one more `files` row, for a path the
+    write does not edit; `[stray-import]`: a `stray-import` entry whose only change is
+    `row`'s, so it carries that one `files` row and no edit (TP:4642)."""
+    if form == "write":
+        body = lr4_body()
+        body["files"] = [*body["files"], row]
+        return body
+    return entry("stray-import", "import --single", journal={"git_commit": SHA_B}, files=[row])
+
+
+@pytest.mark.parametrize("form", FINAL_NEWLINE_FORMS)
+def test_a_final_newline_only_change_on_a_render_set_path_commits(pg, form):
+    """A change of only `lanes/aliases.tsv`'s final newline, a render-set path in
+    `files` that the entry does not edit, commits (lane 3's ruling 3; spec#17's
+    re-review r9, its first and second BLOCKING findings; AT-LR4 and T231, TP:4642):
+
+      * `[write]`: `lr4_body`'s write with one more `files` row, `lanes/aliases.tsv`,
+        present, its `final_newline` the opposite of the stored one and its digest
+        that of the file so rendered;
+      * `[stray-import]`: a `stray-import` entry whose only change is that file's
+        final newline, with that one `files` row and no `journal_edits` row.
+
+    Each commits: the head moves on by one seq; `journal_files` holds the row exactly
+    as sent; `files` holds its `final_newline` as sent, its `sha256` as the row's
+    digest and its `last_seq` as the new seq; and `render_file` gives the file's bytes
+    before with only the final newline added, hashing to that digest. The premise is
+    checked first: the fixture stores the file with no final newline, and it renders so.
+
+    A direct call, as T231f's case: the exception is T107's `commit_write`, step 8's
+    third check (design:2065), which fails until lane 1's T107 follow-up for ruling 3;
+    before it, the row takes the third check's LR004."""
+    n = bring_to_primary(pg, LR4_FILES, no_newline=LR4_NO_NEWLINE)
+    path = "lanes/aliases.tsv"
+    old = file_bytes(LR4_ALIASES, final_newline=False)
+    stored = files_row(pg, path)
+    assert stored is not None and stored["final_newline"] is False and render_of(pg, path) == old, (
+        f"the premise: {path} is stored with no final newline and renders {old!r}: {stored}")
+    row = flipped_row(path, LR4_ALIASES, stored_final_newline=False)
+    seq = committed(pg, n, final_newline_entry(form, row),
+                    f"a {form} whose only change to {path} is its final newline")
+    assert seq == n + 1 and head(pg) == n + 1, f"the head is {head(pg)} and the seq {seq}, not {n + 1}"
+    sent = [r for r in journal_files_at(pg, seq) if r["path"] == path]
+    assert sent == [row], f"journal_files at seq {seq} holds {sent} for {path}, not {row}"
+    now = files_row(pg, path)
+    assert (now["final_newline"], now["sha256"], now["last_seq"]) == (True, row["sha256"], seq), (
+        f"files holds {now} for {path}, not final_newline true, sha256 {row['sha256']} "
+        f"and last_seq {seq}")
+    want = old + b"\n"
+    shown_now = render_of(pg, path)
+    assert shown_now == want and hashlib.sha256(shown_now).hexdigest() == row["sha256"], (
+        f"{path} renders {shown_now!r}, not {want!r} with the digest {row['sha256']}")
+
+
+@pytest.mark.parametrize("form", FINAL_NEWLINE_FORMS)
+def test_a_final_newline_only_change_to_lanes_store_is_refused_lr004_at_commit(pg, form):
+    """The same two entries with the row for `lanes/STORE` in place of
+    `lanes/aliases.tsv`: present, its `final_newline` flipped and its digest that of
+    `lanes/STORE` so rendered. Each is refused at its commit with LR004 at step 8's
+    third check, "a files row names a path the entry does not edit", and nothing
+    changes: every table of section 1.2 equals its value before, since only cutover
+    and rollback, the operator entries, may name `lanes/STORE` (spec#17's re-review r9
+    and its delta review 7i, each its first BLOCKING finding; AT-LR4 and T231,
+    TP:4642). The premise is checked first: the cutover stored `lanes/STORE` with a
+    final newline, and it renders so.
+
+    A direct call, as T231f's case. Lane 1's follow-up for ruling 5 already refuses
+    the row, so the case guards that ruling 3's exception keeps `lanes/STORE` out:
+    with commit 26's third check, which had no such exclusion, each entry commits."""
+    n = bring_to_primary(pg, LR4_FILES, no_newline=LR4_NO_NEWLINE)
+    path = "lanes/STORE"
+    old = file_bytes(STORE_LINES)
+    stored = files_row(pg, path)
+    assert stored is not None and stored["final_newline"] is True and render_of(pg, path) == old, (
+        f"the premise: {path} is stored with a final newline and renders {old!r}: {stored}")
+    row = flipped_row(path, STORE_LINES, stored_final_newline=True)
+    before = state(pg)
+    message = refused(commit_call(pg, n, final_newline_entry(form, row)), "LR004",
+                      f"a {form} whose only change to {path} is its final newline")
+    assert NOT_EDITED in message, f"LR004, but not step 8's third check's: {message}"
+    assert head(pg) == n, f"the head moved from {n} to {head(pg)}"
+    assert state(pg) == before, f"a refused {form} changed the register"
