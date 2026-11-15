@@ -110,8 +110,12 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: off primary, is keyed by analogy with T513's verify case's,
 #: `test_the_session_start_block_reads_the_mirror_and_only_starts_the_service`
 #: (T237's Order, tasks:2302 at commit 24 `f9d6069e`: its tests fail until
-#: L5-S1 lands, lane 5's T511 to T513). No task is common to every row, so
-#: there is no "*" row.
+#: L5-S1 lands, lane 5's T511 to T513). T237zze's row, for the client's own
+#: check of the server's uid, is the row of SVC-2's other case,
+#: `test_a_client_of_another_uid_is_closed_by_so_peercred`: tasks:2278 at
+#: lane 3's commit 31 `8f50d105` says it fails until L5-S1, lane 5's T512,
+#: under the same Order (tasks:2302 there). No task is common to every row,
+#: so there is no "*" row.
 SQL_REGISTER_GATE_TABLE = {
     "test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither": ("T512", "T513"),  # T237; tasks:2302
     "test_a_bind_body_past_its_bound_ends_with_the_bounds_code_and_leaves_no_process": ("T502",),  # T214; tasks:2013
@@ -169,6 +173,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_the_bind_is_one_register_write_and_refuses_a_changed_row": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
     "test_the_bind_records_grammar_as_every_reader_takes_it": ("T502",),  # T214; tasks:2013
     "test_the_bind_resume_path_makes_at_most_n_r_read_calls": ("T502",),  # T214; tasks:2013
+    "test_the_client_treats_a_service_of_another_uid_as_unavailable": ("T512", "T513"),  # T237; tasks:2302, with :2278
     "test_the_database_unreachable_with_the_service_up_is_2_never_a_cached_ok": ("T512", "T513"),  # T237; tasks:2302
     "test_the_direct_read_connects_as_its_engineers_reader_login": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_the_facts_file_is_made_empty_first_and_its_absence_is_reported": ("T502",),  # T214; tasks:2013
@@ -5878,9 +5883,13 @@ class _Listener:
     a rename (`write_record`), after its bind and before its listen, as the
     service writes its own before its socket can be reached (section 2.4,
     "How it is written"). Nothing removes it, as nothing removes the
-    service's: the next service replaces it."""
+    service's: the next service replaces it.
 
-    def __init__(self, est: Estate, hang: bool, whole: bool = False):
+    WITH `answer` (T237zze), a connection that sent any bytes is answered
+    with `answer` before it is closed, as a service answers a request; one
+    that sent none is closed with nothing sent, and its record is `b""`."""
+
+    def __init__(self, est: Estate, hang: bool, whole: bool = False, answer: bytes = None):
         import socket
         run = _run_dir(est)
         run.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -5911,6 +5920,11 @@ class _Listener:
                 except OSError:
                     pass
                 self.got.append(data)
+                if answer is not None and data:
+                    try:
+                        conn.sendall(answer)
+                    except OSError:
+                        pass
                 if hang:
                     self.held.append(conn)
                 else:
@@ -7278,6 +7292,135 @@ def test_a_client_of_another_uid_is_closed_by_so_peercred(estate):
     assert answer == b"" and after == before + 1, \
         (f"the service did not close a client of another uid with no answer: answered "
          f"{answer[:80]!r}; 'closed a client of another uid' lines {before} then {after}")
+
+
+#: T237zze: THE GUARD'S `lanes-index` WHOSE SERVER IS ANOTHER UID, the
+#: client's half of `_OTHER_UID_SERVE` (tasks:2278 at lane 3's commit 31
+#: `8f50d105`). It goes beside a copy of the estate's `lanes-edit.sh`, where
+#: `lanes_index_bin` looks first. It loads the estate's own `lanes-index`,
+#: @INDEX@, so `register_serve_install` still states that file, the one the
+#: owner file names, and replaces its one peer-credential read,
+#: `register_peercred` (`lanes-index:7709` at line R's merge161), with one
+#: that logs each call, its pid and its caller, to @LOG@ and answers
+#: `os.getuid() + 1`. Then it runs `main` as the script does.
+_OTHER_UID_CLIENT = r'''#!@PY@ -I
+import importlib.machinery, importlib.util, os, sys
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("lanes_index_other_uid_client", @INDEX@)
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+sys.modules[loader.name] = module
+loader.exec_module(module)
+if not callable(getattr(module, "register_peercred", None)):
+    sys.exit("lanes-index reads no peer credential through register_peercred (T512)")
+
+
+def register_peercred(conn):
+    with open(@LOG@, "a", encoding="utf-8") as log:
+        log.write(f"{os.getpid()} {sys._getframe(1).f_code.co_name}\n")
+    return os.getuid() + 1
+
+
+module.register_peercred = register_peercred
+sys.exit(module.main(sys.argv[1:]))
+'''
+
+
+def test_the_client_treats_a_service_of_another_uid_as_unavailable(estate):
+    """SVC-2, THE CLIENT'S HALF: the guard's client treats a server of
+    another uid as unavailable and trusts no answer from it (tasks:2278 at
+    lane 3's commit 31 `8f50d105`, with T237's Tests at :2272 and T512's
+    verify at :1604; test-map row 634; design:3838-3843; socket API section
+    3, `fa613b9d`:157-158, at draft 13). CI has no second uid, so, as
+    `test_a_client_of_another_uid_is_closed_by_so_peercred` does for the
+    service, the guard runs a stand-in `lanes-index`, `_OTHER_UID_CLIENT`,
+    whose `register_peercred` answers `os.getuid() + 1`.
+
+    THE ORACLE (tasks:2278): a server of the case's own at the socket path
+    answers every request with the `ok` state's answer, in an estate whose
+    state is `refuse`. The guard prints `guard: direct (service
+    unavailable)` once, and its exit, stdout and stderr are the `refuse`
+    state's direct read, byte for byte. An answer it trusted would show:
+    the `ok` state's guard run is checked to differ from that direct read,
+    the fallback line aside.
+
+    CODEX'S SHOULD ON COMMIT 31 (its delta review of `8f50d105`, which lane
+    2 takes): the client reads the owner file after its connect and before
+    its uid check (socket API section 2.4, `fa613b9d`:143-145), and a file
+    it cannot use falls back the same way for another reason. So the server
+    is `_Listener`, which writes a whole, matching, 0600 `register.owner`
+    with `install=`, `pidns=` and `boot=` (`_owner_lines`). The case asserts
+    exactly one `register_peercred` call by the guard's client, and that
+    the one connection the server accepted got no request bytes: the
+    client sends none to a server of another uid (`lanes-index:9704-9705`,
+    before `sendall` at :9709, at line R's merge161;
+    `bc9ed80b:lanes-index:9102-9106`).
+
+    THE `ok` STATE'S ANSWER is the real service's, on this estate's own
+    register. In the `ok` state (`_guard_state`'s), a `_Listener` records
+    the guard's request; the service is started and warmed (`_warm`, whose
+    run is the `ok` state's guard answer), and `_ask_service` sends it that
+    request. Then one write brings the register to `refuse`, as
+    `_guard_state` makes it, and the direct read is the guard's own
+    fallback from a `_Listener` that answers nothing: a client of this uid,
+    which sends the same request and starts no service. It fails until
+    L5-S1, lane 5's T512, whose client check it runs."""
+    est = estate(mode="primary", to=FROM, to_row=False)
+    est.sql_register = _Register(est)
+    probe = _Listener(est, hang=False, whole=True)
+    try:
+        est.hook("hello")
+    finally:
+        probe.close()
+    assert len(probe.got) == 1 and probe.got[0].endswith(b"\nend\n"), \
+        f"the guard's client sent no whole request to a server of this uid: {probe.got!r}"
+    request = probe.got[0]
+
+    def text_answer():
+        got = _ask_service(est, request)
+        return got if got.startswith(b"text ") else None
+
+    svc = _Service(est)
+    try:
+        ok = _warm(est)
+        answer = _until(text_answer, WARM_S, 0.2)
+    finally:
+        svc.stop()
+    assert answer, "the service gave the guard's request no text answer in the ok state"
+    _live_other(est)
+    est.push_register([_row(FROM, est.other, "LIVE")])
+    plain = _Listener(est, hang=False, whole=True)
+    try:
+        direct = est.hook("hello")
+    finally:
+        plain.close()
+    assert plain.got == [request] and direct.err.count(FALLBACK) == 1 and not direct.killed, \
+        (f"the refuse state's direct read did not send the ok state's request and fall back: "
+         f"{plain.got!r} {direct!r}")
+    unfallen = [line for line in direct.err.splitlines() if line != FALLBACK]
+    assert (ok.code, ok.out, ok.err.splitlines()) != (direct.code, direct.out, unfallen), \
+        f"the ok state's guard answer is the refuse state's direct read: {ok!r}"
+    seam = est.root / "seam-other-uid"
+    seam.mkdir()
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        if (est.guard.parent / name).exists():
+            shutil.copy2(est.guard.parent / name, seam / name)
+    calls = seam / "register_peercred.calls"
+    _script(seam / "lanes-index", _OTHER_UID_CLIENT, PY=sys.executable, INDEX=_q(est.index),
+            LOG=_q(calls))
+    server = _Listener(est, hang=False, whole=True, answer=answer)
+    try:
+        hook = run_hook(["bash", str(seam / "lanes-edit.sh"), "guard"],
+                        est.session.hook_input(prompt="hello"), est.env(), est.session.cwd)
+    finally:
+        server.close()
+    made = calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
+    assert hook.err.count(FALLBACK) == 1 and not hook.killed and \
+        (hook.code, hook.out, hook.err) == (direct.code, direct.out, direct.err), \
+        (f"the guard did not treat a server of another uid as unavailable with the refuse "
+         f"state's direct read: register_peercred calls {made}, the server got "
+         f"{server.got!r}\nthrough the server: {hook!r}\ndirect: {direct!r}")
+    assert len(made) == 1, f"the guard's client made {len(made)} register_peercred calls: {made}"
+    assert server.got == [b""], f"a server of another uid was sent request bytes: {server.got!r}"
 
 
 @pytest.mark.parametrize("case", ["namespace", "boot"])
