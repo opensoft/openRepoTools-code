@@ -7774,9 +7774,9 @@ def register_serve_launch(paths: dict) -> str | None:
     That closes the lexical join, which is what lane 3's ruling asked.
 
     A REPOINT IS SEEN ONLY BY A SERVICE STARTED THROUGH THE LINK (lane 5's
-    correction, #165 6894693645; lane 3 is to rule how v1.3 takes this
-    limit, and until it rules the code stays as it is). The service's install
-    check takes `register_serve_install`'s `realpath` of its own `__file__`
+    correction, #165 6894693645; lane 3 rules it a v1.3 limit, #165
+    6894714082, so the code stays as it is). The service's install check
+    takes `register_serve_install`'s `realpath` of its own `__file__`
     on each request. Where the service was started through an install link,
     its `__file__` keeps the link, so after the link is repointed the check
     finds another install and the service stops. But `lanes-edit.sh`
@@ -7789,7 +7789,13 @@ def register_serve_launch(paths: dict) -> str | None:
     `register.lock` held (`register_serve_run`) and exits 0; the client goes
     on using the old service's answer, and every request spawns one more
     futile `serve`, until the old service stops for another cause. An
-    upgrade that replaces the files at the same real path is seen."""
+    upgrade that replaces the files at the same real path is seen.
+
+    THE REMEDY (lane 3's ruling, #165 6894714082): after an upgrade by
+    repointing a link, stop the old service, whose `pid=` is in the owner
+    file (`register.owner`). That a client which finds another install reads
+    directly, and starts no `serve`, is a named follow-up after v1.3.0, in its
+    own PR; it is not built here."""
     try:
         log = os.open(paths["log"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
                       | os.O_CLOEXEC, 0o600)
