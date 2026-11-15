@@ -92,7 +92,8 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: `bind-record.md`'s section 8, are from T214's Order at the follow-up's
 #: commit 24 `f9d6069e` (tasks:2013), which keeps that line number. T214o's
 #: nine rows, section 8's other bullets at spec#47's draft 14 `96d14916`, are
-#: from the same Order (lane 2, #165 6882026139, Part B). T214t's
+#: from the same Order (lane 2, #165 6882026139, Part B). T254zw's row, its
+#: :376, is from T254's Order (tasks:2419; K1). T214t's
 #: row, for T502's part 21 (lane 5, opensoft/openRepoTools#165 6885608994),
 #: is keyed by the same Order: its case fails until T502 lands. T213r's
 #: row for `test_no_session_environment_carries_a_database_url_or_password`
@@ -114,6 +115,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_bind_in_doubt_looks_its_write_up_before_a_rerun": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
     "test_a_bind_killed_mid_commit_waits_for_ended_utc_plus_c_before_its_lookup": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
     "test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
+    "test_a_bind_whose_write_id_no_pending_record_holds_makes_no_lookup": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
     "test_a_bind_with_no_timeout_says_bounded_no_and_kill_stops_its_group_once": ("T502",),  # T214; tasks:2013
     "test_a_binding_from_another_host_or_container_is_not_judged_by_its_pid_until_the_deadline_plus_60_s": ("T502",),  # T214; tasks:2013
     "test_a_cache_miss_at_the_service_answers_unavailable_and_fetches_in_the_background": ("T302", "T512", "T513"),  # T237; tasks:2302
@@ -4054,6 +4056,83 @@ def test_the_stale_row_copies_a_dead_outers_pending_call_and_the_next_2_looks_it
 #: clock: the largest, 0, is neither first nor last, and none is in the
 #: future, so the lookup decides at once.
 NOT_AFTER_OFFSETS = [-30, 0, -20]
+
+
+@pytest.mark.parametrize("copy", ["no-write-id", "no-pending-record", "write-id-not-uuid"])
+def test_a_bind_whose_write_id_no_pending_record_holds_makes_no_lookup(estate, copy):
+    """Section 8's :376 (spec#47's draft 14 `96d14916`; the contract's section
+    3, its `write_id` row; lane 5's name, #165 6881714002; T254's, lane 2's
+    K1, #165 6882026139: phase 2 on primary, AT-F6's writes). A first bind,
+    whose stand-in `lane-start` writes a whole `start-record` pending record
+    of this session with a `call=` line, as case 20's does, and exits 3,
+    leaves a record holding the five copies; the bind-failed reply restores
+    the offer with them. Then its `write_id` is changed, and `ended_utc` set
+    to now, so a `w₀` wait would hold the body `N_a`*`c` + 6 s, 8 s at the
+    defaults:
+
+    - `[no-write-id]`: the record holds no `write_id`, the other four kept;
+    - `[no-pending-record]`: a new uuid, which no pending record holds,
+      while the first attempt's pending record of this session is still
+      there with its own;
+    - `[write-id-not-uuid]`: the first attempt's id in upper case, which is
+      no uuid in the record's grammar.
+
+    At the next `2` the body makes no lookup, no `find_write` call in the
+    shim's log after it, and no `w₀` wait: the stand-in `lane-start` starts
+    before `ended_utc` plus that `C`, and the record ends `bound`, holding
+    none of the copies. The first attempt's pending record is left, as
+    nothing looked it up or settled it."""
+    est = estate(mode="primary")
+    est.shim()
+    est.extra["LANES_HOST"] = HOST
+    est.make_offer()
+    generation = est.pg.psql("SELECT generation FROM lanes_register.register_switch;"
+                             ).stdout.split()[-1]
+    head = est.pg.psql("SELECT seq FROM lanes_register.register_head;").stdout.split()[-1]
+    est.set("pending-record", json.dumps({
+        "generation": generation, "lane": TO, "session": est.sid, "host": HOST,
+        "container": CONTAINER, "database": "register-test", "base": int(head),
+        "not_after_offsets": [0]}))
+    est.set("rc", 3)
+    est.answer_2()
+    first = est.ended(120)
+    written = [e["pending"] for e in est.starts() if e.get("pending")]
+    assert first["mode"] == "bind-failed" and first["rc"] == "3" \
+        and all(k in first for k in COPIES), first
+    assert written and read_record(Path(written[0])).get("write_id") == first["write_id"], \
+        (written, first)
+    est.hook("hello")
+    # THE SECOND ATTEMPT'S STAND-IN WRITES NO PENDING RECORD, AND ENDS 0.
+    (est.ctl / "pending-record").unlink()
+    est.set("rc", 0)
+    lines = [line for line in est.offer.read_text(encoding="utf-8").splitlines()
+             if not line.startswith(("write_id=", "ended_utc="))]
+    if copy == "no-pending-record":
+        lines.append(f"write_id={uuid.uuid4()}")
+    elif copy == "write-id-not-uuid":
+        upper = first["write_id"].upper()
+        assert upper != first["write_id"], first["write_id"]
+        lines.append(f"write_id={upper}")
+    ended = int(time.time())
+    write_record(est.offer, lines + [f"ended_utc={_utc(ended)}"])
+    record = est.record()
+    assert record.get("mode") == "name-drift" and record.get("write_id") != first["write_id"] \
+        and all(k in record for k in COPIES if k != "write_id"), record
+    c = max(2, int(record.get("c") or 2))
+    n_a = max(1, int(record.get("n_a") or 1))
+    before = len(est.shim_calls())
+    est.answer_2()
+    end = est.ended(120)
+    calls = est.shim_calls()[before:]
+    starts = est.starts()
+    assert not [call for call in calls if "find_write" in call.get("sent", "")], \
+        f"[{copy}]: the body looked up a write no pending record holds: {calls}"
+    assert len(starts) == 2 and starts[1]["t"] < ended + n_a * c + 6, \
+        (f"[{copy}]: the second lane-start started {starts[-1]['t'] - ended:.1f} s after "
+         f"ended_utc, at or past C = {n_a * c + 6} s: a w0 wait")
+    assert end["mode"] == "bound" and end["rc"] == "0" \
+        and not [k for k in COPIES if k in end], end
+    assert Path(written[0]).exists(), "the first attempt's pending record was settled"
 
 
 def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, request):
