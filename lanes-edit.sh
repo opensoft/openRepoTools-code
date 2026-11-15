@@ -22792,16 +22792,35 @@ guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 whe
 # THE OFFER IS STILL THERE, STILL SAYS `name-drift` (the first `mode` line, as
 # `guard_bind_load` takes it) AND IS STILL THE OFFER THAT WAS ANSWERED, by its
 # `from`, `to`, `session` and `utc` where it has them (NIT 2): choice 1's test,
-# made just before its `mv`.
+# made just before its `mv`. ONE READ (Codex's S3 on spec#47's draft 17,
+# `guard_record_says`), which also leaves the offer's own `out` in `GRS_OUT`.
 guard_offer_still() {   # <offer file> <from> <to> <session> <utc>
-  gos2_f="${1-}"
-  [ -f "$gos2_f" ] || return 1
-  [ "$(sed -n -e 's/^mode=//p' "$gos2_f" 2>/dev/null | head -n1)" = name-drift ] || return 1
-  [ -z "${2-}" ] || [ "$(sed -n -e 's/^from=//p' "$gos2_f" 2>/dev/null | head -n1)" = "$2" ] || return 1
-  [ -z "${3-}" ] || [ "$(sed -n -e 's/^to=//p' "$gos2_f" 2>/dev/null | head -n1)" = "$3" ] || return 1
-  [ -z "${4-}" ] || [ "$(sed -n -e 's/^session=//p' "$gos2_f" 2>/dev/null | head -n1)" = "$4" ] || return 1
-  [ -z "${5-}" ] || [ "$(sed -n -e 's/^utc=//p' "$gos2_f" 2>/dev/null | head -n1)" = "$5" ] || return 1
+  gos2_kv=()
+  [ -z "${2-}" ] || gos2_kv+=("from=$2")
+  [ -z "${3-}" ] || gos2_kv+=("to=$3")
+  [ -z "${4-}" ] || gos2_kv+=("session=$4")
+  [ -z "${5-}" ] || gos2_kv+=("utc=$5")
+  guard_record_says "${1-}" name-drift ${gos2_kv[@]+"${gos2_kv[@]}"}
+}
+
+# A FILES' INDEX AT MOST ANOTHER (Codex's S3): both canonical decimal strings,
+# or the second `0`, compared as `guard_bind_next_index` compares them, the
+# longer the larger and an equal length digit by digit.
+guard_bind_index_le() {   # <index> <index or 0>
+  [ "${#1}" -lt "${#2}" ] && return 0
+  [ "${#1}" -gt "${#2}" ] && return 1
+  [ "$1" \> "$2" ] && return 1
   return 0
+}
+
+# THE INDEX OF AN OFFER'S OWN LAST ATTEMPT, from the `out` it names: `<n>` of
+# `<offer file>.bind.<n>.out` where `<n>` is canonical, else 0 (no attempt it
+# names).
+guard_bind_own_index() {   # <offer file> <its out>
+  gboi_f="${1-}"; gboi_o="${2-}"
+  case "$gboi_o" in "$gboi_f".bind.*.out) : ;; *) printf '0\n'; return 0 ;; esac
+  gboi_i="${gboi_o#"$gboi_f".bind.}"; gboi_i="${gboi_i%.out}"
+  if guard_bind_index_ok "$gboi_i"; then printf '%s\n' "$gboi_i"; else printf '0\n'; fi
 }
 
 # The answer, and it is the whole of clause (h) rule 2's second half.
@@ -22881,7 +22900,21 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     # the `mv`: bash has no rename that replaces only an existing file, so a
     # record made or changed in between is still replaced, as it is in
     # `guard_bind_rewrite`'s.
+    # AND WHAT IT CAN MEET THERE (Codex's S3 on spec#47's draft 17): an answer
+    # `2` to the same offer, made at the same moment, can pass its own `--offer`
+    # test after this test, rewrite the offer to `binding` and start its outer,
+    # and this `mv` then replaces that bind record with the allowance. Its outer
+    # then runs nothing where its start rewrite comes after the `mv`, and
+    # otherwise runs its body and finds the record no longer its own at its
+    # outcome, which goes to its `.out` alone. So the `.bind.*` sweep (point 13)
+    # removes only the names LISTED BEFORE THE TEST, and of those only the
+    # offer's own: an index at most that of the `out` the offer names at the
+    # test, none where it names none. A newer attempt's files are never swept.
+    # And after the `mv` the names are read again: one not listed before, above
+    # the offer's own, is that answer `2`'s attempt, whose record this allowance
+    # replaced, and the person is told so plainly, with its output named.
     ga_t="$(umask 077; mktemp "${ga_f%/*}/.${ga_f##*/}.XXXXXX" 2>/dev/null || printf '')"
+    ga_bl=("$ga_f".bind.*)
     ga_wrc=0
     if [ -z "$ga_t" ] || ! ( umask 077
          { printf 'mode=allow\n' || exit 1
@@ -22910,8 +22943,29 @@ guard_answer() {   # <offer file> <the prompt> <pane>
       guard_refuse "the explicit allow could not be recorded at $ga_f, so the mismatch remains unapproved. Nothing was renamed or written; answer 1 again after the session state is writable."
       return 2
     fi
-    rm -f -- "$ga_f".bind.* 2>/dev/null
+    ga_own="$(guard_bind_own_index "$ga_f" "$GRS_OUT")"
+    for ga_x in ${ga_bl[@]+"${ga_bl[@]}"}; do
+      [ -e "$ga_x" ] || continue
+      ga_i="${ga_x#"$ga_f".bind.}"; ga_i="${ga_i%%.*}"
+      guard_bind_index_ok "$ga_i" && guard_bind_index_le "$ga_i" "$ga_own" || continue
+      rm -f -- "$ga_x" 2>/dev/null || :
+    done
+    ga_new=""
+    for ga_x in "$ga_f".bind.*; do
+      [ -e "$ga_x" ] || continue
+      ga_i="${ga_x#"$ga_f".bind.}"; ga_i="${ga_i%%.*}"
+      guard_bind_index_ok "$ga_i" || continue
+      ! guard_bind_index_le "$ga_i" "$ga_own" || continue
+      ga_was=0
+      for ga_y in ${ga_bl[@]+"${ga_bl[@]}"}; do [ "$ga_y" != "$ga_x" ] || ga_was=1; done
+      [ "$ga_was" = 0 ] || continue
+      case "$ga_x" in *.out) ga_new="$ga_x" ;; *) [ -n "$ga_new" ] || ga_new="$ga_x" ;; esac
+    done
     guard_triple
+    if [ -n "$ga_new" ]; then
+      note "THIS ANSWER \`1\` MET AN ANSWER \`2\` MADE AT THE SAME MOMENT: that answer started a bind of this window to lane ${ga_to:-none} (its output is $ga_new), and this allowance was written over its record at $ga_f. The allowance is recorded, but that bind is NOT stopped: its outer leaves a record that is no longer its own, so how the bind ends is written only to that output, which is kept. Read it to see whether this window was bound to lane ${ga_to:-none}; the next prompt reads the record and the window as they are then. This answer is consumed; send your work again."
+      return 2
+    fi
     note "ALLOWED: this lane/session name mismatch is explicitly allowed for this transcript. This answer is consumed; send your work again. Future prompts will warn without blocking while the lane remains $ga_from and the session remains '${ga_session:-none}'."
     return 2 ;;
   2)
