@@ -364,3 +364,23 @@ def test_family_container_alias_does_not_expose_members(tmp_path, physical_name)
     found = rows(home / "projects")
     assert "Atlas" in [row[0] for row in found]
     assert "Alpha" not in [row[0] for row in found]
+
+
+@pytest.mark.parametrize("command", ["park", "status"])
+def test_family_container_boundaries_span_both_projects_roots(tmp_path, command):
+    home = tmp_path / "home"; home.mkdir()
+    alias, holder = logical_family_aliases(home, tmp_path / "storage", "Atlas")
+    other = home / "Projects"; other.mkdir()
+    (home / "projects" / "000-invalid").rename(other / "000-invalid")
+    sweepable_project(holder.parent, "Alpha")
+    result = run(REPO / command, "--all", home=home)
+    assert "Alpha" not in result.stdout + result.stderr
+    if command == "park":
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert result.stdout.count("PROBE park in ") == 1
+    else:
+        # The deliberately uncommitted probe holder has findings; enumeration
+        # must still contain only the family, never its sibling as an estate.
+        assert result.returncode == 1, result.stderr + result.stdout
+        assert result.stdout.count("=== status Atlas ===") == 1
+        assert "1 with findings" in result.stdout

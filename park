@@ -436,18 +436,20 @@ project_directory_walk() {
 }
 
 project_directory_rows() {
-    local families
-    # Resolve container boundaries before emitting rows: an earlier alias with
-    # a different basename must not expose the same family's member projects.
-    families="$(project_directory_walk "$1" 0 families)"
-    project_directory_walk "$1" 0 rows "$families"
+    local base="$1" families root
+    shift
+    [ "$#" -gt 0 ] || set -- "$base"
+    # Resolve boundaries across every configured root before emitting rows.
+    # A family alias in another root must also hide this container's members.
+    families="$(for root in "$@"; do project_directory_walk "$root" 0 families; done)"
+    project_directory_walk "$base" 0 rows "$families"
 }
 # END GROUPED PROJECT DISCOVERY
 
 estate_directory_rows() {
     local dir
     for dir in "${PROJECTS_DIRS[@]}"; do
-        project_directory_rows "$dir"
+        project_directory_rows "$dir" "${PROJECTS_DIRS[@]}"
     done
 }
 
@@ -467,7 +469,7 @@ estate_by_name() {
         hits="$(while IFS=$'\t' read -r name child physical; do
             [ "$name" = "$want" ] || continue
             if estate_here "$child"; then printf '%s\t%s\n' "$child" "$physical"; fi
-        done < <(project_directory_rows "$dir") | awk -F '\t' '!seen[$2]++ {print $1}')"
+        done < <(project_directory_rows "$dir" "${PROJECTS_DIRS[@]}") | awk -F '\t' '!seen[$2]++ {print $1}')"
         [ -n "$hits" ] || continue
         if [ "$(printf '%s\n' "$hits" | wc -l | tr -d ' ')" -gt 1 ]; then
             die "multiple estates named '$want' under $dir; stand in the intended estate and run $SELF_NAME without <Name>: $hits"
@@ -540,7 +542,7 @@ family_folders_with_id() {
             [ "$dup" -eq 0 ] || continue
             found+=("$child")
             printf '%s\n' "$child"
-        done < <(project_directory_rows "$dir")
+        done < <(project_directory_rows "$dir" "${PROJECTS_DIRS[@]}")
     done
 }
 

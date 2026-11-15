@@ -1121,11 +1121,13 @@ project_directory_walk() {
 }
 
 project_directory_rows() {
-    local families
-    # Resolve container boundaries before emitting rows: an earlier alias with
-    # a different basename must not expose the same family's member projects.
-    families="$(project_directory_walk "$1" 0 families)"
-    project_directory_walk "$1" 0 rows "$families"
+    local base="$1" families root
+    shift
+    [ "$#" -gt 0 ] || set -- "$base"
+    # Resolve boundaries across every configured root before emitting rows.
+    # A family alias in another root must also hide this container's members.
+    families="$(for root in "$@"; do project_directory_walk "$root" 0 families; done)"
+    project_directory_walk "$base" 0 rows "$families"
 }
 # END GROUPED PROJECT DISCOVERY
 
