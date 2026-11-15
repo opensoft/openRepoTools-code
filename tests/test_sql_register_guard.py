@@ -496,10 +496,41 @@ def _argv(pid) -> list:
 
 
 def _kill(pid, sig=signal.SIGKILL) -> None:
+    """`sig` to the one process `pid`, and never to more (T214u). A pid of 1
+    or less is refused, and so is this process's own: `os.kill(0, ...)`
+    signals this process's whole group, which `tests/run.sh`'s `set -m`
+    makes pytest's; a negative pid signals a group, and -1 every process this
+    user owns; and 1 is the container's init."""
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1 or pid == os.getpid():
+        return
     try:
         os.kill(pid, sig)
     except (ProcessLookupError, PermissionError):
         pass
+
+
+def _record_pid(record: dict):
+    """THE RECORD'S `pid` AS THE ESTATE'S TEARDOWN MAY SIGNAL IT (T214u), else
+    None: well-formed by the guard's own rule, `guard_bind_pid_ok` (decimal
+    digits, no leading 0, above 1, at most 10 digits); and, where the record
+    holds an all-digit `pidstart` and that pid is live, live with that start
+    (`pid_start_of`'s test), so a pid a case wrote dead is never taken once
+    another process has it. A dead pid is still taken, for the members of the
+    session or group it led, which keep its number from being reused.
+
+    T214o's :371 writes `pid=0`, `1`, `0<pid>` and eleven digits. Taken as
+    digits, `0` was `os.kill(0, SIGKILL)` to pytest's own process group,
+    which ended S8-26's three runs with 137 at `[pid-0]`'s teardown; `1`
+    swept session 1, which in a container holds its init and its main
+    process; and eleven digits raised `OverflowError` out of the teardown."""
+    pid = record.get("pid", "")
+    if not re.fullmatch(r"[1-9][0-9]{0,9}", pid) or int(pid) <= 1:
+        return None
+    start = record.get("pidstart", "")
+    now = _stat(pid).get("start")
+    if re.fullmatch(r"[0-9]+", start) and now is not None and now != start:
+        return None
+    return int(pid)
 
 
 def _until(predicate, limit: float, step: float = 0.05):
@@ -994,20 +1025,30 @@ class Estate:
         return self.session
 
     def close(self) -> None:
+        """Every process the bind left, ended: the case's own (`spare`), the
+        record's outer (`_record_pid`: only a value a bind's pid can take),
+        the stand-ins' logged pids, and the members of each one's session and
+        group; never this process, its group or its session (T214u)."""
         self.release()
         pids = set(self.spare)
         record = self.record()
-        if record.get("pid", "").isdigit():
-            pids.add(int(record["pid"]))
+        outer = _record_pid(record)
+        if outer is not None:
+            pids.add(outer)
+        elif record.get("pid"):
+            print(f"Estate.close: the record's pid {record['pid']!r} is no bind's pid "
+                  f"(guard_bind_pid_ok), so it is not signalled")
         for entry in self.log("lane-start.log") + self.log("body.log"):
             for key in ("pid", "fork", "grandchild"):
                 if isinstance(entry.get(key), int):
                     pids.add(entry[key])
+        own = {os.getpid(), os.getpgrp(), os.getsid(0)}
         for pid in list(pids):
-            pids.update(_members("sid", pid))
-            pids.update(_members("pgid", pid))
+            if pid > 1 and pid not in own:
+                pids.update(_members("sid", pid))
+                pids.update(_members("pgid", pid))
         for pid in pids:
-            if pid != os.getpid():
+            if pid > 1 and pid not in own:
                 _kill(pid)
         for session in self.sessions:
             session.close()
