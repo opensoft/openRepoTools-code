@@ -21864,6 +21864,19 @@ guard_allow_pass() {
 # of two disagreeing LANES a window belongs to.
 #   2 the offer is made and asked · 3 a record is there already, so nothing was
 #   written and nothing was said (`guard_offer_site` answers it)
+# THE LINK `ln` MADE INSIDE A DIRECTORY (Codex's S1 on spec#47's draft 17): a
+# directory, or a link to one, made at the record's path between `guard_offer`'s
+# `-d` test and its `ln` takes the link as `<dir>/<the temporary file's name>`,
+# and `ln` reports success. GNU `ln -T` would refuse it, but BSD's `ln` on macOS
+# has no `-T`, so the link is found instead: where the path is a directory and
+# that child is the very file written (`-ef`), exactly that child is removed.
+# Nothing else inside the directory is touched.
+guard_offer_unlink_inside() {   # <record path> <temporary file>
+  gou_c="${1-}/${2##*/}"
+  [ -n "${1-}" ] && [ -n "${2-}" ] && [ -d "$1" ] && [ "$gou_c" -ef "$2" ] || return 0
+  rm -f -- "$gou_c" 2>/dev/null || :
+  return 0
+}
 guard_offer() {   # <offer file> <pane>
   go_f="${1-}"; go_pane="${2-}"
   # UNDER `umask 077` (feature 007, lane 3's ruling on the bind record, point
@@ -21883,8 +21896,15 @@ guard_offer() {   # <offer file> <pane>
   # the fallback is bash's `noclobber`, whose `>` opens with `O_EXCL` and fails
   # the same way, though it creates the record EMPTY and writes it after (NIT 4). The
   # temporary file is removed after, which is best effort (a name left in
-  # `offers/` holds only this offer). No window is left between the test and the
-  # create: they are one call.
+  # `offers/` holds only this offer). The absence test and the create are one
+  # call, but for a DIRECTORY, or a link to one, made at the record's path after
+  # the `-d` test below and before the `ln` (Codex's S1 on spec#47's draft 17):
+  # `ln` then makes its link INSIDE that directory and reports success, so the
+  # link is found and removed (`guard_offer_unlink_inside`), and the path is
+  # answered as a directory. THE WINDOW LEFT is the `ln` to that removal: a
+  # directory moved away, or removed and made again, in between keeps the link
+  # inside it, a second name of this offer's temporary file (0600, this offer's
+  # lines alone), and no record is written over.
   go_made=0
   ( umask 077; mkdir -p -- "${go_f%/*}" 2>/dev/null || : ) 2>/dev/null
   go_t="$(umask 077; mktemp "${go_f%/*}/.${go_f##*/}.XXXXXX" 2>/dev/null || printf '')"
@@ -21908,13 +21928,14 @@ guard_offer() {   # <offer file> <pane>
       elif ln -- "$go_t" "$go_f" 2>/dev/null; then
         # AND THE LINK MUST BE THE RECORD (NIT 1): a status of 0 with `$go_f` not
         # the very file written (success reported for a name another invocation
-        # holds) is not this writer's create.
-        if [ "$go_f" -ef "$go_t" ]; then go_made=1; else go_made=there; fi
+        # holds, or a link made inside a directory that appeared after the `-d`
+        # test, S1) is not this writer's create.
+        if [ "$go_f" -ef "$go_t" ]; then go_made=1; else go_made=there; guard_offer_unlink_inside "$go_f" "$go_t"; fi
       elif [ -e "$go_f" ] || [ -L "$go_f" ]; then
         # AND THE OTHER WAY ROUND (lane 5's re-check, NIT 1): an `ln` that reports
         # failure after the link was made, as an NFS retransmit does with EEXIST,
         # is this writer's create where `$go_f` is the very file written.
-        if [ "$go_f" -ef "$go_t" ]; then go_made=1; else go_made=there; fi
+        if [ "$go_f" -ef "$go_t" ]; then go_made=1; else go_made=there; guard_offer_unlink_inside "$go_f" "$go_t"; fi
       elif go_nc=0
            ( set -C; umask 077; { cat -- "$go_t" >&3 || exit 4; } 3>"$go_f" ) 2>/dev/null || go_nc=$?
            [ "$go_nc" != 1 ]; then
