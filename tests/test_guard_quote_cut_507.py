@@ -21,6 +21,14 @@ locale and under a UTF-8 one, and with and without form 2's fallback line
 ahead of what it said. The cases whose 1000th byte splits a character are
 red on the cut before the NIT round; the others are its controls, green
 before and after.
+
+The last case, at the end of the file, holds S3's outage text to the
+register-service spec's SHALL, "The guard fails closed during a database
+outage": the refusal names the store, the cause and the two ways out, and
+the first of them is to wait for the database (lane 5's answer to spec#58's
+disagreement 2). It runs `reg_guard_s3` as the file writes it, cut out and
+run in `bash` with the same stand-ins, and is red on the text that named
+the status and rollback commands alone.
 """
 
 from __future__ import annotations
@@ -162,3 +170,62 @@ def test_the_guards_quote_of_form_2_ends_on_a_character_boundary(
     lines = res.stderr.splitlines()
     assert lines.count(FALLBACK) == (1 if fallback else 0), res.stderr
     assert b"Illegal byte sequence" not in res.stderr, res.stderr
+
+
+#: S3's outage text, first clause, byte for byte: the store and why the read
+#: refuses. The register-service spec's SHALL names the store, the cause and
+#: the two ways out, and these words are the store's.
+S3_FIRST_CLAUSE = (
+    "the register's SQL store did not answer the guard's read, so the ROW cannot be read "
+    "and the triple cannot be verified, and an indeterminate read refuses "
+    "(Amendment 12(d); feature 007, S3).")
+
+#: What `lanes-index` says on stderr of form 2's 69, quoted as the cause.
+S3_CAUSE = "the register could not be read (database register_db at 127.0.0.1:55432): connection refused"
+
+#: `reg_guard_s3`'s argument where a declaration was in place and did not
+#: open the mirror path.
+S3_WHY = "An outage is declared for it, but no mirror path opened."
+
+#: What `guard_bypass` prints, stood in for by a marker, so that the case sees
+#: where the refusal ends.
+S3_BYPASS = "BYPASS-LINE"
+
+
+@pytest.mark.parametrize("why", ["", S3_WHY], ids=["no-declaration", "after-a-declaration"])
+def test_the_guards_outage_refusal_names_waiting_for_the_database_first(tmp_path, why):
+    """S3's refusal exits 2 and names the store, the cause and the two ways
+    out, wait for the database first (the register-service spec's SHALL, "The
+    guard fails closed during a database outage"): wait, and send the prompt
+    again once `lanes-index status` says the database is reached; or, on
+    Brett's word, `lanes-index rollback`; each command from a shell or a
+    `CLAUDE_NO_LANE=1` session. The store's clause, the cause and the
+    commands are as they were.
+
+    It fails on the text that named `lanes-index status` and `lanes-index
+    rollback` and never said to wait."""
+    warn = tmp_path / "refusal"
+    script = (STANDINS + f"guard_bypass() {{ printf '%s' {S3_BYPASS}; }}\n"
+              + _function("reg_guard_s3")
+              + f'RG_SAID="{S3_CAUSE}"\nreg_guard_s3 "$5"\n')
+    res = subprocess.run(["bash", "-c", script, "bash", str(tmp_path / "unused"), str(warn),
+                          str(tmp_path / "quote"), str(tmp_path / "cache"), why],
+                         capture_output=True, env={"PATH": os.environ["PATH"], "LC_ALL": "C"},
+                         timeout=60, check=False)
+    assert res.returncode == 2, (res.returncode, res.stderr)
+    text = warn.read_text(encoding="utf-8")
+    assert text.startswith(S3_FIRST_CLAUSE + " `lanes-index register read --for guard --prefetch` "
+                           "exited 69: "), text
+    ahead = f"{S3_CAUSE}. {why + ' ' if why else ''}The two ways out: "
+    assert ahead in text, text
+    ways = text.split(ahead, 1)[1]
+    assert ways.startswith("wait for the database, and send the prompt again once "), ways
+    wait = ways.index("wait for the database")
+    again = ways.index("send the prompt again")
+    status = ways.index("`lanes-index status`, which says whether this workstation reaches "
+                        "the database and what is in place for it")
+    word = ways.index("on Brett's word, `lanes-index rollback`, which takes the estate back to "
+                      "the files")
+    where = ways.index("from a shell or a `CLAUDE_NO_LANE=1` session")
+    assert wait < again < status < word < where, ways
+    assert ways.endswith(f"session. {S3_BYPASS}"), ways
