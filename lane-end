@@ -1624,11 +1624,11 @@ SC_IDX
   # is what holds it, and the holds are asked of candidates alone.
   # FEATURE 007, T403 (lane 3's #165 6852014823, answer 2; tasks:886; Y:3014):
   # THE THREE PER-CHECKOUT READS HOLD ONLY THEIR OWN CHECKOUT. A former name's
-  # `canon-lane` (`sc_judge`), and `sc_still`'s `lanes` re-read and `canon-lane`,
-  # are asked of one checkout at a time. Where one fails, that checkout is kept
-  # or held, naming the read and its code, and the run goes on, as a failed
-  # fetch holds one. But a 69, 75 or 3 there is no answer about that checkout,
-  # and a run that ended 0 over it would say the register was read:
+  # `canon-lane` (`sc_judge`), and `sc_still`'s `lanes` re-read
+  # and `canon-lane`, are asked of one checkout at a time. Where one fails, that
+  # checkout is kept or held, naming the read and its code, and the run goes on,
+  # as a failed fetch holds one. But a 69, 75 or 3 there is no answer about that
+  # checkout, and a run that ended 0 over it would say the register was read:
   # `sc_read_note` remembers the highest-ranked such code, a 69 over a 75 and a
   # 75 over a 3, whatever order they came in (lane 3's #165 6858653912), and
   # the first read met at that rank, so the closing note names it; `sc_end`
