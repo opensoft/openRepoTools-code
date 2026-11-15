@@ -2369,6 +2369,82 @@ if [ "$r10_rc" = 2 ] && [ -d "$B/newout.once" ] && [ "$r10_mode" = allow ] && [ 
 else bad r10-red-p49-nit6-the-s3-note-says-the-answer-2-may-have-started-a-bind \
   "rc=$r10_rc hook=$([ -d "$B/newout.once" ] && echo fired || echo NOT-fired) mode=$r10_mode outer-said=[$(printf '%s' "$SAID" | tail -n 1 | cut -c1-110)] err=[$(printf '%s' "$r10_err" | tail -n 2 | cut -c1-110 | tr '\n' '|')]"; fi
 
+# ---- THE FOLD (spec#47's draft 19, bind-record.md:458; controls, no code change):
+# "the outer folds what it holds into its outcome only where the body ended on its
+# own, so that after a stop by the bound or a signal a why= or note= the body
+# wrote is not in the outcome". The REAL outer runs a stand-in body that writes
+# its facts file (a `why=` and a `note=`), copies it aside as proof that it was
+# written, and says it is up; then it waits for `$B/release`, which never comes
+# (stopped by its bound: `LANES_BIND_BOUND_S=11`, so `timeout` stops it after
+# 1 s), or is stopped by a `TERM` sent to the outer once the body is up (the
+# outer's pid is the record's `pid`), or ends on its own with 0 or 3. No window
+# is opened by a sleep: the signal waits for the body's own marker.
+R10_FWHY="the facts why: the stand-in body refused"
+R10_FNOTE="the facts note: a stand-in act still owed"
+r10_facts_body() {   # <exit code, or block>
+  {
+    printf '#!/bin/bash\n'
+    printf '[ -z "${LANES_BIND_FACTS:-}" ] || { printf "%%s\\n" %q %q > "$LANES_BIND_FACTS" && cp -- "$LANES_BIND_FACTS" %q; }\n' \
+      "why=$R10_FWHY" "note=$R10_FNOTE" "$B/facts-seen"
+    printf ': > %q\n' "$B/body-up"
+    if [ "$1" = block ]; then
+      printf 'n=0\nwhile [ ! -e %q ] && [ "$n" -lt 600 ]; do sleep 0.2; n=$((n + 1)); done\nexit 0\n' "$B/release"
+    else
+      printf ': > %q\nexit %s\n' "$TRIG" "$1"
+    fi
+  } > "$STUB"
+  chmod 755 "$STUB"
+}
+r10_fold_run() {   # <env assignments, one word each, or ''>: the REAL outer, waited for
+  r10_fe="$1"; ORC=0
+  # shellcheck disable=SC2086
+  run_env LANES_BIND_BODY="$STUB" $r10_fe timeout 60 bash "$S" guard-bind "$U" </dev/null >>"$OUT" 2>&1 || ORC=$?
+  SAID="$(cat -- "$OUT" 2>/dev/null)"
+}
+r10_facts_written() { [ -f "$B/facts-seen" ] && grep -q -x -F "why=$R10_FWHY" "$B/facts-seen" && grep -q -x -F "note=$R10_FNOTE" "$B/facts-seen"; }
+r10_fold_none() { ! grep -q -F "$R10_FWHY" "$REC" && ! grep -q -F "$R10_FNOTE" "$REC" && ! has note; }
+r10_fold_state() { printf '%s why=[%s] notes=%s facts-written=%s facts-left=%s' "$(state)" "$(get why)" \
+  "$(grep -c '^note=' "$REC" 2>/dev/null)" "$(r10_facts_written && echo yes || echo NO)" "$([ -e "$FACTS" ] && echo yes || echo no)"; }
+
+box r10-fold-bound; record; r10_facts_body block
+r10_fold_run "LANES_BIND_BOUND_S=11"
+r8_settle
+if r10_facts_written && [ "$(get mode)" = bind-failed ] && { [ "$(get rc)" = 124 ] || [ "$(get rc)" = 137 ]; } &&
+   [ "$(get why)" = "stopped by its bound; what it wrote is not known" ] && r10_fold_none && [ ! -e "$FACTS" ] &&
+   [ ! -e "$B/release" ] && [ "$R7_LEFT" = 0 ]; then
+  ok r10-control-fold-a-body-stopped-by-its-bound-has-neither-its-facts-why-nor-its-note-in-the-outcome
+else bad r10-control-fold-a-body-stopped-by-its-bound-has-neither-its-facts-why-nor-its-note-in-the-outcome "$(r10_fold_state) left=$R7_LEFT"; fi
+
+box r10-fold-signal; record; r10_facts_body block
+( r10_fold_run "LANES_BIND_BOUND_S=60" ) &
+r10_bg=$!
+r10_i=0
+while [ ! -e "$B/body-up" ] && [ "$r10_i" -lt 300 ]; do sleep 0.1; r10_i=$((r10_i + 1)); done
+r10_opid="$(get pid)"; r10_sent=no
+case "$r10_opid" in ''|*[!0-9]*) : ;; *) [ -e "$B/body-up" ] && kill -TERM "$r10_opid" 2>/dev/null && r10_sent=yes ;; esac
+wait "$r10_bg" 2>/dev/null || :
+r8_settle
+if [ "$r10_sent" = yes ] && r10_facts_written && [ "$(get mode)" = bind-failed ] &&
+   [ "$(get why)" = "stopped by a signal; what it wrote is not known" ] && r10_fold_none && [ ! -e "$FACTS" ] &&
+   [ ! -e "$B/release" ] && [ "$R7_LEFT" = 0 ]; then
+  ok r10-control-fold-a-body-stopped-by-a-signal-has-neither-its-facts-why-nor-its-note-in-the-outcome
+else bad r10-control-fold-a-body-stopped-by-a-signal-has-neither-its-facts-why-nor-its-note-in-the-outcome "$(r10_fold_state) term-sent=$r10_sent outer-pid=$r10_opid left=$R7_LEFT"; fi
+
+# THE CONTROLS: the same body, ending on its own. The outer folds what it holds:
+# with 0 the record ends `bound` and keeps the `note=`; with 3 it ends
+# `bind-failed` and the facts' `why=` is its `why`.
+box r10-fold-self-0; record; r10_facts_body 0
+r10_fold_run ''
+if r10_facts_written && [ "$(get mode)" = bound ] && [ "$(get rc)" = 0 ] && grep -q -x -F "note=$R10_FNOTE" "$REC" && [ ! -e "$FACTS" ]; then
+  ok r10-control-fold-a-body-that-ends-on-its-own-with-0-has-its-facts-note-in-the-outcome
+else bad r10-control-fold-a-body-that-ends-on-its-own-with-0-has-its-facts-note-in-the-outcome "$(r10_fold_state)"; fi
+
+box r10-fold-self-3; record; r10_facts_body 3
+r10_fold_run ''
+if r10_facts_written && [ "$(get mode)" = bind-failed ] && [ "$(get rc)" = 3 ] && [ "$(get why)" = "$R10_FWHY" ] && [ ! -e "$FACTS" ]; then
+  ok r10-control-fold-a-body-that-ends-on-its-own-nonzero-has-its-facts-why-in-the-outcome
+else bad r10-control-fold-a-body-that-ends-on-its-own-nonzero-has-its-facts-why-in-the-outcome "$(r10_fold_state)"; fi
+
 # ---- NIT 3: the three comments.
 r10_n1="$(grep -c "lane 5's ruling on lane 2's reader's window" "$S")"
 r10_n2="$(grep -c 'NO CALLER USES IT NOW' "$S")"
