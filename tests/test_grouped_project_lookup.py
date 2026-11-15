@@ -1,0 +1,204 @@
+"""Grouped discovery through real commands; all writes use isolated registers."""
+from pathlib import Path
+import subprocess
+import shutil
+import pytest
+from conftest import REPO, WINDOWS_SKIP
+from test_park_resume_commands import (FAMILY, WORKSPACE_SLUG, git, home, estate, remotes, offline,
+                                      probe_project, probe_family, sweepable_project, run)
+from test_lane_start_claude_current import Sandbox
+
+pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
+    any(shutil.which(command) is None for command in ("bash", "git", "make")),
+    reason="grouped CLI tests require bash, git and make")]
+
+
+def block(name):
+    text = (REPO / name).read_text()
+    return text.split("# BEGIN GROUPED PROJECT DISCOVERY", 1)[1].split("# END GROUPED PROJECT DISCOVERY", 1)[0]
+
+
+def test_discovery_copies_match():
+    assert len({block(name) for name in ("park", "resume", "status", "lane-start")}) == 1
+
+
+def rows(root):
+    result = subprocess.run(["bash", "-c", block("park") + '\nproject_directory_rows "$1"', "lookup", str(root)], text=True, capture_output=True, check=True)
+    return [line.split("\t") for line in result.stdout.splitlines()]
+
+
+def test_bounds_support_collections_and_repository_boundaries(tmp_path):
+    for group in ("workTrees", "laneWorkspaces", "brett-wip-lanes", "worktrees"):
+        probe_project(tmp_path / group, "Hidden")
+    target = probe_project(tmp_path / "business" / "Company space", "Visible")
+    probe_project(tmp_path / "business" / "Company space" / "too-deep", "Deep")
+    outer = probe_project(tmp_path / "factories", "Outer")
+    probe_project(outer / "members", "Pinned")
+    family = probe_family(tmp_path / "healthcare", "Family")
+    probe_project(family.parent / "members", "Sibling")
+    found = rows(tmp_path)
+    names = [r[0] for r in found]
+    assert ["Visible", str(target)] in found
+    assert not {"Hidden", "Deep", "Pinned", "Sibling"}.intersection(names)
+    assert "Family" in names
+
+
+@pytest.mark.parametrize("family", [False, True])
+def test_named_grouped_estate(tmp_path, family):
+    home = tmp_path / "home"; home.mkdir()
+    group = home / "projects" / "group space"
+    root = (probe_family if family else probe_project)(group, "Atlas")
+    result = run(REPO / "park", "Atlas", home=home)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert f"PROBE park in {root}" in result.stdout
+
+
+@pytest.mark.parametrize("command", ["park", "resume", "status"])
+def test_distinct_matching_estates_refuse(tmp_path, command, remotes):
+    home = tmp_path / "home"; home.mkdir()
+    name = FAMILY if command == "resume" else "Atlas"
+    for group in ("one", "two"):
+        probe_project(home / "projects" / group, name)
+    args = [name]
+    if command == "resume":
+        args += ["--workspace", WORKSPACE_SLUG]
+    result = run(REPO / command, *args, home=home, env=offline(remotes))
+    assert result.returncode != 0
+    assert "multiple estates named" in result.stderr
+    assert "PROBE" not in result.stdout
+
+
+def grouped_box(tmp_path):
+    box = Sandbox(tmp_path)
+    target = box.home / "projects" / "developerTools" / "repoZ"
+    target.parent.mkdir(); box.lane_dir.rename(target); box.lane_dir = target
+    box.resolver()
+    return box
+
+
+@pytest.mark.parametrize("alias", [None, "repoZ", "repoz"])
+def test_new_lane_uses_grouped_canonical_target(tmp_path, alias):
+    box = grouped_box(tmp_path)
+    if alias:
+        (box.home / "projects" / alias).symlink_to(box.lane_dir, target_is_directory=True)
+    result = box.start()
+    assert result.returncode == 0, result.stderr
+    assert str(box.lane_dir) in box.lane_log()
+    assert box.claude_runs()
+
+
+def test_ambiguous_new_lane_refuses_without_register_writes(tmp_path):
+    box = grouped_box(tmp_path)
+    other = box.home / "projects" / "other" / "repoZ"; other.mkdir(parents=True)
+    box.git("-C", str(other), "init", "-q")
+    before = box.commits()
+    result = box.start()
+    assert result.returncode != 0
+    assert box.commits() == before
+    assert not box.lane_log()
+    assert not box.claude_runs()
+
+
+def test_explicit_lane_path_wins_over_grouped_ambiguity(tmp_path):
+    box = grouped_box(tmp_path)
+    other = box.home / "projects" / "other" / "repoZ"; other.mkdir(parents=True)
+    box.git("-C", str(other), "init", "-q")
+    result = box.start("--dir", str(box.lane_dir))
+    assert result.returncode == 0, result.stderr
+    assert str(box.lane_dir) in box.lane_log()
+
+
+def test_grouped_sweep_runs_physical_estate_once(tmp_path):
+    home = tmp_path / "home"; home.mkdir()
+    projects = home / "projects"
+    root = sweepable_project(projects / "developerTools", "Atlas")
+    (projects / "Atlas").symlink_to(root, target_is_directory=True)
+    result = run(REPO / "park", "--all", home=home)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert result.stdout.count(f"PROBE park in {root}") == 1
+    assert "1 estate(s) parked" in result.stdout
+
+
+def test_configured_projects_directory_supports_groups(tmp_path):
+    home = tmp_path / "home"; home.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    root = probe_project(elsewhere / "group", "Atlas")
+    result = run(REPO / "park", "Atlas", home=home, env={"PROJECTS_DIR": str(elsewhere)})
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert f"PROBE park in {root}" in result.stdout
+
+
+def test_missing_recorded_directory_does_not_fall_back_to_group(tmp_path):
+    box = grouped_box(tmp_path)
+    result = box.start()
+    assert result.returncode == 0, result.stderr
+    before = box.commits()
+    moved = box.lane_dir.with_name("moved")
+    box.lane_dir.rename(moved)
+    original = box.lane_dir
+    box.lane_dir = moved
+    replacement = box.home / "projects" / "elsewhere" / "repoZ"
+    replacement.mkdir(parents=True)
+    box.git("-C", str(replacement), "init", "-q")
+    result = box.start()
+    assert result.returncode != 0
+    assert str(original) in result.stderr
+    assert box.commits() == before
+
+
+def test_grouped_origin_lookup_and_duplicate_origin_refusal(tmp_path):
+    home = tmp_path / "home"; home.mkdir()
+    projects = home / "projects"
+    first = probe_project(projects / "business" / "Company", "Atlas")
+    def origin(root):
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(["git", "-C", str(root), "remote", "add", "origin", "https://github.com/testorg/Atlas.git"], check=True)
+    origin(first)
+    result = run(REPO / "park", "--repo", "testorg/Atlas", home=home)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert f"PROBE park in {first}" in result.stdout
+    second = probe_project(projects / "other", "AtlasCopy"); origin(second)
+    for command in ("park", "resume", "status"):
+        result = run(REPO / command, "--repo", "testorg/Atlas", home=home)
+        assert result.returncode != 0
+        assert "multiple development checkouts" in result.stderr
+        assert "PROBE" not in result.stdout
+
+
+@pytest.mark.parametrize("kind", ["linked", "bare"])
+def test_supporting_git_checkout_is_not_a_default_candidate(tmp_path, kind):
+    box = grouped_box(tmp_path)
+    other = box.home / "projects" / "other" / "repoZ"
+    other.parent.mkdir()
+    if kind == "linked":
+        box.git("-C", str(box.lane_dir), "commit", "-q", "--allow-empty", "-m", "fixture base")
+        box.git("-C", str(box.lane_dir), "worktree", "add", "--detach", str(other), "HEAD")
+    else:
+        box.git("clone", "--bare", str(box.lane_dir), str(other))
+    result = box.start()
+    assert result.returncode == 0, result.stderr
+    assert str(box.lane_dir) in box.lane_log()
+
+
+def test_resume_grouped_existing_family(home, remotes, estate):
+    target = home / "projects" / "group" / FAMILY
+    target.parent.mkdir()
+    estate["folder"].rename(target)
+    result = run(REPO / "resume", FAMILY, "--workspace", WORKSPACE_SLUG,
+                 home=home, env=offline(remotes))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert str(target) in result.stdout
+    assert "Alpha.sh ran with:" in result.stdout
+    assert not estate["folder"].exists()
+
+
+def test_resume_grouped_existing_standalone(home, remotes):
+    target = home / "projects" / "group" / "Alpha"
+    target.parent.mkdir()
+    git("clone", "-q", str(remotes["members"]["Alpha"]), str(target), cwd=home)
+    result = run(REPO / "resume", "Alpha", "--workspace", "tester/solo",
+                 home=home, env=offline(remotes))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert str(target) in result.stdout
+    assert "Alpha.sh ran with:" in result.stdout
+    assert not (home / "projects" / "Alpha").exists()

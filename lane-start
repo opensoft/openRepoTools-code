@@ -1194,30 +1194,67 @@ fi
 # options at `--` like every other POSIX utility, and the step line this
 # function produces — `repo repocase → repoCase` — is asserted on the macOS job,
 # where an `ls` that refused `--` would leave it silent.
-projects_dir_matches() {   # <typed repo>
-  ls -- "$PROJECTS_ROOT" 2>/dev/null |
-    awk -v want="$1" 'BEGIN { w = tolower(want) } tolower($0) == w { print }' |
-    while IFS= read -r pdm_m; do
-      [ -d "$PROJECTS_ROOT/$pdm_m" ] && printf '%s\n' "$pdm_m"
+# BEGIN GROUPED PROJECT DISCOVERY
+# Self-contained installed commands share this block; a regression test checks
+# byte equality. Names are logical; targets are physical. Never enter a repo,
+# estate, or supporting checkout collection while looking for grouping folders.
+project_directory_rows() {
+    local base="$1" depth="${2:-0}" child name physical boundary
+    [ -d "$base" ] || return 0
+    for child in "$base"/*; do
+        [ -d "$child" ] || continue
+        name="${child##*/}"
+        case "$name" in workTrees|worktrees|laneWorkspaces|brett-wip-lanes) continue ;; esac
+        case "$child" in *$'\t'*|*$'\n'*) continue ;; esac
+        physical="$(cd -- "$child" 2>/dev/null && pwd -P)" || continue
+        case "$physical" in *$'\t'*|*$'\n'*) continue ;; esac
+        boundary=0
+        if [ -e "$child/.git" ] || [ -e "$child/project.yaml" ] ||
+           [ -e "$child/family.yaml" ] || [ -e "$child/$name/family.yaml" ] ||
+           { [ -f "$child/HEAD" ] && [ -d "$child/objects" ]; }; then
+            boundary=1
+        fi
+        if [ "$depth" -eq 0 ] || [ "$boundary" -eq 1 ]; then
+            printf '%s\t%s\n' "$name" "$physical"
+        fi
+        if [ "$boundary" -eq 0 ] && [ "$depth" -lt 2 ]; then
+            project_directory_rows "$child" "$((depth + 1))"
+        fi
     done
 }
+# END GROUPED PROJECT DISCOVERY
+
+project_matches() {
+  local match_name match_dir git_dir common_dir canonical_name
+  while IFS=$'\t' read -r match_name match_dir; do
+    if [ -f "$match_dir/HEAD" ] && [ -d "$match_dir/objects" ]; then continue; fi
+    if [ -e "$match_dir/.git" ]; then
+      git_dir="$(git -C "$match_dir" rev-parse --git-dir 2>/dev/null)" || continue
+      common_dir="$(git -C "$match_dir" rev-parse --git-common-dir 2>/dev/null)" || continue
+      [ "$git_dir" = "$common_dir" ] || continue
+      [ -z "$(git -C "$match_dir" rev-parse --show-superproject-working-tree 2>/dev/null)" ] || continue
+    fi
+    canonical_name="${match_dir##*/}"
+    if [ "$(printf '%s' "$canonical_name" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" ]; then
+      match_name="$canonical_name"
+    fi
+    printf '%s\t%s\n' "$match_name" "$match_dir"
+  done < <(project_directory_rows "$PROJECTS_ROOT" |
+    awk -F '\t' -v want="$1" 'BEGIN { w = tolower(want) } tolower($1) == w') | awk -F '\t' '!seen[$2]++'
+}
+projects_dir_matches() {
+  project_matches "$1" | cut -f1
+}
+
 if [ -n "$repo" ] && [ -d "$PROJECTS_ROOT" ]; then
   repo_hits="$(projects_dir_matches "$repo" || :)"
   repo_hit_n=0
   if [ -n "$repo_hits" ]; then repo_hit_n="$(printf '%s\n' "$repo_hits" | grep -c . || :)"; fi
-  # THE REFUSAL IS FOR A RUN THAT HAS NO OTHER ANSWER, AND `--dir` IS THE OTHER
-  # ANSWER. Its own remedy names `--dir <path>`, so refusing a run that already
-  # passed one is refusing the fix it printed: `lane-start --dir /chosen repotwin
-  # 1` was rejected before the rung that honours the flag (Copilot round 1 on
-  # openRepoTools#41). With the checkout named, the ambiguity that is left is
-  # only about the lane-s NAME, which keeps the spelling that was typed and is
-  # then overruled by the register row-s a few lines below — so this SAYS what
-  # it did not resolve and carries on.
-  if [ "$repo_hit_n" -gt 1 ] && [ -z "$dir_override" ]; then
-    die "$PROJECTS_ROOT holds $repo_hit_n directories whose names differ only by case for '$repo': $(printf '%s\n' "$repo_hits" | tr '\n' ' ')— a lane name is ONE name under any case (Amendment 15(a)), so there is no spelling of '$repo' this can take without choosing which repository the lane is in. Name the checkout yourself with --dir <path>, or rename one of those directories." 2
-  fi
-  if [ "$repo_hit_n" -gt 1 ]; then
-    note "$PROJECTS_ROOT holds $repo_hit_n directories whose names differ only by case for '$repo': $(printf '%s\n' "$repo_hits" | tr '\n' ' ')— --dir has named the checkout, so this run is not ambiguous about WHERE the lane is. Its NAME keeps the '$repo' you typed, and the register row's own spelling wins over that below (Amendment 15(a))."
+  # A unique physical target supplies canonical spelling. Multiple targets
+  # wait for the explicit/recorded directory rungs: only a new default must
+  # refuse to choose among them.
+  if [ "$repo_hit_n" -gt 1 ] && [ -n "$dir_override" ]; then
+    note "multiple project targets match '$repo' — --dir has named the checkout, so the explicit directory remains authoritative"
   fi
   if [ "$repo_hit_n" = 1 ] && [ "$repo_hits" != "$repo" ]; then
     step "repo $repo → $repo_hits (Amendment 15(a): the checkout's real directory name under $PROJECTS_ROOT)"
@@ -1798,10 +1835,14 @@ if [ -n "$DIR" ] && [ ! -d "$DIR" ]; then
   die "no such directory: $DIR (from $DIR_SOURCE) — pass --dir <path> if this lane's checkout is somewhere else" 1
 fi
 if [ -z "$DIR" ]; then
-  if [ -d "$PROJECTS_ROOT/$repo" ]; then
-    DIR="$PROJECTS_ROOT/$repo"; DIR_SOURCE="the default \$PROJECTS_ROOT/<repo>"
+  default_matches="$(project_matches "$repo")"
+  if [ -n "$default_matches" ]; then
+    default_count="$(printf '%s\n' "$default_matches" | wc -l | tr -d ' ')"
+    [ "$default_count" -eq 1 ] || die "$PROJECTS_ROOT holds $default_count directories whose names differ only by case or grouping for '$repo': $default_matches — Amendment 15(a) requires one default target; pass --dir <path>" 2
+    DIR="$(printf '%s\n' "$default_matches" | cut -f2-)"
+    DIR_SOURCE="grouped project lookup under \$PROJECTS_ROOT"
   else
-    DIR_DEFAULT_TRIED="$PROJECTS_ROOT/$repo"
+    DIR_DEFAULT_TRIED="$PROJECTS_ROOT/$repo (including grouping folders)"
   fi
 fi
 
