@@ -1990,8 +1990,16 @@ def test_kill_of_the_bind_outer_ends_the_record_with_the_signals_code(estate, mo
     assert BY_SIGNAL in record["why"] and UNKNOWN in record["why"], record
 
 
-def _no_timeout_path(root: Path) -> str:
-    """A `PATH` that holds every tool this host has but `timeout`."""
+def _no_timeout_path(root: Path, *first: Path) -> str:
+    """A `PATH` that holds every tool this host has but `timeout`: each
+    directory in `first` as it is, then a farm of links to the tools of
+    `/usr/local/bin`, `/usr/bin` and `/bin`. On primary, `first` is the
+    engine's own directory, which the session's `PATH` holds first: the
+    guard's read runs `psql`, which a `PG_BIN` outside those three, as a
+    workstation's non-root build, holds nowhere else, and whose tools there
+    are wrappers that find their tree from their own path, so a link to one
+    runs nothing (a GitHub runner's `postgresql-16` also puts a `psql` in
+    `/usr/bin`, lane 1's census, #165 6807454856)."""
     farm = root / "no-timeout"
     farm.mkdir()
     for d in ("/usr/local/bin", "/usr/bin", "/bin"):
@@ -2003,12 +2011,12 @@ def _no_timeout_path(root: Path) -> str:
             src = os.path.join(d, name)
             if os.path.isfile(src) and os.access(src, os.X_OK):
                 (farm / name).symlink_to(src)
-    return str(farm)
+    return os.pathsep.join([*map(str, first), str(farm)])
 
 
 @pytest.mark.parametrize("mode", ["files", "primary"])
 def test_a_bind_with_no_timeout_says_bounded_no_and_kill_stops_its_group_once(
-        estate, tmp_path, mode):
+        estate, tmp_path, mode, request):
     """AT-F6 case 16: with `timeout` hidden from `PATH` and
     `LANES_BIND_BOUND_S=15`, the record says `bounded=no` and the body leads a
     process group of its own, outside the outer's. A prompt after
@@ -2017,7 +2025,8 @@ def test_a_bind_with_no_timeout_says_bounded_no_and_kill_stops_its_group_once(
     that this host has no `timeout`, so nothing stops it, what `kill <p>`
     costs, and "Your prompt was NOT sent". Then `kill <p>` stops the body's
     group and the outer writes the outcome."""
-    est = estate(mode=mode, path=_no_timeout_path(tmp_path))
+    engine = [request.getfixturevalue("pg_engine").bindir] if mode == "primary" else []
+    est = estate(mode=mode, path=_no_timeout_path(tmp_path, *engine))
     est.set("hold", 60)
     est.make_offer()
     hook = est.answer_2(LANES_BIND_BOUND_S="15")
