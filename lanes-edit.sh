@@ -20381,7 +20381,10 @@ guard_offer_file() {   # <session uuid>
 # `GRS_THERE` (1 where a regular file was read), `GRS_MODE` (its first `mode`)
 # and `GRS_OUT` (its first `out`), so that a caller words its message on what is
 # there now; and it keeps the lines it read (`GRS_GOT`, `GRS_SEEN`), so that
-# `guard_record_got` can test that same read again without another.
+# `guard_record_got` can test that same read again without another. Its stderr
+# is silenced BEFORE the open (lane 2's independent review of part 51, NIT-3):
+# bash makes redirections left to right, so a `7<` that fails first would print
+# its raw error, such as "Permission denied", among the guard's notes.
 #   0 there, a regular file, and saying all of it · 1 not
 guard_record_says() {   # <offer file> <mode> [<key>=<value> …]
   gsy_f="${1-}"; gsy_m="${2-}"; GRS_THERE=0; GRS_MODE=""; GRS_OUT=""; GRS_GOT=""; GRS_SEEN=" "
@@ -20401,7 +20404,7 @@ guard_record_says() {   # <offer file> <mode> [<key>=<value> …]
         out)  GRS_OUT="${gsy_l#*=}" ;;
       esac
     done
-  } 7< "$gsy_f" 2>/dev/null || return 1
+  } 2>/dev/null 7< "$gsy_f" || return 1
   GRS_THERE=1; GRS_GOT="$gsy_got"; GRS_SEEN="$gsy_seen"
   guard_record_got "$gsy_m" "$@"
 }
@@ -20465,7 +20468,9 @@ guard_offer_drop() {   # <offer file>
 guard_drop_if() {   # <mode> <offer file> [record | all] [<key>=<value> …]
   gdi_f="${2-}"
   # THE `.bind.*` NAMES ARE LISTED BEFORE THE RE-READ (lane 5's re-check, the
-  # windows): only those are removed (with `all`; `record` removes none), so a
+  # windows): only those are removed (with any third argument but `record`,
+  # none included, as the stale-offer drop and choice 3 give it; `record`
+  # removes none; lane 2's independent review of part 51, NIT-4), so a
   # `.out` that appears after the listing survives, unless it reuses a listed
   # name: the files' index is one above the highest present
   # (`guard_bind_next_index`), so after another prompt's full sweep a newer
@@ -22517,7 +22522,7 @@ guard_bind_session_live() {   # <sid>
         [ -r /proc/self/stat ] || return 0
         for gbq_p in $gbq_ps; do
           gbq_l=""
-          read -r gbq_l < "/proc/$gbq_p/stat" 2>/dev/null || continue
+          read -r gbq_l 2>/dev/null < "/proc/$gbq_p/stat" || continue
           gbq_r="${gbq_l##*) }"
           # shellcheck disable=SC2086
           set -- $gbq_r
@@ -22530,7 +22535,7 @@ guard_bind_session_live() {   # <sid>
   [ -r /proc/self/stat ] || return 2
   for gbq_st in /proc/[0-9]*/stat; do
     gbq_l=""
-    read -r gbq_l < "$gbq_st" 2>/dev/null || continue
+    read -r gbq_l 2>/dev/null < "$gbq_st" || continue
     gbq_r="${gbq_l##*) }"
     # shellcheck disable=SC2086
     set -- $gbq_r
@@ -22663,7 +22668,10 @@ guard_site_moved() {   # <offer file> <pane>
 # record, which another writer may have changed meanwhile. So the record is read
 # again just before the words, and they follow what is there now: still the
 # record this prompt loaded (its mode, `bind` and `started_utc`), and the next
-# prompt answers it the same way; anything else, and this prompt changed nothing
+# prompt answers it the same way, since `guard_run` sends a bind record to
+# `guard_bind_site` before `guard_answer`, so that prompt is never taken as `1`,
+# `2` or `3` and no choices follow this note (lane 2's independent review of
+# part 51, SHOULD-1); anything else, and this prompt changed nothing
 # there and the next prompt reads whatever is there. The first clause is the
 # same in both forms. WHERE THE RECORD IS THERE AND COULD NOT BE READ AGAIN (lane
 # 5's adversarial review of parts 42 to 47, NIT-3), the words claim no more than
@@ -22687,19 +22695,31 @@ guard_site_unrestored() {   # <offer file> <the mode loaded>; after `guard_site_
 # after it and whether the choices are printed all follow this one read, so no
 # change between two reads gives them contradictory words. `GSR_FORM` is:
 #   still    the record this prompt loaded (its mode, `bind` and `started_utc`):
-#            the next prompt answers it the same way, and restores the offer
-#   offer    an offer between the same two lanes: another prompt restored it
+#            the next prompt goes to `guard_bind_site` again and answers it the
+#            same way, its restore tried again; it is never taken as an answer
+#   offer    an offer between the same two lanes: another prompt restored it,
+#            or made it again
 #   unread   there, and it could not be read again (part 49's NIT-3)
 #   changed  anything else, gone included: no offer of this window's is kept
 # and `GSR_NOW` says what that read found, in `guard_record_now`'s words, worded
 # from that read's own results and never from a second look at the path (lane
 # 5's check of part 51, NIT-2): a record that appears after a read that found
-# nothing is "gone now" to these words, as it was to the read.
+# nothing is "gone now" to these words, as it was to the read. On `offer`,
+# `GSR_K` is the attempts that offer has spent, from the same read: its `bind=`
+# where that is 1, 2 or 3, as `guard_answer` counts them, and 0 where it has
+# none, as a re-made offer has none (lane 2's independent review of part 51,
+# NIT-1).
 guard_site_reread() {   # <offer file> <the mode loaded>
-  GSR_FORM=changed
+  GSR_FORM=changed; GSR_K=0
   if guard_record_says "${1-}" "${2-}" "bind=$GBR_BIND" "started_utc=$GBR_STARTED"; then GSR_FORM=still
   elif guard_record_unread "${1-}"; then GSR_FORM=unread
   elif guard_record_got name-drift "from=$GBR_FROM" "to=$GBR_TO"; then GSR_FORM=offer
+    gsr_nl=$'\n'; gsr_b="$gsr_nl${GRS_GOT-}"
+    case "$gsr_b" in
+      *"${gsr_nl}bind="*)
+        gsr_b="${gsr_b#*"${gsr_nl}bind="}"; gsr_b="${gsr_b%%"$gsr_nl"*}"
+        case "$gsr_b" in 1|2|3) GSR_K="$gsr_b" ;; esac ;;
+    esac
   fi
   if [ "$GSR_FORM" = unread ]; then GSR_NOW="it could not be read again"
   elif [ "${GRS_THERE:-0}" = 1 ]; then GSR_NOW="it says mode=${GRS_MODE:-none} now"
@@ -22719,20 +22739,31 @@ guard_site_back_form() {   # after `guard_site_reread`
   esac
   return 0
 }
-# THE CHOICES ARE PRINTED ONLY WHERE AN OFFER OF THIS WINDOW'S IS KEPT (lane 5's
-# adversarial review of parts 48 to 50, SHOULD-A): after a restore that worked,
-# or where the one read found the record loaded or an offer between the same two
-# lanes. Where it found no offer (`changed`) its note says the next prompt reads
-# whatever is there, and "Reply `1`, `2` or `3` … it is consumed here and never
-# reaches the model" would be false: a reply can reach the model under an
-# allowance that fits. Where it could not read the record again (`unread`), the
-# choices would hold only if the offer is still there, so none are printed: the
-# words already say the next prompt reads whatever is there, and an offer still
-# there asks its question again at a prompt that is not an answer.
-guard_site_offer_kept() {   # <1 where the restore failed>
+# THE CHOICES ARE PRINTED ONLY WHERE THE NEXT PROMPT IS AN ANSWER TO AN OFFER OF
+# THIS WINDOW'S (lane 5's adversarial review of parts 48 to 50, SHOULD-A; lane
+# 2's independent review of part 51, SHOULD-1): after a restore that worked, or
+# where the one read found an offer between the same two lanes (`offer`). Where
+# it found no offer (`changed`) its note says the next prompt reads whatever is
+# there, and "Reply `1`, `2` or `3` … it is consumed here and never reaches the
+# model" would be false: a reply can reach the model under an allowance that
+# fits. Where it could not read the record again (`unread`), the choices would
+# hold only if the offer is still there, so none are printed: the words already
+# say the next prompt reads whatever is there, and an offer still there asks its
+# question again at a prompt that is not an answer. Where it found the record
+# this prompt loaded (`still`), "The answer is the NEXT prompt" is false too:
+# `guard_run` sends a bind record to `guard_bind_site` before `guard_answer`, so
+# the next prompt is this case again and never `1`, `2` or `3`; its note says
+# so ("this prompt's answer is the same as the last one's until it can").
+# `GSO_K` is the attempts the choices count: the loaded record's after a restore
+# that worked, and on `offer` that offer's own (`GSR_K`), not the loaded record's
+# (lane 2's independent review of part 51, NIT-1): a `2` to a re-made offer
+# starts attempt 1.
+guard_site_offer_kept() {   # <1 where the restore failed> <the attempts the loaded record spent>
+  GSO_K="${2-0}"
   [ "${1-0}" = 0 ] && return 0
-  case "${GSR_FORM-}" in still|offer) return 0 ;; esac
-  return 1
+  [ "${GSR_FORM-}" = offer ] || return 1
+  GSO_K="${GSR_K:-0}"
+  return 0
 }
 
 guard_bind_site() {   # <offer file> <pane>
@@ -22800,7 +22831,10 @@ EOF
       [ "$gbt_wrc" != 2 ] || { guard_site_moved "$gbt_f" "$gbt_pane"; return 2; }
       [ "$gbt_wrc" = 0 ] || gbt_back=1
       guard_triple
-      note "THE BIND TO LANE $GBR_TO FAILED (exit $GBR_RC): ${GBR_WHY:-the record gives no reason}${GBR_OUT:+ — its output is kept in $GBR_OUT}."
+      # "WAS WRITTEN TO", NOT "IS KEPT IN" (lane 2's independent review of part
+      # 51, NIT-5): another prompt's choice 1 can sweep that `.out` between the
+      # load and this note, so its being there now is never claimed.
+      note "THE BIND TO LANE $GBR_TO FAILED (exit $GBR_RC): ${GBR_WHY:-the record gives no reason}${GBR_OUT:+ — its output was written to $GBR_OUT}."
       # CASES 6 AND 7 RENAME THE WINDOW BACK (Y:5502; ERR-23 for the third).
       gbt_wf=""
       if [ "$gbt_back" = 1 ]; then
@@ -22815,7 +22849,7 @@ EOF
       else
         note "Nothing of the bind is assumed: a failed bind spends the person's yes, and a \`2\` is attempt $((gbt_k + 1)) of 3. The offer is KEPT:"
       fi
-      ! guard_site_offer_kept "$gbt_back" || guard_offer_choices "$GBR_FROM" "$GBR_TO" "$gbt_k"
+      ! guard_site_offer_kept "$gbt_back" "$gbt_k" || guard_offer_choices "$GBR_FROM" "$GBR_TO" "$GSO_K"
       note "This prompt was NOT sent."
       return 2 ;;
   esac
@@ -22846,7 +22880,7 @@ EOF
     else
       note "The offer is KEPT:"
     fi
-    ! guard_site_offer_kept "$gbt_back" || guard_offer_choices "$GBR_FROM" "$GBR_TO" "$gbt_k"
+    ! guard_site_offer_kept "$gbt_back" "$gbt_k" || guard_offer_choices "$GBR_FROM" "$GBR_TO" "$GSO_K"
     note "This prompt was NOT sent."
     return 2
   fi
@@ -22915,7 +22949,7 @@ EOF
     else
       note "The offer is KEPT:"
     fi
-    ! guard_site_offer_kept "$gbt_back" || guard_offer_choices "$GBR_FROM" "$GBR_TO" "$gbt_k"
+    ! guard_site_offer_kept "$gbt_back" "$gbt_k" || guard_offer_choices "$GBR_FROM" "$GBR_TO" "$GSO_K"
     note "This prompt was NOT sent."
     return 2
   fi
@@ -24012,7 +24046,7 @@ guard_bind_rerun() {   # <facts file> <out, of the record's own form, or empty>
         note "guard-bind --body: F3's lookup found write $WR_ID at seq $PW_LK_SEQ, so its pending record's command runs once under that id, for its tail."
         gbe_size=0
         if [ -n "$gbe_out" ] && [ -f "$gbe_out" ]; then
-          gbe_size="$(wc -c < "$gbe_out" 2>/dev/null | tr -d ' ' || :)"
+          gbe_size="$(wc -c 2>/dev/null < "$gbe_out" | tr -d ' ' || :)"
           case "$gbe_size" in ''|*[!0-9]*) gbe_size=0 ;; esac
         fi
         LANES_WRITE_ID="$WR_REC_WRITE_ID" LANES_WRITE_GENERATION="$WR_REC_GENERATION" \
@@ -24134,7 +24168,7 @@ guard_bind_body() {   # <session uuid>
   # its last line, which is its refusal, can be read back as the `why`.
   gbb_size=0
   if [ -n "$gbb_out" ] && [ -f "$gbb_out" ]; then
-    gbb_size="$(wc -c < "$gbb_out" 2>/dev/null | tr -d ' ' || :)"
+    gbb_size="$(wc -c 2>/dev/null < "$gbb_out" | tr -d ' ' || :)"
     case "$gbb_size" in ''|*[!0-9]*) gbb_size=0 ;; esac
   fi
   gbb_rc=0
@@ -24219,7 +24253,7 @@ guard_bind_body() {   # <session uuid>
     # still ends 0: the bind itself landed (point 4(b), lane 3's same ruling).
     gbb_ssize=0
     if [ -n "$gbb_out" ] && [ -f "$gbb_out" ]; then
-      gbb_ssize="$(wc -c < "$gbb_out" 2>/dev/null | tr -d ' ' || :)"
+      gbb_ssize="$(wc -c 2>/dev/null < "$gbb_out" | tr -d ' ' || :)"
       case "$gbb_ssize" in ''|*[!0-9]*) gbb_ssize=0 ;; esac
     fi
     gbb_src=0
