@@ -20362,6 +20362,52 @@ guard_offer_file() {   # <session uuid>
 # record and leaves `<uuid>.bind.*` for the next removal to sweep: it is the one
 # removal that can meet a live outer, whose `.out` is never unlinked under it.
 
+# THE RECORD AS IT IS NOW (Codex's S2 and S6 on spec#47's draft 17): read ONCE,
+# through one open, and its first `mode` line, and the first line of each key
+# given, as `guard_bind_load` takes them, compared with what the caller expects.
+# A value given empty matches a key that is absent or empty. It sets
+# `GRS_THERE` (1 where a regular file was read), `GRS_MODE` (its first `mode`)
+# and `GRS_OUT` (its first `out`), so that a caller words its message on what is
+# there now.
+#   0 there, a regular file, and saying all of it · 1 not
+guard_record_says() {   # <offer file> <mode> [<key>=<value> …]
+  gsy_f="${1-}"; gsy_m="${2-}"; GRS_THERE=0; GRS_MODE=""; GRS_OUT=""
+  [ "$#" -ge 2 ] || return 1
+  shift 2
+  [ -f "$gsy_f" ] || return 1
+  gsy_seen=" "; gsy_got=""; gsy_nl=$'\n'
+  {
+    while IFS= read -r gsy_l <&7 || [ -n "$gsy_l" ]; do
+      gsy_k="${gsy_l%%=*}"
+      [ "$gsy_k" != "$gsy_l" ] || continue
+      case "$gsy_seen" in *" $gsy_k "*) continue ;; esac
+      gsy_seen="$gsy_seen$gsy_k "
+      gsy_got="$gsy_got$gsy_l$gsy_nl"
+      case "$gsy_k" in
+        mode) GRS_MODE="${gsy_l#*=}" ;;
+        out)  GRS_OUT="${gsy_l#*=}" ;;
+      esac
+    done
+  } 7< "$gsy_f" 2>/dev/null || return 1
+  GRS_THERE=1
+  for gsy_kv in "mode=$gsy_m" "$@"; do
+    gsy_k="${gsy_kv%%=*}"
+    case "$gsy_seen" in
+      *" $gsy_k "*)
+        case "$gsy_nl$gsy_got" in *"$gsy_nl$gsy_kv$gsy_nl"*) : ;; *) return 1 ;; esac ;;
+      *) [ -z "${gsy_kv#*=}" ] || return 1 ;;
+    esac
+  done
+  return 0
+}
+# WHAT IS THERE NOW, IN WORDS, after `guard_record_says` read it.
+guard_record_now() {   # <offer file>
+  if [ "${GRS_THERE:-0}" = 1 ]; then printf 'it says mode=%s now\n' "${GRS_MODE:-none}"
+  elif [ -e "${1-}" ] || [ -L "${1-}" ]; then printf 'it cannot be read now\n'
+  else printf 'it is gone now\n'
+  fi
+}
+
 # THE RECORD AND ITS ATTEMPTS' FILES, `.out` and `.facts`, removed together
 # (point 13).
 guard_offer_drop() {   # <offer file>
@@ -20382,14 +20428,18 @@ guard_offer_drop() {   # <offer file>
 # which the contract allows case 11 alone to meet (`bind-record.md`, section 1).
 #   0 the record said <mode> and was removed (best effort) · 1 it did not, or is
 #   not there, so nothing was removed
-guard_drop_if() {   # <mode> <offer file> [record]
+# WITH `<key>=<value>` PAIRS after `record` or `all` (Codex's S2 on spec#47's
+# draft 17), the first line of each key must also say that value (an empty value
+# is a key that is absent or empty), all on the one read (`guard_record_says`):
+# case 5 drops only the `bound` it loaded, by its `bind`, `started_utc`, `pid`
+# and `ended_utc`.
+guard_drop_if() {   # <mode> <offer file> [record | all] [<key>=<value> …]
   gdi_f="${2-}"
   # THE `.bind.*` NAMES ARE LISTED BEFORE THE RE-READ (lane 5's re-check, the
   # windows): only those are removed, so a fresh `.out` that appears after the
   # read survives.
   gdi_b=("$gdi_f".bind.*)
-  [ -f "$gdi_f" ] || return 1
-  [ "$(sed -n -e 's/^mode=//p' "$gdi_f" 2>/dev/null | head -n1)" = "${1-}" ] || return 1
+  guard_record_says "$gdi_f" "${1-}" "${@:4}" || return 1
   if [ "${3-}" = record ]; then
     rm -f -- "$gdi_f" 2>/dev/null || :
   else
@@ -22490,7 +22540,26 @@ guard_bind_site() {   # <offer file> <pane>
   gbt_bs="${GBR_BOUND:-its}"
   case "$GBR_MODE" in
     bound)
-      guard_offer_drop "$gbt_f"
+      # CASE 5 DROPS ONLY THE `bound` IT LOADED (Codex's S2 on spec#47's draft
+      # 17): another invocation may hear this outcome, drop it, and a new offer's
+      # answer 2 make a new bind, with a live outer and its `.out`, between the
+      # load above and this drop. So the drop is `guard_drop_if`'s: the `.bind.*`
+      # names are listed before its read, and the record and those names go only
+      # where it still says `bound`, with the `bind`, `started_utc`, `pid` and
+      # `ended_utc` loaded. Where it does not, nothing is removed, and the record
+      # is read once and answered (`guard_site_moved`): a newer bind record by
+      # `guard_bind_site`, once; gone, by the refusal. THE WINDOW LEFT is the
+      # drop's read to its `rm`, in which a record put in place is removed with
+      # the names listed before the read, and never a `.out` made after it. No
+      # rewrite turns a `bound` into another record in one step, so the record
+      # removed there can only be one that another prompt made after dropping
+      # this `bound`: a new offer, which the next prompt makes again, or, where
+      # that offer was also answered `2` inside the same instant, its `binding`,
+      # whose outer then runs nothing or, where it had started, keeps its `.out`.
+      if ! guard_drop_if bound "$gbt_f" all "bind=$GBR_BIND" "started_utc=$GBR_STARTED" "pid=$GBR_PID" "ended_utc=$GBR_ENDED"; then
+        guard_site_moved "$gbt_f" "$gbt_pane"
+        return 2
+      fi
       guard_triple
       note "MOVED: this window is lane $GBR_TO, bound to this session ($G_ID) at ${GBR_ENDED:-a time the record does not give}."
       if [ -n "$GBR_NOTES" ]; then
