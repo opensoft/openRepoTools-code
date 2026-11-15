@@ -8771,6 +8771,8 @@ class RegisterService:
         and the request is answered `unavailable`, as 8.4 answers a request
         running under an earlier epoch. A change `take_change` then finds
         gone costs that one `unavailable`."""
+        if job.done.is_set():
+            return      # already answered, at its timer while queued (`request`)
         timer = register_serve_timer_ms(self.cfg) / 1000
         if time.monotonic() >= job.arrival + timer:
             job.give(b"unavailable slow\n")
@@ -9191,8 +9193,24 @@ class RegisterService:
             job = _RegisterServeJob(items, arrival, epoch)
             self.queue.append(job)
             self.cond.notify_all()
+        # AT ITS OWN TIMER (lane 3's Codex delta review of bb19b1ad, #165
+        # 6886976981, SHOULD 2; socket API 6.2 and 13.5): a request still
+        # queued when its timer ends is dropped from the queue and answered
+        # `unavailable slow`, under `cond`, with no `SIGINT`, which would
+        # cancel another request's query or the background fetch; the
+        # worker skips a job already given (`serve_job`). One the worker
+        # has begun is the worker's to answer, at its timer, with the
+        # `SIGINT` (`run`), so the connection waits for that answer at most
+        # the kill's 100 ms more, not the 1.1 s it waited before.
         timer = register_serve_timer_ms(self.cfg) / 1000
-        job.done.wait(max(0.0, arrival + timer + REGISTER_SERVE_KILL_S + 1.0 - time.monotonic()))
+        job.done.wait(max(0.0, arrival + timer - time.monotonic()))
+        with self.cond:
+            queued = job in self.queue
+            if queued:
+                self.queue.remove(job)
+                job.give(b"unavailable slow\n")
+        if not queued:
+            job.done.wait(REGISTER_SERVE_KILL_S)
         job.give(b"unavailable slow\n")
         return job.answer
 
