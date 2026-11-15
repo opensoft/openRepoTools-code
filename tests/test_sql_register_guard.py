@@ -2203,6 +2203,11 @@ ANCHOR_MV = 'mv -f -- "$gbw_t" "$gbw_f" 2>/dev/null || { rm -f -- "$gbw_t"; retu
 ANCHOR_DROP = 'for gbw_a in "$@"; do gbw_drop="$gbw_drop${gbw_a%%=*} "; done'
 ANCHOR_COPIES = 'guard_bind_copies "$gbo_u"'
 ANCHOR_LOAD = 'guard_bind_load() {   # <offer file>'
+#: The rewrite's test that the record exists, before it opens it
+#: (`guard_bind_rewrite`): the window of T502's part 17, `f67f76a7` (T214q).
+#: `lanes-edit.sh` holds it once at line R's merge144 and at every T502 head
+#: from `12eddddf` to `ae702c74`.
+ANCHOR_EXISTS = 'if [ -e "$gbw_f" ]; then'
 #: The outcome's rewrite is the one whose drop list holds `mode` (the outer's
 #: start drops `pid` and `pidstart`, and the body rewrites nothing).
 OUTCOME_REWRITE = 'case "$gbw_drop" in *" mode "*)'
@@ -2271,7 +2276,11 @@ def _outer(est: Estate, program: Path, out: Path) -> subprocess.Popen:
     return proc
 
 
-@pytest.mark.parametrize("result", ["written", "io-failure", "not-its-own"])
+@pytest.mark.parametrize("result", [
+    "written", "io-failure", "not-its-own", "gone-at-its-open",
+    pytest.param("unreadable-at-its-open", marks=pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root opens a mode-000 record, so its open cannot fail"))])
 def test_the_outcome_rewrite_has_three_results(estate, result):
     """S1, the outcome's rewrite gives three results, and the outer's exit
     and its facts file follow each. The stand-in `lane-start` exits 0, so
@@ -2295,7 +2304,24 @@ def test_the_outcome_rewrite_has_three_results(estate, result):
       record that is not the outer's own, a `binding` of another `pid`. The
       rewrite's own test leaves it byte for byte; the outcome is in the
       `.out` alone; the facts file, there at the hold, is removed; and the
-      outer exits 0."""
+      outer exits 0.
+    - `[gone-at-its-open]`, its 2 by a second way (T214q; T502's part 17,
+      `f67f76a7`; spec#47's draft 16 `5e095c52`, section 8, d16:382): a
+      test-only copy holds the outcome's rewrite after its test that the
+      record exists and before its open (`ANCHOR_EXISTS`), and the case
+      removes the record there. No record is made; no temporary file is
+      left; the outcome is in the `.out` alone, named as the record now
+      stands, `mode=none`, since the outer's re-load finds nothing; the
+      facts file is removed; and the outer exits 0. Before part 17 the
+      rewrite gave 1 there, and the outer exited 1.
+    - `[unreadable-at-its-open]`, its control, the same hold with the record
+      made mode 000: the record is still there, so the rewrite's 1 stands.
+      The record is unchanged (read after 0600 is restored); no temporary
+      file is left; the outcome is in the `.out` alone; the facts file is
+      removed; and the outer exits 1. It passes at every T502 head, and is
+      red only where a 2 is given for any failed open, so it shows part 17
+      kept the 1 for a record that is still there. Skipped as root, which
+      opens a mode-000 file (lane 2's reader AF6-27, #165 6885568373)."""
     est = estate()
     out = _direct_record(est)
     facts = Path(f"{est.offer}.bind.1.facts")
@@ -2306,7 +2332,26 @@ def test_the_outcome_rewrite_has_three_results(estate, result):
     elif result == "not-its-own":
         program = _bind_copy(est, [(ANCHOR_DROP, (
             f"{ANCHOR_DROP}\n{OUTCOME_REWRITE} {_hold_sh(est, 'rewrite')} ;; esac"))])
+    elif result in ("gone-at-its-open", "unreadable-at-its-open"):
+        program = _bind_copy(est, [(ANCHOR_EXISTS, (
+            f"{ANCHOR_EXISTS}\n{OUTCOME_REWRITE} {_hold_sh(est, 'open')} ;; esac"))])
     proc = _outer(est, program, out)
+    planted = None
+    if result in ("gone-at-its-open", "unreadable-at-its-open"):
+        held = _until(lambda: (est.ctl / "open.held").exists(), 60)
+        mine, had_facts = est.record(), facts.exists()
+        try:
+            if held and result == "gone-at-its-open":
+                est.offer.unlink()
+            elif held:
+                planted = est.offer.read_bytes()
+                est.offer.chmod(0o000)
+        finally:
+            est.set("open.release")
+        assert held, f"the outer's outcome rewrite never came to its open: {out.read_text()}"
+        assert mine.get("mode") == "binding" and mine.get("pid") == str(proc.pid), \
+            f"the record at the rewrite's open was not the outer's own binding: {mine}"
+        assert had_facts, "the body's facts file was not there when the outer came to write"
     installed = None
     if result == "not-its-own":
         held = _until(lambda: (est.ctl / "rewrite.held").exists(), 60)
@@ -2325,9 +2370,36 @@ def test_the_outcome_rewrite_has_three_results(estate, result):
             f"the record at the outer's rewrite was not its own binding: {mine}"
         assert had_facts, "the body's facts file was not there when the outer came to write"
     code = proc.wait(60)
+    if result == "unreadable-at-its-open" and est.offer.exists():
+        est.offer.chmod(0o600)
     said = out.read_text(encoding="utf-8", errors="replace")
     record = est.record()
     ends = [line for line in said.splitlines() if "mode=bound rc=0" in line]
+    temporaries = [p.name for p in est.offer.parent.iterdir() if p.name.startswith(f".{est.sid}.")]
+    if result == "gone-at-its-open":
+        assert code == 0, \
+            (f"guard-bind exited {code}, not 0, where its record went between the outcome "
+             f"rewrite's test that it exists and its open (before T502's part 17 the rewrite "
+             f"gives 1 there, and the outer exits 1): {said}")
+        assert not est.offer.exists(), \
+            f"the outer's rewrite made a record where it found none: {record}\n{said}"
+        assert not temporaries, f"the rewrite left its temporary file: {temporaries}"
+        assert [line for line in ends if f"{NOT_ITS_OWN} (mode=none," in line
+                and NO_FACTS_NOTE not in line], \
+            f"the outcome, its facts folded in, is not in the .out alone, with mode=none: {said}"
+        assert not facts.exists(), f"the outer left its facts file after its rewrite's 2: {facts}"
+        return
+    if result == "unreadable-at-its-open":
+        assert code == 1, \
+            (f"guard-bind exited {code}, not 1, where its record was still there and could not "
+             f"be opened, so the rewrite's 1 stands: {said}")
+        assert est.offer.exists() and est.offer.read_bytes() == planted, \
+            f"the record that could not be opened was changed or removed: {record}\n{said}"
+        assert not temporaries, f"the rewrite left its temporary file: {temporaries}"
+        assert [line for line in ends if NOT_WRITTEN in line and NO_FACTS_NOTE not in line], \
+            f"the outcome, its facts folded in, is not in the .out alone: {said}"
+        assert not facts.exists(), f"the outer left its facts file after its rewrite's 1: {facts}"
+        return
     if result == "written":
         assert code == 0 and record.get("mode") == "bound" and record.get("rc") == "0", \
             f"guard-bind {code}: {record}\n{said}"
