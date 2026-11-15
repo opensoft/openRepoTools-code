@@ -76,7 +76,9 @@ WHAT IT CHECKS, by the test plan's entries and lane 2's task T221:
     since spec#17's re-review r10 (lane 3's commit 28): a stray revert's `files`
     rows prove the register's current truth and never change it, so a row that
     would change it is LR004 at `commit_write`'s fourth check of step 8, and
-    rows that prove it commit, by direct calls.
+    rows that prove it commit, by direct calls. Since spec#17's re-review r11
+    (lane 3's commit 29), so is a present-false row for a path in `files`, with
+    the fourth check's own message (r12).
 
 REAL ENGINE. Every case but the one-number rule and DEC-23's test asks for
 `pg`, one database cloned from the session's template, so its fixture closure
@@ -3238,9 +3240,24 @@ STRAY_REVERT_ROW_CASES = {
     # `present` null, with the stored digest and final newline
     "null-present": {"path": "lanes/aliases.tsv", "present": None,
                      "sha256": rendered(LR4_ALIASES, False), "final_newline": False},
+    # `present` false, for a path in `files` (spec#17's re-review r11; lane 3's commit 29)
+    "present-false-existing-path": {"path": "lanes/aliases.tsv", "present": False,
+                                    "sha256": None, "final_newline": None},
 }
 #: The fourth check's message, in the words commits 28 and 29 share (design:2065).
 WOULD_CHANGE = "a stray-revert files row would change the register"
+#: Spec#17's re-review r11 and Codex's delta review 7k of commit 28 (lane 3's commit 29
+#: `a227bea9`): the fourth check also refuses, before the loop, a present-false row for a
+#: path in `files`. Spec#17's re-review r12 asks that `[present-false-existing-path]`
+#: assert that check's own message, never the loop's later "proof: % is present"
+#: (design:2077-2078). This is the message at a227bea9's design:2065, kept as one constant
+#: for lane 3's commit 30, which states the message, to restate if its words change.
+PRESENT_FALSE_REFUSAL = (
+    "a stray-revert files row would change the register: a present row must equal the "
+    "stored final_newline and sha256 of its path, a row with present false must name a path "
+    "not in files, and present may not be null")
+#: The ids that assert the fourth check's whole message, in place of `WOULD_CHANGE`.
+STRAY_REVERT_OWN_MESSAGE = {"present-false-existing-path": PRESENT_FALSE_REFUSAL}
 #: Codex's delta review 7j of commit 27, its item 4 (lane 3's commit 28; TP:4642): the
 #: valid equal proof. Its present row equals `lanes/aliases.tsv`'s stored `final_newline`
 #: and digest; its present-false row names `lanes/archive/stray.md`, a render-set path not
@@ -3275,12 +3292,18 @@ def test_a_stray_revert_files_row_that_would_change_the_register_is_refused_lr00
         its stored digest;
       * `[absent-path]`: `lanes/archive/absent.md`, a render-set path not in `files`,
         present, with a digest;
-      * `[null-present]`: `lanes/aliases.tsv` with `present` null.
+      * `[null-present]`: `lanes/aliases.tsv` with `present` null;
+      * `[present-false-existing-path]`: `lanes/aliases.tsv`, a path in `files`, with
+        `present` false and a null digest and `final_newline` (spec#17's re-review
+        r11; lane 3's commit 29). Its LR004 must carry the fourth check's whole
+        message, `PRESENT_FALSE_REFUSAL` (spec#17's re-review r12), and not the
+        loop's own "proof: lanes/aliases.tsv is present", which comes after the
+        `journal_files` insert.
 
     The premise is checked first: `files` holds `lanes/aliases.tsv` with no final
     newline and its digest, and holds no `lanes/archive/absent.md`. The message tells
-    the fourth check from the loop's own proof, whose LR004 `[absent-path]` would
-    otherwise meet.
+    the fourth check from the loop's own proof, whose LR004 `[absent-path]` and
+    `[present-false-existing-path]` would otherwise meet.
 
     A direct call, as T231f's case: the refusal is T107's `commit_write`, step 8's
     fourth check (design:2065), which fails until lane 1's T107 follow-up for it.
@@ -3298,7 +3321,9 @@ def test_a_stray_revert_files_row_that_would_change_the_register_is_refused_lr00
     before = state(pg)
     message = refused(commit_call(pg, n, stray_revert(row)), "LR004",
                       f"a stray-revert's {case} row for {row['path']}")
-    assert WOULD_CHANGE in message, f"LR004, but not step 8's fourth check's: {message}"
+    own = STRAY_REVERT_OWN_MESSAGE.get(case)
+    assert (message == own) if own else (WOULD_CHANGE in message), (
+        f"LR004, but not step 8's fourth check's own message: {message}")
     assert head(pg) == n, f"{case}: the head moved from {n} to {head(pg)}"
     assert state(pg) == before, f"{case}: a refused stray-revert changed the register"
 
