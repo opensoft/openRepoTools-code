@@ -95,7 +95,10 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: from the same Order (lane 2, #165 6882026139, Part B). T254zw's row, its
 #: :376, is from T254's Order (tasks:2419; K1). T214t's
 #: row, for T502's part 21 (lane 5, opensoft/openRepoTools#165 6885608994),
-#: is keyed by the same Order: its case fails until T502 lands. T213r's
+#: is keyed by the same Order: its case fails until T502 lands. T214v's
+#: row, for T502's part 22 and its rule for the hook's writes (lane 3's
+#: ruling 5, (A), opensoft/openRepoTools#165 6885771975, and its
+#: confirmation, 6886113842), is keyed by the same Order. T213r's
 #: row for `test_no_session_environment_carries_a_database_url_or_password`
 #: adds T512 to T213's Order: its `PGPASSFILE` assertions read the
 #: service's own held `psql` child (TP:1952 at `f9d6069e`), which only
@@ -141,6 +144,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_after_bound_one_moved_then_the_next_prompt_passes": ("T502",),  # T214; tasks:2013
     "test_an_outer_that_wrote_pid_alone_still_writes_its_outcome": ("T502",),  # T214; tasks:2013
     "test_an_owner_file_from_another_namespace_or_boot_is_no_service": ("T512", "T513"),  # T237; tasks:2302
+    "test_answer_2_binds_nothing_where_its_offer_is_gone_or_no_longer_the_one_answered": ("T502",),  # T214; tasks:2013
     "test_answer_2_exits_2_binding_before_t0_plus_1_s_and_the_runner_sees_eof": ("T502",),  # T214; tasks:2013
     "test_answer_2_survives_a_group_sigterm_at_the_hooks_timeout": ("T502",),  # T214; tasks:2013
     "test_case_11_with_a_live_outer_drops_the_record_and_keeps_its_files": ("T502",),  # T214; tasks:2013
@@ -3399,6 +3403,307 @@ def test_every_bind_rewrite_is_0600_and_a_failed_one_leaves_the_record(estate, c
             {name: oct(bits) for name, bits in modes.items()}
     finally:
         os.umask(mask)
+
+
+# ------------------------------------------------ T214v: ruling 5's (A), the hook's writes
+#
+# NO REWRITE CREATES A RECORD, AND THE HOOK'S WRITES GO ONLY TO THE OFFER IT
+# ANSWERED (T214v; lane 3's ruling, opensoft/openRepoTools#165 6885771975,
+# ruling 5, with (A) for the hook's answer 2; lane 5's rule for the hook's
+# own writes, #165 6886054653, which lane 3 confirmed, #165 6886113842;
+# T502's parts 22 to 26,
+# `2497b864`, and part 32, `820bbf11`, at its head `6253b0ed`; spec#47's
+# draft 17 `8bc6b29e`, section 5's case 1, and section 7; lane
+# 5's check of these ids and its additions, #165 6888777622). Each case
+# holds the hook in a test-only copy (point 23) before one of its writes on
+# the offer, changes the record there, and releases the hold: the window is
+# made by the hold, never by a sleep.
+
+#: THE HOLDS' ANCHORS, each text that `lanes-edit.sh` holds once at T502's
+#: part 21 `beeae571`, at part 26 `2497b864` and at `6253b0ed`:
+#: - the head copy's test that `.head` gave it a key to copy, just before its
+#:   write (`guard_bind_head_copy`), so a hold there is reached only where
+#:   the head copy writes (lane 5's precondition A; d17:377);
+#: - the head copy's definition and its one call in `guard_answer`, through
+#:   which the copy logs the head copy's result, so a case knows which write
+#:   met the change;
+#: - and answer 2's bound, after the head copy and before its rewrite to
+#:   `binding`.
+ANCHOR_HEAD_COPY = '[ "${#ghc_kv[@]}" -gt 0 ] || return 0'
+ANCHOR_HEAD_COPY_DEF = 'guard_bind_head_copy() {'
+ANCHOR_HEAD_COPY_CALL = 'guard_bind_head_copy "$ga_f"'
+ANCHOR_ANSWER_2_BOUND = 'ga_bs="$(guard_bind_bound_s "$ga_f")"'
+#: (A)'s words (`guard_answer_moved`, 6253b0ed:22675-22695); the I/O
+#: path's words, which say the offer is KEPT (:22915, :22945); and the
+#: outer's start, which no case here may reach (:22999, :23001).
+DROPPED_BIND = "the offer was dropped before the bind could be recorded, so the bind was NOT started"
+CHANGED_BIND = ("was changed before the bind could be recorded (it is another offer now, not "
+                "the one that was answered), so the bind was NOT started")
+NO_OUTER = "and no outer was started"
+BIND_IO = "could not be recorded in"
+
+
+def _renamed_back(lane: str) -> str:
+    """`guard_window_back`'s note (6253b0ed:22216), only as far as lane 5
+    asks it asserted: the clause after it, "so the offer it keeps is still
+    this window's", is lane 5's to reword for (A) (#165 6888777622)."""
+    return f"This window has been renamed back to {lane}, the lane it was before the answer `2`"
+
+
+def _answer_preconditions(est: Estate) -> None:
+    """Lane 5's precondition B (#165 6888777622): the stand-in `tmux` first
+    on the hook's `PATH`, so the rename to `<to>` and back is made, and the
+    stand-in `lane-start` executable at `LANES_LANE_START`, so answer 2 gets
+    past its test of it (6253b0ed:22836-22837) to the rename."""
+    env = est.env()
+    first = env["PATH"].split(os.pathsep)[0]
+    assert first == str(est.session.directory) and os.access(est.session.tmux, os.X_OK), \
+        f"the stand-in tmux is not first on PATH: {first}, {est.session.tmux}"
+    start = Path(env.get("LANES_LANE_START", ""))
+    assert start.is_file() and os.access(start, os.X_OK), \
+        f"the stand-in lane-start is not executable at LANES_LANE_START: {start}"
+
+
+def _head_copy_logged(est: Estate) -> list:
+    """The edits that make a test-only copy log the head copy's result, 0,
+    1 or 2, to `<ctl>/head-copy.rc`, through a wrapper at its one call: so a
+    case knows whether the head copy's own rewrite met the change (2), or
+    wrote nothing (0) and left it to the rewrite to `binding`."""
+    rc = shlex.quote(str(est.ctl / "head-copy.rc"))
+    wrapper = ('t214v_head_copy() { t214v_hrc=0; guard_bind_head_copy "$@" || t214v_hrc=$?; '
+               f'echo "$t214v_hrc" > {rc}; return "$t214v_hrc"; }}')
+    return [(ANCHOR_HEAD_COPY_DEF, f"{wrapper}\n{ANCHOR_HEAD_COPY_DEF}"),
+            (ANCHOR_HEAD_COPY_CALL, 't214v_head_copy "$ga_f"')]
+
+
+def _estate_on_the_stub(estate, tmp_path, edits_of) -> Estate:
+    """Case 22's `[answer-2]` estate (`_bound_through_answer_2_on_the_stub`),
+    with the stub's constants as T207 writes them, so its `.head` gives
+    `c=2`, `n_a=1` and `w_s_ms=0`, each a whole number, and the hook's head
+    copy writes (lane 5's precondition A): the contract's stub `lanes-index`
+    beside a copy of `lanes-edit.sh`, `repos.tsv` and `lane-start`, and a
+    configuration naming the store. The copy takes `edits_of(est)`'s
+    (anchor, text) pairs, each made once, as `_bind_copy` makes them."""
+    code = tmp_path / "code"
+    code.mkdir()
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        shutil.copy2(REPO / name, code / name)
+    est = estate(guard=code / "lanes-edit.sh")
+    copy = code / "lanes-edit.sh"
+    text = copy.read_text(encoding="utf-8")
+    for anchor, new in edits_of(est):
+        text, made = re.subn(re.escape(anchor), lambda _found, new=new: new, text)
+        assert made == 1, f"the test-only copy's anchor was found {made} times, not once: {anchor}"
+    copy.write_text(text, encoding="utf-8")
+    contract_stub(code, register={
+        "lanes/LANES.md": (est.wip / "lanes" / "LANES.md").read_text(encoding="utf-8")})
+    conf = tmp_path / "lanes-index.conf"
+    conf.write_text(f"register_url=postgresql:///register?host={tmp_path}/sock\n",
+                    encoding="utf-8")
+    est.extra["LANES_INDEX_CONFIG"] = str(conf)
+    return est
+
+
+def _answer_held(est: Estate, prompt: str, hold: str, change):
+    """The hook answering `prompt`, from a test-only copy that holds at
+    `hold` (`_hold_sh`), run in a thread with a 30 s timeout, so that the
+    hold is not cut short as the hook's own 5 s would cut it. At the hold,
+    `change()` runs and its value is kept; the hold is released whatever
+    `change` does. Returns the hook and that value."""
+    box = {}
+    thread = threading.Thread(target=lambda: box.update(hook=est.hook(prompt, timeout=30.0)),
+                              daemon=True)
+    thread.start()
+    held = _until(lambda: (est.ctl / f"{hold}.held").exists(), 30)
+    seen = None
+    try:
+        if held:
+            seen = change()
+    finally:
+        est.set(f"{hold}.release")
+    thread.join(45)
+    assert held, f"the hook never came to its hold at its {hold}: {box.get('hook')!r}"
+    assert "hook" in box, f"the hook did not end within 45 s of its release at its {hold}"
+    return box["hook"], seen
+
+
+def _other_binding(est: Estate):
+    """ANOTHER INVOCATION'S `binding`, put in the offer's place as a writer
+    puts a record (`write_record`): a live process of its own session, with
+    its own start token, which the estate stops at its close (`spare`), as
+    `[not-its-own]`'s is; a `deadline_epoch` ahead, and the guard's own
+    `host` and `container`, so the guard's site answers it in progress, not
+    stale and not as another host's (lane 5, #165 6888777622); and its
+    attempt's `.bind.1.out`, which its `out` names. Returns the record's
+    bytes, that `.out` and its bytes."""
+    other = _sleeper()
+    est.spare.append(other.pid)
+    now = time.time()
+    write_record(est.offer, _binding(est, started=now, pid=other.pid,
+                                     pidstart=_stat(other.pid)["start"]))
+    record = est.record()
+    assert int(record["deadline_epoch"]) > now and record.get("host") == HOST \
+        and record.get("container") == CONTAINER, f"the other binding is not live here: {record}"
+    out = Path(record["out"])
+    out.write_text("the other bind's output, which no answer may touch\n", encoding="utf-8")
+    out.chmod(0o600)
+    return est.offer.read_bytes(), out, out.read_bytes()
+
+
+def _guard_bind_processes(est: Estate) -> list:
+    """Every live process whose argv holds `guard-bind` and this estate's
+    uuid: an outer this answer started."""
+    found = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            argv = (entry / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if b"guard-bind" in argv and est.sid.encode() in argv:
+            found.append(int(entry.name))
+    return found
+
+
+def _nothing_new(est: Estate, before: set, made: set, who: str) -> None:
+    """After the hook's exit, `offers/` holds nothing that was not there
+    before it, or that the case put there itself: no temporary file, no
+    record made and no `.bind.<N>.out`; and no outer was started: no
+    `lane-start` start and no `guard-bind` process (lane 5, #165
+    6888777622)."""
+    offers = est.offer.parent
+    new = sorted(set(os.listdir(offers)) - before - made) if offers.is_dir() else []
+    assert not new, f"{who} left new files in offers/: {new}"
+    assert not est.starts() and not _guard_bind_processes(est), \
+        f"{who} started an outer: {est.starts()}, {_guard_bind_processes(est)}"
+
+
+@pytest.mark.parametrize("case", ["gone-at-its-head-copy", "gone-at-its-rewrite",
+                                  "another-offer-at-its-rewrite", "binding-at-its-rewrite"])
+def test_answer_2_binds_nothing_where_its_offer_is_gone_or_no_longer_the_one_answered(
+        estate, tmp_path, case):
+    """T214v, ruling 5's (A) for the hook's answer 2, and the hook's writes
+    on the offer it answered (draft 17's section 5, case 1; section 7). The
+    hook's head copy of `.head`'s `c`, `n_a` and `w_s_ms` and its rewrite to
+    `binding` each run only on a record that is there, still says
+    `name-drift` and is still the offer that was answered, by its `from`,
+    `to`, `session` and `utc` (`--offer` with `guard_answer_match`;
+    6253b0ed:20744, :22908-22913, :22935-22943). Where it is not, they write
+    nothing, and the record's mode is read once and answered for
+    (`guard_answer_moved`, :22641-22700). With the stand-in `tmux` and
+    `lane-start` in place (lane 5's precondition B), a test-only copy holds
+    the hook after it has renamed the window to `<to>`, and logs what the
+    head copy returned; at the hold the record is still the offer answered.
+    Each id exits 2, leaves nothing new in `offers/` and starts no outer.
+
+    - `[gone-at-its-head-copy]`: on the contract's stub, whose `.head` gives
+      the head copy keys to write, held just before that write, and the
+      offer removed there; the head copy's own rewrite returns 2 (lane 5's
+      precondition A). (A): "the offer was dropped before the bind could be
+      recorded, so the bind was NOT started: this window has NOT moved to
+      `<to>` (this answer renamed it, and it was renamed back to `<from>`)
+      ... and no outer was started", after "This window has been renamed
+      back to `<from>`, the lane it was before the answer `2`"; no `KEPT`,
+      no `BINDING:` and no "could not be recorded in"; no record made; tmux
+      renamed to `<to>`, then back to `<from>`. At `beeae571` the head copy
+      made a record of `c`, `n_a` and `w_s_ms` alone, the rewrite then wrote
+      `binding` with no `from` and no `to`, and an outer started.
+    - `[gone-at-its-rewrite]`: with no `.head`, so the head copy writes
+      nothing (0), held after it and before the rewrite to `binding`, the
+      offer removed there. (A), as above. At `beeae571` the rewrite made the
+      record again with its own keys, and an outer started.
+    - `[another-offer-at-its-rewrite]`: the same hold, with the offer, which
+      carries a `utc` line, put back by a temporary file and a rename with a
+      later `utc`: a re-made offer, not the one answered. (A) with "the
+      offer at `<file>` was changed before the bind could be recorded (it is
+      another offer now, not the one that was answered)"; that offer left
+      byte for byte. At `beeae571`, and at `2497b864` before part 32, the
+      rewrite wrote `binding` over it.
+    - `[binding-at-its-rewrite]`: the same hold, with another invocation's
+      live `binding` put in the offer's place, its deadline ahead, on the
+      guard's own host and container, with its own `.bind.1.out`.
+      `guard_bind_site`'s answer, as the guard's first read gives it: that
+      record and its `.out` left byte for byte; "BINDING IN PROGRESS" and
+      not "BINDING: this window is now named"; tmux renamed to `<to>` only,
+      nothing renamed back (section 5). At `beeae571` the rewrite wrote this
+      answer's `binding` over it and started a second outer."""
+    if case == "gone-at-its-head-copy":
+        hold = "head-copy"
+        est = _estate_on_the_stub(estate, tmp_path, lambda e: _head_copy_logged(e) + [(
+            ANCHOR_HEAD_COPY, f"{ANCHOR_HEAD_COPY}\n  {_hold_sh(e, hold)}")])
+    else:
+        hold = "rewrite"
+        est = estate()
+        est.guard = _bind_copy(est, _head_copy_logged(est) + [(ANCHOR_ANSWER_2_BOUND, (
+            f"{_hold_sh(est, hold)}\n    {ANCHOR_ANSWER_2_BOUND}"))])
+    _answer_preconditions(est)
+    est.make_offer()
+    offers = est.offer.parent
+    offer = est.offer.read_bytes()
+    assert re.search(rb"(?m)^utc=", offer), f"the offer carries no utc= line: {offer!r}"
+    before = set(os.listdir(offers))
+    calls = len(est.session.tmux_calls())
+    made = set()
+
+    def change():
+        at_hold = est.offer.read_bytes() if est.offer.exists() else None
+        renamed = [c[-1] for c in _renames(est, calls)]
+        other = None
+        if case.startswith("gone-"):
+            est.offer.unlink()
+        elif case == "another-offer-at-its-rewrite":
+            text, n = re.subn(r"(?m)^utc=.*$", f"utc={_utc(time.time() + 60)}",
+                              offer.decode("utf-8"), count=1)
+            assert n == 1, f"the offer holds no utc= line: {offer!r}"
+            write_record(est.offer, text.splitlines())
+            other = (est.offer.read_bytes(), None, None)
+        else:
+            other = _other_binding(est)
+            made.add(other[1].name)
+        return at_hold, renamed, other
+
+    hook, (at_hold, renamed, other) = _answer_held(est, "2", hold, change)
+    err = hook.err
+    renames = [c[-1] for c in _renames(est, calls)]
+    rc_file = est.ctl / "head-copy.rc"
+    head_copy = rc_file.read_text(encoding="utf-8").strip() if rc_file.exists() else None
+    assert at_hold == offer, f"the record at the hook's {hold} was not the offer answered: {at_hold!r}"
+    assert TO in renamed, f"the window was not named {TO} before the hook's {hold}: {renamed}"
+    assert not hook.killed and hook.code == 2, f"answer 2 did not exit 2: {hook!r}"
+    if case == "binding-at-its-rewrite":
+        installed, out, out_bytes = other
+        assert est.offer.read_bytes() == installed, \
+            f"another invocation's bind record did not survive answer 2: {est.record()}\n{err}"
+        assert out.exists() and out.read_bytes() == out_bytes, \
+            f"another invocation's {out.name} did not survive answer 2"
+        assert IN_PROGRESS in err and BINDING not in err, \
+            f"answer 2 did not give guard_bind_site's answer for the bind record at its rewrite: {hook!r}"
+        assert renames == [TO], \
+            f"tmux saw {renames}, where section 5 has this answer rename to {TO} and nothing back"
+    else:
+        why = CHANGED_BIND if case == "another-offer-at-its-rewrite" else DROPPED_BIND
+        back = (f"this window has NOT moved to {TO} (this answer renamed it, and it was renamed "
+                f"back to {FROM})")
+        assert why in err and "BINDING:" not in err, \
+            f"answer 2 did not refuse with (A) where its offer was {case}: {hook!r}"
+        assert "KEPT" not in err and BIND_IO not in err, \
+            f"answer 2 refused on its I/O path, or said the offer is KEPT: {hook!r}"
+        assert _renamed_back(FROM) in err and back in err and NO_OUTER in err, repr(hook)
+        assert renames == [TO, FROM], f"tmux saw {renames}, not {TO} and then {FROM}"
+        if case.startswith("gone-"):
+            assert not est.offer.exists(), \
+                f"answer 2 made a record where its offer was gone: {est.record()}"
+        else:
+            assert est.offer.read_bytes() == other[0], \
+                f"answer 2 wrote over an offer that is not the one answered: {est.record()}"
+    if case == "gone-at-its-head-copy":
+        assert head_copy == "2", \
+            f"the head copy's own rewrite did not meet the offer gone: it returned {head_copy!r}"
+    else:
+        assert head_copy == "0", \
+            f"the head copy did not write nothing before the hold at the rewrite: {head_copy!r}"
+    _nothing_new(est, before, made, "answer 2")
 
 
 #: `[unknown-key]`'s line, which no reader of the record knows.
