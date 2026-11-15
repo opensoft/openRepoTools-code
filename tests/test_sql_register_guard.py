@@ -2281,6 +2281,15 @@ ANCHOR_EXISTS = 'if [ -e "$gbw_f" ]; then'
 #: The outcome's rewrite is the one whose drop list holds `mode` (the outer's
 #: start drops `pid` and `pidstart`, and the body rewrites nothing).
 OUTCOME_REWRITE = 'case "$gbw_drop" in *" mode "*)'
+#: THE FIRST WRITES (T214s, `[failed-first-write]`; lane 2, #165 6885568373):
+#: the line `guard_bind_rewrite` writes first, the `mode=` it is given, which
+#: of the hook's rewrites only answer 2's gives (`mode=binding`; the offer's
+#: own write and the head copy's rewrite give none); and choice 1's first
+#: `mode=allow` line. `lanes-edit.sh` holds each once at line R's merge144
+#: and at every T502 head from `12eddddf` to `beeae571`. A copy appends
+#: `>/dev/full` to each, so that write fails as a full disk fails it.
+ANCHOR_FIRST_WRITE = "mode=*) printf '%s\\n' \"$gbw_a\""
+ANCHOR_ALLOW_WRITE = "{ printf 'mode=allow\\n'"
 
 
 def _bind_copy(est: Estate, edits) -> Path:
@@ -3270,7 +3279,8 @@ def test_a_malformed_bind_pid_waits_for_the_deadline_then_is_stale(signals_recor
         holder.wait(10)
 
 
-@pytest.mark.parametrize("case", ["was-0644", "new-offers-dir", "failed-write"])
+@pytest.mark.parametrize("case", ["was-0644", "new-offers-dir", "failed-write",
+                                  "failed-first-write"])
 def test_every_bind_rewrite_is_0600_and_a_failed_one_leaves_the_record(estate, case):
     """Section 8's :372 (lane 3's ruling, #165 6746215510, points 1 and 2;
     lane 3's Codex review, #165 6877006381, finding 2), under a umask of
@@ -3286,7 +3296,20 @@ def test_every_bind_rewrite_is_0600_and_a_failed_one_leaves_the_record(estate, c
       in a test-only copy: the offer kept as it was, byte for byte, no
       temporary file in `offers/`, exit 2 with "the bind could not be
       recorded", no attempt started, and the window renamed back to `<from>`
-      after the hook named it `<to>`."""
+      after the hook named it `<to>`.
+    - `[failed-first-write]` (T214s; lane 2, #165 6885568373; lane 5's
+      `[failed-first-write]`, #165 6884069915): a test-only copy fails each
+      first write at `/dev/full`. Half (i): the hook's answer-2 rewrite, its
+      first line, `mode=binding`, failing (`ae702c74`:22453-22459), answers
+      as `[failed-write]` does, K4's oracle: exit 2 with "the bind could not
+      be recorded", KEPT and no BINDING, the offer byte for byte, no
+      temporary file, nothing started, and the window renamed back. Before
+      T502's part 16 the rewrite lost the line and returned 0. Half (ii),
+      on the same offer: choice 1's `mode=allow` record failing at its first
+      write (:22346-22358) exits 2 with "the explicit allow could not be
+      recorded", the offer byte for byte, no temporary file, and nothing
+      renamed. Before T502's part 20 it said ALLOWED and the record lost
+      its mode line."""
     est = estate()
     offers = est.offer.parent
     mask = os.umask(0o022)
@@ -3313,6 +3336,34 @@ def test_every_bind_rewrite_is_0600_and_a_failed_one_leaves_the_record(estate, c
                 "an attempt started after its record could not be written"
             assert TO in renames and renames[-1] == FROM, \
                 f"the window was not named {TO} and then renamed back to {FROM}: {renames}"
+            return
+        if case == "failed-first-write":
+            est.guard = _bind_copy(est, [(ANCHOR_FIRST_WRITE, f"{ANCHOR_FIRST_WRITE} >/dev/full"),
+                                         (ANCHOR_ALLOW_WRITE, f"{ANCHOR_ALLOW_WRITE} >/dev/full")])
+            est.make_offer()
+            before = est.offer.read_bytes()
+            calls = len(est.session.tmux_calls())
+            hook = est.hook("2")
+            renames = [c[-1] for c in _renames(est, calls)]
+            assert hook.code == 2 and "the bind could not be recorded" in hook.err \
+                and KEPT in hook.err and BINDING not in hook.err, \
+                f"half (i), answer 2's rewrite failing at its first write: {hook!r}"
+            assert est.offer.read_bytes() == before, \
+                f"half (i): the failed first write changed the offer: {est.record()}"
+            assert not _temporaries(est), f"half (i) left {_temporaries(est)}"
+            assert not list(offers.glob(f"{est.sid}.bind.*")) and not est.starts(), \
+                "half (i): an attempt started after its record could not be written"
+            assert TO in renames and renames[-1] == FROM, \
+                f"half (i): the window was not named {TO} and then renamed back to {FROM}: {renames}"
+            calls = len(est.session.tmux_calls())
+            hook = est.hook("1")
+            assert hook.code == 2 and "the explicit allow could not be recorded" in hook.err \
+                and "ALLOWED:" not in hook.err, \
+                f"half (ii), choice 1's allow failing at its first write: {hook!r}"
+            assert est.offer.read_bytes() == before, \
+                f"half (ii): the failed allow changed the offer: {est.record()}"
+            assert not _temporaries(est), f"half (ii) left {_temporaries(est)}"
+            assert not _renames(est, calls), f"half (ii) renamed the window: {_renames(est, calls)}"
             return
         est.guard = _bind_copy(est, [(ANCHOR_OUTER_START, (
             f"{_hold_sh(est, 'start')}\n  {ANCHOR_OUTER_START}"))])
