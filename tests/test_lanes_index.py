@@ -933,8 +933,13 @@ def test_offline_no_read_every_act_is_byte_identical_against_an_unreachable_inde
     fake = indexed.root / "pgfake"
     fake.mkdir()
     psql_log = indexed.root / "psql.log"
+    # THE STORE IT REACHED FOR, rebuilt from the `PG*` variables as FAKE_PSQL
+    # rebuilds it (Question 11; L2-0c), so `lanes_writer` below can only have
+    # come from `PGUSER`, never from an argument.
     (fake / "psql").write_text(
-        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {psql_log}\n"
+        "#!/bin/sh\n"
+        "printf 'postgresql://%s@%s%s/%s\\n' \"$PGUSER\" \"$PGHOST\" \"${PGPORT:+:$PGPORT}\" "
+        f"\"$PGDATABASE\" >> {psql_log}\n"
         "echo 'psql: error: connection to server at \"lanes-index.invalid\" failed' >&2\nexit 2\n")
     (fake / "psql").chmod(0o755)
     pw = indexed.config / "pgpass"
@@ -1072,7 +1077,19 @@ log = os.environ["FAKE_PSQL_LOG"]
 vfile = os.environ.get("FAKE_PSQL_VERSION_FILE", "")
 version = open(vfile).read().strip() if vfile else "1"
 args = sys.argv[1:]
-url = args[args.index("-d") + 1] if "-d" in args else ""
+# THE CONNECTION IN `PG*` VARIABLES ALONE (Question 11; L2-0c): an argument
+# that is `-d` or `--dbname`, or that carries a URL, is refused with psql's own
+# fatal-error 1 before anything is recorded, since `/proc` shows a process's
+# arguments for its life. The URL recorded is rebuilt from `PGUSER`, `PGHOST`,
+# `PGPORT` and `PGDATABASE`, with no port where `PGPORT` is unset, so each URL
+# a test configures reads back unchanged.
+if any(a.startswith(("-d", "--dbname")) or "://" in a for a in args):
+    sys.stderr.write("FAKE psql: an argument carries the connection (-d, --dbname or a URL);"
+                     " psql takes it from PG* variables only (Question 11)\n")
+    sys.exit(1)
+port = os.environ.get("PGPORT", "")
+url = ("postgresql://" + os.environ.get("PGUSER", "") + "@" + os.environ.get("PGHOST", "")
+       + (":" + port if port else "") + "/" + os.environ.get("PGDATABASE", ""))
 stdin = sys.stdin.read()
 with open(log, "a") as handle:
     handle.write(json.dumps({"url": url, "passfile": os.environ.get("PGPASSFILE", ""),
@@ -1143,9 +1160,10 @@ def test_the_fake_psql_decodes_echo_as_psql_does(tmp_path):
         "\\echo 'a\\tb\\x41\\101\\q'",
         "\\echo plain",
         ""])
-    res = subprocess.run([sys.executable, str(fake), "-d", "postgresql://x@db.invalid/qa"],
+    res = subprocess.run([sys.executable, str(fake)],
                          input=script, capture_output=True, text=True, check=False,
-                         env=dict(os.environ, FAKE_PSQL_LOG=str(tmp_path / "log")))
+                         env=dict(os.environ, FAKE_PSQL_LOG=str(tmp_path / "log"),
+                                  PGHOST="db.invalid", PGDATABASE="qa", PGUSER="x"))
     assert res.returncode == 0, res.stderr
     assert res.stdout.split("\n") == ["\x1eLANES-INDEX-NEXT", "it's two words", "a\tbAAq",
                                       "plain", ""], res.stdout
@@ -2148,8 +2166,12 @@ def test_offline_no_read_the_inventory_acts_are_byte_identical_against_an_unreac
         fake = indexed.root / "pgfake"
         fake.mkdir()
         psql_log = indexed.root / "psql.log"
+        # THE STORE IT REACHED FOR, from the `PG*` variables alone, as in the
+        # acts' offline test above (Question 11; L2-0c).
         (fake / "psql").write_text(
-            f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {psql_log}\n"
+            "#!/bin/sh\n"
+            "printf 'postgresql://%s@%s%s/%s\\n' \"$PGUSER\" \"$PGHOST\" \"${PGPORT:+:$PGPORT}\" "
+            f"\"$PGDATABASE\" >> {psql_log}\n"
             "echo 'psql: error: connection to server at \"lanes-index.invalid\" failed' >&2\nexit 2\n")
         (fake / "psql").chmod(0o755)
         pw = indexed.e.config / "pgpass"
@@ -3137,3 +3159,49 @@ def test_the_round_cap_hands_back_a_mark_it_took(estate, monkeypatch):
     assert os.path.exists(lock.rerun_path("register")), \
         "the register's mark was taken at the cap and never handed back"
     assert os.path.exists(lock.rerun_path("inventory"))
+
+
+# ======================================================= the bootstrap's arguments
+#
+# T109's follow-up, on Codex's exact-head review of P10 (opensoft/openRepoTools#165
+# 6889426463): `bootstrap` refused a connection string only in its four flags' values,
+# after its usage, so a positional argument or an unknown option that carried one
+# ended 64 with the whole argument echoed on stderr. Its usage texts now echo no
+# argument's value, as `login`'s never do, so a bare secret that no rule can tell
+# from a word is not echoed either.
+
+
+@pytest.mark.parametrize("where", ["positional", "unknown-option", "bare-positional",
+                                   "bare-unknown-option"])
+def test_the_bootstrap_refuses_a_secret_in_any_argument_and_never_echoes_it(estate, where):
+    """NO ARGUMENT ECHOES A SECRET (operations.md section 2.4's refusals; T109):
+    an argument that carries a connection string or a password is refused with 2
+    wherever it stands, before the usage is read, as `login`'s are; and a bare
+    secret, positional or as an unknown option's value, is usage (64), named by
+    no more than `login` names it: an unknown option by its name alone, and a
+    positional argument not at all. Every other flag is in order, so only the
+    refusal keeps `psql` from running. The value reaches neither stdout nor
+    stderr, and no `psql` is run."""
+    secret = f"t109-FAKE-{where}-not-a-secret"
+    argument, code, words = {
+        "positional": (f"postgresql://lanes_register_admin:{secret}@db.invalid:5432/register",
+                       2, "carries a connection string or a password"),
+        "unknown-option": (f"--dsn=host=db.invalid user=lanes_register_admin password={secret}",
+                           2, "carries a connection string or a password"),
+        "bare-positional": (secret, 64, "bootstrap takes no positional argument"),
+        "bare-unknown-option": (f"--dsn={secret}", 64, "bootstrap: unknown option --dsn"),
+    }[where]
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    ran = estate.root / "psql-ran.txt"
+    (fake / "psql").write_text(f"#!/bin/sh\necho ran >> {shlex.quote(str(ran))}\nexit 1\n")
+    (fake / "psql").chmod(0o755)
+    res = estate.index("bootstrap", "--admin-service", "t109admin", "--label", "t109-label",
+                       "--repository", "opensoft/t109-workspace", "--lane", "t109-operator",
+                       "--no-passwords", argument, env={"PATH": estate.path_with(fake)})
+    said = f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}".replace(secret, "<the secret>")
+    assert res.returncode == code, f"[{where}] exit {res.returncode}, not {code}:\n{said}"
+    assert secret not in res.stdout and secret not in res.stderr, (
+        f"[{where}] the secret was echoed:\n{said}")
+    assert words in res.stderr, said
+    assert not ran.exists(), f"[{where}] psql was run:\n{said}"
