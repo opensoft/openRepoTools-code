@@ -8120,14 +8120,49 @@ def register_serve_timer_ms(cfg: dict) -> int:
     return rtt + 100 if rtt > 100 else 200
 
 
+#: THE LAUNCHER'S MODULE (T124; FR-064): once `lanes-index`'s body is moved
+#: out, it is this file, beside the launcher, found in the directory of
+#: `os.path.realpath(__file__)`, as the launcher finds it. Before T124 no tree
+#: has it.
+REGISTER_SERVE_MODULE = "lanes_index_main.py"
+
+
 def register_serve_install() -> tuple:
-    """THE INSTALL'S IDENTITY (Y:3915-3916): this `lanes-index` file's size,
-    mtime and inode, or () where it cannot be read."""
+    """THE INSTALL'S IDENTITY (Y:3915-3916; lane 5's choice (a) on lane 1's
+    T124 prototype, #165 6890257498 and lane 5's answer, #165 6890303231):
+    the size, mtime in nanoseconds and inode of the file
+    `os.path.realpath(__file__)` names (the launcher, once T124 has moved
+    the body), taken once and used for the `stat` and for the module's
+    directory alike, and then, where `REGISTER_SERVE_MODULE` is in that
+    directory, the same three of that module: six numbers in all, the
+    launcher's first. (`abspath` would join `a/link/../lanes-index` lexically,
+    and name the wrong file or none; lane 1's R2, #165 6892234131, NIT 1.)
+
+    - Where there is no module file (`FileNotFoundError` for it: every tree
+      before T124), it is the first three alone, as it was, so this change
+      can land before T124.
+    - Where either file cannot be `stat`ed for any other reason, it is (),
+      and `install=` is written with nothing after it, which
+      `_REGISTER_SERVE_INSTALL_RE` refuses, so the file is unusable by rule
+      (OP-19 (b), rule 7): every client reads directly and starts none.
+
+    The client's test is as it was: the owner file's `install=` against
+    this value, as text. An owner file of three numbers read by a client of
+    six is another install, which starts a service."""
+    launcher = os.path.realpath(__file__)
     try:
-        st = os.stat(os.path.abspath(__file__))
+        st = os.stat(launcher)
     except OSError:
         return ()
-    return st.st_size, st.st_mtime_ns, st.st_ino
+    ident = (st.st_size, st.st_mtime_ns, st.st_ino)
+    module = os.path.join(os.path.dirname(launcher), REGISTER_SERVE_MODULE)
+    try:
+        mst = os.stat(module)
+    except FileNotFoundError:
+        return ident
+    except OSError:
+        return ()
+    return ident + (mst.st_size, mst.st_mtime_ns, mst.st_ino)
 
 
 def register_serve_host() -> dict:
@@ -9274,20 +9309,31 @@ def register_serve_sweep(paths: dict) -> None:
     """THE TEMPORARY SOCKETS AN EARLIER START LEFT (lane 1's U5 gate, #165
     6881993079, N5): a starter killed between its bind and its rename leaves
     its socket at its short name, `s.` and four hex digits, and a later
-    starter that draws that name could not bind it. Each socket of that form
-    in `run/`, by `lstat`, and this uid's, is removed, by the starter that
-    holds `register.lock` and has found no live service at the socket, just
-    before its own bind. Under the lock no other starter is between its bind
-    and its rename, since only the lock's holder binds, so each such socket
-    is a leftover. A name of another form, or a file of that form that is
-    not a socket or not this uid's, is left as it is.
+    starter that draws that name could not bind it. The starter that holds
+    `register.lock` and has found no live service at the socket attempts to
+    remove each socket of that form in `run/`, by `lstat`, and this uid's,
+    just before its own bind. Under the lock no other starter is between its
+    bind and its rename, since only the lock's holder binds, so each such
+    socket is a leftover. A name of another form, or a file of that form
+    that is not a socket or not this uid's, is left as it is, and no line is
+    written for it.
 
-    WHAT FAILS IS SAID (lane 3's Codex delta review of bb19b1ad, #165
-    6886976981, NIT 6): an entry gone before it is reached (`ENOENT`) is
-    passed over; any other failure, to list `run/` or to `lstat` or remove a
-    leftover, is written to `register.log`, and the leftover stays. A start
-    that then draws its name draws another (`register_serve_run`, SHOULD 3),
-    so a leftover that cannot be removed no longer ends the start at 69."""
+    WHAT FAILS IS SAID, AND WHAT IT LEAVES (lane 3's Codex delta review of
+    bb19b1ad, #165 6886976981, NIT 6; its review of 1e1846e3, NIT 1): the
+    sweep attempts each removal and does not promise one. An entry gone
+    before it is reached (`ENOENT`, at the `lstat` or at the removal) is
+    passed over. Any other failure is written to `register.log`: where `run/`
+    cannot be listed no entry is tried, and where an entry cannot be
+    `lstat`ed or removed, that leftover stays at its name and the sweep goes
+    on to the next entry.
+
+    A leftover that stays is not itself the end of the start. A bind that
+    finds its name taken (`EADDRINUSE`) draws another name
+    (`register_serve_run`, SHOULD 3), so the retry normally avoids one
+    occupied draw. It does not avoid every one: where all
+    `REGISTER_SERVE_BIND_TRIES` (8) draws find their names taken, by that
+    leftover or by any other entry, or by one occupied name drawn again, the
+    start still ends at 69."""
     run = paths["run"]
     try:
         names = os.listdir(run)
@@ -9319,9 +9365,14 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     connect is a live service, and this starter exits 0; `ECONNREFUSED` is a
     stale socket, which it replaces, renaming its own new socket over it,
     and never unlinks (socket API 2.5 and 8.3); then the temporary sockets
-    an earlier start left removed (`register_serve_sweep`; N5), the bind, under
-    `umask 077`, the owner file, the listen, and the stamp removed
-    (Y:3936-3938). `stamps`
+    an earlier start left, each removal attempted (`register_serve_sweep`;
+    N5), where one that cannot be removed is logged and stays, the bind,
+    under `umask 077`, the owner file, the listen, and the stamp removed
+    (Y:3936-3938). The bind draws a temporary name of `s.` and four hex
+    digits, up to `REGISTER_SERVE_BIND_TRIES` (8) times, drawing another
+    where a name is taken (`EADDRINUSE`). It ends the start at 69 after the
+    eighth taken name, and at once at any other `OSError` from the bind, the
+    listen, the owner file, the rename or the `lstat` after it. `stamps`
     are the install's and the configuration's, as `serve` took them before
     it read the configuration (`register_serve_load`)."""
     import socket
@@ -9490,9 +9541,14 @@ def register_serve_state(paths: dict) -> str:
 #: THE OWNER FILE'S KNOWN KEYS, each on one line at most (OP-19 (b), rule 3).
 _REGISTER_SERVE_OWNER_KEYS = ("pid", "started", "install", "pidns", "boot")
 
-#: `install=`'s one form (OP-19 (b), rule 4): three runs of ASCII digits, one
-#: space between each, and nothing else.
-_REGISTER_SERVE_INSTALL_RE = re.compile(r"[0-9]+ [0-9]+ [0-9]+")
+#: `install=`'s one form (OP-19 (b), rule 4; lane 5's choice (a) on T124's
+#: two files): three runs of ASCII digits, or six, one space between each, and
+#: nothing else. Three are the launcher's alone, as every tree before T124
+#: writes them; six are the launcher's and then the module's
+#: (`register_serve_install`). It is applied with `fullmatch`, so no trailing
+#: newline, space or other character passes, and `[0-9]` takes ASCII digits
+#: only.
+_REGISTER_SERVE_INSTALL_RE = re.compile(r"[0-9]+ [0-9]+ [0-9]+(?: [0-9]+ [0-9]+ [0-9]+)?")
 
 
 def register_serve_owner_read(paths: dict) -> dict | None:
@@ -9682,8 +9738,9 @@ def register_serve_ask(data: bytes, deadline: float) -> tuple:
         # 2.4, draft 13) adds, with the same outcome, a file that
         # `register_serve_owner_read` refuses, longer than 4,096 bytes, not
         # ending in `\n`, or with a known key twice; and an `install=` that is
-        # not three runs of ASCII digits with one space between, such as the
-        # empty value a service writes where it cannot `stat` its own file.
+        # not three runs of ASCII digits, or six (the launcher's and the
+        # module's, T124), with one space between, such as the empty value a
+        # service writes where it cannot `stat` its own file or its module.
         owner = register_serve_owner_read(paths)
         if (owner is None or "install" not in owner
                 or not _REGISTER_SERVE_INSTALL_RE.fullmatch(owner["install"])):
