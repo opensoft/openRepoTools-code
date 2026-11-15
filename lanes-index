@@ -9221,6 +9221,10 @@ _REGISTER_SERVE_TEMP_RE = re.compile(r"s\.[0-9a-f]{4}")
 # `register_serve_run`: five attempts over 100 ms (NIT-B).
 REGISTER_SERVE_LOCK_WAITS = (0.0, 0.025, 0.025, 0.025, 0.025)
 
+# The temporary names a start draws, at most, where each one it draws is
+# already taken by an entry it did not make (`EADDRINUSE`; Codex SHOULD 3).
+REGISTER_SERVE_BIND_TRIES = 8
+
 
 def register_serve_sweep(run: str) -> None:
     """THE TEMPORARY SOCKETS AN EARLIER START LEFT (lane 1's U5 gate, #165
@@ -9307,26 +9311,45 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     # after an unlink.
     # The owner file is written, and the socket listens, before the rename,
     # so a client never connects to it unanswered or finds no owner file.
+    # ONLY WHAT THIS START MADE IS REMOVED (lane 3's Codex delta review of
+    # bb19b1ad, #165 6886976981, SHOULD 3): the temporary name is unlinked
+    # on a failure only where this attempt's own `bind` made it, and not
+    # once it is renamed. A name an entry this start did not make already
+    # holds, `EADDRINUSE` at the bind, whatever it is, a file, a symbolic
+    # link, a directory, or a socket the sweep left or could not remove,
+    # is left as it is, and another name is drawn, up to
+    # `REGISTER_SERVE_BIND_TRIES` names in all.
     register_serve_sweep(paths["run"])
-    temp = os.path.join(paths["run"], f"s.{os.urandom(2).hex()}")
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    old = os.umask(0o077)
-    try:
-        server.bind(temp)
-        server.listen(64)
-        _register_serve_write(paths["owner"], register_serve_owner_text(utc_now()))
-        os.rename(temp, paths["sock"])
-        bound = os.lstat(paths["sock"]).st_ino
-    except OSError as exc:
-        server.close()
+    for attempt in range(REGISTER_SERVE_BIND_TRIES):
+        temp = os.path.join(paths["run"], f"s.{os.urandom(2).hex()}")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        made = renamed = False
+        old = os.umask(0o077)
         try:
-            os.unlink(temp)
-        except OSError:
-            pass
-        note(f"serve: the socket {paths['sock']} could not be bound ({exc.strerror or exc})")
-        return EXIT_UNAVAILABLE
-    finally:
-        os.umask(old)
+            server.bind(temp)
+            made = True
+            server.listen(64)
+            _register_serve_write(paths["owner"], register_serve_owner_text(utc_now()))
+            os.rename(temp, paths["sock"])
+            renamed = True
+            bound = os.lstat(paths["sock"]).st_ino
+        except OSError as exc:
+            server.close()
+            if made and not renamed:
+                try:
+                    os.unlink(temp)
+                except OSError:
+                    pass
+            if (not made and exc.errno == errno.EADDRINUSE
+                    and attempt + 1 < REGISTER_SERVE_BIND_TRIES):
+                register_serve_log(paths, f"the temporary name {os.path.basename(temp)} is "
+                                          f"taken: another is drawn")
+                continue
+            note(f"serve: the socket {paths['sock']} could not be bound ({exc.strerror or exc})")
+            return EXIT_UNAVAILABLE
+        finally:
+            os.umask(old)
+        break
     register_serve_unstamp(paths)
     register_serve_log(paths, f"listening, pid {os.getpid()}")
     try:
