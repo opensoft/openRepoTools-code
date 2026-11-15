@@ -327,6 +327,13 @@
 #   exits 1. Every other 3, files mode's `pushed, not confirmed` and one whose
 #   words could not be kept among them, keeps files mode's note and the
 #   publish act, as before.
+#   A SIGNAL WHILE THAT LINE IS WRITTEN is taken once the writer has ended,
+#   as bash runs a trap only after its foreground command. So where the
+#   words the sweep kept are one of those five forms, it relays them
+#   likewise, prints no command of its own, and exits 130 or 143. A primary
+#   writer that ended 0, or that the same Ctrl-C ended, prints nothing that
+#   tells its mode, and there the signal's note keeps its publish act and its
+#   line by hand, as before (lane 4's #165 6895094501, the signal path).
 #
 # EXIT
 #   0  done
@@ -404,7 +411,10 @@
 #   130, 143  stopped by INT or TERM (128 plus the signal): the run ends where
 #      the signal found it and removes its temporary file, never resumes.
 #      `--sweep-checkouts --yes` lets a checkout's move and removal in hand
-#      finish first, and after any removal prints its NOTED line by hand
+#      finish first, and after any removal prints its NOTED line by hand;
+#      but where the signal came while that line was written and the
+#      writer's words are a primary 3, those words, its rerun among them,
+#      are all it prints to finish the line
 #
 # ENVIRONMENT
 #   LANES_FILE  default <the workspace repository>/lanes/LANES.md
@@ -2863,9 +2873,35 @@ SLU
   # the NOTED line by hand for what was done. One that comes while the line
   # is being written says the line may be on origin already, and hands out
   # the publish act first, so the sweep is never recorded twice.
+  # ON PRIMARY A SIGNAL DURING THE WRITE ADDS NOTHING TO A WRITER'S 3 (lane
+  # 4's #165 6895094501; T430's `3)` arm, below). bash runs a trap only once
+  # its foreground command has ended, so this one meets a writer that has
+  # ended: by itself, where the signal reached this shell alone, or by the
+  # same signal, where a Ctrl-C reached the process group it shares. Where
+  # its kept words open as a primary write's five exit-3 `die`s do (the
+  # `3)` arm's two patterns), the line is in doubt in the register, or an
+  # identical write holds it; the publish act sends nothing for it; and the
+  # line by hand, a plain rerun of the same command, writes anew once the
+  # write's pending record is gone, so it could record the sweep twice. The
+  # sweep passes no `LANES_WRITE_ID` and cannot know the id the register
+  # mints, so the writer's printed words are the remedy: they are relayed,
+  # this sweep prints no command, and the run keeps the signal's code. Any
+  # other words, and none, keep the note below: a primary writer that ended
+  # 0, or that the Ctrl-C ended, prints nothing that tells its mode.
   sc_sig=""; sc_noting=0; sc_text=""
   sc_on_signal() {   # <the exit code, 128 plus the signal>
     trap '' INT TERM
+    sc_sig_err=""
+    if [ "$sc_noting" = 1 ] && [ -n "${LE_TMP:-}" ]; then
+      sc_sig_err="$(cat -- "$LE_TMP" 2>/dev/null)" || sc_sig_err=""
+    fi
+    case "$sc_sig_err" in
+      *"lanes-edit: cannot confirm whether register write "* | *"lanes-edit: an identical write "*)
+        cat -- "$LE_TMP" >&2 2>/dev/null || :
+        note "a signal stopped this sweep while its NOTED line was being written, and the line may not be written: \`lanes-edit.sh log\` ended 3 on primary (its words are above). Settle it by what the writer printed, and by nothing else, so the sweep is recorded once: run its printed \`LANES_WRITE_ID\` rerun, which writes the line once or finds it, or, where it names an identical write still running or holding the claim, do what it says once that write has ended. Nothing was lost: each checkout removed held nothing unpublished."
+        sc_say_partial
+        exit "$1" ;;
+    esac
     if [ "$sc_noting" = 1 ]; then
       if [ -n "${LE_TMP:-}" ]; then cat -- "$LE_TMP" >&2 2>/dev/null || :; fi
       note "a signal stopped this sweep while its NOTED line was being written, so the line may be on origin already, or committed in the checkout it went through and not yet published. Nothing was lost: each checkout removed held nothing unpublished. Look at lane $sc_runner's log on origin first. Where origin lacks the line, the publish act sends a commit that is kept:"

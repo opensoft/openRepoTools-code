@@ -2343,6 +2343,94 @@ def test_noted_line_3_on_primary_patterns_open_the_writers_five_exit_3_dies_and_
     assert not elsewhere, elsewhere
 
 
+@pytest.mark.parametrize("form", sorted(_PRIMARY_3))
+def test_a_signal_while_the_noted_line_is_written_on_primary_relays_the_writers_3(sweep, form):
+    """ON PRIMARY A SIGNAL DURING THE NOTED WRITE ADDS NOTHING TO THE
+    WRITER'S 3 (lane 4's #165 6895094501: the signal path of T430's NOTED
+    `3)` fix). bash runs the sweep's trap once the writer has ended; here
+    the writer ends 3 in one of a primary write's five forms, and the sweep
+    is sent TERM while it runs. The sweep relays the writer's words once,
+    says to settle the line by what the writer printed, prints no command
+    of its own (no publish act, no line by hand), and keeps the signal's
+    code, 143. The `3)` arm never runs: the trap ends the run first."""
+    box = sweep.box
+    words = _PRIMARY_3[form]
+    said = box.root / "primary-3-words.txt"
+    said.write_text(words + "\n", encoding="utf-8")
+    stopped = _wrapped(box, "lanes-edit-stopped-primary-3-log", "log", (
+        f"  cat {said} >&2\n"
+        "  trap '' TERM; kill -TERM 0\n"
+        "  exit 3\n"))
+    result, rows = _run_own_group(box, "--yes", LANES_LANE=RUNNER, LANES_EDIT=stopped)
+    assert result.returncode == 143, (result.stdout, result.stderr)
+    assert _tagged(rows, "removed") == {str(box.checkout(CLOSED))}, rows
+    assert not _noted_on_origin(box)
+    assert result.stderr.count(words) == 1, result.stderr
+    assert "a signal stopped this sweep while its NOTED line was being written" in result.stderr
+    assert "`lanes-edit.sh log` ended 3 on primary (its words are above)" in result.stderr, result.stderr
+    assert "Settle it by what the writer printed, and by nothing else" in result.stderr, result.stderr
+    assert _remedies(result.stderr) == [], result.stderr
+    assert "lanes-edit.sh commit" not in result.stderr, result.stderr
+    assert "may be on origin already" not in result.stderr, result.stderr
+    assert "written by hand" not in result.stderr, result.stderr
+    assert "exited 3 on primary" not in result.stderr, result.stderr
+
+
+#: The note a signal during the NOTED write has always printed off primary,
+#: byte for byte, before its two commands.
+_SIGNAL_NOTE = (
+    "lane-end: a signal stopped this sweep while its NOTED line was being written, so the line "
+    "may be on origin already, or committed in the checkout it went through and not yet "
+    "published. Nothing was lost: each checkout removed held nothing unpublished. Look at lane "
+    f"{RUNNER}'s log on origin first. Where origin lacks the line, the publish act sends a commit "
+    "that is kept:\n")
+
+
+@pytest.mark.parametrize("said", ["files-words", "no-words"])
+def test_a_signal_while_the_noted_line_is_written_off_primary_keeps_its_note(sweep, said):
+    """A SIGNAL DURING THE NOTED WRITE WHOSE WORDS ARE NONE OF PRIMARY'S
+    FIVE 3s keeps the note it has always printed, byte for byte, and its two
+    commands in their order, the publish act first (lane 4's #165
+    6895094501): files mode's own `pushed, not confirmed` words, and no
+    words at all. A primary writer that ended 0, or that a Ctrl-C ended,
+    prints none of the five, so it meets this note too: nothing it printed
+    tells the sweep its mode."""
+    box = sweep.box
+    words = box.root / "signal-words.txt"
+    words.write_text(_FILES_3 if said == "files-words" else "", encoding="utf-8")
+    stopped = _wrapped(box, "lanes-edit-stopped-files-log", "log", (
+        f"  cat {words} >&2\n"
+        "  trap '' TERM; kill -TERM 0\n"
+        f"  exit {3 if said == 'files-words' else 0}\n"))
+    result, rows = _run_own_group(box, "--yes", LANES_LANE=RUNNER, LANES_EDIT=stopped)
+    assert result.returncode == 143, (result.stdout, result.stderr)
+    assert _tagged(rows, "removed") == {str(box.checkout(CLOSED))}, rows
+    assert _SIGNAL_NOTE in result.stderr, result.stderr
+    assert "ended 3 on primary" not in result.stderr, result.stderr
+    remedies = _remedies(result.stderr)
+    assert len(remedies) == 2, remedies
+    assert remedies[0].startswith(f"LANES_LANE={RUNNER} lanes-edit.sh commit "), remedies
+    assert remedies[1].startswith(
+        f"LANES_LANE={RUNNER} LANES_SESSION={UUID[RUNNER]} lanes-edit.sh log NOTED "), remedies
+
+
+def test_a_signal_on_primary_reads_the_noted_3_arms_two_patterns():
+    """THE SIGNAL PATH TELLS A PRIMARY 3 BY THE `3)` ARM'S OWN TWO PATTERNS
+    (lane 4's #165 6895094501). `sc_on_signal` matches the words the sweep
+    kept against the same two openings as the NOTED `3)` arm, which the
+    guard above ties to the writer's five exit-3 `die`s. This reads both
+    pattern lines from `lane-end` and holds them equal, so a reword of one
+    of them alone fails here."""
+    lines = [line.strip() for line in (REPO / "lane-end").read_text(encoding="utf-8").splitlines()]
+    at = lines.index('case "$sc_noted_rc" in')
+    assert lines[at + 1:at + 3] == ["3)", 'case "$sc_log_err" in'], lines[at:at + 4]
+    start = lines.index("sc_on_signal() {   # <the exit code, 128 plus the signal>")
+    body = lines[start:lines.index("}", start)]
+    cases = [n for n, line in enumerate(body) if line == 'case "$sc_sig_err" in']
+    assert len(cases) == 1, cases
+    assert body[cases[0] + 1] == lines[at + 3], (body[cases[0] + 1], lines[at + 3])
+
+
 def test_noted_line_kept_unpublished_is_published_not_written_again(sweep):
     """A NOTED write that exits 6 with its commit KEPT in the checkout it was
     made in (rv4's SHOULD 2): every push is refused here with origin unmoved.
