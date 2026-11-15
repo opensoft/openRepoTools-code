@@ -20384,15 +20384,24 @@ guard_offer_drop() {   # <offer file>
 #   not there, so nothing was removed
 guard_drop_if() {   # <mode> <offer file> [record]
   gdi_f="${2-}"
+  # THE `.bind.*` NAMES ARE LISTED BEFORE THE RE-READ (lane 5's re-check, the
+  # windows): only those are removed, so a fresh `.out` that appears after the
+  # read survives.
+  gdi_b=("$gdi_f".bind.*)
   [ -f "$gdi_f" ] || return 1
   [ "$(sed -n -e 's/^mode=//p' "$gdi_f" 2>/dev/null | head -n1)" = "${1-}" ] || return 1
   if [ "${3-}" = record ]; then
     rm -f -- "$gdi_f" 2>/dev/null || :
   else
-    guard_offer_drop "$gdi_f"
+    rm -f -- "$gdi_f" "${gdi_b[@]}" 2>/dev/null || :
   fi
   return 0
 }
+# THE ALLOWANCE'S DROP removes the record and nothing else: no `.bind.*` sweep,
+# because an allowance has none (the contract states that exception). ITS WINDOW,
+# this function's read to its `rm`, can remove a bind record that another
+# invocation made in between, though never that bind's `.out`; the contract
+# states that as a limit.
 guard_allow_drop() {   # <offer file>: an allowance, only while it still says `allow`
   guard_drop_if allow "${1-}" record
 }
