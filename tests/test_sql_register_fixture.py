@@ -587,6 +587,127 @@ def test_the_silent_after_startup_relay_forwards_the_startup_then_nothing_and_ho
         _silent_psql_on_the_socket(relay_of, request)
 
 
+# ---------------------------------------------------------------- T229f's races
+#: THE RELAYS' SHUTDOWN RACES (T229f; Codex's SHOULD 5 on f060619c,
+#: opensoft/openRepoTools#165 6882190927). Each case opens its window with a
+#: hook on the relay's seam, `tests/pgcluster.py`'s `_seam`, which holds one
+#: of the relay's threads on an event where a concurrent `close()` meets it,
+#: never with a sleep. Both relays, in front of a loopback listener of the
+#: standard library that never accepts, so no engine is needed.
+RACE_RELAYS = ["delayed-loopback", "silent-after-startup"]
+#: The bound on each wait for a held thread to arrive, or for a relay's
+#: thread to end: only a failure waits it out.
+RACE_WAIT = 30.0
+
+
+def _race_relay(kind: str):
+    """A relay of `kind` in front of a listener that never accepts, whose
+    backlog completes the relay's upstream connect: (relay, listener)."""
+    import pgcluster
+    server = socket.create_server(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+    if kind == "delayed-loopback":
+        return pgcluster.delayed_loopback(port, 0.0), server
+    return pgcluster.silent_after_startup(port), server
+
+
+def _race_end(relay) -> list:
+    """The relay closed once more, since a red case's `close()` may have
+    stopped short, and each of its threads, found by its name, given until
+    RACE_WAIT to end, so that no leak outlives its case: the names of those
+    still alive."""
+    try:
+        relay.close(wait=0.0)
+    except RuntimeError:
+        pass
+    prefixes = tuple(f"{kind}-{relay.port}-" for kind in RACE_RELAYS)
+    end = time.monotonic() + RACE_WAIT
+    while True:
+        live = [t for t in threading.enumerate() if t.name.startswith(prefixes) and t.is_alive()]
+        if not live or time.monotonic() >= end:
+            return sorted(t.name for t in live)
+        live[0].join(max(0.0, end - time.monotonic()))
+
+
+@pytest.mark.parametrize("kind", RACE_RELAYS)
+def test_a_relay_closed_while_it_connects_upstream_relays_nothing_and_leaves_no_thread(kind):
+    """T229f (Codex's SHOULD 5 on f060619c): a client the relay has accepted,
+    whose upstream connect is still under way when `close()` takes its
+    snapshot, is closed, never relayed. The seam holds `_accept`, with the
+    client and its upstream in hand, until `close()` has its snapshot, as a
+    slow upstream connect would; when `close()` returns, no thread of the
+    relay's is alive, and the client's end is closed.
+    `[silent-after-startup]` passed before T229f, on its `done` flag;
+    `[delayed-loopback]`, with no closing flag, registered the pair after the
+    snapshot and started its readers, which `close()` never saw."""
+    relay, server = _race_relay(kind)
+    arrived, snapshot = threading.Event(), threading.Event()
+
+    def hook(point, name):
+        if point == "accepted":
+            arrived.set()
+            snapshot.wait(RACE_WAIT)
+        elif point == "snapshot":
+            snapshot.set()
+    relay.seam = hook
+    client = socket.create_connection(("127.0.0.1", relay.port), timeout=RACE_WAIT)
+    try:
+        assert arrived.wait(RACE_WAIT), f"[{kind}] the relay's accept never reached its seam"
+        relay.close()
+        left = relay.alive()
+        assert left == [], f"[{kind}] close() has returned, and the relay's threads are alive: {left}"
+        assert _within(client, RACE_WAIT) == b"", (
+            f"[{kind}] the client accepted as close() began was not closed")
+    finally:
+        snapshot.set()
+        client.close()
+        server.close()
+        _race_end(relay)
+
+
+@pytest.mark.parametrize("kind", RACE_RELAYS)
+def test_a_relay_closed_while_it_starts_a_thread_never_joins_one_not_yet_started(kind):
+    """T229f (Codex's SHOULD 5 on f060619c): `close()` meets threads the
+    relay is spawning, each listed by `_spawn` under the lock `close()`
+    snapshots under, and held by the seam as `_spawn` leaves that lock:
+    `[delayed-loopback]`'s two readers, each as it spawns its deliverer, and
+    `[silent-after-startup]`'s acceptor as it spawns the pump.
+    `close(wait=0)`, as when an earlier join has spent the deadline, joins
+    each thread of its snapshot and raises nothing, and once the hold is
+    released every thread of the relay's ends. Before T229f, `_spawn` started
+    the thread only after it left the lock, so `close()` joined a thread not
+    yet started, and `Thread.join` raised RuntimeError."""
+    relay, server = _race_relay(kind)
+    name, count = ("deliver", 2) if kind == "delayed-loopback" else ("pump", 1)
+    arrived, release, lock, held = threading.Event(), threading.Event(), threading.Lock(), []
+
+    def hook(point, spawned):
+        if point != "listed" or spawned != name:
+            return
+        with lock:
+            held.append(threading.current_thread().name)
+            if len(held) == count:
+                arrived.set()
+        release.wait(RACE_WAIT)
+    relay.seam = hook
+    client = socket.create_connection(("127.0.0.1", relay.port), timeout=RACE_WAIT)
+    raised = None
+    try:
+        assert arrived.wait(RACE_WAIT), f"[{kind}] the seam holds {held}, not {count} {name} spawn(s)"
+        try:
+            relay.close(wait=0.0)
+        except RuntimeError as error:
+            raised = error
+        assert raised is None, (
+            f"[{kind}] close() joined a thread `_spawn` had listed and not yet started: {raised!r}")
+    finally:
+        release.set()
+        client.close()
+        server.close()
+        left = _race_end(relay)
+    assert left == [], f"[{kind}] the relay's threads outlive it: {left}"
+
+
 #: THE STALE SWEEP'S CASES (T205c). Every pid is fake, above any system's pid
 #: limit, and every signal goes to a recorder through the module's seam.
 SWEEP_CASES = ["no-proc", "pid-not-positive", "malformed", "does-not-stop", "reused-pid", "orphan"]

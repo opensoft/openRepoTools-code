@@ -1345,6 +1345,20 @@ class CountingCluster(Cluster):
         return self.root / "server.log"
 
 
+def _seam(relay, point: str, name: str = "") -> None:
+    """THE RELAYS' SEAM (T229f; Codex's SHOULD 5 on f060619c): each relay
+    calls it where a concurrent `close()` can meet one of its threads, and it
+    does nothing unless a test has set the relay's `seam` to a callable
+    `seam(point, name)`. The points: "accepted", in `_accept`, with a client
+    and its upstream in hand and neither registered; "listed", as `_spawn`
+    leaves the lock with the thread `name` listed; "snapshot", in `close()`,
+    once it has taken its snapshot. A test's hook holds a thread at a point
+    on an event, so a window that only the scheduler would open is open every
+    time."""
+    if relay.seam is not None:
+        relay.seam(point, name)
+
+
 class DelayedLoopback:
     """THE DELAYED-LOOPBACK RELAY (T229; R-P23, lane 3's option B, #165
     6741861590): standard library only, needing no root. It listens on
@@ -1353,25 +1367,38 @@ class DelayedLoopback:
     direction, untouched, so TLS passes through and the client meets the
     server's own certificate. An end's close reaches the other end after the
     delay; when both directions have ended, both sockets close. It models no
-    slow start and no loss. `close()`, or leaving its `with`, ends it."""
+    slow start and no loss. `close()`, or leaving its `with`, ends it: a
+    client accepted while it closes is closed, never relayed (T229f)."""
+
+    #: T229f's seam (`_seam`): None, or a test's hook.
+    seam = None
 
     def __init__(self, target_port: int, delay_s: float, target_host: str = "127.0.0.1") -> None:
         self.target, self.delay = (target_host, int(target_port)), float(delay_s)
         self.lock = threading.Lock()
         self.sockets: set = set()
         self.threads: List[threading.Thread] = []
+        self.closing = False
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen(16)
         self.port = self.listener.getsockname()[1]
         self._spawn(self._accept, "accept")
 
-    def _spawn(self, target, name: str, *args) -> threading.Thread:
+    def _start(self, target, name: str, *args) -> threading.Thread:
+        """Under `self.lock`, list the thread and start it (T229f): `close()`
+        snapshots under the same lock, so it never joins a thread not yet
+        started, and no later sweep of the dead drops one about to start."""
         thread = threading.Thread(target=target, args=args, daemon=True,
                                   name=f"delayed-loopback-{self.port}-{name}")
-        with self.lock:
-            self.threads = [t for t in self.threads if t.is_alive()] + [thread]
+        self.threads = [t for t in self.threads if t.is_alive()] + [thread]
         thread.start()
+        return thread
+
+    def _spawn(self, target, name: str, *args) -> threading.Thread:
+        with self.lock:
+            thread = self._start(target, name, *args)
+        _seam(self, "listed", name)
         return thread
 
     def _accept(self) -> None:
@@ -1386,11 +1413,18 @@ class DelayedLoopback:
             except OSError:
                 client.close()
                 continue
+            _seam(self, "accepted")
             pair = {"open": 2, "sockets": (client, upstream)}
-            with self.lock:
-                self.sockets.update((client, upstream))
-            self._spawn(self._read, "up", client, upstream, pair)
-            self._spawn(self._read, "down", upstream, client, pair)
+            with self.lock:                 # T229f: registered and started in one act, or not at all
+                closing = self.closing
+                if not closing:
+                    self.sockets.update((client, upstream))
+                    self._start(self._read, "up", client, upstream, pair)
+                    self._start(self._read, "down", upstream, client, pair)
+            if closing:                     # accepted as `close()` began: closed, never relayed
+                client.close()
+                upstream.close()
+                return
 
     def _read(self, source, sink, pair) -> None:
         held: "queue.Queue" = queue.Queue()
@@ -1442,10 +1476,12 @@ class DelayedLoopback:
             return [t.name for t in self.threads if t.is_alive()]
 
     def close(self, wait: float = 10.0) -> None:
+        with self.lock:
+            self.closing = True             # T229f: before the listener's shutdown, under the lock
+            ends, threads = list(self.sockets), list(self.threads)
+        _seam(self, "snapshot")
         self._shut(self.listener)
         self.listener.close()
-        with self.lock:
-            ends, threads = list(self.sockets), list(self.threads)
         for end in ends:
             self._shut(end)
         end_by = time.monotonic() + wait + self.delay
@@ -1492,6 +1528,8 @@ class SilentAfterStartup:
     the guard call this, one copy exists."""
 
     READY = re.compile(rb"Z\x00\x00\x00\x05[ITE]")
+    #: T229f's seam (`_seam`): None, or a test's hook.
+    seam = None
 
     def __init__(self, target_port: int, socket_dir=None) -> None:
         self.target_port = int(target_port)
@@ -1510,9 +1548,10 @@ class SilentAfterStartup:
     def _spawn(self, target, name: str, *args) -> None:
         thread = threading.Thread(target=target, args=args, daemon=True,
                                   name=f"silent-after-startup-{self.port}-{name}")
-        with self.lock:
+        with self.lock:                     # T229f: listed and started under `close()`'s lock
             self.threads = [t for t in self.threads if t.is_alive()] + [thread]
-        thread.start()
+            thread.start()
+        _seam(self, "listed", name)
 
     def _upstream(self) -> socket.socket:
         if self.socket_dir is None:
@@ -1539,6 +1578,7 @@ class SilentAfterStartup:
             except OSError:
                 client.close()
                 continue
+            _seam(self, "accepted")
             with self.lock:
                 if self.done:
                     client.close()
@@ -1601,6 +1641,7 @@ class SilentAfterStartup:
             self.done = True
             ends, threads = list(self.sockets), list(self.threads)
             self.sockets.clear()
+        _seam(self, "snapshot")
         self._shut(self.listener)
         self.listener.close()
         for end in ends:
