@@ -20359,8 +20359,15 @@ guard_offer_file() {   # <session uuid>
 # removes them too (point 13), and that removal also takes any facts file an
 # outer left, as after case 9 (lane 3's ruling on the facts file's two
 # removers, opensoft/openRepoTools#165 6747528875). Case 11 alone drops the
-# record and leaves `<uuid>.bind.*` for the next removal to sweep: it is the one
-# removal that can meet a live outer, whose `.out` is never unlinked under it.
+# record and leaves `<uuid>.bind.*` for the next removal to sweep, and never
+# unlinks a live outer's `.out` itself. Every other removal of `.bind.*` files
+# (`guard_drop_if`'s, for case 5, a stale offer and choice 3, and choice 1's
+# sweep) takes only names listed before its read or check, so it meets a newer
+# attempt's live `.out` only where that reuses a listed name: after a full
+# sweep the next attempt takes index 1 again (`guard_bind_next_index`), and
+# where `.bind.1.out` was listed, that removal unlinks it in its window (lane
+# 5's adversarial review of parts 42 to 47, SHOULD-1 and SHOULD-2; of parts 48
+# to 50, its held item (D)).
 
 # THE RECORD AS IT IS NOW (Codex's S2 and S6 on spec#47's draft 17): read ONCE,
 # through one open, and its first `mode` line, and the first line of each key
@@ -20368,10 +20375,11 @@ guard_offer_file() {   # <session uuid>
 # A value given empty matches a key that is absent or empty. It sets
 # `GRS_THERE` (1 where a regular file was read), `GRS_MODE` (its first `mode`)
 # and `GRS_OUT` (its first `out`), so that a caller words its message on what is
-# there now.
+# there now; and it keeps the lines it read (`GRS_GOT`, `GRS_SEEN`), so that
+# `guard_record_got` can test that same read again without another.
 #   0 there, a regular file, and saying all of it · 1 not
 guard_record_says() {   # <offer file> <mode> [<key>=<value> …]
-  gsy_f="${1-}"; gsy_m="${2-}"; GRS_THERE=0; GRS_MODE=""; GRS_OUT=""
+  gsy_f="${1-}"; gsy_m="${2-}"; GRS_THERE=0; GRS_MODE=""; GRS_OUT=""; GRS_GOT=""; GRS_SEEN=" "
   [ "$#" -ge 2 ] || return 1
   shift 2
   [ -f "$gsy_f" ] || return 1
@@ -20389,13 +20397,23 @@ guard_record_says() {   # <offer file> <mode> [<key>=<value> …]
       esac
     done
   } 7< "$gsy_f" 2>/dev/null || return 1
-  GRS_THERE=1
-  for gsy_kv in "mode=$gsy_m" "$@"; do
-    gsy_k="${gsy_kv%%=*}"
-    case "$gsy_seen" in
-      *" $gsy_k "*)
-        case "$gsy_nl$gsy_got" in *"$gsy_nl$gsy_kv$gsy_nl"*) : ;; *) return 1 ;; esac ;;
-      *) [ -z "${gsy_kv#*=}" ] || return 1 ;;
+  GRS_THERE=1; GRS_GOT="$gsy_got"; GRS_SEEN="$gsy_seen"
+  guard_record_got "$gsy_m" "$@"
+}
+# THE LAST READ, TESTED AGAIN WITHOUT ANOTHER (lane 5's adversarial review of
+# parts 48 to 50, NIT-A): the lines `guard_record_says` kept, compared as it
+# compares them. Where that read found no regular file, or could not read it,
+# nothing matches.
+#   0 that read said all of it · 1 not
+guard_record_got() {   # <mode> [<key>=<value> …]
+  [ "${GRS_THERE:-0}" = 1 ] || return 1
+  grg_nl=$'\n'
+  for grg_kv in "mode=${1-}" "${@:2}"; do
+    grg_k="${grg_kv%%=*}"
+    case "${GRS_SEEN:- }" in
+      *" $grg_k "*)
+        case "$grg_nl${GRS_GOT-}" in *"$grg_nl$grg_kv$grg_nl"*) : ;; *) return 1 ;; esac ;;
+      *) [ -z "${grg_kv#*=}" ] || return 1 ;;
     esac
   done
   return 0
@@ -20442,8 +20460,13 @@ guard_offer_drop() {   # <offer file>
 guard_drop_if() {   # <mode> <offer file> [record | all] [<key>=<value> …]
   gdi_f="${2-}"
   # THE `.bind.*` NAMES ARE LISTED BEFORE THE RE-READ (lane 5's re-check, the
-  # windows): only those are removed, so a fresh `.out` that appears after the
-  # read survives.
+  # windows): only those are removed (with `all`; `record` removes none), so a
+  # `.out` that appears after the listing survives, unless it reuses a listed
+  # name: the files' index is one above the highest present
+  # (`guard_bind_next_index`), so after another prompt's full sweep a newer
+  # attempt takes index 1 again, and where `.bind.1.out` was listed here, that
+  # newer `.out` is removed with the record (lane 5's adversarial review of
+  # parts 42 to 47, SHOULD-1; of parts 48 to 50, its held item (C)).
   gdi_b=("$gdi_f".bind.*)
   guard_record_says "$gdi_f" "${1-}" "${@:4}" || return 1
   if [ "${3-}" = record ]; then
@@ -22034,7 +22057,10 @@ guard_offer() {   # <offer file> <pane>
         # removed for a 5, and a failed `cat` is a 4 only where the path still
         # names this writer's regular file. A FIFO PUT THERE IN THAT SAME INSTANT
         # IS A WINDOW LEFT, and not a new one: the open blocks for a reader, until
-        # the hook's time budget ends it.
+        # the hook's time budget ends it. Then (lane 5's adversarial review of
+        # parts 48 to 50, NIT-C) the temporary file `.<uuid>.XXXXXX` is left in
+        # `offers/`, since the `rm` after the create never runs, and the prompt
+        # goes however Claude Code treats a hook that its timeout ends.
         # THE INSTANT LEFT is the 4's test to its `rm`, outside the descriptor: a
         # record put in place there is removed, its `.bind.*` files are not.
         case "$go_nc" in
@@ -22637,30 +22663,65 @@ guard_site_moved() {   # <offer file> <pane>
 # same in both forms. WHERE THE RECORD IS THERE AND COULD NOT BE READ AGAIN (lane
 # 5's adversarial review of parts 42 to 47, NIT-3), the words claim no more than
 # that: this prompt changed nothing, and the next prompt reads whatever is there.
-guard_site_unrestored() {   # <offer file> <the mode loaded>
-  if guard_record_says "${1-}" "${2-}" "bind=$GBR_BIND" "started_utc=$GBR_STARTED"; then
-    note "…and the offer could not be restored in ${1-}, so this prompt's answer is the same as the last one's until it can: the record still says ${2-} for that attempt."
-  elif guard_record_unread "${1-}"; then
-    note "…and the offer could not be restored in ${1-}. This prompt changed nothing there, and the record could not be read again, so the next prompt reads whatever is there."
-  else
-    note "…and the offer could not be restored in ${1-}. This prompt changed nothing there, and the record is no longer the one it read ($(guard_record_now "${1-}")), so the next prompt reads whatever is there."
+# It is worded on `guard_site_reread`'s one read (`GSR_FORM`, `GSR_NOW`), the
+# same read the rename-back's note is worded on (lane 5's adversarial review of
+# parts 48 to 50, NIT-A).
+guard_site_unrestored() {   # <offer file> <the mode loaded>; after `guard_site_reread`
+  case "${GSR_FORM-}" in
+    still)
+      note "…and the offer could not be restored in ${1-}, so this prompt's answer is the same as the last one's until it can: the record still says ${2-} for that attempt." ;;
+    unread)
+      note "…and the offer could not be restored in ${1-}. This prompt changed nothing there, and the record could not be read again, so the next prompt reads whatever is there." ;;
+    *)
+      note "…and the offer could not be restored in ${1-}. This prompt changed nothing there, and the record is no longer the one it read (${GSR_NOW:-it is gone now}), so the next prompt reads whatever is there." ;;
+  esac
+  return 0
+}
+# THE ONE READ AFTER A FAILED RESTORE IN CASES 6, 7, 9 AND 10 (lane 5's
+# adversarial review of parts 48 to 50, NIT-A): the rename-back's note, the note
+# after it and whether the choices are printed all follow this one read, so no
+# change between two reads gives them contradictory words. `GSR_FORM` is:
+#   still    the record this prompt loaded (its mode, `bind` and `started_utc`):
+#            the next prompt answers it the same way, and restores the offer
+#   offer    an offer between the same two lanes: another prompt restored it
+#   unread   there, and it could not be read again (part 49's NIT-3)
+#   changed  anything else, gone included: no offer of this window's is kept
+# and `GSR_NOW` says what that read found, in `guard_record_now`'s words.
+guard_site_reread() {   # <offer file> <the mode loaded>
+  GSR_FORM=changed
+  if guard_record_says "${1-}" "${2-}" "bind=$GBR_BIND" "started_utc=$GBR_STARTED"; then GSR_FORM=still
+  elif guard_record_unread "${1-}"; then GSR_FORM=unread
+  elif guard_record_got name-drift "from=$GBR_FROM" "to=$GBR_TO"; then GSR_FORM=offer
   fi
+  GSR_NOW="$(guard_record_now "${1-}")"
   return 0
 }
 # THE RENAME-BACK NOTE'S FORM FOR CASES 6, 7 AND 9 WHERE THEIR RESTORE FAILED (an
-# I/O 1; lane 5's check of parts 42 to 47, part 48): the record is read again
-# first. Still the record loaded (its mode, `bind` and `started_utc`), the next
-# prompt restores the offer; an offer between the same two lanes, another prompt
-# restored it; either way the offer is kept, and the default form is printed.
-# Anything else, and no offer is kept: `changed`. WHERE THE RECORD IS THERE AND
-# COULD NOT BE READ AGAIN (part 49's NIT-3, carried to this note in part 50), the
-# note claims no more than that: `unread`.
-guard_site_back_form() {   # <offer file> <the mode loaded>
-  guard_record_says "${1-}" "${2-}" "bind=$GBR_BIND" "started_utc=$GBR_STARTED" && return 0
-  guard_record_unread "${1-}" && { printf 'unread\n'; return 0; }
-  guard_record_says "${1-}" name-drift "from=$GBR_FROM" "to=$GBR_TO" && return 0
-  guard_record_unread "${1-}" && { printf 'unread\n'; return 0; }
-  printf 'changed\n'
+# I/O 1; lane 5's check of parts 42 to 47, part 48), on `guard_site_reread`'s one
+# read: still the record loaded, or an offer between the same two lanes, and the
+# offer is kept, so the default form is printed; there and not readable again,
+# `unread` (part 49's NIT-3, carried to this note in part 50); anything else, and
+# no offer is kept: `changed`.
+guard_site_back_form() {   # after `guard_site_reread`
+  case "${GSR_FORM-}" in
+    changed|unread) printf '%s\n' "$GSR_FORM" ;;
+  esac
+  return 0
+}
+# THE CHOICES ARE PRINTED ONLY WHERE AN OFFER OF THIS WINDOW'S IS KEPT (lane 5's
+# adversarial review of parts 48 to 50, SHOULD-A): after a restore that worked,
+# or where the one read found the record loaded or an offer between the same two
+# lanes. Where it found no offer (`changed`) its note says the next prompt reads
+# whatever is there, and "Reply `1`, `2` or `3` … it is consumed here and never
+# reaches the model" would be false: a reply can reach the model under an
+# allowance that fits. Where it could not read the record again (`unread`), the
+# choices would hold only if the offer is still there, so none are printed: the
+# words already say the next prompt reads whatever is there, and an offer still
+# there asks its question again at a prompt that is not an answer.
+guard_site_offer_kept() {   # <1 where the restore failed>
+  [ "${1-0}" = 0 ] && return 0
+  case "${GSR_FORM-}" in still|offer) return 0 ;; esac
+  return 1
 }
 
 guard_bind_site() {   # <offer file> <pane>
@@ -22692,16 +22753,21 @@ guard_bind_site() {   # <offer file> <pane>
       # listed before the read; but those are names, not files, and names are
       # reused: `guard_bind_next_index` gives one above the highest index
       # present, so once another prompt has heard this `bound` and dropped it
-      # with its files, a new offer's answer `2` takes index 1 again, and its
-      # `.out` has a name listed here. No rewrite turns a `bound` into another
-      # record in one step, so the record removed there can only be one that
-      # another prompt made after dropping this `bound`: a new offer, which the
-      # next prompt makes again; or, where that offer was also answered `2`, all
-      # between this read and this `rm`, its `binding` record and its `.out`.
-      # That newer attempt is then lost: its outer runs nothing (its start
-      # rewrite finds no record), or, where its body had started, the bind runs
-      # on and how it ends is written only to the unlinked `.out`, and is lost;
-      # and this prompt still says MOVED.
+      # with every `.bind.*` file there, a new offer's answer `2` takes index 1
+      # again, and its `.out` is `.bind.1.out`: a name listed here wherever
+      # `.bind.1.out` was there at `guard_drop_if`'s listing (as it is where this
+      # `bound`'s attempt, or an earlier one whose output was kept, had index 1;
+      # an outer never removes its own `.out`). No rewrite turns a `bound` into
+      # another record in one step, so the record removed there can only be one
+      # that another prompt made after dropping this `bound`: a new offer, which
+      # the next prompt makes again; or, where that offer was also answered `2`,
+      # all between this read and this `rm`, its `binding` record, and its
+      # `.out` too where that name was listed. Its outer then runs nothing (its
+      # start rewrite finds no record), or, where its body had started, the bind
+      # runs on and how it ends is written only to its `.out`: lost with it where
+      # that name was listed, and kept where it was not; and this prompt still
+      # says MOVED (lane 5's adversarial review of parts 48 to 50, its held
+      # item (A)).
       if ! guard_drop_if bound "$gbt_f" all "bind=$GBR_BIND" "started_utc=$GBR_STARTED" "pid=$GBR_PID" "ended_utc=$GBR_ENDED"; then
         guard_site_moved "$gbt_f" "$gbt_pane"
         return 2
@@ -22726,7 +22792,10 @@ EOF
       note "THE BIND TO LANE $GBR_TO FAILED (exit $GBR_RC): ${GBR_WHY:-the record gives no reason}${GBR_OUT:+ — its output is kept in $GBR_OUT}."
       # CASES 6 AND 7 RENAME THE WINDOW BACK (Y:5502; ERR-23 for the third).
       gbt_wf=""
-      [ "$gbt_back" = 0 ] || gbt_wf="$(guard_site_back_form "$gbt_f" bind-failed)"
+      if [ "$gbt_back" = 1 ]; then
+        guard_site_reread "$gbt_f" bind-failed
+        gbt_wf="$(guard_site_back_form)"
+      fi
       guard_window_back "$GBR_FROM" "$GBR_TO" ${gbt_wf:+"$gbt_wf"} || :
       if [ "$gbt_back" = 1 ]; then
         guard_site_unrestored "$gbt_f" bind-failed
@@ -22735,7 +22804,7 @@ EOF
       else
         note "Nothing of the bind is assumed: a failed bind spends the person's yes, and a \`2\` is attempt $((gbt_k + 1)) of 3. The offer is KEPT:"
       fi
-      guard_offer_choices "$GBR_FROM" "$GBR_TO" "$gbt_k"
+      ! guard_site_offer_kept "$gbt_back" || guard_offer_choices "$GBR_FROM" "$GBR_TO" "$gbt_k"
       note "This prompt was NOT sent."
       return 2 ;;
   esac
@@ -22761,11 +22830,12 @@ EOF
     guard_triple
     note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} ON $GBR_HOST/$GBR_CONTAINER IS NO LONGER RUNNING AND LEFT NO OUTCOME by 60 s past its deadline, $gbt_dlu, so what it wrote is not known; the next \`2\` finds out first. This window is not renamed: that bind ran on another host or container."
     if [ "$gbt_back" = 1 ]; then
+      guard_site_reread "$gbt_f" binding
       guard_site_unrestored "$gbt_f" binding
     else
       note "The offer is KEPT:"
     fi
-    guard_offer_choices "$GBR_FROM" "$GBR_TO" "$gbt_k"
+    ! guard_site_offer_kept "$gbt_back" || guard_offer_choices "$GBR_FROM" "$GBR_TO" "$gbt_k"
     note "This prompt was NOT sent."
     return 2
   fi
@@ -22824,14 +22894,17 @@ EOF
     note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} (attempt $gbt_k) IS NO LONGER RUNNING AND LEFT NO OUTCOME: $gbt_why. What it wrote is not known; the next \`2\` finds out first."
     # CASE 9 RENAMES THE WINDOW BACK TOO (ERR-23); case 10, above, does not.
     gbt_wf=""
-    [ "$gbt_back" = 0 ] || gbt_wf="$(guard_site_back_form "$gbt_f" binding)"
+    if [ "$gbt_back" = 1 ]; then
+      guard_site_reread "$gbt_f" binding
+      gbt_wf="$(guard_site_back_form)"
+    fi
     guard_window_back "$GBR_FROM" "$GBR_TO" ${gbt_wf:+"$gbt_wf"} || :
     if [ "$gbt_back" = 1 ]; then
       guard_site_unrestored "$gbt_f" binding
     else
       note "The offer is KEPT:"
     fi
-    guard_offer_choices "$GBR_FROM" "$GBR_TO" "$gbt_k"
+    ! guard_site_offer_kept "$gbt_back" || guard_offer_choices "$GBR_FROM" "$GBR_TO" "$gbt_k"
     note "This prompt was NOT sent."
     return 2
   fi
@@ -23112,14 +23185,22 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     # is above every name listed. BUT NAMES ARE REUSED (lane 5's adversarial
     # review of parts 42 to 47, SHOULD-2): `guard_bind_next_index` gives one
     # above the highest index present, so where, in the same window, another
-    # prompt dropped this offer with its `.bind.*` files (choice 3, or a stale
-    # identity) and a new offer was made and answered `2`, that attempt takes
-    # index 1 again, its `.out` has a name listed here at or below the offer's
-    # own, and it is swept: this allowance is written over its `binding`; its
-    # outer runs nothing where its start rewrite comes after the `mv`, and
-    # otherwise how that bind ends goes only to its unlinked `.out` and is lost;
-    # the read below does not see it (its name was listed before); and the
-    # person is told ALLOWED for an offer that is no longer there.
+    # prompt dropped this offer with every `.bind.*` file there (choice 3, or a
+    # stale identity) and a new offer was made and answered `2`, that attempt
+    # takes index 1 again, and this allowance is written over its `binding`.
+    # Its outer runs nothing where its start rewrite comes after the `mv`.
+    # Its `.out`, `.bind.1.out`, is swept as the offer's own wherever that name
+    # was listed above (`ga_bl`): index 1 is then at or below the offer's own,
+    # which is at least 1 (the index of the `out` the offer names, or else the
+    # highest listed name that is there at the sweep, `.bind.1.out` among
+    # them). How that bind ends then goes only to the unlinked `.out` and is
+    # lost. Where that name was not listed, the `.out` is kept, and how the bind
+    # ends is written there. Either way the read below reports it only where
+    # the offer's own is 0, since it reports names above the offer's own and
+    # not listed here; so wherever the offer named an attempt, or a listed name
+    # is there again at the sweep (here only a reused `.bind.1.*`), the person
+    # is told ALLOWED for an offer that is no longer there (lane 5's adversarial
+    # review of parts 48 to 50, its held item (B)).
     # And after the `mv` the names are read again: one not listed before, above
     # the offer's own, is that answer `2`'s attempt, whose record this allowance
     # replaced, and the person is told so plainly, with its output named.
