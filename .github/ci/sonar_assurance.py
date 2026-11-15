@@ -244,7 +244,57 @@ def measure_value(measure):
     return measure["periods"][0]["value"]
 
 
-def verify_coverage_measures(measured, pull_request):
+def pin_only_pr_proof(root, manifest, pull_request):
+    """Prove a pin-only root diff, never infer zero eligibility from omission."""
+    repository = "opensoft/openRepoTools"
+    pairs = ((b"code", b"contracts/code-pin.yaml"),
+             (b"spec", b"contracts/spec-pin.yaml"))
+    modes = {path: b"160000" if path == leg else b"100644"
+             for leg, pin in pairs for path in (leg, pin)}
+    try:
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+        pr = event["pull_request"]
+        merge = manifest["commits"]["."]
+        base, head = pr["base"]["sha"], pr["head"]["sha"]
+        if (os.environ.get("GITHUB_EVENT_NAME") != "pull_request" or
+                os.environ.get("GITHUB_REPOSITORY") != repository or
+                os.environ.get("GITHUB_REF") != "refs/pull/" + pull_request + "/merge" or
+                os.environ.get("GITHUB_SHA") != merge or
+                type(event["number"]) is not int or str(event["number"]) != pull_request or
+                pr["number"] != event["number"] or pr["base"]["ref"] != "main" or
+                any(pr[side]["repo"]["full_name"] != repository for side in ("base", "head")) or
+                any(not isinstance(sha, str) or len(sha) != 40 or
+                    any(char not in "0123456789abcdef" for char in sha)
+                    for sha in (base, head, merge))):
+            return None
+        objects = git(root, "rev-list", "--parents", "-n", "1", "HEAD").decode().split()
+        if objects != [merge, base, head]:
+            return None
+        # Compare matched local object IDs, never file-derived command arguments.
+        if git(root, "diff", "--name-only", "--ignore-submodules=none", objects[0], "--", ".").strip():
+            return None
+        raw = git(root, "diff", "--raw", "--no-abbrev", "--no-renames", "--no-ext-diff",
+                  "--ignore-submodules=none", "-z", objects[1], objects[0], "--")
+        fields = raw.split(b"\0")
+        if fields[-1] or len(fields) % 2 != 1:
+            return None
+        paths = []
+        for metadata, path in zip(fields[:-1:2], fields[1:-1:2]):
+            record = metadata.split()
+            mode = modes.get(path)
+            if (mode is None or len(record) != 5 or
+                    record[0] != b":" + mode or record[1] != mode or record[4] != b"M"):
+                return None
+            paths.append(path)
+        if not paths or any((leg in paths) != (pin in paths) for leg, pin in pairs):
+            return None
+        return {"base": base, "head": head, "merge": merge,
+                "paths": sorted(path.decode("utf-8") for path in paths)}
+    except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError):
+        return None
+
+
+def verify_coverage_measures(measured, pull_request, pin_only=False):
     if not pull_request:
         if "coverage" not in measured or int(measured.get("lines_to_cover", {}).get("value", "0")) <= 0:
             raise ValueError("Sonar did not import measured coverage")
@@ -252,6 +302,8 @@ def verify_coverage_measures(measured, pull_request):
     # PR APIs expose new-code metrics only. A root PR changing YAML/gitlinks
     # has no eligible new lines; it cannot establish complete main coverage.
     if "new_lines_to_cover" not in measured:
+        if pin_only:
+            return False
         raise ValueError("Sonar did not report PR coverage eligibility")
     eligible = int(measure_value(measured["new_lines_to_cover"]))
     if eligible < 0 or eligible > 0 and "new_coverage" not in measured:
@@ -268,7 +320,7 @@ def verify_main_revision(analysis_id, revision):
     return selected["revision"]
 
 
-def verify_analysis(out, task_file, pull_request=None):
+def verify_analysis(out, task_file, pull_request=None, root=None):
     task = {key: value for line in task_file.read_text().splitlines() if "=" in line
             for key, value in [line.split("=", 1)]}
     if task.get("projectKey") != PROJECT:
@@ -304,9 +356,14 @@ def verify_analysis(out, task_file, pull_request=None):
     if missing:
         raise ValueError("Sonar omitted or misclassified sources: " + ", ".join(missing))
     measures = sonar_api("measures/component", {
-        **scope, "metricKeys": "coverage,lines_to_cover,uncovered_lines,new_coverage,new_lines_to_cover"})
+        **scope, "metricKeys": "coverage,lines_to_cover,uncovered_lines,new_coverage,new_lines_to_cover,new_lines,new_uncovered_lines"})
     measured = {row["metric"]: row for row in measures["component"]["measures"]}
-    require_coverage = verify_coverage_measures(measured, pull_request)
+    pin_only = None
+    if (pull_request and root is not None and not components and
+            type(result["paging"]["total"]) is int and result["paging"]["total"] == 0 and
+            not any(metric.startswith("new_") for metric in measured)):
+        pin_only = pin_only_pr_proof(root, manifest, pull_request)
+    require_coverage = verify_coverage_measures(measured, pull_request, pin_only=pin_only is not None)
     verify_gate(status, gate["conditions"], require_period=not pull_request,
                 require_coverage=require_coverage)
     server_revision = (None if pull_request else
@@ -315,6 +372,7 @@ def verify_analysis(out, task_file, pull_request=None):
                "revision": manifest["commits"]["."], "indexed_sources": len(verified),
                "configured_sources": len(expected), "full_index_verified": not bool(pull_request),
                "coverage_import_verified": not bool(pull_request),
+               "pin_only_pr": pin_only,
                "coverage_condition_evaluated": require_coverage, "server_revision": server_revision,
                "qualityGate": gate, "projectStatus": status["projectStatus"],
                "measures": measures["component"]["measures"]}
@@ -354,7 +412,7 @@ def main():
     elif args.command == "rebind":
         print(json.dumps(rebind_evidence(root, out), indent=2))
     else:
-        verify_analysis(out, root / ".scannerwork/report-task.txt", args.pull_request)
+        verify_analysis(out, root / ".scannerwork/report-task.txt", args.pull_request, root=root)
 
 
 if __name__ == "__main__":
