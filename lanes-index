@@ -9260,20 +9260,31 @@ def register_serve_sweep(paths: dict) -> None:
     """THE TEMPORARY SOCKETS AN EARLIER START LEFT (lane 1's U5 gate, #165
     6881993079, N5): a starter killed between its bind and its rename leaves
     its socket at its short name, `s.` and four hex digits, and a later
-    starter that draws that name could not bind it. Each socket of that form
-    in `run/`, by `lstat`, and this uid's, is removed, by the starter that
-    holds `register.lock` and has found no live service at the socket, just
-    before its own bind. Under the lock no other starter is between its bind
-    and its rename, since only the lock's holder binds, so each such socket
-    is a leftover. A name of another form, or a file of that form that is
-    not a socket or not this uid's, is left as it is.
+    starter that draws that name could not bind it. The starter that holds
+    `register.lock` and has found no live service at the socket attempts to
+    remove each socket of that form in `run/`, by `lstat`, and this uid's,
+    just before its own bind. Under the lock no other starter is between its
+    bind and its rename, since only the lock's holder binds, so each such
+    socket is a leftover. A name of another form, or a file of that form
+    that is not a socket or not this uid's, is left as it is, and no line is
+    written for it.
 
-    WHAT FAILS IS SAID (lane 3's Codex delta review of bb19b1ad, #165
-    6886976981, NIT 6): an entry gone before it is reached (`ENOENT`) is
-    passed over; any other failure, to list `run/` or to `lstat` or remove a
-    leftover, is written to `register.log`, and the leftover stays. A start
-    that then draws its name draws another (`register_serve_run`, SHOULD 3),
-    so a leftover that cannot be removed no longer ends the start at 69."""
+    WHAT FAILS IS SAID, AND WHAT IT LEAVES (lane 3's Codex delta review of
+    bb19b1ad, #165 6886976981, NIT 6; its review of 1e1846e3, NIT 1): the
+    sweep attempts each removal and does not promise one. An entry gone
+    before it is reached (`ENOENT`, at the `lstat` or at the removal) is
+    passed over. Any other failure is written to `register.log`: where `run/`
+    cannot be listed no entry is tried, and where an entry cannot be
+    `lstat`ed or removed, that leftover stays at its name and the sweep goes
+    on to the next entry.
+
+    A leftover that stays is not itself the end of the start. A bind that
+    finds its name taken (`EADDRINUSE`) draws another name
+    (`register_serve_run`, SHOULD 3), so the retry normally avoids one
+    occupied draw. It does not avoid every one: where all
+    `REGISTER_SERVE_BIND_TRIES` (8) draws find their names taken, by that
+    leftover or by any other entry, or by one occupied name drawn again, the
+    start still ends at 69."""
     run = paths["run"]
     try:
         names = os.listdir(run)
@@ -9305,9 +9316,14 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     connect is a live service, and this starter exits 0; `ECONNREFUSED` is a
     stale socket, which it replaces, renaming its own new socket over it,
     and never unlinks (socket API 2.5 and 8.3); then the temporary sockets
-    an earlier start left removed (`register_serve_sweep`; N5), the bind, under
-    `umask 077`, the owner file, the listen, and the stamp removed
-    (Y:3936-3938). `stamps`
+    an earlier start left, each removal attempted (`register_serve_sweep`;
+    N5), where one that cannot be removed is logged and stays, the bind,
+    under `umask 077`, the owner file, the listen, and the stamp removed
+    (Y:3936-3938). The bind draws a temporary name of `s.` and four hex
+    digits, up to `REGISTER_SERVE_BIND_TRIES` (8) times, drawing another
+    where a name is taken (`EADDRINUSE`). It ends the start at 69 after the
+    eighth taken name, and at once at any other `OSError` from the bind, the
+    listen, the owner file, the rename or the `lstat` after it. `stamps`
     are the install's and the configuration's, as `serve` took them before
     it read the configuration (`register_serve_load`)."""
     import socket
