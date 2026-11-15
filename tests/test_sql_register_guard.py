@@ -6252,18 +6252,30 @@ def _owner_lines(index: Path) -> list:
       contract names the service's, its start UTC in whole seconds;
     - `install=` is the size, mtime in nanoseconds and inode of `index`,
       the `lanes-index` the case's client runs (`Estate.index`: the guard
-      runs the one beside its `lanes-edit.sh`, which is it), so the client
-      finds its own install and starts no service (section 8.1);
+      runs the one beside its `lanes-edit.sh`, which is it), then, where
+      T124's module `lanes_index_main.py` is beside `index`'s `realpath`,
+      the module's three, as lane 5's (a) has `register_serve_install`
+      state both files (opensoft/openRepoTools#165 6890303231; T237zzf).
+      With no module, as before T124, it is the three alone. So the client
+      finds its own install and starts no service (section 8.1). A
+      stand-in client that loads `index` by `SourceFileLoader` states the
+      same files, since its `__file__` is `index`;
     - `boot=` and `pidns=`, each where it can be read, are this host's, as
       the client reads its own, so the client finds its own boot and pid
       namespace.
 
-    Each key once, each line ending in `\\n`, and `install=` three decimals:
-    so the file is one a client can use under lane 3's OP-19 (b) too
-    (opensoft/openRepoTools#165 6880543448), not only under T512's reader."""
-    st = os.stat(index)
+    Each key once, each line ending in `\\n`, and `install=` three decimals,
+    or six with T124's module (rule 4's three or six runs, lane 5's T512
+    follow-up): so the file is one a client can use under lane 3's OP-19 (b)
+    too (opensoft/openRepoTools#165 6880543448), not only under T512's reader."""
+    found = [os.stat(index)]
+    try:
+        found.append(os.stat(Path(os.path.realpath(index)).with_name("lanes_index_main.py")))
+    except FileNotFoundError:
+        pass
     lines = [f"pid={os.getpid()}", f"started={_utc(time.time())}",
-             f"install={st.st_size} {st.st_mtime_ns} {st.st_ino}"]
+             "install=" + " ".join(f"{st.st_size} {st.st_mtime_ns} {st.st_ino}"
+                                   for st in found)]
     host = {}
     try:
         host["pidns"] = os.readlink("/proc/self/ns/pid")
