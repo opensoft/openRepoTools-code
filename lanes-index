@@ -9828,61 +9828,107 @@ def register_serve_agree(records: list) -> bool:
       same kind, and two `file` records among them name one path with one
       digest. So `file lanes/log/Foo.md ...` for `lanes/log/foo.md` and
       `absent lanes/log/FOO.md` in one answer are a mismatch."""
-    views = {}
+    # EACH VIEW AND EACH NAME ONCE (lane 3's Codex delta review of bb19b1ad,
+    # #165 6886976981, SHOULD 4, which is the first review's SHOULD 6): the
+    # answer is brought to its distinct views before any covering check.
+    # Named records are grouped by name, a log's folded A-Z (the fourth
+    # rule), and two lists, or two sets of one prefix, must name the same
+    # paths, since one transaction gives one view of each, so a repeated
+    # view that differs is refused once, at its first repeat, as a
+    # mismatch. What is left is checked once: each distinct set prefix
+    # against the list by the range of the list's sorted paths that begin
+    # with it (`_register_prefix_range`); and each distinct name against
+    # the list and against each distinct set prefix the name begins with,
+    # found by walking a trie of the prefixes along the name, each view's
+    # logs folded once (`register_log_index`). So the cost is the answer's
+    # size, with the list's sort, plus, for each distinct name, its own
+    # length and the views that cover it, each looked up once: near-linear
+    # in the answer's bytes, whatever the request repeats.
+    views, names = {}, {}
     for rec in records:
         if rec[0] in ("file", "absent", "ambiguous"):
             name = rec[1]
             key = _register_fold(name) if name.startswith(LOG_PREFIX) else name
             if views.setdefault(key, rec[:1] + rec[2:4]) != rec[:1] + rec[2:4]:
                 return False
-    digests, lists, sets = {}, [], []
+            names.setdefault(name, rec)
+    digests, listed, keys, sets = {}, None, [], {}
     for rec in records:
         if rec[0] == "file":
             named = [rec[2:4]]
         elif rec[0] == "set":
             named = [member[:2] for member in rec[2]]
-            sets.append((rec[1], {path for path, _digest in named}))
+            paths = frozenset(path for path, _digest in named)
+            if sets.setdefault(rec[1], paths) != paths:
+                return False
         elif rec[0] == "list":
             named = rec[2]
-            lists.append({path for path, _digest in named})
+            paths = frozenset(path for path, _digest in named)
+            if listed is None:
+                listed, keys = paths, sorted(os.fsencode(path) for path in paths)
+            elif paths != listed:
+                return False
         else:
             continue
         if any(digests.setdefault(path, digest) != digest for path, digest in named):
             return False
-    listed = lists[0] if lists else None
-    if any(paths != listed for paths in lists):
-        return False
-    if listed is not None and (
-            any(rec[0] == "file" and rec[2] not in listed for rec in records)
-            or any(paths != {path for path in listed if path.startswith(prefix)}
-                   for prefix, paths in sets)):
-        return False
-    # EACH COVERING VIEW ON ITS OWN, EACH FOLDED ONCE (lane 3's Codex review
-    # of 88b50886, #165 6882203066, SHOULDs 3 and 6): a name's record agrees
-    # with the list and with each set that covers it, one by one, never with
-    # their union, so one set cannot mask another that contradicts it; and
-    # each view's logs are folded once (`register_log_index`), so the check
-    # is near-linear in the answer's paths and records.
-    covers = ([("", listed)] if listed is not None else []) + sets
+    if listed is not None:
+        if any(rec[0] == "file" and rec[2] not in listed for rec in names.values()):
+            return False
+        for prefix, paths in sets.items():
+            low, high = _register_prefix_range(keys, os.fsencode(prefix))
+            if len(paths) != high - low or not all(path.startswith(prefix) and path in listed
+                                                   for path in paths):
+                return False
+    # EACH COVERING VIEW ON ITS OWN (lane 3's Codex review of 88b50886, #165
+    # 6882203066, SHOULD 3): a name's record agrees with the list and with
+    # each set that covers it, one by one, never with their union, so one
+    # set cannot mask another that contradicts it.
+    trie = {}
+    for prefix in sets:
+        node = trie
+        for char in prefix:
+            node = node.setdefault(char, {})
+        node[None] = prefix
     folded = {}
-    for rec in records:
-        if rec[0] not in ("file", "absent", "ambiguous"):
-            continue
-        name = rec[1]
-        for at, (prefix, paths) in enumerate(covers):
-            if not name.startswith(prefix):
-                continue
-            if name.startswith(LOG_PREFIX):
+    for name, rec in names.items():
+        covers = [(None, listed)] if listed is not None else []     # None: the list's index
+        node = trie
+        if None in node:
+            covers.append((node[None], sets[node[None]]))
+        for char in name:
+            node = node.get(char)
+            if node is None:
+                break
+            if None in node:
+                covers.append((node[None], sets[node[None]]))
+        want = (_register_fold(f"{LOG_PREFIX}{name[len(LOG_PREFIX):-len('.md')]}.md")
+                if name.startswith(LOG_PREFIX) else None)
+        for at, paths in covers:
+            if want is not None:
+                # `register_log_path_ci`'s own lookup in its `index`, with
+                # the name folded once, not once a view
                 if at not in folded:
                     folded[at] = register_log_index(paths)
-                found = register_log_path_ci(paths, name[len(LOG_PREFIX):-len(".md")],
-                                             index=folded[at])
+                found = list(folded[at].get(want, ()))
             else:
                 found = [name] if name in paths else []
             if ((rec[0] == "absent" and found) or (rec[0] == "ambiguous" and len(found) < 2)
                     or (rec[0] == "file" and found != [rec[2]])):
                 return False
     return True
+
+
+def _register_prefix_range(keys: list, prefix: bytes) -> tuple:
+    """The range [low, high) of `keys`, sorted bytes, that begin with
+    `prefix`: those from `prefix` itself up to the first key past every
+    key that begins with it."""
+    import bisect
+    low = bisect.bisect_left(keys, prefix)
+    stem = prefix.rstrip(b"\xff")
+    if not stem:
+        return low, len(keys)
+    return low, bisect.bisect_left(keys, stem[:-1] + bytes([stem[-1] + 1]))
 
 
 def register_serve_snap(parsed: dict) -> tuple:
