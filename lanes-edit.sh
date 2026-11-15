@@ -21689,8 +21689,19 @@ guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 whe
     gam_why="the offer was dropped before the $gam_what could be recorded"
   fi
   if [ "$gam_what" = bind ]; then
-    guard_refuse "$gam_why, so the bind was NOT started: this window has NOT moved to $gam_to (a rename this answer made is undone just below), NOTHING has been written to the register or to $gam_f, and no outer was started. Send your prompt again and the question will be asked afresh."
-    [ "$gam_ren" = 0 ] || guard_window_back "$gam_from" "$gam_to" || :
+    # THE RENAME BACK IS TRIED FIRST (F5), and the refusal says what came of it:
+    # `guard_window_back` can fail, and "renamed back" printed before it is tried
+    # was false then. `guard_triple` first, so the header still leads.
+    guard_triple
+    gam_win="this window has NOT moved to $gam_to"
+    if [ "$gam_ren" != 0 ]; then
+      if guard_window_back "$gam_from" "$gam_to"; then
+        gam_win="$gam_win (this answer renamed it, and it was renamed back to $gam_from)"
+      else
+        gam_win="this window was renamed to $gam_to by this answer and could NOT be renamed back to $gam_from (see the note above)"
+      fi
+    fi
+    guard_refuse "$gam_why, so the bind was NOT started: $gam_win, NOTHING has been written to the register or to $gam_f, and no outer was started. Send your prompt again and the question will be asked afresh."
   else
     guard_refuse "$gam_why, so the mismatch remains unapproved. Nothing was renamed or written; send your prompt again and the question will be asked afresh."
   fi
@@ -21933,12 +21944,22 @@ guard_answer() {   # <offer file> <the prompt> <pane>
         # back out, and nothing is written.
         ga_brc=0
         guard_bind_rewrite --binding "$ga_f" "bind started_utc bound_s bounded deadline_epoch host container out detach" "${ga_back[@]}" || ga_brc=$?
-        if [ "$ga_brc" = 2 ]; then
-          guard_refuse "the bind's child could not be started, so this window has NOT moved to $ga_to and NOTHING has been written; the offer was dropped or changed meanwhile, so there is none of this answer's to keep. Send your prompt again and the question will be asked afresh."
-        else
-          guard_refuse "the bind's child could not be started, so this window has NOT moved to $ga_to and NOTHING has been written. The offer is KEPT: answer \`2\` again, or choose \`1\` or \`3\`."
+        # THE RENAME BACK IS TRIED FIRST (F5), and the refusal is worded on its
+        # result, as `guard_answer_moved`'s is.
+        guard_triple
+        gba_win="this window has NOT moved to $ga_to"
+        if [ "$ga_ren" != 0 ]; then
+          if guard_window_back "$ga_from" "$ga_to"; then
+            gba_win="$gba_win (it was renamed back to $ga_from)"
+          else
+            gba_win="this window was renamed to $ga_to and could NOT be renamed back to $ga_from (see the note above)"
+          fi
         fi
-        [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
+        if [ "$ga_brc" = 2 ]; then
+          guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been written; the offer was dropped or changed meanwhile, so there is none of this answer's to keep. Send your prompt again and the question will be asked afresh."
+        else
+          guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been written. The offer is KEPT: answer \`2\` again, or choose \`1\` or \`3\`."
+        fi
         return 2 ;;
     esac
     guard_triple
