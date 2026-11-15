@@ -20561,17 +20561,21 @@ guard_bind_readable() {
 # and 8; lane 3's Codex code review of `12eddddf`, #165 6882203066, finding 8).
 # WITH `--binding`, THE OUTER'S START (lane 3's ruling on open point 26, #165
 # 6885378657, ruling 4(a): `guard_offer`'s write is the record's only creation,
-# so a rewrite never makes one; lane 5's ruling on lane 2's reader's window,
-# #165 6885568373): the rewrite runs only on a record that is there and whose
+# so a rewrite never makes one; lane 2's answer on its reader's window, #165
+# 6885568373, under lane 3's ruling, #165 6885771975, which governs it; Codex's
+# NIT 3 on spec#47's draft 17): the rewrite runs only on a record that is there and whose
 # first `mode` line, as `guard_bind_load` takes it, says `binding`. Where the
 # record is gone at the existence test or at the open, or says anything else, it
 # writes nothing and returns 2, so the outer that asked runs nothing. The test
 # is made on the very lines it copies, as `--own`'s is, and has its window.
-# WITH `--exist`, `guard_bind_site`'S REWRITES (lane 3's ruling on lane 5's rule
-# "No rewrite creates a record", #165 6885771975, ruling 5, which takes it from
-# #165 6885751796): the rewrite runs only on a record that is there, whatever
-# its mode, and where it is gone, at the existence test or at the open, it
-# writes nothing and returns 2. `guard_offer`'s write stays the only creation.
+# WITH `--exist` (lane 3's ruling on lane 5's rule "No rewrite creates a
+# record", #165 6885771975, ruling 5, which takes it from #165 6885751796): the
+# rewrite runs only on a record that is there, whatever its mode, and where it
+# is gone, at the existence test or at the open, it writes nothing and returns
+# 2. `guard_offer`'s write stays the only creation. NO CALLER USES IT NOW
+# (Codex's NIT 3 on spec#47's draft 17): it was `guard_bind_site`'s at part 22,
+# and since part 30 those rewrites require what they loaded, by `--mode` or
+# `--binding` with `--match`; the flag is kept for its direct proof cases.
 # WITH `--mode <m>` AND `--match <key>=<value>` (lane 5's adversarial review of T502
 # parts 22 to 26, F4; each may be given more than once, with any flag above): the
 # first line of that key, as `guard_bind_load` takes it, must be exactly that, or
@@ -20589,10 +20593,11 @@ guard_bind_readable() {
 # once and answers for what is there (`guard_answer_moved`). The test is made
 # on the very lines it copies, and has its window: from this read to the `mv`.
 #   0 written · 1 not: this rewrite did not change the record, which is as
-#   another writer may have left it · 2 (`--own`, `--binding`, `--exist` or
-#   `--offer` only) not the outer's own, or no record, or not `binding` (not
-#   `name-drift` under `--offer`), so not written: this rewrite did not change
-#   the record either
+#   another writer may have left it · 2 (with any of `--own`, `--binding`,
+#   `--exist`, `--offer`, `--mode` or `--match` only; Codex's NIT 3 on spec#47's
+#   draft 17) not the outer's own, or no record, or not `binding` (not
+#   `name-drift` under `--offer`), or a `--mode` or `--match` line not as given,
+#   so not written: this rewrite did not change the record either
 guard_bind_rewrite() {   # [--own | --binding | --exist | --offer | --mode <m> | --match <key>=<value> …] <offer file> <keys to drop, space-separated> [<key>=<value> …]
   gbw_own=0; gbw_bd=0; gbw_ex=0; gbw_of=0; gbw_wl=""; gbw_wk=" "
   while :; do
@@ -21987,7 +21992,7 @@ guard_offer() {   # <offer file> <pane>
         # is this writer's create where `$go_f` is the very file written.
         if [ "$go_f" -ef "$go_t" ]; then go_made=1; else go_made=there; guard_offer_unlink_inside "$go_f" "$go_t"; fi
       elif go_nc=0
-           ( set -C; umask 077; { cat -- "$go_t" >&3 || exit 4; } 3>"$go_f" ) 2>/dev/null || go_nc=$?
+           ( set -C; umask 077; { cat -- "$go_t" >&3 || { [ "$go_f" -ef /dev/fd/3 ] && exit 4; exit 5; }; [ "$go_f" -ef /dev/fd/3 ] || exit 5; } 3>"$go_f" ) 2>/dev/null || go_nc=$?
            [ "$go_nc" != 1 ]; then
         # THE CONTENT IS WRITTEN THROUGH THE DESCRIPTOR THAT WAS OPENED
         # EXCLUSIVELY (NIT 4; lane 5's re-check of parts 27 to 34, C): `3>` under
@@ -21998,14 +22003,22 @@ guard_offer() {   # <offer file> <pane>
         # EMPTY INSTANT IS THE WINDOW LEFT on this path alone: a reader that meets
         # the empty record calls it unreadable (case 11 drops it), and the write
         # then goes to the unlinked file, so nothing is recreated at another mode
-        # and no other record is written over. The record is then not there, and
-        # the question is asked with its note that it could not be written.
-        if [ "$go_nc" = 0 ]; then
-          go_made=1
-          [ -e "$go_f" ] || go_made=0
-        else
-          rm -f -- "$go_f" 2>/dev/null || :
-        fi
+        # and no other record is written over.
+        # AND "MADE" IS PROVED ON THE DESCRIPTOR (Codex's NIT 1 on spec#47's draft
+        # 17; lane 5's final check, C): while it is still open, the record's path
+        # must name the very file it opened (`-ef /dev/fd/3`, which bash answers
+        # from the descriptor itself on every system). A 5 is a file this writer
+        # made and that the path no longer names: dropped in the empty instant,
+        # then the question is asked with its note, or replaced by another
+        # invocation's record, which is then answered as a record that is there,
+        # and never taken for this writer's. Nothing is removed for a 5, and a
+        # failed `cat` is a 4 only where the path still names this writer's file.
+        # THE INSTANT LEFT is the 4's test to its `rm`, outside the descriptor: a
+        # record put in place there is removed, its `.bind.*` files are not.
+        case "$go_nc" in
+          0) go_made=1 ;;
+          4) rm -f -- "$go_f" 2>/dev/null || : ;;
+        esac
       elif [ -e "$go_f" ] || [ -L "$go_f" ]; then
         go_made=there
       fi
@@ -22078,18 +22091,27 @@ guard_offer_site() {   # <offer file> <pane> <the prompt>
   guard_offer "$gos_f" "$gos_pane" || gos_rc=$?
   [ "$gos_rc" = 3 ] || return 2
   gos_m=""
-  # A RECORD THAT IS NOT A FILE (NIT 1: a directory, or a link to one) is a
-  # record that is there and that cannot be answered or replaced: refused, with
-  # nothing written, and `guard_answer` is never called on it.
+  # A RECORD THAT IS NOT A REGULAR FILE (NIT 1: a directory, or a link to one;
+  # Codex's NIT 2 on spec#47's draft 17 and lane 5's final check, E: a FIFO, a
+  # socket or a device too) is a record that is there and that cannot be
+  # answered or replaced: refused, with nothing written, and `guard_answer` is
+  # never called on it. The words say "not a regular file" for every one, and
+  # name a directory as such.
   if [ -L "$gos_f" ] && [ ! -e "$gos_f" ]; then
     # A DANGLING LINK (lane 5's re-check, E) is dropped, as case 11 drops a record
     # that cannot be read, so it heals as it did at 2497b864: the retry below
     # makes the offer.
     rm -f -- "$gos_f" 2>/dev/null || :
   elif [ -e "$gos_f" ] && [ ! -f "$gos_f" ]; then
-    # A DIRECTORY, OR A LINK TO ONE, is not for this guard to remove: the person
-    # is told to, and the question is not said to be asked afresh.
-    guard_refuse "the pending offer could not be recorded: a record of this transcript's is at $gos_f and could not be replaced, so nothing was written to it. It is a directory, or a link to one: remove it, then send your prompt again."
+    # A DIRECTORY, OR A LINK TO ONE, OR ANY OTHER PATH THAT IS NOT A REGULAR FILE,
+    # is not for this guard to remove: the person is told to, and the question is
+    # not said to be asked afresh.
+    if [ -d "$gos_f" ]; then
+      gos_what="It is not a regular file. It is a directory, or a link to one: remove it, then send your prompt again."
+    else
+      gos_what="It is not a regular file (a FIFO, a socket or a device, or a link to one): remove it, then send your prompt again."
+    fi
+    guard_refuse "the pending offer could not be recorded: a record of this transcript's is at $gos_f and could not be replaced, so nothing was written to it. $gos_what"
     return 2
   fi
   # A RECORD THAT HAS GONE SINCE THE FAILED CREATE (F3): neither `-e` nor `-L`
@@ -22113,9 +22135,24 @@ guard_offer_site() {   # <offer file> <pane> <the prompt>
         if [ "$gos_dr" != 0 ] && { [ -e "$gos_f" ] || [ -L "$gos_f" ]; }; then
           # THE ALLOWANCE HAS BECOME ANOTHER RECORD since this site read it (H):
           # a bind record is answered once, as `guard_site_moved` answers one, and
-          # not refused with "could not be replaced".
-          guard_site_moved "$gos_f" "$gos_pane"
-          return 2
+          # not refused with "could not be replaced". AN OFFER, OR A FILE WITH NO
+          # MODE (lane 5's final check, H: `guard_site_moved` refused a new offer
+          # as "changed"), is answered as the first read would have answered it:
+          # by `guard_answer`, with this prompt, as the branch below does, its 3
+          # meeting the one retry. Read once; nothing loops.
+          gos_m=""
+          [ -f "$gos_f" ] && gos_m="$(sed -n -e 's/^mode=//p' "$gos_f" 2>/dev/null | head -n1)"
+          if [ ! -f "$gos_f" ] || { [ -n "$gos_m" ] && [ "$gos_m" != name-drift ]; }; then
+            guard_site_moved "$gos_f" "$gos_pane"
+            return 2
+          fi
+          gos_arc=0
+          guard_answer "$gos_f" "$gos_prompt" "$gos_pane" || gos_arc=$?
+          [ "$gos_arc" = 3 ] || return 2
+          if [ -f "$gos_f" ] && guard_allow_active "$gos_f"; then
+            guard_allow_pass
+            return 0
+          fi
         fi ;;
       *)
         gos_arc=0
@@ -23384,8 +23421,9 @@ guard_bind_outer() {   # <session uuid>
   gbo_now="$(date -u '+%s %Y-%m-%dT%H:%M:%SZ')"
   gbo_ep="${gbo_now%% *}"
   # THE START REWRITE RUNS ONLY ON A RECORD THAT STILL SAYS `binding` (lane 3's
-  # ruling on open point 26, #165 6885378657, ruling 4(a); lane 5's ruling on
-  # lane 2's reader's window, #165 6885568373): `guard_offer`'s write is the
+  # ruling on open point 26, #165 6885378657, ruling 4(a); lane 2's answer on its
+  # reader's window, #165 6885568373, under lane 3's ruling, #165 6885771975,
+  # which governs it; Codex's NIT 3 on spec#47's draft 17): `guard_offer`'s write is the
   # only one that creates the record, and the record is the bind's authority.
   # Where it has gone since the load above, or an offer has taken its place,
   # `--binding` writes nothing and answers 2, and this outer runs nothing and
