@@ -12865,7 +12865,8 @@ def _ready_installed() -> str:
 def _ready_check_digests(release: str) -> tuple[bool, str]:
     """CHECK 1 (ops:444): the installed tools' digests equal the release's,
     by `_READY_DIGEST_LIST` in the installed-tools directory, a list that
-    names each of `_READY_DIGEST_NAMES`."""
+    names each of `_READY_DIGEST_NAMES`; and T124's cached module's bytecode
+    is the release's (`_ready_check_cache`)."""
     installed = _ready_installed()
     if not installed:
         return False, "there is no lanes-index on PATH, so there are no installed tools to compare"
@@ -12904,6 +12905,60 @@ def _ready_check_digests(release: str) -> tuple[bool, str]:
     if stale:
         return False, (f"the installed tools in {tools} differ from release {release}'s "
                        f"digests: {', '.join(stale)}")
+    return _ready_check_cache(tools, entries)
+
+
+#: T124'S CACHED MODULE (FR-064; tasks:2850-2854): the module `lanes-index`
+#: runs its body from, beside it, whose checked-hash bytecode is
+#: `__pycache__/lanes_index_main.<tag>.pyc` beside the module.
+_READY_CACHED_MODULE = "lanes_index_main.py"
+
+
+def _ready_check_cache(tools: str, entries: list) -> tuple[bool, str]:
+    """CHECK 1'S COMPARISON (T124; FR-064; lane 3's ruling, commit 20's post):
+    where the release's list names `_READY_CACHED_MODULE`, the module, as
+    digest-checked, is compiled with this interpreter, the one `lanes-index`
+    runs on, in checked-hash mode, exactly as `py_compile` writes it with
+    `dfile` `lanes_index_main.py` and `optimize` 0: the magic, the flags 0b11
+    as 4 bytes little-endian, the module's `source_hash`, then `marshal.dumps`
+    of the code. The installed bytecode must equal it byte for byte, or check
+    1 fails, naming the cached module as not matching the release's source;
+    a missing one is named with `sys.executable`. On Python 3.9 and 3.10,
+    whose bytecode is not byte-stable, or with no cache tag, no bytes are
+    compared: the install writes none, so the launcher runs the source, and
+    check 1 names it and passes (lane 3's ruling, #165 6885378657)."""
+    digests = {digest for digest, name in entries if name == _READY_CACHED_MODULE}
+    if not digests:
+        return True, ""
+    module = os.path.join(tools, _READY_CACHED_MODULE)
+    tag = sys.implementation.cache_tag
+    if sys.version_info < (3, 11) or tag is None:
+        return True, (f"no bytecode is compared on Python {sys.version_info[0]}."
+                      f"{sys.version_info[1]}: lanes-index runs the source, {module}")
+    import importlib.util
+    import marshal
+    with open(module, "rb") as handle:
+        source = handle.read()
+    if hashlib.sha256(source).hexdigest() not in digests:
+        return False, f"{module} changed while check 1 read it"
+    # `code` is bound to a name before `marshal.dumps`, as `py_compile`'s is:
+    # marshal marks an object it holds more than one reference to (FLAG_REF),
+    # so the dump of an unbound temporary differs from py_compile's at byte 16.
+    code = compile(source, _READY_CACHED_MODULE, "exec", dont_inherit=True, optimize=0)
+    expected = (importlib.util.MAGIC_NUMBER + (0b11).to_bytes(4, "little")
+                + importlib.util.source_hash(source) + marshal.dumps(code))
+    cached = os.path.join(tools, "__pycache__",
+                          f"{os.path.splitext(_READY_CACHED_MODULE)[0]}.{tag}.pyc")
+    try:
+        with open(cached, "rb") as handle:
+            installed = handle.read()
+    except OSError as exc:
+        return False, (f"the cached module {cached} cannot be read ({exc.strerror or exc}): "
+                       f"there is no checked-hash bytecode of {module} for {sys.executable}, "
+                       f"which `openRepoTools --install` run with that python3 writes")
+    if installed != expected:
+        return False, (f"the cached module {cached} does not match the release's source "
+                       f"{module}: it is not {sys.executable}'s checked-hash compilation of it")
     return True, ""
 
 

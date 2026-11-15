@@ -110,12 +110,47 @@ RENDER_GIT_HALF = False
 #: THE BODY (feature 007, T124; FR-064): everything else `lanes-index` runs is
 #: in `lanes_index_main.py`, beside this file, and runs here, in this file's own
 #: namespace, so `sys.argv`, `__file__` and the constant above are this file's.
+#: The module's CACHED CODE runs where `__pycache__/lanes_index_main.<tag>.pyc`
+#: beside it is a checked-hash `.pyc` (PEP 552, flags 0b11) of this
+#: interpreter's magic, carrying the `source_hash` of the module's bytes, and
+#: `-O` is not in force; otherwise the module's source runs, compiled under the
+#: name `ready`'s check 1 and the install give it. The path is built here, never
+#: by `cache_from_source`, which follows `-X pycache_prefix`, and this file never
+#: writes the cache. Its directory is `realpath`'s, as the module finds its own
+#: siblings: an install reached through a symlink finds the module beside the
+#: real file.
 def _lanes_index_main():
+    import importlib.util
+    import marshal
     import os
+    import sys
+    import types
 
-    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "lanes_index_main.py")
-    with open(path, "rb") as handle:
-        source = handle.read()
+    directory = os.path.dirname(os.path.realpath(__file__))
+    path = os.path.join(directory, "lanes_index_main.py")
+    try:
+        with open(path, "rb") as handle:
+            source = handle.read()
+    except OSError as exc:
+        raise SystemExit(f"lanes-index: its module {path} cannot be read "
+                         f"({exc.strerror or exc}), so nothing ran") from None
+    tag = sys.implementation.cache_tag
+    if tag is not None and sys.flags.optimize == 0:
+        try:
+            with open(os.path.join(directory, "__pycache__", f"lanes_index_main.{tag}.pyc"),
+                      "rb") as handle:
+                data = handle.read()
+        except OSError:
+            data = b""
+        if (len(data) > 16 and data[:4] == importlib.util.MAGIC_NUMBER
+                and int.from_bytes(data[4:8], "little") == 0b11
+                and data[8:16] == importlib.util.source_hash(source)):
+            try:
+                code = marshal.loads(memoryview(data)[16:])
+            except (EOFError, TypeError, ValueError):
+                code = None
+            if isinstance(code, types.CodeType):
+                return code
     return compile(source, "lanes_index_main.py", "exec", dont_inherit=True, optimize=0)
 
 
