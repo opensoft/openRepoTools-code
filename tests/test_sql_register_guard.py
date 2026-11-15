@@ -98,8 +98,12 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: two cases that pass today,
 #: `test_the_hook_string_and_guard_timeout_are_unchanged` and
 #: `test_an_unreadable_bind_record_is_dropped_with_exit_2` (tasks:2013), have
-#: no row, so they always run. No task is common to every row, so there is
-#: no "*" row.
+#: no row, so they always run. T237zzb's row, for its `session-start` cases
+#: off primary, is keyed by analogy with T513's verify case's,
+#: `test_the_session_start_block_reads_the_mirror_and_only_starts_the_service`
+#: (T237's Order, tasks:2302 at commit 24 `f9d6069e`: its tests fail until
+#: L5-S1 lands, lane 5's T511 to T513). No task is common to every row, so
+#: there is no "*" row.
 SQL_REGISTER_GATE_TABLE = {
     "test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither": ("T512", "T513"),  # T237; tasks:2302
     "test_a_bind_body_past_its_bound_ends_with_the_bounds_code_and_leaves_no_process": ("T502",),  # T214; tasks:2013
@@ -139,6 +143,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_one_instance_holds_register_lock_and_a_second_starter_exits_0": ("T512", "T513"),  # T237; tasks:2302
     "test_pid_start_of_answers_live_dead_and_unreadable": ("T502",),  # T214; tasks:2013
     "test_serve_refuses_unless_the_mode_answer_is_primary": ("T512", "T513"),  # T237; tasks:2302
+    "test_session_start_starts_no_service_outside_primary": ("T512", "T513"),  # T237; tasks:2302
     "test_status_prints_the_services_lines_and_its_failure_stamp": ("T512", "T513"),  # T237; tasks:2302
     "test_the_bind_child_environment_is_as_lane_4_lists_it": ("T502",),  # T214; tasks:2013
     "test_the_bind_child_reaches_tmux_through_tmux_pane": ("T502",),  # T214; tasks:2013
@@ -4968,6 +4973,125 @@ def test_the_session_start_block_reads_the_mirror_and_only_starts_the_service(es
                           env=est.env(), cwd=str(est.wip), timeout=60)
     assert proc.returncode == 0 and not est.shim_calls(), est.shim_calls()
     assert _until(lambda: _service_dir(est), 10), "the block did not start the service"
+
+
+#: T237zzb: HOW LONG A CASE WAITS FOR A START IT MUST NOT MAKE, from its
+#: `session-start`'s exit: past the start's own limit, `timeout -k 1 1`
+#: (`reg_service_start`, at most 2 s), and past the 10 s in which the
+#: control, `test_the_session_start_block_reads_the_mirror_and_only_starts_the_service`,
+#: finds the socket its start made.
+NO_START_S = 12.0
+
+#: T237zzb's STAND-IN `lanes-index`, beside a copy of the estate's
+#: `lanes-edit.sh`, where `lanes_index_bin` looks first. It logs each call's
+#: words to @LOG@; answers `mode`, the block's one mode question
+#: (`reg_mode_query`), as the case's state says, `index` with "index" and 0,
+#: `78` with 78, EX_CONFIG, the code of a build that refuses `mode=primary`;
+#: answers `serve` 0, starting nothing, while @OFF@ exists (the case's twin,
+#: with T513's start disabled); and hands every other call, `serve --start`
+#: included, to the estate's flipped `lanes-index`, @REAL@, on its primary
+#: configuration.
+_SESSION_SEAM = r'''#!/bin/sh
+printf '%s\n' "$*" >> @LOG@
+case "${1-}" in
+  mode)
+    case @STATE@ in
+      index) printf 'index\n'; exit 0 ;;
+      78) printf 'lanes-index: REFUSED: mode=primary in this build (T237zzb stand-in)\n' >&2
+          exit 78 ;;
+    esac ;;
+  serve)
+    if [ -e @OFF@ ]; then exit 0; fi ;;
+esac
+exec @REAL@ "$@"
+'''
+
+#: The block's last line (`ssb_tail`), whose age is the one word two runs
+#: of one state can differ in (`fetch_age`: seconds, under 90 s).
+AS_OF = re.compile(r"^as of .+ \(no fetch\)$", re.M)
+
+
+def _estate_servers(est: Estate) -> list:
+    """The live processes of this estate's own `lanes-index`, its flipped
+    copy (`Estate.index`), with `serve` among the words after it: a start,
+    `serve --start`, or the service one starts, whose argv is that path and
+    `serve` (`register_serve_launch`)."""
+    index = str(est.index)
+    found = []
+    for entry in Path("/proc").iterdir():
+        if entry.name.isdigit() and _alive(entry.name):
+            argv = _argv(entry.name)
+            if index in argv and "serve" in argv[argv.index(index) + 1:]:
+                found.append(int(entry.name))
+    return found
+
+
+@pytest.mark.parametrize("state", ["index", "78", "compact"])
+def test_session_start_starts_no_service_outside_primary(estate, state):
+    """T513's start runs only where the block's one mode answer is primary:
+    the `session-start` arm runs it after `session_start_block` returns,
+    keyed on that answer (lane 1's U5 review of T513, which asks for these
+    three cases, opensoft/openRepoTools#165 6882025131; lane 5, #165
+    6882048675, which gives them to lane 2 as T237zzb). `[index]`: the
+    answer `mode index`. `[78]`: `lanes-index mode` exits 78, EX_CONFIG,
+    which the block reads as a refused mode and a failed read
+    (`reg_mode_query`'s `78:*` arm, under `mirror`). `[compact]`: a
+    `SessionStart` whose `source` is `compact`, which returns before the
+    mode question. Each runs `session-start` and gets exit 0 and no register
+    call; after `NO_START_S` no `register.sock` exists and no `serve` of the
+    estate's `lanes-index` runs; the stand-in's log holds no `serve` call
+    and the block's one `mode` call, none for `[compact]`; and its stdout is
+    the bytes of the same state with T513's start disabled, the fetch's age
+    aside (`AS_OF`).
+
+    THE CONTROL'S ESTATE, WITH ONE ANSWER CHANGED. Each case is the
+    control's primary estate, flipped build and configuration, with
+    `_SESSION_SEAM` beside a copy of its `lanes-edit.sh`: the block's one
+    mode question gets the case's answer, and every other call, `serve
+    --start` included, reaches the flipped `lanes-index` on that primary
+    configuration. A real index configuration or a refusing build is
+    refused again by `serve --start` (`register_serve_start_only`, which
+    refuses any mode but primary) and by `serve`, so a start there makes no
+    socket either, and a case run there would pass with the arm's mode test
+    gone. Here any start makes the control's socket, so "no socket" is
+    measured against a start that would make one."""
+    est = estate(mode="primary")
+    est.shim()
+    seam = est.root / "seam"
+    seam.mkdir()
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        if (est.guard.parent / name).exists():
+            shutil.copy2(est.guard.parent / name, seam / name)
+    calls, off = seam / "lanes-index.calls", seam / "start-off"
+    _script(seam / "lanes-index", _SESSION_SEAM, LOG=shlex.quote(str(calls)),
+            STATE=shlex.quote(state), OFF=shlex.quote(str(off)),
+            REAL=shlex.quote(str(est.index)))
+    hook_input = est.session.hook_input()
+    if state == "compact":
+        hook_input = json.dumps(dict(json.loads(hook_input), hook_event_name="SessionStart",
+                                     source="compact"), separators=(",", ":"))
+
+    def block() -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", str(seam / "lanes-edit.sh"), "session-start"],
+                              input=hook_input, capture_output=True, text=True,
+                              env=est.env(), cwd=str(est.wip), timeout=60)
+
+    proc = block()
+    assert proc.returncode == 0 and not est.shim_calls(), \
+        (proc.returncode, est.shim_calls(), proc.stderr)
+    started = _until(lambda: _service_dir(est) or _estate_servers(est), NO_START_S, 0.25)
+    servers = _estate_servers(est)
+    est.spare.extend(servers)
+    assert not started and not servers and not (_run_dir(est) / "register.sock").exists(), \
+        f"session-start [{state}] started the service: {started} {servers}\n{proc.stderr}"
+    words = [line.split(" ", 1)[0] for line in
+             calls.read_text(encoding="utf-8").splitlines()] if calls.exists() else []
+    assert words.count("mode") == (0 if state == "compact" else 1) and "serve" not in words, words
+    off.write_text("", encoding="utf-8")
+    twin = block()
+    assert twin.returncode == 0, twin.stderr
+    assert AS_OF.sub("as of <age> (no fetch)", proc.stdout) == \
+        AS_OF.sub("as of <age> (no fetch)", twin.stdout), (proc.stdout, twin.stdout)
 
 
 def test_the_first_call_starts_the_service_with_no_supervisor(estate):
