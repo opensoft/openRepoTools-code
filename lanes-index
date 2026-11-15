@@ -8270,7 +8270,7 @@ class RegisterService:
         self.config_checking = 0     # connections comparing the stamp now (Codex SHOULD 1)
         self.asks = 0                # requests that saw a change, counted (NIT-A)
         self.taken = 0               # of them, those a finished `take_change` has covered
-        self.change_ends = False     # the worker found a change that ends the service
+        self.change_ends = None      # (after, upto]: the counts whose take found the change ends it
         self.idle_check_s, ignored = register_serve_seconds(REGISTER_SERVE_IDLE_CHECK)
         if ignored:
             register_serve_log(paths, "the idle check's test value is ignored: the default is kept")
@@ -8764,7 +8764,7 @@ class RegisterService:
 
         AND NOT ONCE A CHANGE IS SEEN (round 3b; socket API 8.4, "once a
         request has seen a change, no answer built on the old settings is
-        sent"): the worker re-reads a change only between its jobs (M1), so
+        given"): the worker re-reads a change only between its jobs (M1), so
         the epoch cannot move while this query runs. Where another request
         has seen a change the worker has not yet taken (`reload_due`, set
         under `cond`), this answer, built on the old settings, is not given,
@@ -9102,7 +9102,8 @@ class RegisterService:
                 self.cond.wait_for(lambda: (self.config_epoch != epoch or self.taken >= ticket
                                             or self.stopping),
                                    max(0.0, limit - time.monotonic()))
-                restarting = self.change_ends
+                ends = self.change_ends     # this request's own take's result (NIT 5)
+                restarting = bool(ends) and ends[0] < ticket <= ends[1]
             return b"unavailable restarting\n" if restarting else b"unavailable\n"
         return self.request(items, arrival, epoch)
 
@@ -9122,7 +9123,12 @@ class RegisterService:
         under the same hold of `cond` that ends those waits, before the
         service is stopped, so a waiting request that wakes then answers
         `unavailable restarting`, and one that wakes for any other stop
-        answers plain `unavailable` (lane 5's review of round 3, NIT 2)."""
+        answers plain `unavailable` (lane 5's review of round 3, NIT 2).
+        It is recorded for this take's own requests only, the counts after
+        the last take's and up to its own, `(taken, upto]`, so a request an
+        earlier take covered, with a change that did not end the service,
+        answers plain `unavailable` though it wakes after this take (lane
+        3's Codex delta review of bb19b1ad, #165 6886976981, NIT 5)."""
         with self.cond:
             cfg, stamp, upto = self.cfg, self.config_stamp, self.asks
         why = ""
@@ -9131,9 +9137,9 @@ class RegisterService:
                 why = self.reload()
         finally:
             with self.cond:
-                self.taken = max(self.taken, upto)
                 if why:
-                    self.change_ends = True
+                    self.change_ends = (self.taken, upto)
+                self.taken = max(self.taken, upto)
                 self.cond.notify_all()
         if why:
             self.stop(why)
@@ -9226,20 +9232,50 @@ REGISTER_SERVE_LOCK_WAITS = (0.0, 0.025, 0.025, 0.025, 0.025)
 REGISTER_SERVE_BIND_TRIES = 8
 
 
-def register_serve_sweep(run: str) -> None:
+def register_serve_try_lock(fd: int) -> bool:
+    """ONE ATTEMPT AT `register.lock`, without blocking (NIT 8): True where
+    it is taken; False where another holds it, `EAGAIN` (`EWOULDBLOCK`) or
+    `EACCES`; an attempt a signal interrupts (`EINTR`) is made again at
+    once, up to 100 times. Any other error is raised, a lock that cannot be
+    taken."""
+    import fcntl
+    for _ in range(100):
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except InterruptedError:
+            continue
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                return False
+            raise
+    raise InterruptedError(errno.EINTR, "flock was interrupted 100 times")
+
+
+def register_serve_sweep(paths: dict) -> None:
     """THE TEMPORARY SOCKETS AN EARLIER START LEFT (lane 1's U5 gate, #165
     6881993079, N5): a starter killed between its bind and its rename leaves
     its socket at its short name, `s.` and four hex digits, and a later
     starter that draws that name could not bind it. Each socket of that form
-    in `run`, by `lstat`, and this uid's, is removed, by the starter that
+    in `run/`, by `lstat`, and this uid's, is removed, by the starter that
     holds `register.lock` and has found no live service at the socket, just
     before its own bind. Under the lock no other starter is between its bind
     and its rename, since only the lock's holder binds, so each such socket
     is a leftover. A name of another form, or a file of that form that is
-    not a socket or not this uid's, is left as it is."""
+    not a socket or not this uid's, is left as it is.
+
+    WHAT FAILS IS SAID (lane 3's Codex delta review of bb19b1ad, #165
+    6886976981, NIT 6): an entry gone before it is reached (`ENOENT`) is
+    passed over; any other failure, to list `run/` or to `lstat` or remove a
+    leftover, is written to `register.log`, and the leftover stays. A start
+    that then draws its name draws another (`register_serve_run`, SHOULD 3),
+    so a leftover that cannot be removed no longer ends the start at 69."""
+    run = paths["run"]
     try:
         names = os.listdir(run)
-    except OSError:
+    except OSError as exc:
+        register_serve_log(paths, f"the temporary sockets could not be listed "
+                                  f"({errno.errorcode.get(exc.errno, exc.errno)})")
         return
     for name in names:
         if not _REGISTER_SERVE_TEMP_RE.fullmatch(name):
@@ -9249,8 +9285,11 @@ def register_serve_sweep(run: str) -> None:
             st = os.lstat(path)
             if stat.S_ISSOCK(st.st_mode) and st.st_uid == os.getuid():
                 os.unlink(path)
-        except OSError:
+        except FileNotFoundError:
             pass
+        except OSError as exc:
+            register_serve_log(paths, f"the leftover temporary socket {name} could not be removed "
+                                      f"({errno.errorcode.get(exc.errno, exc.errno)})")
 
 
 def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
@@ -9285,13 +9324,23 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     # service's, and this starter would exit 0 and start nothing. Only a
     # lock still held after the last attempt is a service's; the exit codes
     # are as before.
+    # ONLY A HELD LOCK IS A SERVICE'S (lane 3's Codex delta review of
+    # bb19b1ad, #165 6886976981, NIT 8): `register_serve_try_lock` retries
+    # an interrupted attempt at once, and counts only `EAGAIN` and `EACCES`
+    # as the lock held. Any other `flock` error is a lock that cannot be
+    # taken: it is written to stderr and `register.log`, and the start
+    # exits 69, as one whose `register.lock` cannot be opened does, above.
     for wait in REGISTER_SERVE_LOCK_WAITS:
         time.sleep(wait)
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
-        except OSError:
-            continue
+            if register_serve_try_lock(lock):
+                break
+        except OSError as exc:
+            os.close(lock)
+            note(f"serve: {paths['lock']} could not be locked ({exc.strerror or exc})")
+            register_serve_log(paths, f"register.lock could not be locked "
+                                      f"({errno.errorcode.get(exc.errno, exc.errno)})")
+            return EXIT_UNAVAILABLE
     else:
         os.close(lock)
         return EXIT_OK      # ONE INSTANCE: another service holds the lock
@@ -9319,7 +9368,7 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     # link, a directory, or a socket the sweep left or could not remove,
     # is left as it is, and another name is drawn, up to
     # `REGISTER_SERVE_BIND_TRIES` names in all.
-    register_serve_sweep(paths["run"])
+    register_serve_sweep(paths)
     for attempt in range(REGISTER_SERVE_BIND_TRIES):
         temp = os.path.join(paths["run"], f"s.{os.urandom(2).hex()}")
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
