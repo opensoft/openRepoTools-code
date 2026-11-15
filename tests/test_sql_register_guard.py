@@ -2476,7 +2476,8 @@ def test_the_outer_matches_host_and_container_without_regard_to_case(estate, cas
     assert NOT_ITS_OWN in said, f"the outer's outcome is not in its .out: {said}"
 
 
-@pytest.mark.parametrize("index", ["0", "01"], ids=["bind-0", "bind-01"])
+@pytest.mark.parametrize("index", ["0", "01", "١"],
+                         ids=["bind-0", "bind-01", "bind-u0661"])
 def test_a_noncanonical_out_names_no_facts_file_and_no_words(estate, index):
     """S3, an `out` whose index is not canonical, `[1-9][0-9]*` (contract
     section 3's `out` row), names no facts file: nothing is read from,
@@ -2485,7 +2486,17 @@ def test_a_noncanonical_out_names_no_facts_file_and_no_words(estate, index):
     where a derivation would put it, and the stand-in `lane-start` refuses
     1, its words in the `out`. The sentinel is left byte for byte, no other
     file is made beside the `out`, and the record ends `bind-failed` with
-    point 16(c)'s `why`, not the stand-in's line."""
+    point 16(c)'s `why`, not the stand-in's line.
+
+    `[bind-0]` and `[bind-01]` stop at the predicate's `0*` branch.
+    `[bind-u0661]` (T214r) is an index of U+0661, the Arabic-Indic digit
+    one, which reaches its non-digit branch, `*[!0123456789]*` (T502's part
+    19, `a6ee7c0b`), the branch that keeps an `out` from naming an arbitrary
+    facts path. Its id is ASCII, set by `ids=`. It is coverage, not a red
+    for part 19: bash 5.x's `*[!0-9]*` before it already rejects U+0661 on
+    this host, so it goes red only where the non-digit test is dropped
+    (lane 5's `[non-ascii-digit]`, #165 6884069915; lane 2's reader AF6-27,
+    #165 6885568373)."""
     est = estate()
     est.set("rc", 1)
     out = _direct_record(est, index=index)
