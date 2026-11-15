@@ -21865,6 +21865,13 @@ guard_offer() {   # <offer file> <pane>
     fi
     rm -f -- "$go_t" 2>/dev/null || :
   fi
+  # A RECORD THAT IS THERE, WHEREVER THE CREATE FAILED (lane 5's adversarial
+  # review, F2): where `offers/` cannot take the temporary file (`mktemp` fails,
+  # say on a directory that is not writable) or the temporary write fails, no
+  # create was tried, and a stale record that is there is still a record that is
+  # there: it is answered by `guard_offer_site`, not asked over with an answer that
+  # could never be recorded.
+  if [ "$go_made" != 1 ] && { [ -e "$go_f" ] || [ -L "$go_f" ]; }; then go_made=there; fi
   [ "$go_made" != there ] || return 3
   guard_triple
   note "WARNING: the lane and Claude session names disagree. This prompt is paused until you choose how to repair or explicitly allow this lane."
@@ -21890,7 +21897,7 @@ guard_offer() {   # <offer file> <pane>
     note "AND THE ' (N)' SUFFIX IS EVIDENCE: it is exactly what a rename into a title something else still holds mints, so another holder of '$G_LANE' was live when this session was named (Amendment 6(d), ratified decision D4). Naming them is a read of its own, kept off this hook's path because it costs about three seconds: \`lanes-edit.sh forks $G_LANE\`. Retiring one is \`lane-end $G_LANE --retire <pid>\`, which proves it is a fork, prints Amendment 6(d)'s act filled in, and ends, writes and kills nothing."
   fi
   note "Reply \`1\`, \`2\` or \`3\`. The answer is the NEXT prompt, it is consumed here and never reaches the model; anything else asks again."
-  [ -f "$go_f" ] || note "(the offer could not be written to $go_f, so the answer will be read as a fresh prompt and this question asked again — which is the safe direction)"
+  [ "$go_made" = 1 ] || note "(the offer could not be written to $go_f, so the answer will be read as a fresh prompt and this question asked again — which is the safe direction)"
   return 2
 }
 
@@ -21912,10 +21919,12 @@ guard_offer() {   # <offer file> <pane>
 #                                 offer (its 3), the offer is made once more
 # THE ONE RETRY is the whole of the loop: where its create fails too, nothing is
 # written, and the prompt is refused with the question to be asked afresh.
-# Where a drop cannot remove a leftover (a failed `rm`), the leftover is no
-# longer written over, as it was: the prompt is refused here, and the next one
-# meets the same record and the same refusal, until the drop works. Nothing is
-# lost: the record is as it was, and the person's prompt is theirs to send again.
+# Where a drop cannot remove a leftover (a failed `rm`), or `offers/` cannot take
+# the temporary file (`guard_offer` answers 3 for a record that is there then too,
+# F2), the leftover is no longer written over, as it was: the prompt is refused
+# here, and the next one meets the same record and the same refusal, until the
+# drop works. Nothing is lost: the record is as it was, and the person's prompt
+# is theirs to send again.
 guard_offer_site() {   # <offer file> <pane> <the prompt>
   gos_f="${1-}"; gos_pane="${2-}"; gos_prompt="${3-}"
   gos_rc=0
