@@ -314,6 +314,19 @@
 #   to run it again from its start (Y:5601); under `@files` or after
 #   `act-begin`'s 2, the hand command stands (Y:5596) (lane 3's REV-ACT Q4,
 #   #165 6774499606, and Q11, #165 6779688808).
+#   THE SWEEP'S NOTED LINE ON PRIMARY (lane 3, #165 6894116246: T430 takes
+#   lane 4's fix, #165 6889006976 item 3). `--sweep-checkouts` takes no act
+#   base, so its one write, the NOTED line, cannot tell the mode by
+#   `LANES_ACT`: it tells it by the writer's own words, which it keeps (lane
+#   openRepoTools-3's SHOULD 373). A 3 in one of the five forms a primary
+#   write ends 3 in (a register write in doubt; an identical write still
+#   running, its record read or not, or being started; a claim whose owner
+#   cannot be tested) is no push the read-back could not confirm, and the
+#   publish act sends nothing for a register write. So the sweep relays the
+#   writer's words, its rerun among them, prints no command of its own, and
+#   exits 1. Every other 3, files mode's `pushed, not confirmed` and one whose
+#   words could not be kept among them, keeps files mode's note and the
+#   publish act, as before.
 #
 # EXIT
 #   0  done
@@ -325,7 +338,9 @@
 #      listed, or a fetch `--yes` decides on), a read's 3, which the sweep
 #      never passes (research.md ERR-52; the 69, 75, 3 row below), a removal
 #      that did not finish, or removals whose NOTED line was not written or
-#      not confirmed on origin (the commands to finish it are printed).
+#      not confirmed on origin (the commands to finish it are printed), or
+#      whose write ended 3 on primary (the writer's words are above, its rerun
+#      among them, and no publish act is printed).
 #      And feature 007's refusals before the first
 #      write (A2): `act-begin` answered 1, 64 or another code that is no base,
 #      or exited 0 with no line or a malformed one; or `canon-lane --walk`
@@ -3139,10 +3154,33 @@ SLU
     # staged sends what origin lacks by content and says so where it lacks
     # nothing, so it is safe to run whichever happened. A 6 is handed what
     # its own cause needs (below), and every other refusal the line by hand.
+    # ON PRIMARY A 3 IS NO PUSH (lane 3, #165 6894116246; lane 4's #165
+    # 6889006976, item 3). There `log` is one register transaction, and the
+    # publish act sends nothing for it: primary's dispatcher sends every verb
+    # but `commit` to `pw_run`, and `commit` publishes only queued git
+    # commits. A primary `log` ends 3 in five forms, each its own `die`
+    # (`pw_lookup_3`, `pw_owner_live_end`'s three and `pw_owner_untested_end`):
+    # a register write in doubt, or an identical write still running, being
+    # started or holding a claim whose owner cannot be tested. Each says how
+    # to settle it, its `LANES_WRITE_ID` rerun where it has one. So a 3 whose
+    # kept words are one of those forms relays them (printed above), prints
+    # no command of its own, and exits 1, as every unfinished NOTED line
+    # does: this command's own 3 is the dry run's "something is removable"
+    # (research.md ERR-52). The sweep takes no act base, so the writer's words
+    # are the one sign of the mode it has. Every other 3 keeps files mode's
+    # note and the publish act: files mode's `pushed, not confirmed`, and a 3
+    # whose words could not be kept, where no capture could be made and the
+    # words went to stderr unread, so a primary 3 then still shows the
+    # writer's rerun, above files mode's note.
     if [ "$sc_noted_rc" != 0 ]; then
       sc_by_hand="$(sc_by_hand_of "$sc_text")"
       case "$sc_noted_rc" in
         3)
+          case "$sc_log_err" in
+            *"lanes-edit: cannot confirm whether register write "* | *"lanes-edit: an identical write "*)
+              note "the NOTED line recording this sweep may not be written: \`lanes-edit.sh log\` exited 3 on primary (its words are above). Settle it by what the writer printed, and by nothing else, so the sweep is recorded once: run its printed \`LANES_WRITE_ID\` rerun, which writes the line once or finds it, or, where it names an identical write still running or holding the claim, do what it says once that write has ended. Nothing was lost: each checkout removed held nothing unpublished."
+              exit 1 ;;
+          esac
           note "the NOTED line recording this sweep was committed and pushed, and the read-back could not confirm it on origin (\`lanes-edit.sh log\` exited 3, above), so it may be on origin already, and it is not to be written again. Nothing was lost: each checkout removed held nothing unpublished. The publish act sends its commit only where origin lacks it by content, and says so where origin has it:"
           note "  $sc_publish"
           exit 1 ;;
