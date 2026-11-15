@@ -20502,13 +20502,33 @@ guard_drop_if() {   # <mode> <offer file> [record | all] [<key>=<value> …]
   fi
   return 0
 }
+# WHY A RECORD'S `rm` FAILED, AND THE WAY OUT (lane 5's adversarial read of
+# parts 56 to 59, NIT-4): where the offers directory cannot be written, that is
+# the cause; where it can, the file itself refused (an attribute, or a sticky
+# directory's other owner), and making the directory writable would not help.
+# Sets `GRC_WHY`, a clause after "`rm` failed on <file>, ", and `GRC_FIX`.
+guard_rm_cause() {   # <offer file>
+  grc_f="${1-}"; grc_d="${grc_f%/*}"
+  if [ -w "$grc_d" ]; then
+    GRC_WHY="though the offers directory, $grc_d, is writable, so the file itself refuses removal (an attribute, or a sticky directory's other owner)"
+    GRC_FIX="Remove $grc_f yourself once that is put right."
+  else
+    GRC_WHY="and removing a record needs the offers directory, $grc_d, to be writable"
+    GRC_FIX="Make $grc_d writable, or remove $grc_f yourself."
+  fi
+}
 # THE REFUSAL WHERE A RECORD COULD NOT BE REMOVED (lane 3's SHOULD-1): the record
 # is still there, so the question is not asked afresh, and the next prompt meets
-# the same record. The refusal names the offers directory, which removing a
-# record needs to be writable, and the bypass.
+# the same record. The refusal names the cause (`guard_rm_cause`) and the bypass.
+# "NOTHING WAS REMOVED", not "this prompt changed nothing" (NIT-3): an answer `2`
+# may have renamed the window and its head copy written to the record before
+# this refusal, so it says what it can know; and where `guard_answer_moved`
+# renamed the window (`GBT_REN_FROM`), it says the window was kept.
 guard_drop_refuse() {   # <offer file> <what this prompt found, as a clause>
-  gdf_f="${1-}"; gdf_d="${gdf_f%/*}"
-  guard_refuse "${2-}, and it could NOT be removed: \`rm\` failed on $gdf_f, and removing a record needs the offers directory, $gdf_d, to be writable. So the record is still there, this prompt changed nothing, and the next prompt meets the same record. Make $gdf_d writable, or remove $gdf_f yourself. Send your prompt again after that. $(guard_bypass)"
+  gdf_f="${1-}"; gdf_w=""
+  guard_rm_cause "$gdf_f"
+  [ -z "${GBT_REN_FROM-}" ] || gdf_w=" This window keeps the name ${GBT_REN_TO:-<to>} that this answer gave it."
+  guard_refuse "${2-}, and it could NOT be removed: \`rm\` failed on $gdf_f, $GRC_WHY. So the record is still there and nothing was removed, and the next prompt meets the same record.$gdf_w $GRC_FIX Send your prompt again after that. $(guard_bypass)"
 }
 # THE ALLOWANCE'S DROP removes the record and nothing else: no `.bind.*` sweep,
 # because an allowance has none (the contract states that exception). ITS WINDOW,
@@ -22343,6 +22363,14 @@ GBT_MOVED=0
 # of part 55, NIT 3): empty here, so that a value the environment carries never
 # renames a window this prompt did not.
 GBT_REN_FROM=""; GBT_REN_TO=""
+# `guard_answer`'s FAILED-DROP FLAG (lane 3's SHOULD-1; lane 5's adversarial read
+# of parts 56 to 59, NIT-2): 0 here, so that a value the environment carries
+# neither silences the first failed-drop note nor names a failed `rm` that never
+# happened. THE WINDOW LEFT, unstated before: within one prompt, where the
+# stale drop failed and the offer site's retry then meets a record another
+# prompt put there meanwhile, the retry's refusal names the failed `rm` on the
+# path though the record there is that newer one; the next prompt reads it.
+GA_DROP_FAILED=0
 guard_bind_refill() {
   [ "$GB_REFILLED" = 0 ] || return 0
   reg_flush
@@ -22754,11 +22782,18 @@ guard_site_moved() {   # <offer file> <pane>
   fi
   # A RECORD THERE THAT COULD NOT BE READ AGAIN (part 50's audit of part 49's
   # NIT-3) is said to be just that, never "mode=none". Its first `mode` and
-  # first `from` lines are taken from the one read (part 59).
+  # first `from` lines are taken from the one read (part 59), in
+  # `guard_site_reread`'s form, the newline in a variable, so that no
+  # `$'…'` sits inside a quoted `${…}`, which bash 3.2 reads otherwise
+  # under `shopt -u extquote` (lane 5's adversarial read of parts 56 to 59).
   if [ -f "$gsm2_f" ] && gsm2_all="$(sed -n -e '/^mode=/p' -e '/^from=/p' "$gsm2_f" 2>/dev/null)"; then
-    gsm2_read=1; gsm2_x=$'\n'"$gsm2_all"
-    case "$gsm2_x" in *$'\n'mode=*) gsm2_m="${gsm2_x#*$'\n'mode=}"; gsm2_m="${gsm2_m%%$'\n'*}" ;; esac
-    case "$gsm2_x" in *$'\n'from=*) gsm2_from="${gsm2_x#*$'\n'from=}"; gsm2_from="${gsm2_from%%$'\n'*}" ;; esac
+    gsm2_read=1; gsm2_nl=$'\n'; gsm2_x="$gsm2_nl$gsm2_all"
+    case "$gsm2_x" in
+      *"${gsm2_nl}mode="*) gsm2_m="${gsm2_x#*"${gsm2_nl}mode="}"; gsm2_m="${gsm2_m%%"$gsm2_nl"*}" ;;
+    esac
+    case "$gsm2_x" in
+      *"${gsm2_nl}from="*) gsm2_from="${gsm2_x#*"${gsm2_nl}from="}"; gsm2_from="${gsm2_from%%"$gsm2_nl"*}" ;;
+    esac
   fi
   if [ "$gsm2_read" = 0 ]; then
     guard_refuse "the pending offer at $gsm2_f was changed while it was being answered, and the record there could not be read again, so nothing was written to it. Send your prompt again and it will be read afresh."
@@ -23025,7 +23060,10 @@ guard_bind_site() {   # <offer file> <pane>
 $GBR_NOTES
 EOF
       fi
-      [ "$gbt_drc" = 0 ] || note "The bind record at $gbt_f could NOT be removed: \`rm\` failed on it, and removing a record needs the offers directory, ${gbt_f%/*}, to be writable. So the next prompt hears this outcome again: make ${gbt_f%/*} writable, or remove $gbt_f yourself. $(guard_bypass)"
+      if [ "$gbt_drc" != 0 ]; then
+        guard_rm_cause "$gbt_f"
+        note "The bind record at $gbt_f could NOT be removed: \`rm\` failed on it, $GRC_WHY. So the next prompt hears this outcome again. $GRC_FIX $(guard_bypass)"
+      fi
       note "This prompt was NOT sent: it is the one that hears how the bind ended. Send your work again."
       return 2 ;;
     bind-failed)
@@ -23460,7 +23498,8 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     ga_stale="the pending question was about lane $ga_from and session '${ga_session:-none}', and this window is now lane ${G_LANE:-none} with session '${G_NAME:-none}'"
     case "$ga_drc" in
       0) note "$ga_stale — so the offer has been DROPPED rather than answered on a state you were never shown. Nothing was renamed or written. This prompt is judged afresh below." ;;
-      2) [ "${GA_DROP_FAILED:-0}" = 1 ] || note "$ga_stale — so the offer was to be dropped rather than answered on a state you were never shown, and it could NOT be removed: \`rm\` failed on $ga_f, and removing a record needs the offers directory, ${ga_f%/*}, to be writable. So it is still there. Nothing was renamed or written. This prompt is judged afresh below."
+      2) guard_rm_cause "$ga_f"
+         [ "${GA_DROP_FAILED:-0}" = 1 ] || note "$ga_stale — so the offer was to be dropped rather than answered on a state you were never shown, and it could NOT be removed: \`rm\` failed on $ga_f, $GRC_WHY. So it is still there. Nothing was renamed or written. This prompt is judged afresh below."
          GA_DROP_FAILED=1 ;;
       *) note "$ga_stale — so the offer is not answered on a state you were never shown; and it was not dropped, because the record had changed or gone since it was read ($(guard_record_now "$ga_f")), so nothing was removed. Nothing was renamed or written. This prompt is judged afresh below." ;;
     esac
@@ -23776,7 +23815,11 @@ guard_answer() {   # <offer file> <the prompt> <pane>
           fi
         fi
         if [ "$ga_brc" = 2 ]; then
-          guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been written; the offer was dropped or changed meanwhile, so there is none of this answer's to keep. Send your prompt again and the question will be asked afresh."
+          # "READ AFRESH", NOT "ASKED AFRESH" (lane 5's adversarial read of parts
+          # 56 to 59, NIT-1): since part 57 this 2 is also another attempt's live
+          # `binding` at the record, which the next prompt answers BINDING IN
+          # PROGRESS and never asks; the words since part 34 cover every record.
+          guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been written; the offer was dropped or changed meanwhile, so there is none of this answer's to keep. Send your prompt again and it will be read afresh."
         elif [ "$ga_brc" = 1 ] && [ "$ga_bstill" = 1 ]; then
           guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been started; but the record could not be written back to the question, so it still says binding: the next prompts say BINDING IN PROGRESS until its deadline, and the first after it finds the record stale and asks afresh. Answer \`2\` again then, or choose \`1\` or \`3\`."
         elif [ "$ga_brc" = 1 ] && [ "$ga_bunread" = 1 ]; then
