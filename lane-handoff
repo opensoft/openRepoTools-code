@@ -134,14 +134,14 @@
 #      database could not be reached, the register was busy, or it could not
 #      confirm whether the line landed — and then the line MAY NOT be written,
 #      and the rerun the helper printed, where it printed one, settles it (where
-#      it printed none, what it printed does, except under this act's base,
-#      where this command run again, as it was typed, does). Any other code from
-#      that write is still 2. A 69 is also what a late PAUSED that was NOT SENT
-#      exits with, where `act-begin` answered 69 or this run read the mirror:
-#      the PAUSED record's writes are held then, in every mode of this command
-#      (the handoff file is still written, and the lane stays SWAPPING), and the
-#      note names `lane-handoff --late --at <UTC> --lane <L>` as the act that
-#      completes it.
+#      it printed none, what it printed does, except that on primary, under this
+#      act's base, where it says to run a command, this command run again, as it
+#      was typed, does). Any other code from that write is still 2. A 69 is also
+#      what a late PAUSED that was NOT SENT exits with, where `act-begin`
+#      answered 69 or this run read the mirror: the PAUSED record's writes are
+#      held then, in every mode of this command (the handoff file is still
+#      written, and the lane stays SWAPPING), and the note names `lane-handoff
+#      --late --at <UTC> --lane <L>` as the act that completes it.
 #
 #   $LANES_EDIT       the register's reader/writer (default: beside this file)
 #   $LANES_ROUTE_WRITES=1     Amendment 23's opt-in: the lane's writes, the
@@ -3467,23 +3467,26 @@ relay_writer_words() {   # <what the writer printed on stderr, empty where nothi
 # two of its five 3s, in two more only where this run was under a
 # `LANES_WRITE_ID` (this file sets none), and in the fifth, a record it cannot
 # read, not at all. So where it printed none, what it printed is what to follow,
-# EXCEPT UNDER THIS ACT'S BASE (lane 3's ruling on D9, its base clause), where
-# this command is run again from its start, as it was typed: what the writer
-# printed may be a hand command, and one run without the act's `LANES_ACT` and
-# `LANES_EXPECT` writes unchecked (Y:5587). THE CLAUSE IS NOT RIGHT AT EVERY
-# SITE, so there are three forms. `d8_text` is the rule whole, for W9's line,
-# W12's row and the late line (`--late` writes that line alone, so its run again
-# is the same command). `d8_text_w11` is for the file-level line, which carries
-# a UTC of its own (Y:5224): a run again appends a second one, so the base
-# clause does not apply to it. `d8_text_gate` is the rule without the clause,
-# for the `--restart` and `--exit` gates, whose `gate_tail` says what to do
-# under a base and says never to run this command again (Y:5224). Off primary it
-# was committed locally and origin did not confirm it. Every note, gate and
+# wait and effect check included, EXCEPT THAT ON PRIMARY, UNDER THIS ACT'S BASE
+# (lane 3's ruling on D9, its base clause, narrowed to primary by the delta
+# review's B2), where it says to run a command, this command is run again from
+# its start, as it was typed: that command is a hand command, and one run
+# without the act's `LANES_ACT` and `LANES_EXPECT` writes unchecked (Y:5587).
+# Files mode's `<act-id>@files` base reads neither and keeps its hand commands
+# (Y:5596), so off primary the words are the commit's. THE CLAUSE IS NOT RIGHT
+# AT EVERY SITE, so there are three forms. `d8_text` is the rule whole, for W9's
+# line, W12's row and the late line (`--late` writes that line alone, so its run
+# again is the same command). `d8_text_w11` is for the file-level line, which
+# carries a UTC of its own (Y:5224): a run again appends a second one, so the
+# base clause does not apply to it. `d8_text_gate` is the rule without the
+# clause, for the `--restart` and `--exit` gates, whose `gate_tail` says what to
+# do under a base and says never to run this command again (Y:5224). Off primary
+# it was committed locally and origin did not confirm it. Every note, gate and
 # lifecycle line below that follows a 3 uses one of the three, whole and byte
 # for byte, and prints no hint of its own.
 d8_head="may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun, "
 d8_off="; off primary, the commit is local and may already be on origin."
-d8_text="${d8_head}follow what it printed, except under this act's base, where you run $prog again from its start, as it was typed, instead${d8_off}"
+d8_text="${d8_head}follow what it printed, except that on primary, under this act's base, where it says to run a command, you run $prog again from its start, as it was typed, instead${d8_off}"
 d8_cause="${d8_text%.}"   # the same, without its last full stop, where a sentence goes on
 d8_text_w11="${d8_head}follow what it printed, and do not run $prog again for it: that run would append a second file-level line, which carries a UTC of its own (Y:5224)${d8_off}"
 d8_cause_w11="${d8_text_w11%.}"
@@ -3586,15 +3589,16 @@ paused_69_landed_note() {
 # (Y:5601), as the stop does: a late PAUSED would be a first PAUSED, and the act
 # run again would write a second. Where W9 exited 3, it names W9's printed
 # `LANES_WRITE_ID` rerun first, where the writer printed one, and then the act
-# again (Y:5199, Y:5222); where it printed none, the act again alone, instead of
-# what it printed (D9's base clause): before the rerun settles it `--late` would
-# write a late PAUSED that the rerun then repeats, and after it `--late`
-# refuses, since the line is the lane's last.
+# again (Y:5199, Y:5222); where it printed none, what it printed, except that
+# where it says to run a command, the act again instead (D9's base clause):
+# before the rerun settles it `--late` would write a late PAUSED that the rerun
+# then repeats, and after it `--late` refuses, since the line is the lane's
+# last.
 paused_69_w9_stopped_note() {
 	note "THE PAUSED RECORD IS INCOMPLETE and lane $lane stays SWAPPING, an interrupted swap. The object log's PAUSED line was NOT written (the helper's own words are above), so \`$prog --late\` is not the way to complete it: it would write that one line and never the LANES.md file-level line or the row, and the act run again would then write a second PAUSED. Once the register answers, run $prog again from its start (Y:5601): it takes a fresh base and supersedes this operation.$p69_also3"
 }
 paused_69_w9_3_note() {
-	note "THE PAUSED RECORD IS INCOMPLETE and lane $lane stays SWAPPING, an interrupted swap. The object log's PAUSED line may or may not have landed (its write exited 3), so \`$prog --late\` is not the way to complete it: where the line landed it refuses, and where it did not it would write a late PAUSED that the rerun the writer printed above would then repeat. Where the writer printed a rerun, run it first, which writes the line once or finds it (Y:5222), and then, once the register answers, run $prog again from its start (Y:5601): it takes a fresh base and supersedes this operation. Where it printed none, run $prog again from its start, once the register answers, instead of following what it printed (Y:5601).$p69_also3"
+	note "THE PAUSED RECORD IS INCOMPLETE and lane $lane stays SWAPPING, an interrupted swap. The object log's PAUSED line may or may not have landed (its write exited 3), so \`$prog --late\` is not the way to complete it: where the line landed it refuses, and where it did not it would write a late PAUSED that the rerun the writer printed above would then repeat. Where the writer printed a rerun, run it first, which writes the line once or finds it (Y:5222), and then, once the register answers, run $prog again from its start (Y:5601): it takes a fresh base and supersedes this operation. Where it printed none, follow what it printed, except that where it says to run a command, run $prog again from its start instead, once the register answers (Y:5601).$p69_also3"
 }
 
 # ------------------------------------------------------------ the LATE branch
@@ -3630,9 +3634,10 @@ if [ "$do_late" = 1 ]; then
 		# (ERR-36), and any other code keeps the exit this arm always had, 2.
 		# AND A 3 IS NOT "NOT WRITTEN" (F9, item 4): it is the register saying it
 		# cannot confirm whether the line landed, so the text says what D8 says and
-		# sends the reader to the rerun the writer printed above, which writes it once
-		# or finds it, where it printed one, and, where it printed none, to what it
-		# printed, or under a seq base to this command run again as it was typed
+		# sends the reader to the rerun the writer printed above, which writes it
+		# once or finds it, where it printed one, and, where it printed none, to
+		# what it printed, except that on primary, under a seq base, where that
+		# says to run a command, to this command run again as it was typed
 		# (`d8_text`).
 		late_exit=2
 		late_cause="the late PAUSED record was refused by the helper"
@@ -3751,15 +3756,16 @@ else
 		# note after the third write is the one way offered, since a bare hand
 		# line run once the register answers would be dated then, and the late
 		# PAUSED the note names would be a second line.
-		# UNDER A SEQ BASE NO HAND COMMAND IS PRINTED for a write that did not end 0
-		# (#165 6774499606, REV-ACT Q4; #165 6779688808, Q11): one run without
-		# `LANES_ACT` and `LANES_EXPECT` writes unchecked (Y:5587), and one run with
-		# them only refuses again. A 3 relays the writer's rerun where it printed one
-		# (G3) and says, where it printed none, to run the act again from its start
-		# (D9), a 69 prints the late-path note, and any other code — a 2, a 75 — keeps
-		# the writer's stderr, above, and says to run the act again from its start
-		# (Y:5601). Under `@files`, or after `act-begin`'s 2, the hand line stays
-		# (Y:5596).
+		# UNDER A SEQ BASE NO HAND COMMAND IS PRINTED for a write that did not end
+		# 0 (#165 6774499606, REV-ACT Q4; #165 6779688808, Q11): one run without
+		# `LANES_ACT` and `LANES_EXPECT` writes unchecked (Y:5587), and one run
+		# with them only refuses again. A 3 relays the writer's rerun where it
+		# printed one (G3) and says, where it printed none, to follow what it
+		# printed, except that on primary, where that says to run a command, the
+		# act is run again from its start (D9), a 69 prints the late-path note, and
+		# any other code — a 2, a 75 — keeps the writer's stderr, above, and says
+		# to run the act again from its start (Y:5601). Under `@files`, or after
+		# `act-begin`'s 2, the hand line stays (Y:5596).
 		[ "$w9_rc" != 69 ] || paused_69=1
 		if [ "$w9_rc" = 3 ]; then
 			record_in_doubt=1

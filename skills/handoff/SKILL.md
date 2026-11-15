@@ -763,7 +763,7 @@ itself exited 69 or was not sent and no write stopped the act** (lane 3, #165 68
 because `--late` writes that line alone and refuses once the lane's last line is a `PAUSED`, and after a stop it would write a
 second one. Where that line landed, or a write stopped the act, the note says to run
 `/handoff` again from step 1 once the register answers (Y:5601), and where it exited 3 the note names that write's printed
-`LANES_WRITE_ID` rerun first, where the writer printed one, and then `/handoff` again (Y:5199, Y:5222), and where it printed none only `/handoff` again, instead of what it printed (below). Where the register's line or the row also exited 3, every one of these notes ends with the stop's own sentence, which names the rerun the writer printed for it, where it printed one (where it printed none, that write's own `IN DOUBT` line says what to do), and says to run it first (lane 3, #165 6837908956, questions 1 to 3). Where `act-begin` exits 2 the helper predates feature 007 and the writes go as
+`LANES_WRITE_ID` rerun first, where the writer printed one, and then `/handoff` again (Y:5199, Y:5222), and where it printed none what it printed, except that where it says to run a command, `/handoff` again instead (below). Where the register's line or the row also exited 3, every one of these notes ends with the stop's own sentence, which names the rerun the writer printed for it, where it printed one (where it printed none, that write's own `IN DOUBT` line says what to do), and says to run it first (lane 3, #165 6837908956, questions 1 to 3). Where `act-begin` exits 2 the helper predates feature 007 and the writes go as
 they always did, with `LANES_ACT` unset and `LANES_EXPECT` kept, which such a helper reads no more than it reads
 `LANES_ACT`; this skill sets no `SWAPPING`, so the note says the lane stays as it is. Off a SQL register the base
 reads `<id>@files` and both variables are ignored. Set `L`, `sread`, `lane`, `ws` and the rest as steps 1 and 2 have
@@ -838,16 +838,15 @@ act_re='^[0123456789abcdef]{32}@(files|(0|[123456789][0123456789]{0,17}):[012345
 # `PAUSED` lines (lane 3, #165 6836853700, question 8). WHERE W11'S OR W12'S WRITE ALSO
 # EXITED 3, UNDER A SEQ BASE, each of the four ends with the stop's own sentence
 # (`act_p69_also3`, set where the three writes are known; T429's `p69_also3`; lane 3, #165
-# 6837908956, questions 1 to 3): the rerun the writer printed, where it printed one, is what
-# settles that write, and where it printed none that write's own `IN DOUBT` line says what
-# to do, and the way the note names is no way to settle it. It is empty everywhere else,
-# `@files` and `act-begin`'s 2 included, so those notes keep their words, and W9's own 3 is named by
-# `act_69_doubt_note` already. Where `act-begin`, an identity
-# read or the walk stopped the writes, none was sent: the note prints at the end of the
-# reads, before anything is built, and the block ends there, and it is always
-# `act_69_note`. `act_down_say` and
-# `act_hold` run here, not in a `$( )`, because they set `act_down`. They clear the
-# base and the scopes, which no write below will use.
+# 6837908956, questions 1 to 3): the rerun the writer printed, where it printed one, is
+# what settles that write, and where it printed none that write's own `IN DOUBT` line says
+# what to do, and the way the note names is no way to settle it. It is empty everywhere
+# else, `@files` and `act-begin`'s 2 included, so those notes keep their words, and W9's
+# own 3 is named by `act_69_doubt_note` already. Where `act-begin`, an identity read or
+# the walk stopped the writes, none was sent: the note prints at the end of the reads,
+# before anything is built, and the block ends there, and it is always `act_69_note`.
+# `act_down_say` and `act_hold` run here, not in a `$( )`, because they set `act_down`.
+# They clear the base and the scopes, which no write below will use.
 act_down_say() {   # act_down_say <the call that stopped the writes> <its exit code: 69, 75 or 3>
   act_down=1; act_exit="$2"; act_line=""; act_scopes=""
   echo "NO PAUSED WRITES: \`$1\` exited $2, so the register cannot be consulted and every write below would be refused 69 as well. None of the three is sent: no PAUSED line, no register line and no state cell is written. The handoff step 2 refreshed stands, and step 5 prints the restart command with --lane. This block ends $2."
@@ -863,7 +862,7 @@ act_69_landed_note() {
   echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The object log's PAUSED line is written, so \`lane-handoff --late\` is not the way to complete it: it refuses where the lane's last line is already a PAUSED, and it never writes the register's file-level line or the row. Once the register answers, run /handoff again from step 1 (Y:5601): it takes a new base.$act_p69_also3"
 }
 act_69_doubt_note() {
-  echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The object log's PAUSED line is in doubt (its write exited 3), so \`lane-handoff --late\` is not the way to complete it: where the rerun the writer printed above lands the line, \`--late\` refuses, and where it has not, a late line and that rerun would write two. Where the writer printed a \`LANES_WRITE_ID\` rerun, run it first, which writes the line once or finds it (Y:5199, Y:5222), and then, once the register answers, run /handoff again from step 1 (Y:5601): it takes a new base. Where it printed none, run /handoff again from step 1, once the register answers, instead of following what it printed (Y:5601).$act_p69_also3"
+  echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The object log's PAUSED line is in doubt (its write exited 3), so \`lane-handoff --late\` is not the way to complete it: where the rerun the writer printed above lands the line, \`--late\` refuses, and where it has not, a late line and that rerun would write two. Where the writer printed a \`LANES_WRITE_ID\` rerun, run it first, which writes the line once or finds it (Y:5199, Y:5222), and then, once the register answers, run /handoff again from step 1 (Y:5601): it takes a new base. Where it printed none, follow what it printed, except that where it says to run a command, run /handoff again from step 1 instead, once the register answers (Y:5601).$act_p69_also3"
 }
 act_69_again_note() {
   echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The object log's PAUSED line did not land (it was not written, and this act stops, below), so \`lane-handoff --late\` is not the way to complete it. Once the register answers, run /handoff again from step 1 (Y:5601): it takes a new base.$act_p69_also3"
@@ -874,28 +873,30 @@ act_69_again_note() {
 # rerun: T433's text, D8's words and then the files-mode sentence. The writers'
 # stderr is kept, so the rerun is above, and this block prints no hint of its
 # own beside it. WHERE THE WRITER PRINTED NO RERUN the line says to follow what
-# it printed, except under a seq base, where the act is run again from step 1
-# instead (D9; lane 3's base clause), as `lane-handoff`'s `d8_text` does. THE
-# REGISTER'S FILE-LEVEL LINE IS THE EXCEPTION to the exception: it carries a UTC
-# of its own (Y:5224), so the act run again would append a second one, and its
-# line says to follow what the writer printed and not to run the act again
-# (`d8_text_w11`).
+# it printed, except that on primary, under a seq base, where it says to run a
+# command, the act is run again from step 1 instead (D9; lane 3's base clause,
+# narrowed to primary by the delta review's B2), as `lane-handoff`'s `d8_text`
+# does. `@files` keeps its hand commands (Y:5596). THE REGISTER'S FILE-LEVEL
+# LINE IS THE EXCEPTION to the exception: it carries a UTC of its own (Y:5224),
+# so the act run again would append a second one, and its line says to follow
+# what the writer printed and not to run the act again (`d8_text_w11`).
 act_in_doubt() {   # act_in_doubt <which write> [<what to do where the writer printed no rerun>]
   act_d3=1
   ai_none="${2-}"
-  [[ -n "$ai_none" ]] || ai_none="follow what it printed, except under this act's base, where you run /handoff again from step 1 instead"
+  [[ -n "$ai_none" ]] || ai_none="follow what it printed, except that on primary, under this act's base, where it says to run a command, you run /handoff again from step 1 instead"
   echo "IN DOUBT: $1 exited 3 (the writer's own code, above). On primary it may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun, ${ai_none}; off primary, the commit is local and may already be on origin."
 }
 # NO HAND COMMAND AFTER A WRITE THAT DID NOT END 0, UNDER A SEQ BASE (lane 3, #165
-# 6779688808, Q11; Y:5587, Y:5601). A hand re-run of a write that left out the act's
-# two variables writes unchecked, and one that kept them would only be refused again,
-# so the block prints none. A 3 keeps the writer's rerun where it printed one
-# (`act_in_doubt`) and says where it printed none to run the act again (D9), a 69 keeps
-# the note, and every other code keeps the writer's own stderr, above, and says to run
-# the act again from its start. Under `@files`, or with no base after `act-begin`'s 2,
-# today's hand re-run stands and this prints nothing. AND THE WRITE IS RECORDED AS ONE
-# THAT STOPS THE ACT (T431; lane 3, #165 6834271321 and 6835210568, question 4): the block
-# ends with it, below, 2 and never 0, whatever code the writer gave.
+# 6779688808, Q11; Y:5587, Y:5601). A hand re-run of a write that left out the act's two
+# variables writes unchecked, and one that kept them would only be refused again, so the
+# block prints none. A 3 keeps the writer's rerun where it printed one (`act_in_doubt`)
+# and says where it printed none to follow what it printed, except that on primary, where
+# that says to run a command, the act is run again (D9), a 69 keeps the note, and every
+# other code keeps the writer's own stderr, above, and says to run the act again from its
+# start. Under `@files`, or with no base after `act-begin`'s 2, today's hand re-run stands
+# and this prints nothing. AND THE WRITE IS RECORDED AS ONE THAT STOPS THE ACT (T431; lane
+# 3, #165 6834271321 and 6835210568, question 4): the block ends with it, below, 2 and
+# never 0, whatever code the writer gave.
 act_again_say() {   # act_again_say <which write> <its exit code>
   case "$act_line" in ""|*@files) return 0 ;; esac
   case "$2" in 0|3|69) return 0 ;; esac
@@ -1439,12 +1440,13 @@ fi
 # landed, `act_69_landed_note` says to run the act again, as `lane-handoff`'s own note
 # does; where it exited 3, `act_69_doubt_note` names the writer's printed rerun
 # first, where it printed one, and then the act again, and where it printed none
-# the act again alone; where a write stopped the act (`act_stop`), the note says
-# to run the act again, as the stop does. Off a seq base it is `--late`'s. Where
-# the register's line or the row also exited 3 (`act_also3`), whichever note
-# prints ends with the stop's own sentence, which names the rerun the writer
-# printed for it, where it printed one, and says to run it first, and where it
-# printed none, to do what that write's own `IN DOUBT` line says.
+# what it printed, with the act again where that says to run a command; where a
+# write stopped the act (`act_stop`), the note says to run the act again, as the
+# stop does. Off a seq base it is `--late`'s. Where the register's line or the
+# row also exited 3 (`act_also3`), whichever note prints ends with the stop's
+# own sentence, which names the rerun the writer printed for it, where it
+# printed one, and says to run it first, and where it printed none, to do what
+# that write's own `IN DOUBT` line says.
 if [[ -n "$act_w69" ]]; then
   case "$act_line" in
     ""|*@files) act_69_note ;;
@@ -1510,16 +1512,16 @@ ends the block 1 and the identity's (its own `REFUSED` line, or Amendment 15(d)'
 **A write that exits 3 is in doubt, not refused** (Y:5698; the register's in-doubt code). On primary the transaction may
 or may not have committed, so the block goes on to the next write, as it does after any write that did not land, and
 prints one line after the write: it exited 3, it may not be written, and the printed `LANES_WRITE_ID` rerun, which writes
-it once or finds it, is what to run (where the writer printed no such rerun, follow what it printed, except under a seq
-base, where you run `/handoff` again from step 1 instead, and except for the register's file-level line, which that run
-would append a second time (Y:5224): follow what the writer printed for it; off primary, the commit is local and may
-already be on origin). The writers' own stderr is kept, so what the writer printed, its rerun where it printed one, is
-above the line, and the block adds no hint of its own beside it. Say in the report which of the three exited 3, and relay
-what the writer printed. A 3 from the row write also sets `row_write_refused`, so that step 5 names the lane in the
-restart command, and step 5 then says the row write may not be written, never that it was refused (Y:5700; lane 3, #165
-6774499606, T431's question 1). Where any write of the act exited 3 and a later one exits 69, the 69 note names that rerun
-first, where the writer printed one (below): the object log's own in `act_69_doubt_note`, the register's line's or the
-row's in the sentence every note then ends with.
+it once or finds it, is what to run (where the writer printed no such rerun, follow what it printed, except that on
+primary, under a seq base, where it says to run a command, you run `/handoff` again from step 1 instead, and except for
+the register's file-level line, which that run would append a second time (Y:5224): follow what the writer printed for it;
+off primary, the commit is local and may already be on origin). The writers' own stderr is kept, so what the writer
+printed, its rerun where it printed one, is above the line, and the block adds no hint of its own beside it. Say in the
+report which of the three exited 3, and relay what the writer printed. A 3 from the row write also sets
+`row_write_refused`, so that step 5 names the lane in the restart command, and step 5 then says the row write may not be
+written, never that it was refused (Y:5700; lane 3, #165 6774499606, T431's question 1). Where any write of the act exited
+3 and a later one exits 69, the 69 note names that rerun first, where the writer printed one (below): the object log's own
+in `act_69_doubt_note`, the register's line's or the row's in the sentence every note then ends with.
 
 **A write that exits 69 prints the note, once** (spec:692: the three writes "SHALL exit 69 and then print a note"). The
 block goes on to the next write, as after any write that did not land, and after the third prints the note of how
@@ -1536,8 +1538,8 @@ cases the block prints `THE PAUSED RECORD IS INCOMPLETE` and names something els
   from step 1 once the register answers, which takes a new base (Y:5601);
 - **it exited 3** (in doubt): the note names the writer's printed `LANES_WRITE_ID` rerun first, which writes the line once
   or finds it, where the writer printed one, and then `/handoff` again from step 1 (Y:5199, Y:5222) (where it printed
-  none, the note says `/handoff` again from step 1 alone, instead of following what it printed), since a `--late` before
-  that rerun would write a second line and one after it refuses;
+  none, the note says to follow what it printed, except that where it says to run a command, `/handoff` again from step 1
+  instead), since a `--late` before that rerun would write a second line and one after it refuses;
 - **a write stopped the act** (the first write's own 2, 75 or any other code, or a later write's beside a first write that
   exited 69 or was not sent; the block ends 2 after `THIS ACT STOPS`, below): the note says the line was not written and
   says to run `/handoff` again from step 1 once the register answers, which is what the stop's own line says too. A
