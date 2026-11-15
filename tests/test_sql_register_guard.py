@@ -98,7 +98,8 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: is keyed by the same Order: its case fails until T502 lands. T214v's
 #: and T214w's rows, for T502's part 22 and its rule for the hook's writes
 #: (lane 3's ruling 5, (A), opensoft/openRepoTools#165 6885771975, and its
-#: confirmation, 6886113842), are keyed by the same Order. T213r's
+#: confirmation, 6886113842), are keyed by the same Order, and so is
+#: T214x's, for the back-out of the same rule (6dd8bbbd:23333-23384). T213r's
 #: row for `test_no_session_environment_carries_a_database_url_or_password`
 #: adds T512 to T213's Order: its `PGPASSFILE` assertions read the
 #: service's own held `psql` child (TP:1952 at `f9d6069e`), which only
@@ -151,6 +152,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_answer_2_binds_nothing_where_its_offer_is_gone_or_no_longer_the_one_answered": ("T502",),  # T214; tasks:2013
     "test_answer_2_exits_2_binding_before_t0_plus_1_s_and_the_runner_sees_eof": ("T502",),  # T214; tasks:2013
     "test_answer_2_survives_a_group_sigterm_at_the_hooks_timeout": ("T502",),  # T214; tasks:2013
+    "test_answer_2s_back_out_writes_nothing_where_its_binding_is_gone_or_no_longer_binding": ("T502",),  # T214; tasks:2013
     "test_case_11_with_a_live_outer_drops_the_record_and_keeps_its_files": ("T502",),  # T214; tasks:2013
     "test_choice_1_allows_nothing_where_its_offer_is_gone_or_no_longer_the_one_answered": ("T502",),  # T214; tasks:2013
     "test_claude_no_lane_still_skips_before_any_input": ("T103", "T113", "T507"),  # T213; tasks:1992
@@ -3732,8 +3734,128 @@ def _nothing_new(est: Estate, before: set, made: set, who: str) -> None:
         f"{who} started an outer: {est.starts()}, {_guard_bind_processes(est)}"
 
 
+#: T214x: THE OTHER RECORDS A HOLD CAN MEET IN THE OFFER'S PLACE (lane 5's
+#: list of what T214v's and T214w's first ids leave out, #165 6888777622), by
+#: id, each answered once by `guard_answer_moved` (6dd8bbbd:22904-22952):
+#: another invocation's `bound` (heard as MOVED) or `bind-failed` (case 6),
+#: another prompt's allowance (3, judged afresh), and a record of another mode.
+IN_PLACE = {"bound-at-its-rewrite": "bound", "bind-failed-at-its-rewrite": "bind-failed",
+            "allow-at-its-rewrite": "allow", "another-mode-at-its-rewrite": "weird",
+            "bound-before-its-mv": "bound", "bind-failed-before-its-mv": "bind-failed",
+            "allow-before-its-mv": "allow", "another-mode-before-its-mv": "weird"}
+#: Their words: case 5's MOVED and its last line (6dd8bbbd:22710, :22718),
+#: case 6's failure (:22726), the allowance's pass (`guard_allow_pass`,
+#: :21921-21925), the default rename-back note's last clause, which says an
+#: offer is kept (:22372), and the why of the bind that failed.
+MOVED_TO = f"MOVED: this window is lane {TO}, bound to this session ("
+HEARS = "This prompt was NOT sent: it is the one that hears how the bind ended"
+FAILED_TO = f"THE BIND TO LANE {TO} FAILED (exit 1)"
+OTHER_WHY = "the other bind's stand-in failed"
+ALLOW_PASS = ("WARNING: this lane/session name mismatch was explicitly allowed for this "
+              "transcript")
+OFFER_KEPT_NOTE = "so the offer it keeps is still this window's"
+NOT_STARTED = "so the bind was NOT started"
+UNAPPROVED = "so the mismatch remains unapproved"
+
+
+def _put_in_place(est: Estate, kind: str) -> bytes:
+    """T214x: ANOTHER RECORD IN THE OFFER'S PLACE, put there at the hold as
+    a writer puts a record (`write_record`), for this offer's two lanes, and
+    its bytes:
+
+    - `bound`: another answer 2's bind, ended `bound` (`rc=0`, `ended_utc`);
+    - `bind-failed`: its attempt 1, ended `bind-failed` (`rc=1`, a `why`);
+    - `allow`: another prompt's choice 1, the allowance as `guard_answer`
+      writes it (6dd8bbbd:23130-23135), for this session and this transcript;
+    - `weird`: the offer itself, its `mode` line saying `weird`."""
+    now = time.time()
+    if kind in ("bound", "bind-failed"):
+        ended = ["rc=0"] if kind == "bound" else ["rc=1", f"why={OTHER_WHY}"]
+        lines = ([f"mode={kind}"] + _binding(est, started=now - 60)[1:]
+                 + ended + [f"ended_utc={_utc(now)}"])
+    elif kind == "allow":
+        lines = ["mode=allow", f"from={FROM}", f"to={est.to}",
+                 f"session={read_record(est.offer)['session']}", f"uuid={est.sid}",
+                 f"utc={_utc(now)}"]
+    else:
+        text, n = re.subn(r"(?m)^mode=name-drift$", f"mode={kind}",
+                          est.offer.read_text(encoding="utf-8"), count=1)
+        assert n == 1, f"the offer holds no mode=name-drift line: {est.offer.read_text()!r}"
+        lines = text.splitlines()
+    write_record(est.offer, lines)
+    return est.offer.read_bytes()
+
+
+def _changed_to(est: Estate, kind: str, what: str) -> str:
+    """`guard_answer_moved`'s why for a record of another mode, `<what>` being
+    `bind` or `allow` (6dd8bbbd:22928-22929; d18, section 5)."""
+    return (f"the offer at {est.offer} was changed before the {what} could be recorded "
+            f"(it says mode={kind} now)")
+
+
+def _in_place_answered(est: Estate, hook, kind: str, installed: bytes, renames: list,
+                       answer: str) -> None:
+    """T214x: the answer `answer` (`2`, which renamed the window to `TO`
+    before its hold, or `1`, which renames nothing) met another
+    invocation's `bound` or `bind-failed`, or another prompt's allowance,
+    in the offer's place, and wrote nothing over it (d18, section 5):
+
+    - `bound`: `guard_bind_site`'s case 5, as the guard's first read hears
+      it: exit 2, MOVED for this session, "This prompt was NOT sent: it is
+      the one that hears how the bind ended", the record dropped as the one
+      loaded; nothing renamed back.
+    - `bind-failed`: case 6: exit 2, "THE BIND TO LANE `TO` FAILED (exit
+      1)", the record rewritten to the question with `bind=1`, the offer
+      KEPT, and the window renamed back to `FROM` by case 6 itself.
+    - `allow`: `guard_answer` answers 3 and the prompt is judged afresh: the
+      allowance still fits, so it passes with its warning, exit 0, the
+      allowance left byte for byte. Answer 2 renames the window back first,
+      in `none`'s words, not the default's, which says an offer is kept
+      (part 48, `3e6dc617`; 6dd8bbbd:22914-22918).
+
+    In none of them is (A) or its mirror said, BINDING or ALLOWED printed."""
+    err = hook.err
+    who = f"answer {answer}"
+    assert "BINDING:" not in err and ALLOWED not in err, \
+        f"{who} wrote its own record over another's {kind}: {hook!r}"
+    assert NOT_STARTED not in err and UNAPPROVED not in err, \
+        f"{who} refused with (A) or its mirror where the record in place said {kind}: {hook!r}"
+    if kind == "bound":
+        assert not hook.killed and hook.code == 2, f"{who} did not exit 2: {hook!r}"
+        assert MOVED_TO + f"{est.sid}) at " in err and HEARS in err, \
+            f"{who} did not hear the bound record in place as MOVED: {hook!r}"
+        assert not est.offer.exists(), f"case 5 did not drop the bound it heard: {est.record()}"
+        assert renames == ([TO] if answer == "2" else []), \
+            f"tmux saw {renames}, where case 5 renames nothing back"
+    elif kind == "bind-failed":
+        assert not hook.killed and hook.code == 2, f"{who} did not exit 2: {hook!r}"
+        assert FAILED_TO in err and KEPT in err and _renamed_back(FROM) in err, \
+            f"{who} did not answer the bind-failed record in place as case 6: {hook!r}"
+        record = est.record()
+        assert record.get("mode") == "name-drift" and record.get("bind") == "1" \
+            and record.get("from") == FROM and record.get("to") == TO, \
+            f"case 6 did not rewrite the record to the question with bind=1: {record}"
+        assert renames == ([TO, FROM] if answer == "2" else [FROM]), \
+            f"tmux saw {renames}, where case 6 renames the window back to {FROM}"
+    else:
+        assert not hook.killed and hook.code == 0 and ALLOW_PASS in err, \
+            f"{who} did not pass the prompt on the allowance in place, with its warning: {hook!r}"
+        assert est.offer.read_bytes() == installed, \
+            f"{who} wrote over the allowance in place: {est.record()}"
+        if answer == "2":
+            back = _renamed_back(FROM)
+            assert back in err and OFFER_KEPT_NOTE not in err \
+                and err.index(back) < err.index(ALLOW_PASS), \
+                f"answer 2 did not rename the window back first, in none's words: {hook!r}"
+            assert renames == [TO, FROM], f"tmux saw {renames}, not {TO} and then {FROM}"
+        else:
+            assert renames == [], f"choice 1 renamed the window: {renames}"
+
+
 @pytest.mark.parametrize("case", ["gone-at-its-head-copy", "gone-at-its-rewrite",
-                                  "another-offer-at-its-rewrite", "binding-at-its-rewrite"])
+                                  "another-offer-at-its-rewrite", "binding-at-its-rewrite",
+                                  "bound-at-its-rewrite", "bind-failed-at-its-rewrite",
+                                  "allow-at-its-rewrite", "another-mode-at-its-rewrite"])
 def test_answer_2_binds_nothing_where_its_offer_is_gone_or_no_longer_the_one_answered(
         estate, tmp_path, case):
     """T214v, ruling 5's (A) for the hook's answer 2, and the hook's writes
@@ -3748,7 +3870,8 @@ def test_answer_2_binds_nothing_where_its_offer_is_gone_or_no_longer_the_one_ans
     `lane-start` in place (lane 5's precondition B), a test-only copy holds
     the hook after it has renamed the window to `<to>`, and logs what the
     head copy returned; at the hold the record is still the offer answered.
-    Each id exits 2, leaves nothing new in `offers/` and starts no outer.
+    Each id exits 2, but `[allow-at-its-rewrite]`, which exits 0, leaves
+    nothing new in `offers/` and starts no outer.
 
     - `[gone-at-its-head-copy]`: on the contract's stub, whose `.head` gives
       the head copy keys to write, held just before that write, and the
@@ -3780,7 +3903,24 @@ def test_answer_2_binds_nothing_where_its_offer_is_gone_or_no_longer_the_one_ans
       record and its `.out` left byte for byte; "BINDING IN PROGRESS" and
       not "BINDING: this window is now named"; tmux renamed to `<to>` only,
       nothing renamed back (section 5). At `beeae571` the rewrite wrote this
-      answer's `binding` over it and started a second outer."""
+      answer's `binding` over it and started a second outer.
+
+    T214x, the records lane 5 listed as not yet covered (#165 6888777622),
+    each put in the offer's place at the same hold (`_put_in_place`) and
+    answered as `_in_place_answered` says, by draft 18's section 5 at
+    `f8e5cfa8` and `guard_answer_moved` at T502's `6dd8bbbd`:22904-22952:
+
+    - `[bound-at-its-rewrite]`: another invocation's `bound`: MOVED, the
+      record dropped, tmux renamed to `<to>` only.
+    - `[bind-failed-at-its-rewrite]`: another invocation's `bind-failed`:
+      case 6, the record back to the question with `bind=1`, the offer
+      KEPT, tmux renamed to `<to>` and back to `<from>` by case 6.
+    - `[allow-at-its-rewrite]`: another prompt's allowance: the window
+      renamed back first, not in the default form's words, then the prompt
+      passed on the allowance with its warning, exit 0.
+    - `[another-mode-at-its-rewrite]`: the offer saying `mode=weird`: (A),
+      with "the offer at `<file>` was changed before the bind could be
+      recorded (it says mode=weird now)", that record left byte for byte."""
     if case == "gone-at-its-head-copy":
         hold = "head-copy"
         est = _estate_on_the_stub(estate, tmp_path, lambda e: _head_copy_logged(e) + [(
@@ -3811,6 +3951,8 @@ def test_answer_2_binds_nothing_where_its_offer_is_gone_or_no_longer_the_one_ans
             assert n == 1, f"the offer holds no utc= line: {offer!r}"
             write_record(est.offer, text.splitlines())
             other = (est.offer.read_bytes(), None, None)
+        elif case in IN_PLACE:
+            other = (_put_in_place(est, IN_PLACE[case]), None, None)
         else:
             other = _other_binding(est)
             made.add(other[1].name)
@@ -3823,8 +3965,12 @@ def test_answer_2_binds_nothing_where_its_offer_is_gone_or_no_longer_the_one_ans
     head_copy = rc_file.read_text(encoding="utf-8").strip() if rc_file.exists() else None
     assert at_hold == offer, f"the record at the hook's {hold} was not the offer answered: {at_hold!r}"
     assert TO in renamed, f"the window was not named {TO} before the hook's {hold}: {renamed}"
-    assert not hook.killed and hook.code == 2, f"answer 2 did not exit 2: {hook!r}"
-    if case == "binding-at-its-rewrite":
+    site = IN_PLACE.get(case) in ("bound", "bind-failed", "allow")
+    if not site:
+        assert not hook.killed and hook.code == 2, f"answer 2 did not exit 2: {hook!r}"
+    if site:
+        _in_place_answered(est, hook, IN_PLACE[case], other[0], renames, "2")
+    elif case == "binding-at-its-rewrite":
         installed, out, out_bytes = other
         assert est.offer.read_bytes() == installed, \
             f"another invocation's bind record did not survive answer 2: {est.record()}\n{err}"
@@ -3835,7 +3981,9 @@ def test_answer_2_binds_nothing_where_its_offer_is_gone_or_no_longer_the_one_ans
         assert renames == [TO], \
             f"tmux saw {renames}, where section 5 has this answer rename to {TO} and nothing back"
     else:
-        why = CHANGED_BIND if case == "another-offer-at-its-rewrite" else DROPPED_BIND
+        why = {"another-offer-at-its-rewrite": CHANGED_BIND,
+               "another-mode-at-its-rewrite": f"{_changed_to(est, 'weird', 'bind')}, {NOT_STARTED}",
+               }.get(case, DROPPED_BIND)
         back = (f"this window has NOT moved to {TO} (this answer renamed it, and it was renamed "
                 f"back to {FROM})")
         assert why in err and "BINDING:" not in err, \
@@ -3859,7 +4007,9 @@ def test_answer_2_binds_nothing_where_its_offer_is_gone_or_no_longer_the_one_ans
     _nothing_new(est, before, made, "answer 2")
 
 
-@pytest.mark.parametrize("case", ["gone-before-its-mv", "binding-before-its-mv"])
+@pytest.mark.parametrize("case", ["gone-before-its-mv", "binding-before-its-mv",
+                                  "bound-before-its-mv", "bind-failed-before-its-mv",
+                                  "allow-before-its-mv", "another-mode-before-its-mv"])
 def test_choice_1_allows_nothing_where_its_offer_is_gone_or_no_longer_the_one_answered(
         estate, case):
     """T214w, choice 1's mirror of (A) (lane 3's confirmation, #165
@@ -3871,8 +4021,10 @@ def test_choice_1_allows_nothing_where_its_offer_is_gone_or_no_longer_the_one_an
     mode is read once and answered for (`guard_answer_moved`, :22817). A
     test-only copy holds choice 1 before its temporary file, so before that
     test, never between it and the `mv` (d17:148; lane 5, #165 6888777622,
-    whose names these ids are). Each id exits 2, renames nothing, leaves
-    nothing new in `offers/` and starts no outer.
+    whose names these ids are). Each id exits 2, but `[allow-before-its-mv]`,
+    which exits 0; renames nothing, but `[bind-failed-before-its-mv]`, whose
+    case 6 renames the window back to `<from>`; leaves nothing new in
+    `offers/` and starts no outer.
 
     - `[gone-before-its-mv]`: the offer removed at the hold. "the offer was
       dropped before the allow could be recorded, so the mismatch remains
@@ -3886,7 +4038,26 @@ def test_choice_1_allows_nothing_where_its_offer_is_gone_or_no_longer_the_one_an
       that record and its `.out` left byte for byte; "BINDING IN PROGRESS",
       and no ALLOWED and no "BINDING: this window is now named". At
       `beeae571` the `allow` record was written over it, and its sweep,
-      `rm -f "$ga_f".bind.*` (:22376), removed the other's `.out`."""
+      `rm -f "$ga_f".bind.*` (:22376), removed the other's `.out`.
+
+    T214x, the records lane 5 listed as not yet covered (#165 6888777622),
+    each put in the offer's place at the same hold (`_put_in_place`) and
+    answered as `_in_place_answered` says, by draft 18's section 5 at
+    `f8e5cfa8` and `guard_answer_moved` at T502's `6dd8bbbd`:22904-22952,
+    choice 1 itself renaming nothing and writing nothing:
+
+    - `[bound-before-its-mv]`: another invocation's `bound`: MOVED, the
+      record dropped, nothing renamed.
+    - `[bind-failed-before-its-mv]`: another invocation's `bind-failed`:
+      case 6, the record back to the question with `bind=1`, the offer
+      KEPT, the window renamed to `<from>` by case 6, the one rename here.
+    - `[allow-before-its-mv]`: another prompt's allowance: the prompt
+      passed on it with its warning, exit 0, nothing renamed.
+    - `[another-mode-before-its-mv]`: the offer saying `mode=weird`: the
+      mirror of (A), "the offer at `<file>` was changed before the allow
+      could be recorded (it says mode=weird now), so the mismatch remains
+      unapproved. Nothing was renamed or written"; that record left byte
+      for byte."""
     est = estate()
     est.guard = _bind_copy(est, [(ANCHOR_ALLOW_TEMP, (
         f"{_hold_sh(est, 'choice-1')}\n    {ANCHOR_ALLOW_TEMP}"))])
@@ -3903,6 +4074,8 @@ def test_choice_1_allows_nothing_where_its_offer_is_gone_or_no_longer_the_one_an
         if case == "gone-before-its-mv":
             est.offer.unlink()
             return at_hold, None
+        if case in IN_PLACE:
+            return at_hold, (_put_in_place(est, IN_PLACE[case]), None, None)
         other = _other_binding(est)
         made.add(other[1].name)
         return at_hold, other
@@ -3910,8 +4083,20 @@ def test_choice_1_allows_nothing_where_its_offer_is_gone_or_no_longer_the_one_an
     hook, (at_hold, other) = _answer_held(est, "1", "choice-1", change)
     err = hook.err
     assert at_hold == offer, f"the record at choice 1's hold was not the offer answered: {at_hold!r}"
-    assert not hook.killed and hook.code == 2, f"choice 1 did not exit 2: {hook!r}"
-    if case == "gone-before-its-mv":
+    site = IN_PLACE.get(case) in ("bound", "bind-failed", "allow")
+    if not site:
+        assert not hook.killed and hook.code == 2, f"choice 1 did not exit 2: {hook!r}"
+    if site:
+        _in_place_answered(est, hook, IN_PLACE[case], other[0],
+                           [c[-1] for c in _renames(est, calls)], "1")
+    elif case == "another-mode-before-its-mv":
+        why = f"{_changed_to(est, 'weird', 'allow')}, {UNAPPROVED}. Nothing was renamed or written"
+        assert why in err and ALLOWED not in err, \
+            f"choice 1 did not refuse with (A)'s mirror where the offer said mode=weird: {hook!r}"
+        assert ALLOW_IO not in err, f"choice 1 refused on its I/O path: {hook!r}"
+        assert est.offer.read_bytes() == other[0], \
+            f"choice 1 wrote over a record of another mode: {est.record()}"
+    elif case == "gone-before-its-mv":
         assert DROPPED_ALLOW in err and ALLOWED not in err, \
             f"choice 1 did not refuse with (A)'s mirror where its offer was gone: {hook!r}"
         assert ALLOW_IO not in err, f"choice 1 refused on its I/O path: {hook!r}"
@@ -3925,8 +4110,104 @@ def test_choice_1_allows_nothing_where_its_offer_is_gone_or_no_longer_the_one_an
             f"another invocation's bind record did not survive choice 1: {est.record()}\n{err}"
         assert IN_PROGRESS in err and ALLOWED not in err and BINDING not in err, \
             f"choice 1 did not give guard_bind_site's answer for the bind record: {hook!r}"
-    assert not _renames(est, calls), f"choice 1 renamed the window: {_renames(est, calls)}"
+    if IN_PLACE.get(case) != "bind-failed":
+        assert not _renames(est, calls), f"choice 1 renamed the window: {_renames(est, calls)}"
     _nothing_new(est, before, made, "choice 1")
+
+
+#: T214x's back-out anchors, each found once in `lanes-edit.sh` at T502's
+#: `6253b0ed` and `6dd8bbbd`: the fork of the bind's child, which the
+#: test-only copy makes start nothing (a child that could not be started:
+#: its subshell prints no pid), and the case on that pid, before which the
+#: copy holds, after the rewrite to `binding` and before the back-out.
+ANCHOR_FORK = 'ga_p="$( ( umask 077'
+ANCHOR_NO_CHILD = 'case "$ga_p" in'
+#: The back-out's refusal where the record is gone or no longer `binding`
+#: (6dd8bbbd:23373-23374; d18, section 5).
+NO_CHILD = "the bind's child could not be started, so "
+BACKED_OUT_NOTHING = ("and NOTHING has been written; the offer was dropped or changed "
+                      "meanwhile, so there is none of this answer's to keep")
+
+
+@pytest.mark.parametrize("case", ["gone-at-its-back-out", "not-binding-at-its-back-out"])
+def test_answer_2s_back_out_writes_nothing_where_its_binding_is_gone_or_no_longer_binding(
+        estate, case):
+    """T214x, THE HOOK'S BACK-OUT under lane 3's ruling 5, "No rewrite
+    creates a record" (opensoft/openRepoTools#165 6885771975), the last of
+    the cases lane 5 listed as not yet covered (#165 6888777622). Where no
+    child started, answer 2 puts the record back to the question, by a
+    rewrite that runs only on a record still saying `binding` (`--binding`,
+    6dd8bbbd:23338-23344). Where the record is gone or no longer `binding`,
+    there is nothing of this answer's to back out: nothing is written, the
+    window is renamed back first in `guard_window_back`'s `none` form, and
+    the refusal is "the bind's child could not be started, so this window
+    has NOT moved to `<to>` (it was renamed back to `<from>`) and NOTHING has
+    been written; the offer was dropped or changed meanwhile, so there is
+    none of this answer's to keep" (:23353-23374; draft 18's section 5 at
+    `f8e5cfa8`, "The hook's back-out, where no child started").
+
+    A test-only copy (point 23) makes the fork start nothing, so the
+    subshell prints no pid (`ANCHOR_FORK`), and holds before the case on
+    that pid (`ANCHOR_NO_CHILD`), with the stand-in `tmux` and `lane-start`
+    in place (lane 5's precondition B). At the hold the record is this
+    answer's `binding`, attempt 1 with no `pid`, and the window is named
+    `<to>`; the case changes the record and releases the hold.
+
+    - `[gone-at-its-back-out]`: the record removed there; none is made.
+    - `[not-binding-at-its-back-out]`: the offer made again in its place,
+      with a later `utc`; it is left byte for byte.
+
+    Each id exits 2 with that refusal, says no KEPT, no "still says
+    binding" and no BINDING, renames the window to `<to>` and back to
+    `<from>`, not in the default form's words, which say an offer is kept,
+    leaves nothing new in `offers/` and starts no outer."""
+    est = estate()
+    est.guard = _bind_copy(est, [
+        (ANCHOR_FORK, ANCHOR_FORK.replace("( umask", "( exit 1; umask")),
+        (ANCHOR_NO_CHILD, f"{_hold_sh(est, 'back-out')}\n    {ANCHOR_NO_CHILD}")])
+    _answer_preconditions(est)
+    est.make_offer()
+    offers = est.offer.parent
+    offer = est.offer.read_bytes()
+    assert re.search(rb"(?m)^utc=", offer), f"the offer carries no utc= line: {offer!r}"
+    before = set(os.listdir(offers))
+    calls = len(est.session.tmux_calls())
+
+    def change():
+        at_hold = est.record() if est.offer.exists() else {}
+        renamed = [c[-1] for c in _renames(est, calls)]
+        if case == "gone-at-its-back-out":
+            est.offer.unlink()
+            return at_hold, renamed, None
+        text, n = re.subn(r"(?m)^utc=.*$", f"utc={_utc(time.time() + 60)}",
+                          offer.decode("utf-8"), count=1)
+        assert n == 1, f"the offer holds no utc= line: {offer!r}"
+        write_record(est.offer, text.splitlines())
+        return at_hold, renamed, est.offer.read_bytes()
+
+    hook, (at_hold, renamed, installed) = _answer_held(est, "2", "back-out", change)
+    err = hook.err
+    renames = [c[-1] for c in _renames(est, calls)]
+    assert at_hold.get("mode") == "binding" and at_hold.get("bind") == "1" \
+        and not at_hold.get("pid"), \
+        f"the record at the back-out's hold was not this answer's binding: {at_hold}"
+    assert TO in renamed, f"the window was not named {TO} before the back-out's hold: {renamed}"
+    assert not hook.killed and hook.code == 2, f"answer 2 did not exit 2: {hook!r}"
+    window = f"this window has NOT moved to {TO} (it was renamed back to {FROM}) "
+    assert NO_CHILD + window + BACKED_OUT_NOTHING in err, \
+        f"the back-out did not refuse with nothing of this answer's to keep: {hook!r}"
+    assert "KEPT" not in err and "still says binding" not in err and "BINDING:" not in err, \
+        f"the back-out said the offer is kept, or that the record still says binding: {hook!r}"
+    assert _renamed_back(FROM) in err and OFFER_KEPT_NOTE not in err, \
+        f"the window was not renamed back in none's words: {hook!r}"
+    assert renames == [TO, FROM], f"tmux saw {renames}, not {TO} and then {FROM}"
+    if case == "gone-at-its-back-out":
+        assert not est.offer.exists(), \
+            f"the back-out made a record where its binding was gone: {est.record()}"
+    else:
+        assert est.offer.read_bytes() == installed, \
+            f"the back-out wrote over a record that is not its binding: {est.record()}"
+    _nothing_new(est, before, set(), "answer 2's back-out")
 
 
 #: `[unknown-key]`'s line, which no reader of the record knows.
