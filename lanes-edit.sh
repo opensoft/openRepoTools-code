@@ -22279,15 +22279,27 @@ guard_offer_choices() {   # <from> <the lane choice 2 moves to> <binds spent>
 # `<from>`. UNTARGETED, like the rename it undoes: the hook runs inside the
 # session's own pane. Case 10 renames nothing, since that bind ran on another
 # host or container.
+# WITH `none` (lane 5's wording note to lane 2, #165 6888777622; Codex's S6 on
+# spec#47's draft 17): where this answer keeps no offer, as in (A), the offer
+# gone or no longer the one answered, the words say what the answer did, and
+# not that an offer is kept. The first clause is the same in both forms.
 #   0 renamed · 1 not, and the person is told the one command
-guard_window_back() {   # <from> <to>
-  gwb_from="${1-}"; gwb_to="${2-}"
+guard_window_back() {   # <from> <to> [none]
+  gwb_from="${1-}"; gwb_to="${2-}"; gwb_form="${3-}"
   [ -n "$gwb_from" ] || return 1
   if command -v tmux >/dev/null 2>&1 && tmux rename-window "$gwb_from" 2>/dev/null; then
-    note "This window has been renamed back to $gwb_from, the lane it was before the answer \`2\`, so the offer it keeps is still this window's."
+    if [ "$gwb_form" = none ]; then
+      note "This window has been renamed back to $gwb_from, the lane it was before the answer \`2\`, which started no bind."
+    else
+      note "This window has been renamed back to $gwb_from, the lane it was before the answer \`2\`, so the offer it keeps is still this window's."
+    fi
     return 0
   fi
-  note "This window could NOT be renamed back to $gwb_from, so it still carries ${gwb_to:-the other lane}'s name, and the next prompt would drop the kept offer as one about another window. Rename it first: tmux rename-window -t ${G_WINREF:-<this window>} $gwb_from"
+  if [ "$gwb_form" = none ]; then
+    note "This window could NOT be renamed back to $gwb_from, so it still carries ${gwb_to:-the other lane}'s name, though the answer \`2\` started no bind. Rename it yourself: tmux rename-window -t ${G_WINREF:-<this window>} $gwb_from"
+  else
+    note "This window could NOT be renamed back to $gwb_from, so it still carries ${gwb_to:-the other lane}'s name, and the next prompt would drop the kept offer as one about another window. Rename it first: tmux rename-window -t ${G_WINREF:-<this window>} $gwb_from"
+  fi
   return 1
 }
 
@@ -22525,6 +22537,23 @@ guard_site_moved() {   # <offer file> <pane>
   return 2
 }
 
+# CASES 6, 7, 9 AND 10 COULD NOT RESTORE THE OFFER (Codex's S6 on spec#47's draft
+# 17): `guard_bind_rewrite`'s 1 proves only that this prompt did not change the
+# record, which another writer may have changed meanwhile. So the record is read
+# again just before the words, and they follow what is there now: still the
+# record this prompt loaded (its mode, `bind` and `started_utc`), and the next
+# prompt answers it the same way; anything else, and this prompt changed nothing
+# there and the next prompt reads whatever is there. The first clause is the
+# same in both forms.
+guard_site_unrestored() {   # <offer file> <the mode loaded>
+  if guard_record_says "${1-}" "${2-}" "bind=$GBR_BIND" "started_utc=$GBR_STARTED"; then
+    note "…and the offer could not be restored in ${1-}, so this prompt's answer is the same as the last one's until it can: the record still says ${2-} for that attempt."
+  else
+    note "…and the offer could not be restored in ${1-}. This prompt changed nothing there, and the record is no longer the one it read ($(guard_record_now "${1-}")), so the next prompt reads whatever is there."
+  fi
+  return 0
+}
+
 guard_bind_site() {   # <offer file> <pane>
   gbt_f="${1-}"; gbt_pane="${2-}"
   if ! guard_bind_load "$gbt_f" || ! guard_bind_readable; then
@@ -22581,7 +22610,7 @@ EOF
       # CASES 6 AND 7 RENAME THE WINDOW BACK (Y:5502; ERR-23 for the third).
       guard_window_back "$GBR_FROM" "$GBR_TO" || :
       if [ "$gbt_back" = 1 ]; then
-        note "…and the offer could not be restored in $gbt_f, so this prompt's answer is the same as the last one's until it can."
+        guard_site_unrestored "$gbt_f" bind-failed
       elif [ "$gbt_k" -ge 3 ]; then
         note "That was this offer's third bind, so choice 2 is no longer offered, and the offer is KEPT for the other two:"
       else
@@ -22613,7 +22642,7 @@ EOF
     guard_triple
     note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} ON $GBR_HOST/$GBR_CONTAINER IS NO LONGER RUNNING AND LEFT NO OUTCOME by 60 s past its deadline, $gbt_dlu, so what it wrote is not known; the next \`2\` finds out first. This window is not renamed: that bind ran on another host or container."
     if [ "$gbt_back" = 1 ]; then
-      note "…and the offer could not be restored in $gbt_f, so this prompt's answer is the same as the last one's until it can."
+      guard_site_unrestored "$gbt_f" binding
     else
       note "The offer is KEPT:"
     fi
@@ -22677,7 +22706,7 @@ EOF
     # CASE 9 RENAMES THE WINDOW BACK TOO (ERR-23); case 10, above, does not.
     guard_window_back "$GBR_FROM" "$GBR_TO" || :
     if [ "$gbt_back" = 1 ]; then
-      note "…and the offer could not be restored in $gbt_f, so this prompt's answer is the same as the last one's until it can."
+      guard_site_unrestored "$gbt_f" binding
     else
       note "The offer is KEPT:"
     fi
@@ -22776,7 +22805,8 @@ guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 whe
     guard_triple
     gam_win="this window has NOT moved to $gam_to"
     if [ "$gam_ren" != 0 ]; then
-      if guard_window_back "$gam_from" "$gam_to"; then
+      # (A) KEEPS NO OFFER of this answer's, so the note says so (`none`).
+      if guard_window_back "$gam_from" "$gam_to" none; then
         gam_win="$gam_win (this answer renamed it, and it was renamed back to $gam_from)"
       else
         gam_win="this window was renamed to $gam_to by this answer and could NOT be renamed back to $gam_from (see the note above)"
@@ -22785,6 +22815,26 @@ guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 whe
     guard_refuse "$gam_why, so the bind was NOT started: $gam_win, NOTHING has been written to the register or to $gam_f, and no outer was started. Send your prompt again and the question will be asked afresh."
   else
     guard_refuse "$gam_why, so the mismatch remains unapproved. Nothing was renamed or written; send your prompt again and the question will be asked afresh."
+  fi
+  return 2
+}
+
+# THE HOOK'S OWN WRITE ON THE OFFER FAILED (`guard_bind_rewrite`'s 1, at the head
+# copy or at the rewrite to `binding`; Codex's S6 on spec#47's draft 17): that 1
+# proves only that this answer did not change the record. It can come before
+# the rewrite's own test (`mktemp`, a write to its temporary file) or at its
+# `mv`, and another writer may have changed the record meanwhile. So the record
+# is read again (`guard_offer_still`) before the words: where it is still the
+# offer that was answered, it is KEPT, as the words have said; anything else, and
+# this answer changed nothing there and the next prompt reads whatever is there.
+# The first clause is the same in both forms. Uses `guard_answer`'s `ga_*`.
+guard_answer_unrecorded() {
+  if guard_offer_still "$ga_f" "$ga_from" "$ga_to" "$ga_session" "$ga_utc"; then
+    guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and the offer is KEPT. Answer \`2\` again once that directory is writable, or choose \`1\` or \`3\`."
+    [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
+  else
+    guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and this answer changed nothing at $ga_f, where the record is no longer the offer that was answered ($(guard_record_now "$ga_f")). Send your prompt again: the next prompt reads whatever is there."
+    [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" none || :
   fi
   return 2
 }
@@ -23056,8 +23106,7 @@ guard_answer() {   # <offer file> <the prompt> <pane>
       return $?
     fi
     if [ "$ga_hrc" != 0 ]; then
-      guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and the offer is KEPT. Answer \`2\` again once that directory is writable, or choose \`1\` or \`3\`."
-      [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
+      guard_answer_unrecorded
       return 2
     fi
     ga_bs="$(guard_bind_bound_s "$ga_f")"
@@ -23086,8 +23135,7 @@ guard_answer() {   # <offer file> <the prompt> <pane>
       return $?
     fi
     if [ "$ga_wrc" != 0 ]; then
-      guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and the offer is KEPT. Answer \`2\` again once that directory is writable, or choose \`1\` or \`3\`."
-      [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
+      guard_answer_unrecorded
       return 2
     fi
     # THE OUTER'S PID IS `$!` INSIDE THE FORK, handed back through the command
@@ -23118,12 +23166,26 @@ guard_answer() {   # <offer file> <the prompt> <pane>
         # back out, and nothing is written.
         ga_brc=0
         guard_bind_rewrite --binding "$ga_f" "bind started_utc bound_s bounded deadline_epoch host container out detach" "${ga_back[@]}" || ga_brc=$?
+        # AN I/O FAILURE OF THE BACK-OUT (its 1; Codex's S6 on spec#47's draft
+        # 17) proves only that it did not change the record: so the record is read
+        # again, and "it still says binding" is said only where it is still this
+        # answer's `binding` (its `bind`, `started_utc` and `out`). Where it is
+        # not, or the back-out found it changed (2), this answer keeps no offer,
+        # and the rename back's note says so (`none`).
+        ga_bstill=0; ga_bform=""
+        case "$ga_brc" in
+          2) ga_bform=none ;;
+          1)
+            if guard_record_says "$ga_f" binding "bind=$ga_k" "started_utc=${ga_now#* }" "out=$ga_out"; then ga_bstill=1
+            else ga_bform=none; ga_bnow="$(guard_record_now "$ga_f")"
+            fi ;;
+        esac
         # THE RENAME BACK IS TRIED FIRST (F5), and the refusal is worded on its
         # result, as `guard_answer_moved`'s is.
         guard_triple
         gba_win="this window has NOT moved to $ga_to"
         if [ "$ga_ren" != 0 ]; then
-          if guard_window_back "$ga_from" "$ga_to"; then
+          if guard_window_back "$ga_from" "$ga_to" ${ga_bform:+"$ga_bform"}; then
             gba_win="$gba_win (it was renamed back to $ga_from)"
           else
             gba_win="this window was renamed to $ga_to and could NOT be renamed back to $ga_from (see the note above)"
@@ -23131,8 +23193,10 @@ guard_answer() {   # <offer file> <the prompt> <pane>
         fi
         if [ "$ga_brc" = 2 ]; then
           guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been written; the offer was dropped or changed meanwhile, so there is none of this answer's to keep. Send your prompt again and the question will be asked afresh."
-        elif [ "$ga_brc" = 1 ]; then
+        elif [ "$ga_brc" = 1 ] && [ "$ga_bstill" = 1 ]; then
           guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been started; but the record could not be written back to the question, so it still says binding: the next prompts say BINDING IN PROGRESS until its deadline, and the first after it finds the record stale and asks afresh. Answer \`2\` again then, or choose \`1\` or \`3\`."
+        elif [ "$ga_brc" = 1 ]; then
+          guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been started; the record could not be written back to the question, and it is no longer this answer's binding ($ga_bnow): this answer changed nothing more there, and the next prompt reads whatever is there. Send your prompt again."
         else
           guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been written. The offer is KEPT: answer \`2\` again, or choose \`1\` or \`3\`."
         fi
