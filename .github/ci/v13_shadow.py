@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 
 import shadow_scope as common
 
@@ -44,17 +45,32 @@ def read_policy(root, main):
         raise ValueError("Unexpected prerequisite control inventory")
     for blob in prerequisite["blobs"].values():
         common.sha(blob)
-    if set(policy["profiles"]) != {"P03", "P05"}:
+    if "foundation" in policy:
+        epoch = policy["foundation"]
+        if (not isinstance(epoch, dict) or set(epoch) != {"head", "blobs"}
+                or not isinstance(epoch["blobs"], dict) or set(epoch["blobs"]) != set(P01_FILES)):
+            raise ValueError("Invalid foundation epoch")
+        common.sha(epoch["head"])
+        for blob in epoch["blobs"].values():
+            common.sha(blob)
+    if set(policy["profiles"]) not in ({"P03", "P05"}, {"P05", "P06"}):
         raise ValueError("Unexpected proposed cuts")
     for profile in policy["profiles"].values():
         source = profile["source"]
-        if (set(source) != {"number", "head", "branch"}
+        if (set(source) not in ({"number", "head", "branch"}, {"number", "head", "branch", "commits"})
                 or type(source["number"]) is not int or source["number"] < 1
                 or source["number"] == prerequisite["number"]
                 or not common.valid_branch(source["branch"])
                 or not common.source_branch(source["branch"])):
             raise ValueError("Invalid source binding")
         common.sha(source["head"])
+        commits = source.get("commits", [source["head"]])
+        if (not isinstance(commits, list) or not 1 <= len(commits) <= 3
+                or any(not isinstance(commit, str) for commit in commits)
+                or len(set(commits)) != len(commits) or commits[-1] != source["head"]):
+            raise ValueError("Invalid source lineage")
+        for commit in commits:
+            common.sha(commit)
         for key, pattern in (("tasks", r"T[0-9]{3}"),
                              ("files", r"tests/test_sql_register_[a-z_]+[.]py")):
             values = profile[key]
@@ -62,6 +78,8 @@ def read_policy(root, main):
                     or any(not isinstance(value, str) or not re.fullmatch(pattern, value)
                            for value in values) or len(set(values)) != len(values)):
                 raise ValueError("Invalid profile projection")
+        if len(profile["files"]) + len(profile["tasks"]) > 6:
+            raise ValueError("Test-only profile exceeds the staged file bound")
     if any(len({profile["source"][key] for profile in policy["profiles"].values()}) != 2
            for key in ("number", "head", "branch")):
         raise ValueError("Duplicate source binding")
@@ -132,11 +150,47 @@ def p01_status(root, main, policy, pr):
     for task in P01_TASKS:
         if common.git(root, "show", f"{main}:{MARKERS}{task}") != b"":
             return "contract-drift"
+    try:
+        require_foundation(root, main, policy)
+    except (ValueError, subprocess.SubprocessError):
+        return "contract-drift"
     return "merged-contract-observed"
 
 
+def require_foundation(root, main, policy):
+    """Verify an explicit immutable epoch, never discover one from moving main."""
+    parent = policy["prerequisite"]["head"]
+    epoch = policy.get("foundation")
+    anchor = epoch["head"] if epoch is not None else parent
+    if anchor != parent:
+        common.git(root, "merge-base", "--is-ancestor", parent, anchor)
+    common.git(root, "merge-base", "--is-ancestor", anchor, main)
+    controls = list(policy["prerequisite"]["blobs"]) + [MARKERS + task for task in P01_TASKS]
+    if epoch is None:
+        common.git(root, "diff", "--quiet", "--no-ext-diff", parent, main,
+                   "--", *controls, *P01_FILES)
+        return
+    expected = {f"100644 blob {blob}\t{path}" for path, blob in epoch["blobs"].items()}
+    found = common.git(root, "ls-tree", anchor, "--", *P01_FILES).decode().splitlines()
+    if set(found) != expected:
+        raise ValueError("Foundation epoch tree differs")
+    common.git(root, "diff", "--quiet", "--no-ext-diff", parent, main, "--", *controls)
+    common.git(root, "diff", "--quiet", "--no-ext-diff", anchor, main, "--", *P01_FILES)
+
+
+def source_lineage(root, parent, profile):
+    """Only the trusted, bounded exact history; check every cumulative cut."""
+    previous = parent
+    for commit in profile["source"].get("commits", [profile["source"]["head"]]):
+        if (common.git(root, "show", "-s", "--format=%P", commit).decode().split() != [previous]
+                or not scoped_diff(root, parent, commit, profile)):
+            return False
+        previous = commit
+    return True
+
+
 def known_child(root, main, policy, cut, pr, prerequisite):
-    """One immutable P01 child only; this is not a merge or qualification proof."""
+    """One immutable P01 cut only; this is not a merge or qualification proof."""
     profile = policy["profiles"][cut]
     source = profile["source"]
     if (type(pr["number"]) is not int or pr["number"] != source["number"]
@@ -151,11 +205,9 @@ def known_child(root, main, policy, cut, pr, prerequisite):
         r"(?im)^[ \t]*Depends-On:[ \t]*([^\n]*)", pr.get("body") or "")]
     if dependencies != ["#88"] and not (base == (main, "main") and not dependencies):
         return False
-    if common.git(root, "show", "-s", "--format=%P", source["head"]).decode().split() != [parent]:
-        return False
     paths = profile["files"] + [MARKERS + task for task in profile["tasks"]]
     common.git(root, "diff", "--quiet", "--no-ext-diff", parent, main, "--", *paths)
-    return scoped_diff(root, parent, source["head"], profile)
+    return source_lineage(root, parent, profile)
 
 
 def observe_pr(env, event, root, main, policy, request, prerequisite):

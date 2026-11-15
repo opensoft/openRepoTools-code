@@ -32,11 +32,7 @@ def configuration(root, base):
         raise ValueError("V1.3 delivery is not enabled")
     # Reuse the reviewed immutable projection, NOT classify() or its output.
     policy = projection.read_policy(root, base)
-    parent = policy["prerequisite"]["head"]
-    common.git(root, "merge-base", "--is-ancestor", parent, base)
-    paths = list(policy["prerequisite"]["blobs"]) + list(projection.P01_FILES)
-    paths += [projection.MARKERS + task for task in projection.P01_TASKS]
-    common.git(root, "diff", "--quiet", "--no-ext-diff", parent, base, "--", *paths)
+    projection.require_foundation(root, base, policy)
     return policy
 
 
@@ -48,12 +44,10 @@ def cut(root, base, head):
         raise ValueError("Unrecognized v1.3 source head")
     name, profile = matches[0]
     parent = policy["prerequisite"]["head"]
-    if common.git(root, "show", "-s", "--format=%P", head).decode().split() != [parent]:
-        raise ValueError("V1.3 source parent differs")
+    if not projection.source_lineage(root, parent, profile):
+        raise ValueError("V1.3 source lineage differs")
     paths = profile["files"] + [projection.MARKERS + task for task in profile["tasks"]]
     common.git(root, "diff", "--quiet", "--no-ext-diff", parent, base, "--", *paths)
-    if not projection.scoped_diff(root, parent, head, profile):
-        raise ValueError("V1.3 source diff differs")
     return policy, name, profile
 
 
