@@ -112,8 +112,9 @@ RENDER_GIT_HALF = False
 #: namespace, so `sys.argv`, `__file__` and the constant above are this file's.
 #: The module's CACHED CODE runs where `__pycache__/lanes_index_main.<tag>.pyc`
 #: beside it is a checked-hash `.pyc` (PEP 552, flags 0b11) of this
-#: interpreter's magic, carrying the `source_hash` of the module's bytes, and
-#: `-O` is not in force; otherwise the module's source runs, compiled under the
+#: interpreter's magic, carrying the `source_hash` of the module's bytes, `-O`
+#: is not in force, and the interpreter is Python 3.11 or later, where check 1
+#: compares the bytecode; otherwise the module's source runs, compiled under the
 #: name `ready`'s check 1 and the install give it. The path is built here, never
 #: by `cache_from_source`, which follows `-X pycache_prefix`, and this file never
 #: writes the cache. Its directory is `realpath`'s, as the module finds its own
@@ -135,7 +136,7 @@ def _lanes_index_main():
         raise SystemExit(f"lanes-index: its module {path} cannot be read "
                          f"({exc.strerror or exc}), so nothing ran") from None
     tag = sys.implementation.cache_tag
-    if tag is not None and sys.flags.optimize == 0:
+    if tag is not None and sys.flags.optimize == 0 and sys.version_info >= (3, 11):
         try:
             with open(os.path.join(directory, "__pycache__", f"lanes_index_main.{tag}.pyc"),
                       "rb") as handle:
