@@ -327,6 +327,26 @@
 #   exits 1. Every other 3, files mode's `pushed, not confirmed` and one whose
 #   words could not be kept among them, keeps files mode's note and the
 #   publish act, as before.
+#   A SIGNAL WHILE THAT LINE IS WRITTEN is taken once the writer has ended,
+#   as bash runs a trap only after its foreground command. So where the
+#   words the sweep kept are one of those five forms, it relays them
+#   likewise, prints no command of its own, and exits 130 or 143. A primary
+#   writer that ended 0, or that the same Ctrl-C ended, prints nothing that
+#   tells its mode, and there the signal's note keeps its publish act and its
+#   line by hand, as before (lane 4's #165 6895094501, the signal path).
+#   THAT IS A v1.3 LIMIT (lane 3, #165 6897110551): a signal to `lane-end`
+#   alone, after a write that committed, still gets that note, and its line
+#   by hand records the sweep a second time: a duplicate sweep line in the
+#   register, with nothing lost. So does a signal that comes after the
+#   write's words were read back and before the `3)` arm prints them, when
+#   `LE_TMP` is already empty: the same consequence, a second sweep line,
+#   from another window (lane 2, #165 6898032113, NIT 2).
+#   A `git add` THAT FAILS ON PRIMARY fails in the write's own scratch tree,
+#   and its 6 carries files mode's words, so the sweep asks the checkout the
+#   line goes through: where the runner's log there is as its HEAD has it,
+#   nothing is put back and only the line by hand is printed, exiting 1 as
+#   before; files mode's failed `git add`, which leaves its line there, keeps
+#   its `restore` (lane 4's #165 6895094501).
 #
 # EXIT
 #   0  done
@@ -404,7 +424,10 @@
 #   130, 143  stopped by INT or TERM (128 plus the signal): the run ends where
 #      the signal found it and removes its temporary file, never resumes.
 #      `--sweep-checkouts --yes` lets a checkout's move and removal in hand
-#      finish first, and after any removal prints its NOTED line by hand
+#      finish first, and after any removal prints its NOTED line by hand;
+#      but where the signal came while that line was written and the
+#      writer's words are a primary 3, those words, its rerun among them,
+#      are all it prints to finish the line
 #
 # ENVIRONMENT
 #   LANES_FILE  default <the workspace repository>/lanes/LANES.md
@@ -2863,9 +2886,44 @@ SLU
   # the NOTED line by hand for what was done. One that comes while the line
   # is being written says the line may be on origin already, and hands out
   # the publish act first, so the sweep is never recorded twice.
+  # ON PRIMARY A SIGNAL DURING THE WRITE ADDS NOTHING TO A WRITER'S 3 (lane
+  # 4's #165 6895094501; T430's `3)` arm, below). bash runs a trap only once
+  # its foreground command has ended, so this one meets a writer that has
+  # ended: by itself, where the signal reached this shell alone, or by the
+  # same signal, where a Ctrl-C reached the process group it shares. Where
+  # its kept words open as a primary write's five exit-3 `die`s do (the
+  # `3)` arm's two patterns), the line is in doubt in the register, or an
+  # identical write holds it; the publish act sends nothing for it; and the
+  # line by hand, a plain rerun of the same command, writes anew once the
+  # write's pending record is gone, so it could record the sweep twice. The
+  # sweep passes no `LANES_WRITE_ID` and cannot know the id the register
+  # mints, so the writer's printed words are the remedy: they are relayed,
+  # this sweep prints no command, and the run keeps the signal's code. Any
+  # other words, and none, keep the note below: a primary writer that ended
+  # 0, or that the Ctrl-C ended, prints nothing that tells its mode.
+  # A v1.3 LIMIT (lane 3, #165 6897110551): a signal to `lane-end` alone,
+  # after a write that committed, still gets the note below, whose line by
+  # hand records the sweep a second time: a duplicate sweep line in the
+  # register, with nothing lost. Giving the trap the writer's `$?`, which
+  # would tell that 0, is a follow-up after v1.3.0. The same limit has a
+  # second window (lane 2, #165 6898032113, NIT 2): a signal that comes
+  # after the capture below was read back and `LE_TMP` emptied, and before
+  # the `3)` arm prints, finds no words here and gets the note below too:
+  # the same consequence, a second sweep line.
   sc_sig=""; sc_noting=0; sc_text=""
   sc_on_signal() {   # <the exit code, 128 plus the signal>
     trap '' INT TERM
+    sc_sig_err=""
+    if [ "$sc_noting" = 1 ] && [ -n "${LE_TMP:-}" ]; then
+      sc_sig_err="$(cat -- "$LE_TMP" 2>/dev/null)" || sc_sig_err=""
+    fi
+    case "$sc_sig_err" in
+      *"lanes-edit: cannot confirm whether register write "* | *"lanes-edit: an identical write "*)
+        cat -- "$LE_TMP" >&2 2>/dev/null || :
+        note "a signal stopped this sweep while its NOTED line was being written, and the line may not be written: \`lanes-edit.sh log\` ended 3 on primary (its words are above). Settle it by what the writer printed, and by nothing else, so the sweep is recorded once: run its printed \`LANES_WRITE_ID\` rerun, which writes the line once or finds it, or, where it names an identical write still running or holding the claim, do what it says once that write has ended. Nothing was lost: each checkout removed held nothing unpublished."
+        sc_say_partial
+        exit "$1" ;;
+    esac
     if [ "$sc_noting" = 1 ]; then
       if [ -n "${LE_TMP:-}" ]; then cat -- "$LE_TMP" >&2 2>/dev/null || :; fi
       note "a signal stopped this sweep while its NOTED line was being written, so the line may be on origin already, or committed in the checkout it went through and not yet published. Nothing was lost: each checkout removed held nothing unpublished. Look at lane $sc_runner's log on origin first. Where origin lacks the line, the publish act sends a commit that is kept:"
@@ -3198,11 +3256,32 @@ SLU
           # so it is archived on origin (S6.3) and taken off the checkout
           # first. Words this sweep does not know get both remedies, in the
           # order that is safe whichever happened.
+          # ON PRIMARY A `git add` THAT FAILED LEFT NOTHING TO PUT BACK (lane
+          # 4's #165 6895094501; V3F-L4's NIT 4(b)). There `log` runs its
+          # verb in an attempt's child on the write's own scratch tree
+          # (`LANES_REGISTER_SCRATCH`), whose `git add` dies 6 before the
+          # seam; the run then ends 6 with the child's words, which are
+          # files mode's own, and only where the register holds none of the
+          # line (no commit call held, or F3's lookup found it absent). The
+          # words cannot tell the mode, so the arm asks the checkout the line
+          # goes through: where its `lanes/log/<runner>.md` is as its HEAD
+          # has it (`git status`, with no optional lock), the write left
+          # nothing there, and the line by hand alone is printed. Files
+          # mode's failed `git add` or `git commit` always leaves its line
+          # there; a status that names the log, or cannot be read, keeps the
+          # note below and its `restore`.
           case "$sc_log_err" in
             *"with origin/$sc_branch unmoved"*)
               note "the NOTED line recording this sweep is committed in $sc_wco and was not published: its push was refused with origin/$sc_branch unmoved (\`lanes-edit.sh log\` exited 6, above), so only origin lacks it, and it is not to be written again. Nothing was lost: each checkout removed held nothing unpublished. Once what refused the push is put right, the publish act sends it:"
               note "  $sc_publish" ;;
             *"git add failed"* | *"git commit failed"*)
+              sc_wco_st=""; sc_wco_rc=0
+              sc_wco_st="$(GIT_OPTIONAL_LOCKS=0 git -C "$sc_wco" status --porcelain=v1 --untracked-files=all -- "lanes/log/$sc_runner.md" 2>/dev/null)" || sc_wco_rc=$?
+              if [ "$sc_wco_rc" = 0 ] && [ -z "$sc_wco_st" ]; then
+                note "the NOTED line recording this sweep was NOT committed: git could not add or commit it (\`lanes-edit.sh log\` exited 6, above), and lanes/log/$sc_runner.md in $sc_wco is as its HEAD has it, so nothing of it is left there to put back. On primary that \`git add\` ran in the write's own scratch tree, and the register holds none of the line. Nothing was lost: each checkout removed held nothing unpublished. Once what refused it is put right, write the line by hand:"
+                note "  $sc_by_hand"
+                exit 1
+              fi
               note "the NOTED line recording this sweep was NOT committed: git could not add or commit it in $sc_wco (\`lanes-edit.sh log\` exited 6, above), so it is left there, staged or in the working tree, and none of it is on origin. Nothing was lost: each checkout removed held nothing unpublished. Once what refused the commit is put right, put the log back and write the line by hand:"
               note "  git -C $(printf '%q' "$sc_wco") restore --staged --worktree -- $(printf '%q' "lanes/log/$sc_runner.md")"
               note "  $sc_by_hand" ;;
