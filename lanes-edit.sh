@@ -20527,7 +20527,7 @@ guard_rm_cause() {   # <offer file>
 guard_drop_refuse() {   # <offer file> <what this prompt found, as a clause>
   gdf_f="${1-}"; gdf_w=""
   guard_rm_cause "$gdf_f"
-  [ -z "${GBT_REN_FROM-}" ] || gdf_w=" This window keeps the name ${GBT_REN_TO:-<to>} that this answer gave it."
+  [ -z "${GBT_REN_FROM-}" ] || { gdf_w=" This window keeps the name ${GBT_REN_TO:-<to>} that this answer gave it."; GBT_REN_SAID=1; }
   guard_refuse "${2-}, and it could NOT be removed: \`rm\` failed on $gdf_f, $GRC_WHY. So the record is still there and nothing was removed, and the next prompt meets the same record.$gdf_w $GRC_FIX Send your prompt again after that. $(guard_bypass)"
 }
 # THE ALLOWANCE'S DROP removes the record and nothing else: no `.bind.*` sweep,
@@ -22362,7 +22362,7 @@ GBT_MOVED=0
 # THE WINDOW `guard_answer_moved` RENAMED, for `guard_bind_site` (lane 1's check
 # of part 55, NIT 3): empty here, so that a value the environment carries never
 # renames a window this prompt did not.
-GBT_REN_FROM=""; GBT_REN_TO=""
+GBT_REN_FROM=""; GBT_REN_TO=""; GWB_CALLED=0; GBT_REN_SAID=0
 # `guard_answer`'s FAILED-DROP FLAG (lane 3's SHOULD-1; lane 5's adversarial read
 # of parts 56 to 59, NIT-2): 0 here, so that a value the environment carries
 # neither silences the first failed-drop note nor names a failed `rm` that never
@@ -22505,6 +22505,10 @@ guard_offer_choices() {   # <from> <the lane choice 2 moves to> <binds spent>
 #   0 renamed · 1 not, and the person is told the one command
 guard_window_back() {   # <from> <to> [none | changed | unread]
   gwb_from="${1-}"; gwb_to="${2-}"; gwb_form="${3-}"
+  # EVERY CALL IS MARKED (`GWB_CALLED`; lane 1's check of parts 58 and 59,
+  # NIT-3): its note says what came of the rename back, so `guard_answer_moved`
+  # says "keeps the name" only where no call was made.
+  GWB_CALLED=1
   [ -n "$gwb_from" ] || return 1
   if command -v tmux >/dev/null 2>&1 && tmux rename-window "$gwb_from" 2>/dev/null; then
     if [ "$gwb_form" = none ]; then
@@ -22773,7 +22777,22 @@ guard_site_match() {
 # keeps `<to>`'s name though no bind of this answer's ran, and the next prompt
 # is judged in a window named for `<to>` while the register still holds this
 # transcript under `<from>`, so it is refused or asked on that state until the
-# window is renamed by hand.
+# window is renamed by hand. The person is told the window keeps `<to>`'s name
+# (`guard_answer_moved`'s last note, NIT-3).
+# `guard_answer_moved`'S OWN BRANCHES DIFFER, AND STAY (lane 1's check of parts
+# 58 and 59, NIT-2): (A) and its allowance branch rename back for a gone record,
+# for any offer or allowance, and for any other mode. The rule here rests on a
+# bind record read, which shows that another answer `2` ran and may have
+# succeeded; there the record read just after this answer's own rewrite was no
+# bind record, so nothing shows that any bind ran. An offer is removed there by
+# a stale drop, choice 3 or case 11, and an offer from another lane there can
+# be one another prompt made on reading the window this answer had just renamed
+# to `<to>`; in each, renaming back is right. The contract's section 5 states
+# (A)'s rename back, and lane 2's T214x cases and rounds 7 to 12 assert it. THE
+# WINDOW LEFT, AND ITS COST: where, inside a stalled hook (point 27's class), a
+# bind ran there, ended `bound` and was heard and dropped, renaming back undoes
+# its rename, and the next prompt meets a window named for `<from>` in a lane
+# now `<to>`, refused or asked on that state until it is renamed by hand.
 guard_site_moved() {   # <offer file> <pane>
   gsm2_f="${1-}"; gsm2_m=""; gsm2_from=""; gsm2_read=0
   if [ ! -e "$gsm2_f" ] && [ ! -L "$gsm2_f" ]; then
@@ -22956,8 +22975,10 @@ guard_bind_site() {   # <offer file> <pane>
     # states, a live `binding` is never removed here (lane 1's check of part 55,
     # NIT 2). THE WINDOW LEFT is this load to its `rm`: a record put in place
     # between them is removed. A record gone by the existence test just before
-    # the `rm` is `guard_bind_gone`'s (NIT 1), so the window that removes one is
-    # that test to the `rm`. ITS COST, as case 5's comment gives its own: where
+    # the `rm` gets `guard_bind_gone`'s words and is not removed (NIT 1); the
+    # test does not narrow the window: a record put in place after the read and
+    # before the test is still removed (lane 1's check of parts 58 and 59,
+    # NIT-1). ITS COST, as case 5's comment gives its own: where
     # what is removed there is another prompt's live `binding`, its outer then
     # runs nothing (its start rewrite finds no record), or, where its body had
     # started, the bind runs on and how it ends is written only to its `.out`,
@@ -23122,7 +23143,17 @@ EOF
     [ "$gbt_wrc" != 2 ] || { guard_site_moved "$gbt_f" "$gbt_pane"; return 2; }
     [ "$gbt_wrc" = 0 ] || gbt_back=1
     guard_triple
-    note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} ON $GBR_HOST/$GBR_CONTAINER IS NO LONGER RUNNING AND LEFT NO OUTCOME by 60 s past its deadline, $gbt_dlu, so what it wrote is not known; the next \`2\` finds out first. This window is not renamed: that bind ran on another host or container."
+    # IN A WINDOW THIS ANSWER RENAMED (`GBT_REN_FROM`; lane 1's check of parts 58
+    # and 59, NIT-3), "This window is not renamed" was false: the words say the
+    # window keeps the name this answer gave it, and case 10 still renames
+    # nothing. ITS COST: the offer kept there is about `<from>`, so the next
+    # prompt, in a window named for `<to>`, drops it as stale and asks afresh.
+    gbt_ten="This window is not renamed: that bind ran on another host or container."
+    if [ -n "${GBT_REN_FROM-}" ]; then
+      gbt_ten="This window keeps the name ${GBT_REN_TO:-<to>} that this answer gave it; that bind ran on another host or container, so case 10 renames nothing."
+      GBT_REN_SAID=1
+    fi
+    note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} ON $GBR_HOST/$GBR_CONTAINER IS NO LONGER RUNNING AND LEFT NO OUTCOME by 60 s past its deadline, $gbt_dlu, so what it wrote is not known; the next \`2\` finds out first. $gbt_ten"
     if [ "$gbt_back" = 1 ]; then
       guard_site_reread "$gbt_f" binding
       guard_site_unrestored "$gbt_f" binding
@@ -23280,9 +23311,17 @@ guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 whe
       # refusal of a record that became an offer or an allowance renames it back
       # (lane 1's check of part 55, NIT 3). Its other answers leave the window
       # as that bind record's answer leaves it, as before.
-      GBT_REN_FROM=""; GBT_REN_TO=""
+      # AND WHERE NOTHING RENAMED IT BACK, THE PERSON IS TOLD (lane 1's check of
+      # parts 58 and 59, NIT-3): on every path of `guard_bind_site` and
+      # `guard_site_moved` that keeps the window, unless the words already said
+      # so (`GBT_REN_SAID`: `guard_drop_refuse`, case 10), the last note is
+      # "This window keeps the name <to> that this answer gave it." A call of
+      # `guard_window_back` (`GWB_CALLED`) has said what came of the rename back.
+      GBT_REN_FROM=""; GBT_REN_TO=""; GWB_CALLED=0; GBT_REN_SAID=0
       [ "$gam_ren" = 0 ] || { GBT_REN_FROM="$gam_from"; GBT_REN_TO="$gam_to"; }
       guard_bind_site "$gam_f" "$gam_pane"
+      [ -z "$GBT_REN_FROM" ] || [ "$GWB_CALLED" = 1 ] || [ "$GBT_REN_SAID" = 1 ] ||
+        note "This window keeps the name $GBT_REN_TO that this answer gave it."
       GBT_REN_FROM=""; GBT_REN_TO=""
       return 2 ;;
     allow)
@@ -23446,8 +23485,10 @@ guard_answer() {   # <offer file> <the prompt> <pane>
   # separate reads of `mode`, `from` and `bind` above, to the `rm` below, where a
   # record removed or replaced between them can still be read as an offer
   # missing a key, and whatever is there at the `rm` is removed. A record gone
-  # by the existence test just before the `rm` is `guard_bind_gone`'s (NIT 1),
-  # so the window that removes one is that test to the `rm`. ITS COST, as case
+  # by the existence test just before the `rm` gets `guard_bind_gone`'s words
+  # and is not removed (NIT 1); the test does not narrow the window: a record
+  # put in place after the reads and before the test is still removed (lane 1's
+  # check of parts 58 and 59, NIT-1). ITS COST, as case
   # 5's comment gives its own: where what is removed there is another prompt's
   # live `binding`, its outer then runs nothing (its start rewrite finds no
   # record), or, where its body had started, the bind runs on and how it ends
