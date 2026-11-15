@@ -2543,6 +2543,70 @@ def test_noted_line_whose_commit_fails_is_put_back_then_written_by_hand(sweep):
     assert len(_noted_on_origin(box)) == 1, _noted_on_origin(box)
 
 
+def test_noted_line_whose_git_add_fails_on_primary_puts_nothing_back(sweep):
+    """ON PRIMARY A NOTED WRITE WHOSE `git add` FAILS LEFT NOTHING TO PUT
+    BACK (lane 4's #165 6895094501; V3F-L4's NIT 4(b)). There the verb runs
+    in an attempt's child on the write's own scratch tree, so the run's 6
+    carries files mode's words, `git add failed`, while the checkout the
+    line goes through is as its HEAD has it and the register holds none of
+    the line. A `log` wrapper says so and exits 6, touching no checkout. The
+    sweep exits 1, says nothing is left there to put back, and hands out
+    the line by hand alone, with no `restore`; run, it lands the line once."""
+    box = sweep.box
+    runner = box.checkout(RUNNER)
+    failing = _wrapped(box, "lanes-edit-primary-add-6-log", "log", (
+        "  printf 'lanes-edit: git add failed\\n' >&2\n"
+        "  exit 6\n"))
+    result, rows = sweep("--yes", LANES_LANE=RUNNER, LANES_EDIT=failing)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert _tagged(rows, "removed") == {str(box.checkout(CLOSED))}, rows
+    assert not _noted_on_origin(box)
+    assert "the NOTED line recording this sweep was NOT committed" in result.stderr, result.stderr
+    assert (f"lanes/log/{RUNNER}.md in {runner} is as its HEAD has it, so nothing of it is left "
+            "there to put back") in result.stderr, result.stderr
+    assert "the register holds none of the line" in result.stderr, result.stderr
+    assert "restore --staged --worktree" not in result.stderr, result.stderr
+    assert "staged or in the working tree" not in result.stderr, result.stderr
+    remedies = _remedies(result.stderr)
+    assert len(remedies) == 1, remedies
+    assert remedies[0].startswith(
+        f"LANES_LANE={RUNNER} LANES_SESSION={UUID[RUNNER]} lanes-edit.sh log NOTED "), remedies
+    assert box.git("-C", str(runner), "status", "--porcelain", "--", f"lanes/log/{RUNNER}.md") == ""
+    _run_in_order(box, remedies)
+    assert len(_noted_on_origin(box)) == 1, _noted_on_origin(box)
+
+
+def test_noted_line_whose_git_add_fails_with_the_line_left_is_put_back_then_written_by_hand(sweep):
+    """FILES MODE'S FAILED `git add` LEAVES ITS LINE IN THE CHECKOUT, and the
+    6 keeps its `restore` (lane 4's #165 6895094501). `log` appends the line
+    to the runner's log in the checkout it writes through, and its `git add`
+    then fails: a wrapper does both and exits 6. The sweep's status read
+    names the log, so the note and its two commands are as before: put the
+    log back, then write the line by hand. Run in order, they land the line
+    once."""
+    box = sweep.box
+    runner = box.checkout(RUNNER)
+    log = runner / "lanes" / "log" / f"{RUNNER}.md"
+    failing = _wrapped(box, "lanes-edit-files-add-6-log", "log", (
+        f"  printf 'FAKE: a line git could not add\\n' >> {log}\n"
+        "  printf 'lanes-edit: git add failed\\n' >&2\n"
+        "  exit 6\n"))
+    result, rows = sweep("--yes", LANES_LANE=RUNNER, LANES_EDIT=failing)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert _tagged(rows, "removed") == {str(box.checkout(CLOSED))}, rows
+    assert not _noted_on_origin(box)
+    assert (f"git could not add or commit it in {runner} (`lanes-edit.sh log` exited 6, above), so "
+            "it is left there, staged or in the working tree") in result.stderr, result.stderr
+    assert "nothing of it is left there to put back" not in result.stderr, result.stderr
+    remedies = _remedies(result.stderr)
+    assert len(remedies) == 2, remedies
+    assert remedies[0] == f"git -C {runner} restore --staged --worktree -- lanes/log/{RUNNER}.md", remedies
+    assert remedies[1].startswith(
+        f"LANES_LANE={RUNNER} LANES_SESSION={UUID[RUNNER]} lanes-edit.sh log NOTED "), remedies
+    _run_in_order(box, remedies)
+    assert len(_noted_on_origin(box)) == 1, _noted_on_origin(box)
+
+
 def test_noted_line_that_loses_six_push_races_is_archived_then_written_by_hand(sweep):
     """A NOTED WRITE THAT LOSES THE RACE SIX TIMES (lane openRepoTools-3's
     SHOULD 373): a peer's commit lands on origin before every push from the

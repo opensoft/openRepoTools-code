@@ -338,6 +338,12 @@
 #   alone, after a write that committed, still gets that note, and its line
 #   by hand records the sweep a second time: a duplicate sweep line in the
 #   register, with nothing lost.
+#   A `git add` THAT FAILS ON PRIMARY fails in the write's own scratch tree,
+#   and its 6 carries files mode's words, so the sweep asks the checkout the
+#   line goes through: where the runner's log there is as its HEAD has it,
+#   nothing is put back and only the line by hand is printed, exiting 1 as
+#   before; files mode's failed `git add`, which leaves its line there, keeps
+#   its `restore` (lane 4's #165 6895094501).
 #
 # EXIT
 #   0  done
@@ -3243,11 +3249,32 @@ SLU
           # so it is archived on origin (S6.3) and taken off the checkout
           # first. Words this sweep does not know get both remedies, in the
           # order that is safe whichever happened.
+          # ON PRIMARY A `git add` THAT FAILED LEFT NOTHING TO PUT BACK (lane
+          # 4's #165 6895094501; V3F-L4's NIT 4(b)). There `log` runs its
+          # verb in an attempt's child on the write's own scratch tree
+          # (`LANES_REGISTER_SCRATCH`), whose `git add` dies 6 before the
+          # seam; the run then ends 6 with the child's words, which are
+          # files mode's own, and only where the register holds none of the
+          # line (no commit call held, or F3's lookup found it absent). The
+          # words cannot tell the mode, so the arm asks the checkout the line
+          # goes through: where its `lanes/log/<runner>.md` is as its HEAD
+          # has it (`git status`, with no optional lock), the write left
+          # nothing there, and the line by hand alone is printed. Files
+          # mode's failed `git add` or `git commit` always leaves its line
+          # there; a status that names the log, or cannot be read, keeps the
+          # note below and its `restore`.
           case "$sc_log_err" in
             *"with origin/$sc_branch unmoved"*)
               note "the NOTED line recording this sweep is committed in $sc_wco and was not published: its push was refused with origin/$sc_branch unmoved (\`lanes-edit.sh log\` exited 6, above), so only origin lacks it, and it is not to be written again. Nothing was lost: each checkout removed held nothing unpublished. Once what refused the push is put right, the publish act sends it:"
               note "  $sc_publish" ;;
             *"git add failed"* | *"git commit failed"*)
+              sc_wco_st=""; sc_wco_rc=0
+              sc_wco_st="$(GIT_OPTIONAL_LOCKS=0 git -C "$sc_wco" status --porcelain=v1 --untracked-files=all -- "lanes/log/$sc_runner.md" 2>/dev/null)" || sc_wco_rc=$?
+              if [ "$sc_wco_rc" = 0 ] && [ -z "$sc_wco_st" ]; then
+                note "the NOTED line recording this sweep was NOT committed: git could not add or commit it (\`lanes-edit.sh log\` exited 6, above), and lanes/log/$sc_runner.md in $sc_wco is as its HEAD has it, so nothing of it is left there to put back. On primary that \`git add\` ran in the write's own scratch tree, and the register holds none of the line. Nothing was lost: each checkout removed held nothing unpublished. Once what refused it is put right, write the line by hand:"
+                note "  $sc_by_hand"
+                exit 1
+              fi
               note "the NOTED line recording this sweep was NOT committed: git could not add or commit it in $sc_wco (\`lanes-edit.sh log\` exited 6, above), so it is left there, staged or in the working tree, and none of it is on origin. Nothing was lost: each checkout removed held nothing unpublished. Once what refused the commit is put right, put the log back and write the line by hand:"
               note "  git -C $(printf '%q' "$sc_wco") restore --staged --worktree -- $(printf '%q' "lanes/log/$sc_runner.md")"
               note "  $sc_by_hand" ;;
