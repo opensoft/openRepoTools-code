@@ -2288,6 +2288,61 @@ def test_noted_line_3_off_primary_keeps_files_modes_note_and_the_publish_act(swe
     assert len(_noted_on_origin(box)) == 1, "the publish act wrote no second line"
 
 
+def _bash_function(text: str, name: str) -> list:
+    """The numbered lines of the bash function `name` in `text`: from its one
+    `name() {` line to the first `}` alone at column 0 after it."""
+    lines = text.splitlines()
+    starts = [n for n, line in enumerate(lines) if line.startswith(f"{name}() {{")]
+    assert len(starts) == 1, (name, starts)
+    end = lines.index("}", starts[0])
+    return list(enumerate(lines[starts[0]:end + 1], starts[0] + 1))
+
+
+def test_noted_line_3_on_primary_patterns_open_the_writers_five_exit_3_dies_and_nothing_else():
+    """THE TWO PATTERNS ARE THE WRITER'S OWN OPENINGS, AND ONLY ITS PRIMARY 3s
+    PRINT THEM (V3F-L4's SHOULD 1 on T430's NOTED `3)` fix). The sweep tells
+    a primary 3 from files mode's by two patterns in its `3)` arm, and the
+    cases above feed it copies of the writer's words. This reads both sides
+    from the repository: the patterns from `lane-end`'s arm, the prefix from
+    `lanes-edit.sh`'s `die`, and the five `die ... 3`s a primary write ends 3
+    with, by their functions (`pw_lookup_3`, `pw_owner_live_end`'s three and
+    `pw_owner_untested_end`). Each of the five opens, after the prefix, with
+    one of the patterns, each pattern opens one at least, and no other line
+    of `lanes-edit.sh` but a comment holds either pattern's words, so files
+    mode's 3 cannot take the primary arm. A reword of either side alone fails
+    here, where the sweep would otherwise fall back to files mode's note."""
+    arm = [line.strip() for line in (REPO / "lane-end").read_text(encoding="utf-8").splitlines()]
+    at = arm.index('case "$sc_noted_rc" in')
+    assert arm[at + 1:at + 3] == ["3)", 'case "$sc_log_err" in'], arm[at:at + 4]
+    patterns = re.findall(r'\*"([^"]*)"\*', arm[at + 3])
+    assert len(patterns) == 2 and arm[at + 3].endswith(")"), arm[at + 3]
+    for pattern in patterns:
+        assert not set(pattern) & set("$`\\*?["), pattern   # a plain substring, as the glob reads it
+
+    text = (REPO / "lanes-edit.sh").read_text(encoding="utf-8")
+    prefix = [m.group(1) for _, line in _bash_function(text, "die")
+              for m in [re.search(r"""printf '([^'%]*)%s\\n' "\$\{1-\}" >&2""", line)] if m]
+    assert prefix == ["lanes-edit: "], prefix
+    openings = [pattern[len(prefix[0]):] for pattern in patterns if pattern.startswith(prefix[0])]
+    assert len(openings) == 2, (prefix, patterns)
+
+    dies = {}
+    for name, count in (("pw_lookup_3", 1), ("pw_owner_live_end", 3), ("pw_owner_untested_end", 1)):
+        found = {n: m.group(1) for n, line in _bash_function(text, name)
+                 for m in [re.fullmatch(r'\s*die "(.*)" 3', line)] if m}
+        assert len(found) == count, (name, found)
+        dies.update(found)
+    for n, message in dies.items():
+        assert any((prefix[0] + message).startswith(pattern) for pattern in patterns), (n, message)
+    for opening in openings:
+        assert any(message.startswith(opening) for message in dies.values()), opening
+
+    elsewhere = [f"{n}: {line.strip()}" for n, line in enumerate(text.splitlines(), 1)
+                 if n not in dies and not line.lstrip().startswith("#")
+                 and any(opening in line for opening in openings)]
+    assert not elsewhere, elsewhere
+
+
 def test_noted_line_kept_unpublished_is_published_not_written_again(sweep):
     """A NOTED write that exits 6 with its commit KEPT in the checkout it was
     made in (rv4's SHOULD 2): every push is refused here with origin unmoved.
