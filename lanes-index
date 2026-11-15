@@ -8267,6 +8267,7 @@ class RegisterService:
         self.install, self.config_stamp = stamps
         self.config_epoch = 0        # moves with each configuration taken (`reload`)
         self.reload_due = False      # a request saw a change; the worker re-reads it (M1)
+        self.config_checking = 0     # connections comparing the stamp now (Codex SHOULD 1)
         self.asks = 0                # requests that saw a change, counted (NIT-A)
         self.taken = 0               # of them, those a finished `take_change` has covered
         self.change_ends = False     # the worker found a change that ends the service
@@ -8777,7 +8778,17 @@ class RegisterService:
         try:
             answer = self.query(job, job.arrival + timer)
             with self.cond:
-                if job.epoch == self.config_epoch and not self.reload_due:
+                # NOR WHILE A CHECK IS UNDER WAY (Codex's delta review of
+                # bb19b1ad, SHOULD 1): a connection comparing the stamp may
+                # already have found a change it has not yet asked for, so
+                # the answer waits for the checks, within the request's
+                # timer, and is given only where none is under way and no
+                # change is waiting; else the request is answered
+                # `unavailable`.
+                self.cond.wait_for(lambda: not self.config_checking,
+                                   max(0.0, job.arrival + timer - time.monotonic()))
+                if (job.epoch == self.config_epoch and not self.reload_due
+                        and not self.config_checking):
                     job.give(answer)
         finally:
             job.give(b"unavailable\n")
@@ -9031,9 +9042,28 @@ class RegisterService:
         if register_serve_install() != self.install:
             self.stop("its install changed")
             return b"unavailable restarting\n"
+        # THE CHECK, UNDER A GATE (lane 3's Codex delta review of bb19b1ad,
+        # #165 6886976981, SHOULD 1; socket API 8.4): the request has seen a
+        # change when its comparison finds one, which is before it can ask
+        # the worker for it under `cond`. So it counts itself as checking
+        # (`config_checking`) under `cond` before the comparison, and
+        # `serve_job` gives no answer while any check is under way; the
+        # count is let go under `cond` after the comparison, in the same
+        # hold that asks the worker (`reload_due`) where it found a change.
+        # `cond` is never held across the `stat`s.
         with self.cond:
             cfg, stamp, epoch = self.cfg, self.config_stamp, self.config_epoch
-        if register_serve_config_stamp(cfg) != stamp:
+            self.config_checking += 1
+        changed = None
+        try:
+            timer = register_serve_timer_ms(cfg) / 1000
+            changed = register_serve_config_stamp(cfg) != stamp
+        finally:
+            if not changed:
+                with self.cond:
+                    self.config_checking -= 1
+                    self.cond.notify_all()
+        if changed:
             # ONE THREAD RE-READS IT, THE WORKER (lane 1's U5 gate, #165
             # 6881993079, M1; socket API 8.4, draft 13): this connection asks
             # it, and waits for its one step, or for the service's end, at
@@ -9058,8 +9088,8 @@ class RegisterService:
             # plus 100 ms), and the client hears `unavailable` rather than
             # giving up. The change stays asked of the worker; no connection
             # thread re-reads it, runs `git` or waits on a kill (M1).
-            timer = register_serve_timer_ms(cfg) / 1000
             with self.cond:
+                self.config_checking -= 1
                 self.asks += 1
                 ticket = self.asks
                 self.reload_due = True
