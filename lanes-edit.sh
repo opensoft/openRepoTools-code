@@ -21109,22 +21109,29 @@ guard_offer_site() {   # <offer file> <pane> <the prompt>
   guard_offer "$gos_f" "$gos_pane" || gos_rc=$?
   [ "$gos_rc" = 3 ] || return 2
   gos_m=""
-  [ -f "$gos_f" ] && gos_m="$(sed -n -e 's/^mode=//p' "$gos_f" 2>/dev/null | head -n1)"
-  case "$gos_m" in
-    binding|bound|bind-failed)
-      guard_bind_site "$gos_f" "$gos_pane"
-      return 2 ;;
-    allow)
-      if guard_allow_active "$gos_f"; then
-        guard_allow_pass
-        return 0
-      fi
-      guard_allow_drop "$gos_f" || : ;;
-    *)
-      gos_arc=0
-      guard_answer "$gos_f" "$gos_prompt" "$gos_pane" || gos_arc=$?
-      [ "$gos_arc" = 3 ] || return 2 ;;
-  esac
+  # A RECORD THAT HAS GONE SINCE THE FAILED CREATE (F3): neither `-e` nor `-L`
+  # holds, so this invocation read nothing and has nothing to answer or drop (a
+  # `guard_answer` on a missing file would call it unreadable, say it was
+  # dropped, and `rm -f` whatever a third invocation made in the gap). The first
+  # read, finding no record, would have made the offer: the retry below does.
+  if [ -e "$gos_f" ] || [ -L "$gos_f" ]; then
+    [ -f "$gos_f" ] && gos_m="$(sed -n -e 's/^mode=//p' "$gos_f" 2>/dev/null | head -n1)"
+    case "$gos_m" in
+      binding|bound|bind-failed)
+        guard_bind_site "$gos_f" "$gos_pane"
+        return 2 ;;
+      allow)
+        if guard_allow_active "$gos_f"; then
+          guard_allow_pass
+          return 0
+        fi
+        guard_allow_drop "$gos_f" || : ;;
+      *)
+        gos_arc=0
+        guard_answer "$gos_f" "$gos_prompt" "$gos_pane" || gos_arc=$?
+        [ "$gos_arc" = 3 ] || return 2 ;;
+    esac
+  fi
   gos_rc=0
   guard_offer "$gos_f" "$gos_pane" || gos_rc=$?
   [ "$gos_rc" = 3 ] || return 2
