@@ -6848,8 +6848,17 @@ def register_guard_fetch(opts: dict, paths: list) -> dict:
     the caller takes each only where its digest is the read's at `n`. The
     cut is a `PsqlFailed` with `timer_expired`, as a cut request is. A fetch
     that could not be started is `RegisterGuardFetchMissed`: the database
-    answered the read, so it opens no `.outage`."""
-    argv = [sys.executable or "python3", os.path.abspath(__file__), "register", "guard-fetch"]
+    answered the read, so it opens no `.outage`.
+
+    THE CHILD IS STARTED BY `__file__` AS PYTHON GIVES IT, as
+    `register_serve_launch` starts the service (`register_serve_launch_file`;
+    lane 3's ruling on that launch, #165 6894116246, T512's commit 5 and
+    T507's A5): the same lexical join applies here. `os.path.abspath(__file__)` collapses a
+    launcher called as `a/link/../lanes-index` to `a/lanes-index`, which can
+    be another launcher's file or none, so the child would run a file this
+    read does not; the un-normalized path opens the real file, since the
+    kernel resolves `link/..` physically."""
+    argv = [sys.executable or "python3", register_serve_launch_file(), "register", "guard-fetch"]
     for path in paths:
         argv += ["--path-hex", os.fsencode(path).hex()]
     try:
