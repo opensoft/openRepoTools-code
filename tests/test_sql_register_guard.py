@@ -5015,13 +5015,17 @@ def _estate_servers(est: Estate) -> list:
     """The live processes of this estate's own `lanes-index`, its flipped
     copy (`Estate.index`), with `serve` among the words after it: a start,
     `serve --start`, or the service one starts, whose argv is that path and
-    `serve` (`register_serve_launch`)."""
-    index = str(est.index)
+    `serve` (`register_serve_launch`). The path is compared by its real
+    path, as the guard resolves its own directory (`readlink -f`); it is
+    under the estate's own root, so no other estate's process carries it."""
+    index = os.path.realpath(est.index)
     found = []
     for entry in Path("/proc").iterdir():
         if entry.name.isdigit() and _alive(entry.name):
             argv = _argv(entry.name)
-            if index in argv and "serve" in argv[argv.index(index) + 1:]:
+            at = [i for i, word in enumerate(argv) if word.startswith("/")
+                  and os.path.realpath(word) == index]
+            if at and "serve" in argv[at[0] + 1:]:
                 found.append(int(entry.name))
     return found
 
@@ -5110,11 +5114,32 @@ def test_the_first_call_starts_the_service_with_no_supervisor(estate):
     that started the service and then dropped its own request, or answered
     it otherwise, passed the start's assertions alone."""
     est = estate(mode="primary")
-    hook = est.hook("hello")
-    assert _until(lambda: _service_dir(est), 10), "the first call started no service"
-    servers = [p for p in _members("sid", 0) if "serve" in " ".join(_argv(p))] or [
-        int(e.name) for e in Path("/proc").iterdir() if e.name.isdigit()
-        and _argv(e.name)[-1:] == ["serve"]]
+    # T237zzc: ONLY THIS ESTATE'S OWN SERVICE IS TAKEN, AND STOPPED AT THE
+    # TEARDOWN. The lookup took any process on the workstation whose argv
+    # ended in `serve`, another lane's service included, and `spare` stopped
+    # it. It now takes the processes of this estate's own `lanes-index`
+    # (`_estate_servers`, the `serve` its client starts); any other `serve`
+    # is printed and left alone, never signalled. A decoy this case starts,
+    # whose argv ends in `serve` as a service's does, shows it each run: it
+    # must be left out. It ends on its own when its stdin closes (or after
+    # 60 s), and nothing here signals it.
+    decoy = subprocess.Popen([sys.executable, "-c",
+                              "import select, sys; select.select([sys.stdin], [], [], 60)",
+                              "serve"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+    try:
+        hook = est.hook("hello")
+        assert _until(lambda: _service_dir(est), 10), "the first call started no service"
+        servers = [p for p in _estate_servers(est) if _argv(p)[-1:] == ["serve"]]
+        foreign = [int(e.name) for e in Path("/proc").iterdir() if e.name.isdigit()
+                   and _argv(e.name)[-1:] == ["serve"] and int(e.name) not in servers]
+        for pid in foreign:
+            print(f"T237zzc: a serve not this estate's, left alone: pid {pid} {_argv(pid)}")
+        assert decoy.poll() is None and decoy.pid in foreign and decoy.pid not in servers, \
+            f"the lookup took a serve that is not this estate's (the decoy {decoy.pid}): {servers}"
+    finally:
+        decoy.stdin.close()
+        decoy.wait(10)
     assert servers and all(_stat(p).get("ppid") != hook.pgid for p in servers), servers
     est.spare.extend(servers)
     # T237zza: THE FIRST CALL'S OWN ANSWER, after the start's assertions, so
