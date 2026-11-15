@@ -20513,6 +20513,14 @@ guard_bind_readable() {
 # #165 6885751796): the rewrite runs only on a record that is there, whatever
 # its mode, and where it is gone, at the existence test or at the open, it
 # writes nothing and returns 2. `guard_offer`'s write stays the only creation.
+# WITH `--mode <m>` AND `--match <key>=<value>` (lane 5's adversarial review of T502
+# parts 22 to 26, F4; each may be given more than once, with any flag above): the
+# first line of that key, as `guard_bind_load` takes it, must be exactly that, or
+# the rewrite writes nothing and returns 2. `guard_bind_site` loaded a record, and
+# its rewrites require what they loaded (`--mode bind-failed`; `--binding` with
+# `--match bind=<k>` and `--match started_utc=<t>`), so a record another
+# invocation has changed since is not written over. The window left is this read
+# to the `mv`.
 # WITH `--offer`, THE HOOK'S OWN WRITES ON THE OFFER THE PERSON ANSWERED (the
 # head copy and the rewrite to `binding`; lane 5's rule for them, which lane 3
 # confirmed in #165 6886113842, as point 26's): the rewrite runs only on a record that
@@ -20526,16 +20534,27 @@ guard_bind_readable() {
 #   `--offer` only) not the outer's own, or no record, or not `binding` (not
 #   `name-drift` under `--offer`), so not written: this rewrite did not change
 #   the record either
-guard_bind_rewrite() {   # [--own | --binding | --exist | --offer] <offer file> <keys to drop, space-separated> [<key>=<value> …]
-  gbw_own=0; gbw_bd=0; gbw_ex=0; gbw_of=0
-  case "${1-}" in
-    --own) gbw_own=1; shift ;;
-    --binding) gbw_bd=1; shift ;;
-    --exist) gbw_ex=1; shift ;;
-    --offer) gbw_of=1; shift ;;
-  esac
+guard_bind_rewrite() {   # [--own | --binding | --exist | --offer | --mode <m> | --match <key>=<value> …] <offer file> <keys to drop, space-separated> [<key>=<value> …]
+  gbw_own=0; gbw_bd=0; gbw_ex=0; gbw_of=0; gbw_wl=""; gbw_wk=" "
+  while :; do
+    case "${1-}" in
+      --own) gbw_own=1 ;;
+      --binding) gbw_bd=1 ;;
+      --exist) gbw_ex=1 ;;
+      --offer) gbw_of=1 ;;
+      --mode)
+        [ "$#" -ge 2 ] || return 1
+        gbw_wl="${gbw_wl}mode=$2"$'\n'; gbw_wk="${gbw_wk}mode "; shift ;;
+      --match)
+        [ "$#" -ge 2 ] || return 1
+        case "$2" in ?*=*) : ;; *) return 1 ;; esac
+        gbw_wl="${gbw_wl}$2"$'\n'; gbw_wk="${gbw_wk}${2%%=*} "; shift ;;
+      *) break ;;
+    esac
+    shift
+  done
   gbw_two=0
-  [ "$gbw_own" = 0 ] && [ "$gbw_bd" = 0 ] && [ "$gbw_ex" = 0 ] && [ "$gbw_of" = 0 ] || gbw_two=1
+  [ "$gbw_own" = 0 ] && [ "$gbw_bd" = 0 ] && [ "$gbw_ex" = 0 ] && [ "$gbw_of" = 0 ] && [ -z "$gbw_wl" ] || gbw_two=1
   gbw_f="${1-}"; gbw_drop=" ${2-} "
   [ -n "$gbw_f" ] && [ "$#" -ge 2 ] || return 1
   shift 2
@@ -20557,10 +20576,17 @@ guard_bind_rewrite() {   # [--own | --binding | --exist | --offer] <offer file> 
         case "$gbw_a" in mode=*) printf '%s\n' "$gbw_a" || exit 1; break ;; esac
       done
       if [ -e "$gbw_f" ]; then
-        gbw_seen=" "; gbw_m=""; gbw_p=""; gbw_ps=""; gbw_h=""; gbw_c=""
+        gbw_seen=" "; gbw_m=""; gbw_p=""; gbw_ps=""; gbw_h=""; gbw_c=""; gbw_ms=" "; gbw_got=""
         {
         while { gbw_st=0; IFS= read -r gbw_l <&8 || gbw_st=$?; [ "$gbw_st" = 0 ] || [ -n "$gbw_l" ]; }; do
           if [ "$gbw_two" = 1 ]; then
+            case "$gbw_wk" in
+              *" ${gbw_l%%=*} "*)
+                case "$gbw_ms" in
+                  *" ${gbw_l%%=*} "*) : ;;
+                  *) gbw_ms="$gbw_ms${gbw_l%%=*} "; gbw_got="${gbw_got}${gbw_l}"$'\n' ;;
+                esac ;;
+            esac
             case "$gbw_l" in
               mode=*|pid=*|pidstart=*|host=*|container=*)
                 case "$gbw_seen" in
@@ -20593,6 +20619,12 @@ guard_bind_rewrite() {   # [--own | --binding | --exist | --offer] <offer file> 
         [ "$gbw_own" = 0 ] || guard_bind_own "$gbw_m" "$gbw_p" "$gbw_ps" "$gbw_h" "$gbw_c" || exit 2
         [ "$gbw_bd" = 0 ] || [ "$gbw_m" = binding ] || exit 2
         [ "$gbw_of" = 0 ] || [ "$gbw_m" = name-drift ] || exit 2
+        if [ -n "$gbw_wl" ]; then
+          while IFS= read -r gbw_w; do
+            [ -n "$gbw_w" ] || continue
+            case $'\n'"$gbw_got" in *$'\n'"$gbw_w"$'\n'*) : ;; *) exit 2 ;; esac
+          done <<<"$gbw_wl"
+        fi
       elif [ "$gbw_two" = 1 ]; then
         exit 2
       fi
@@ -22313,8 +22345,41 @@ guard_bind_gone() {   # <offer file>
   return 2
 }
 
+# WHAT `guard_bind_site`'S STALE ROWS REQUIRE of the record they loaded, beyond its
+# mode (F4): the same attempt, its `bind` and its `started_utc`, so an outer of
+# another attempt, or a record rewritten since, is not turned into a stale one.
+guard_site_match() {
+  GBT_MATCH=(--match "bind=$GBR_BIND")
+  [ -z "$GBR_STARTED" ] || GBT_MATCH+=(--match "started_utc=$GBR_STARTED")
+}
+
+# `guard_bind_site`'S REWRITE FOUND THE RECORD GONE, OR NOT WHAT IT LOADED (F4):
+# nothing was written. The record is read ONCE and answered: gone is
+# `guard_bind_gone`'s refusal; a bind record is `guard_bind_site`'s answer, once
+# more (`GBT_MOVED` is the whole of the loop: a second change is refused); any
+# other record is refused as changed, and the next prompt answers it as the first
+# read does.
+guard_site_moved() {   # <offer file> <pane>
+  gsm2_f="${1-}"; gsm2_m=""
+  if [ ! -e "$gsm2_f" ] && [ ! -L "$gsm2_f" ]; then
+    guard_bind_gone "$gsm2_f"
+    return 2
+  fi
+  [ -f "$gsm2_f" ] && gsm2_m="$(sed -n -e 's/^mode=//p' "$gsm2_f" 2>/dev/null | head -n1)"
+  case "$gsm2_m" in
+    binding|bound|bind-failed)
+      if [ "${GBT_MOVED:-0}" = 0 ]; then
+        GBT_MOVED=1
+        guard_bind_site "$gsm2_f" "${2-}"
+        return 2
+      fi ;;
+  esac
+  guard_refuse "the pending offer at $gsm2_f was changed while it was being answered (it says mode=${gsm2_m:-none} now), so nothing was written to it. Send your prompt again and it will be read afresh."
+  return 2
+}
+
 guard_bind_site() {   # <offer file> <pane>
-  gbt_f="${1-}"
+  gbt_f="${1-}"; gbt_pane="${2-}"
   if ! guard_bind_load "$gbt_f" || ! guard_bind_readable; then
     rm -f -- "$gbt_f"
     guard_refuse "the pending offer at $gbt_f could not be read, so it has been dropped rather than answered on a guess. Send your prompt again and the question will be asked afresh."
@@ -22342,8 +22407,8 @@ EOF
       return 2 ;;
     bind-failed)
       gbt_back=0; gbt_wrc=0
-      guard_bind_rewrite --exist "$gbt_f" "" mode=name-drift || gbt_wrc=$?
-      [ "$gbt_wrc" != 2 ] || { guard_bind_gone "$gbt_f"; return 2; }
+      guard_bind_rewrite --mode bind-failed "$gbt_f" "" mode=name-drift || gbt_wrc=$?
+      [ "$gbt_wrc" != 2 ] || { guard_site_moved "$gbt_f" "$gbt_pane"; return 2; }
       [ "$gbt_wrc" = 0 ] || gbt_back=1
       guard_triple
       note "THE BIND TO LANE $GBR_TO FAILED (exit $GBR_RC): ${GBR_WHY:-the record gives no reason}${GBR_OUT:+ — its output is kept in $GBR_OUT}."
@@ -22375,8 +22440,9 @@ EOF
     # CASE 10 IS STALE WITH NO COPIES (W:5458's row; tasks.md T510): the
     # pending record is that host's, so the five keys are dropped.
     gbt_wrc=0
-    guard_bind_rewrite --exist "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" || gbt_wrc=$?
-    [ "$gbt_wrc" != 2 ] || { guard_bind_gone "$gbt_f"; return 2; }
+    guard_site_match
+    guard_bind_rewrite --binding "${GBT_MATCH[@]}" "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" || gbt_wrc=$?
+    [ "$gbt_wrc" != 2 ] || { guard_site_moved "$gbt_f" "$gbt_pane"; return 2; }
     [ "$gbt_wrc" = 0 ] || gbt_back=1
     guard_triple
     note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} ON $GBR_HOST/$GBR_CONTAINER IS NO LONGER RUNNING AND LEFT NO OUTCOME by 60 s past its deadline, $gbt_dlu, so what it wrote is not known; the next \`2\` finds out first. This window is not renamed: that bind ran on another host or container."
@@ -22436,8 +22502,9 @@ EOF
     # them, and none where there is no such record (`guard_bind_copies`).
     guard_bind_copies "$G_ID"
     gbt_wrc=0
-    guard_bind_rewrite --exist "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" ${GBC_KV[@]+"${GBC_KV[@]}"} || gbt_wrc=$?
-    [ "$gbt_wrc" != 2 ] || { guard_bind_gone "$gbt_f"; return 2; }
+    guard_site_match
+    guard_bind_rewrite --binding "${GBT_MATCH[@]}" "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" ${GBC_KV[@]+"${GBC_KV[@]}"} || gbt_wrc=$?
+    [ "$gbt_wrc" != 2 ] || { guard_site_moved "$gbt_f" "$gbt_pane"; return 2; }
     [ "$gbt_wrc" = 0 ] || gbt_back=1
     guard_triple
     note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} (attempt $gbt_k) IS NO LONGER RUNNING AND LEFT NO OUTCOME: $gbt_why. What it wrote is not known; the next \`2\` finds out first."
