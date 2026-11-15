@@ -1922,6 +1922,16 @@ def _record_with(est: Estate, keys) -> None:
 #: 474 gives 540 s, (437000 + 84000 + 19 * w_s_ms + 9999) // 10000 * 10, so
 #: a bound clamped to 530 fails `[c3-w474]` (`bind-record.md` section 4 at
 #: draft 13 `cd578400`). The two ids are lane 3's names from that fold.
+#:
+#: THE 510 s BAND AT `c` = 2 (T214p; Codex's r8 of spec#17 at commit 25
+#: `d1a66b2e`, its BLOCKING: `register-cli.md` draft 4.31's K12, :303, gives
+#: 510 s at `c` = 2 where `w_s_ms` passes 368; lane 3's fix for its commit
+#: 26, #165 6882323446, at TP:6258-6265 and :6408-6409, tasks:2008 and map
+#: row 442; lane 2 confirmed it, 6882513333): with one address and `c` = 2,
+#: `w_s_ms` 368 gives 500 s and 369 gives 510 s,
+#: (437000 + 56000 + 19 * w_s_ms + 9999) // 10000 * 10, so a bound clamped
+#: to 500 at `c` = 2 fails `[c2-w369]`. The two ids are lane 3's names, on
+#: the `[c3-w473]` pattern.
 BOUND_CASES = {
     "c2": ({"c": 2, "n_a": 1, "w_s_ms": 0}, 500),
     "c3": ({"c": 3, "n_a": 1, "w_s_ms": 0}, 530),
@@ -1935,6 +1945,8 @@ BOUND_CASES = {
     "c3-rtt270": ({"c": 3, "n_a": 1, "w_s_ms": 470}, 530),
     "c3-w473": ({"c": 3, "n_a": 1, "w_s_ms": 473}, 530),
     "c3-w474": ({"c": 3, "n_a": 1, "w_s_ms": 474}, 540),
+    "c2-w368": ({"c": 2, "n_a": 1, "w_s_ms": 368}, 500),
+    "c2-w369": ({"c": 2, "n_a": 1, "w_s_ms": 369}, 510),
 }
 
 #: Case 22's `[answer-2]`: the contract stub's constants line as T207 writes
