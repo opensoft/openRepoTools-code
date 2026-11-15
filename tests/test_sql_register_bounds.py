@@ -910,7 +910,18 @@ class Bench:
         clone, its switch `files` with the marker `absent` and its head -1
         (line BD17's run of the lookup's wait). Made with `TIMING_PSQL` off
         `PATH`, so the timing and begin logs hold the case's own calls alone.
-        Only the cases whose writers commit call it."""
+        Only the cases whose writers commit call it.
+
+        THE MARKER ON ORIGIN (T257p; lane 4's 6899400726, lane 2's
+        6899444735): `lanes/STORE`, its bytes as the cutover's entry holds
+        them, is then pushed to the bench's own origin in one commit on C, so
+        a writer that falls back to files mode finds the marker at its own
+        fetch and ends 69 (`cs_marker_refuse`), never 0 with no journal row.
+        It is not the real marker commit: it carries no `Register-Seq`, so
+        the renderer that a committed write starts stops at its walk as
+        before, and the switch still records `_to_primary`'s stand-in
+        commit."""
+        import hashlib
         from types import SimpleNamespace
         from test_sql_register_import import _to_primary
         url = self.pg.url()
@@ -929,6 +940,22 @@ class Bench:
                               env=self.env, capture_output=True, text=True,
                               check=True).stdout.strip()
         _to_primary(self.pg, SimpleNamespace(c=self.c, tree=lambda sha: tree), load_indexer())
+        rows = self.pg.psql(f"SELECT text FROM {SCHEMA}.doc_lines WHERE path = 'lanes/STORE' "
+                            f"ORDER BY line_no;").stdout
+        digest = self.pg.psql(f"SELECT sha256 FROM {SCHEMA}.files WHERE path = 'lanes/STORE' "
+                              f"AND final_newline;").stdout.strip()
+        assert hashlib.sha256(rows.encode("utf-8")).hexdigest() == digest, \
+            f"lanes/STORE as the register holds it: {rows!r}, sha256 {digest!r}"
+        # A clone of its own, so the bench's checkout and W keep their last fetch.
+        marker = self.root / "marker"
+        subprocess.run(["git", "clone", "-q", str(self.origin), str(marker)], check=True,
+                       env=self.env, capture_output=True, stdin=subprocess.DEVNULL)
+        (marker / "lanes" / "STORE").write_bytes(rows.encode("utf-8"))
+        for argv in (["add", "--", "lanes/STORE"],
+                     ["commit", "-q", "-m", "The bench's stand-in marker: lanes/STORE alone"],
+                     ["push", "-q", "origin", "HEAD:main"]):
+            subprocess.run(["git", *argv], cwd=str(marker), check=True, env=self.env,
+                           capture_output=True, stdin=subprocess.DEVNULL)
 
     def lane_checkout(self) -> Path:
         """`<c>`, lane `repoA-2`'s own register checkout, made once (T257l; lane 4's triage,
