@@ -6862,11 +6862,25 @@ def register_guard_fetch(opts: dict, paths: list) -> dict:
     the caller takes each only where its digest is the read's at `n`. The
     cut is a `PsqlFailed` with `timer_expired`, as a cut request is. A fetch
     that could not be started is `RegisterGuardFetchMissed`: the database
-    answered the read, so it opens no `.outage`."""
-    argv = [sys.executable or "python3", os.path.abspath(__file__), "register", "guard-fetch"]
-    for path in paths:
-        argv += ["--path-hex", os.fsencode(path).hex()]
+    answered the read, so it opens no `.outage`.
+
+    THE CHILD IS STARTED BY `__file__` AS PYTHON GIVES IT, as
+    `register_serve_launch` starts the service (`register_serve_launch_file`;
+    lane 3's ruling on that launch, #165 6894116246, T512's commit 5 and
+    T507's A5): the same lexical join applies here. `os.path.abspath(__file__)` collapses a
+    launcher called as `a/link/../lanes-index` to `a/lanes-index`, which can
+    be another launcher's file or none, so the child would run a file this
+    read does not; the un-normalized path opens the real file, since the
+    kernel resolves `link/..` physically."""
     try:
+        # THE ARGV IS BUILT INSIDE THE TRY (lane 1's D3, #165 6896841050):
+        # `register_serve_launch_file()` calls `os.getcwd()` where `__file__` is
+        # relative, and its `OSError` is then a start that failed, a
+        # `RegisterGuardFetchMissed`, as `register_serve_launch`'s is.
+        argv = [sys.executable or "python3", register_serve_launch_file(),
+                "register", "guard-fetch"]
+        for path in paths:
+            argv += ["--path-hex", os.fsencode(path).hex()]
         child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                  stderr=subprocess.DEVNULL, close_fds=True,
                                  start_new_session=True)
@@ -7765,14 +7779,64 @@ def register_serve_launch(paths: dict) -> str | None:
     kill of its caller or a timed-out hook's SIGTERM never reaches it; stdin
     and stdout on `/dev/null`, stderr appended to `register.log`; the
     working directory `/`; and the reduced environment. Returns None where it
-    was started, else why not."""
+    was started, else why not.
+
+    THE LAUNCHER IS STARTED BY `__file__` AS PYTHON GIVES IT, NEVER
+    NORMALIZED (lane 3's ruling, #165 6894116246, which closes this line;
+    lane 1's R2, #165 6892234131, NIT 1): `register_serve_launch_file()`.
+    With `os.path.abspath(__file__)`, a launcher called as
+    `a/link/../lanes-index` is joined lexically to `a/lanes-index`, which can
+    be another launcher or none: the service it starts would run another
+    install, or none, and its `install=` would differ from every client's,
+    so every client would read "another install". The un-normalized path
+    opens the real file, since the kernel resolves `link/..` physically.
+    That closes the lexical join, which is what lane 3's ruling asked.
+
+    A REPOINT IS SEEN ONLY BY A SERVICE STARTED THROUGH THE LINK (lane 5's
+    correction, #165 6894693645; lane 3 rules it a v1.3 limit, #165
+    6894714082, so the code stays as it is). The service's install check
+    takes `register_serve_install`'s `realpath` of its own `__file__`
+    on each request. Where the service was started through an install link,
+    its `__file__` keeps the link, so after the link is repointed the check
+    finds another install and the service stops. But `lanes-edit.sh`
+    resolves itself with `readlink -f` (`lanes-edit.sh`:1226-1232) and
+    `lanes_index_bin` returns `$SCRIPT_DIR/lanes-index` (:6178-6184), so a
+    service it starts is started by the real path, and does not see a link
+    repointed above that path: the same as with the real-path launch that
+    T512's commit e2212236 built and gave up. The consequence: a client of
+    the new install reads "another install" and starts a `serve`, which finds
+    `register.lock` held (`register_serve_run`) and exits 0; the client goes
+    on using the old service's answer, and every request spawns one more
+    futile `serve`, until the old service stops for another cause. An
+    upgrade that replaces the files at the same real path is seen. A link in
+    the working directory's path is not kept either: Python joins a relative
+    path (`./lanes-index`) to the PHYSICAL working directory, giving
+    `<real>/./lanes-index`, so a service started from a directory reached
+    through a directory link (`cd dirlink; ./lanes-index`) does not see a
+    repoint of that link (lane 1's U5, #165 6895008151).
+
+    A SECOND LIVE INSTALL IS THE SAME LIMIT (lane 3's ruling, #165
+    6895062857): option 1 covers any second live install at another real
+    path, whatever put it there. The four cases are: a checkout run by hand;
+    a link-estates RELINK; a changed `OPENREPOTOOLS_BIN_DIR`; and a link
+    repointed above the path, as above. Each has the same consequence: the
+    other install's service answers, and a client of this install reads
+    "another install" and starts a futile `serve`.
+
+    THE REMEDY (lane 3's ruling, #165 6895062857, on #165 6894714082):
+    "stop the other install's service, whose `pid=` is in the owner file, or
+    do not run two installs against one register at once". After an upgrade
+    by repointing a link, the other install's service is the old service,
+    whose `pid=` is in the owner file (`register.owner`). That a client which
+    finds another install reads directly, and starts no `serve`, is a named
+    follow-up after v1.3.0, in its own PR; it is not built here."""
     try:
         log = os.open(paths["log"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
                       | os.O_CLOEXEC, 0o600)
     except OSError as exc:
         return f"{paths['log']} could not be opened ({exc.strerror or exc})"
     try:
-        subprocess.Popen([sys.executable or "python3", os.path.abspath(__file__), "serve"],
+        subprocess.Popen([sys.executable or "python3", register_serve_launch_file(), "serve"],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
                          cwd="/", env=register_serve_env(), close_fds=True,
                          start_new_session=True)
@@ -8120,14 +8184,74 @@ def register_serve_timer_ms(cfg: dict) -> int:
     return rtt + 100 if rtt > 100 else 200
 
 
+def register_serve_launch_file() -> str:
+    """THE FILE `register_serve_launch` STARTS: `__file__` as Python gives
+    it, where it is absolute, else joined to the working directory, and
+    NEVER NORMALIZED: no `abspath`, `normpath` or `realpath`. Python makes
+    the main script's `__file__` absolute but leaves a `..` in it, so a
+    launcher called as `a/link/../lanes-index` keeps that path, which the
+    kernel resolves physically, through `link`, to the real launcher.
+    `os.path.abspath` would collapse it lexically to `a/lanes-index`, which
+    can be another launcher or none. (On Python 3.9 and later the main
+    script's `__file__` is absolute, so the join to the working directory is
+    a fallback. In a working directory longer than `PATH_MAX`, `__file__`
+    stays relative (lane 1's U5, #165 6895008151, NIT 2), and the join then
+    gives a path the kernel refuses, "File name too long": `Popen` succeeds,
+    and the started `serve` fails, logging to `register.log`. So there the
+    join cannot yield a usable path.) The link stays in `__file__`, and a
+    repoint is seen, only where the launcher was invoked through that link;
+    a launcher invoked by its real path, as `lanes-edit.sh` does, has the
+    real path (see `register_serve_launch`, and lane 5's correction, #165
+    6894693645).
+    On a tree of T124's form this module's code runs in the launcher's
+    namespace, so `__file__` is the launcher's, as it was invoked."""
+    return __file__ if os.path.isabs(__file__) else os.path.join(os.getcwd(), __file__)
+
+
+#: THE LAUNCHER'S MODULE (T124; FR-064): once `lanes-index`'s body is moved
+#: out, it is this file, beside the launcher, found in the directory of
+#: `os.path.realpath(__file__)`, as the launcher finds it. Before T124 no tree
+#: has it.
+REGISTER_SERVE_MODULE = "lanes_index_main.py"
+
+
 def register_serve_install() -> tuple:
-    """THE INSTALL'S IDENTITY (Y:3915-3916): this `lanes-index` file's size,
-    mtime and inode, or () where it cannot be read."""
+    """THE INSTALL'S IDENTITY (Y:3915-3916; lane 5's choice (a) on lane 1's
+    T124 prototype, #165 6890257498 and lane 5's answer, #165 6890303231):
+    the size, mtime in nanoseconds and inode of the file
+    `os.path.realpath(__file__)` names (the launcher, once T124 has moved
+    the body), taken once and used for the `stat` and for the module's
+    directory alike, and then, where
+    `REGISTER_SERVE_MODULE` is in that directory, the same three of that
+    module: six numbers in all, the launcher's first. (`abspath` would join
+    `a/link/../lanes-index` lexically, and name the wrong file or none;
+    lane 1's R2, #165 6892234131, NIT 1.)
+
+    - Where there is no module file (`FileNotFoundError` for it: every tree
+      before T124), it is the first three alone, as it was, so this change
+      can land before T124.
+    - Where either file cannot be `stat`ed for any other reason, it is (),
+      and `install=` is written with nothing after it, which
+      `_REGISTER_SERVE_INSTALL_RE` refuses, so the file is unusable by rule
+      (OP-19 (b), rule 7): every client reads directly and starts none.
+
+    The client's test is as it was: the owner file's `install=` against
+    this value, as text. An owner file of three numbers read by a client of
+    six is another install, which starts a service."""
+    launcher = os.path.realpath(__file__)
     try:
-        st = os.stat(os.path.abspath(__file__))
+        st = os.stat(launcher)
     except OSError:
         return ()
-    return st.st_size, st.st_mtime_ns, st.st_ino
+    ident = (st.st_size, st.st_mtime_ns, st.st_ino)
+    module = os.path.join(os.path.dirname(launcher), REGISTER_SERVE_MODULE)
+    try:
+        mst = os.stat(module)
+    except FileNotFoundError:
+        return ident
+    except OSError:
+        return ()
+    return ident + (mst.st_size, mst.st_mtime_ns, mst.st_ino)
 
 
 def register_serve_host() -> dict:
@@ -9274,20 +9398,31 @@ def register_serve_sweep(paths: dict) -> None:
     """THE TEMPORARY SOCKETS AN EARLIER START LEFT (lane 1's U5 gate, #165
     6881993079, N5): a starter killed between its bind and its rename leaves
     its socket at its short name, `s.` and four hex digits, and a later
-    starter that draws that name could not bind it. Each socket of that form
-    in `run/`, by `lstat`, and this uid's, is removed, by the starter that
-    holds `register.lock` and has found no live service at the socket, just
-    before its own bind. Under the lock no other starter is between its bind
-    and its rename, since only the lock's holder binds, so each such socket
-    is a leftover. A name of another form, or a file of that form that is
-    not a socket or not this uid's, is left as it is.
+    starter that draws that name could not bind it. The starter that holds
+    `register.lock` and has found no live service at the socket attempts to
+    remove each socket of that form in `run/`, by `lstat`, and this uid's,
+    just before its own bind. Under the lock no other starter is between its
+    bind and its rename, since only the lock's holder binds, so each such
+    socket is a leftover. A name of another form, or a file of that form
+    that is not a socket or not this uid's, is left as it is, and no line is
+    written for it.
 
-    WHAT FAILS IS SAID (lane 3's Codex delta review of bb19b1ad, #165
-    6886976981, NIT 6): an entry gone before it is reached (`ENOENT`) is
-    passed over; any other failure, to list `run/` or to `lstat` or remove a
-    leftover, is written to `register.log`, and the leftover stays. A start
-    that then draws its name draws another (`register_serve_run`, SHOULD 3),
-    so a leftover that cannot be removed no longer ends the start at 69."""
+    WHAT FAILS IS SAID, AND WHAT IT LEAVES (lane 3's Codex delta review of
+    bb19b1ad, #165 6886976981, NIT 6; its review of 1e1846e3, NIT 1): the
+    sweep attempts each removal and does not promise one. An entry gone
+    before it is reached (`ENOENT`, at the `lstat` or at the removal) is
+    passed over. Any other failure is written to `register.log`: where `run/`
+    cannot be listed no entry is tried, and where an entry cannot be
+    `lstat`ed or removed, that leftover stays at its name and the sweep goes
+    on to the next entry.
+
+    A leftover that stays is not itself the end of the start. A bind that
+    finds its name taken (`EADDRINUSE`) draws another name
+    (`register_serve_run`, SHOULD 3), so the retry normally avoids one
+    occupied draw. It does not avoid every one: where all
+    `REGISTER_SERVE_BIND_TRIES` (8) draws find their names taken, by that
+    leftover or by any other entry, or by one occupied name drawn again, the
+    start still ends at 69."""
     run = paths["run"]
     try:
         names = os.listdir(run)
@@ -9319,9 +9454,14 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     connect is a live service, and this starter exits 0; `ECONNREFUSED` is a
     stale socket, which it replaces, renaming its own new socket over it,
     and never unlinks (socket API 2.5 and 8.3); then the temporary sockets
-    an earlier start left removed (`register_serve_sweep`; N5), the bind, under
-    `umask 077`, the owner file, the listen, and the stamp removed
-    (Y:3936-3938). `stamps`
+    an earlier start left, each removal attempted (`register_serve_sweep`;
+    N5), where one that cannot be removed is logged and stays, the bind,
+    under `umask 077`, the owner file, the listen, and the stamp removed
+    (Y:3936-3938). The bind draws a temporary name of `s.` and four hex
+    digits, up to `REGISTER_SERVE_BIND_TRIES` (8) times, drawing another
+    where a name is taken (`EADDRINUSE`). It ends the start at 69 after the
+    eighth taken name, and at once at any other `OSError` from the bind, the
+    listen, the owner file, the rename or the `lstat` after it. `stamps`
     are the install's and the configuration's, as `serve` took them before
     it read the configuration (`register_serve_load`)."""
     import socket
@@ -9490,9 +9630,15 @@ def register_serve_state(paths: dict) -> str:
 #: THE OWNER FILE'S KNOWN KEYS, each on one line at most (OP-19 (b), rule 3).
 _REGISTER_SERVE_OWNER_KEYS = ("pid", "started", "install", "pidns", "boot")
 
-#: `install=`'s one form (OP-19 (b), rule 4): three runs of ASCII digits, one
-#: space between each, and nothing else.
-_REGISTER_SERVE_INSTALL_RE = re.compile(r"[0-9]+ [0-9]+ [0-9]+")
+#: `install=`'s one form (OP-19 (b), rule 4; lane 5's choice (a) on T124's
+#: two files, ruled by lane 3, #165 6894116246): "three or six runs of ASCII
+#: digits, one space between each, and nothing else". Three are the
+#: launcher's alone, as every tree before T124 writes them; six are the
+#: launcher's and then the module's (`register_serve_install`). `[0-9]` takes
+#: ASCII digits only, each space is a single U+0020, and `fullmatch` takes the
+#: whole value, so no leading or trailing space or newline, and no other
+#: character, passes.
+_REGISTER_SERVE_INSTALL_RE = re.compile(r"[0-9]+ [0-9]+ [0-9]+(?: [0-9]+ [0-9]+ [0-9]+)?")
 
 
 def register_serve_owner_read(paths: dict) -> dict | None:
@@ -9682,8 +9828,10 @@ def register_serve_ask(data: bytes, deadline: float) -> tuple:
         # 2.4, draft 13) adds, with the same outcome, a file that
         # `register_serve_owner_read` refuses, longer than 4,096 bytes, not
         # ending in `\n`, or with a known key twice; and an `install=` that is
-        # not three runs of ASCII digits with one space between, such as the
-        # empty value a service writes where it cannot `stat` its own file.
+        # not three or six runs of ASCII digits, one space between each, and
+        # nothing else (rule 4; six are the launcher's and the module's,
+        # T124), such as the empty value a service writes where it cannot
+        # `stat` its own file or its module.
         owner = register_serve_owner_read(paths)
         if (owner is None or "install" not in owner
                 or not _REGISTER_SERVE_INSTALL_RE.fullmatch(owner["install"])):
