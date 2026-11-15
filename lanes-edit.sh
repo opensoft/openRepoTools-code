@@ -21122,6 +21122,13 @@ guard_offer_site() {   # <offer file> <pane> <the prompt>
   guard_offer "$gos_f" "$gos_pane" || gos_rc=$?
   [ "$gos_rc" = 3 ] || return 2
   gos_m=""
+  # A RECORD THAT IS NOT A FILE (NIT 1: a directory, or a link to one) is a
+  # record that is there and that cannot be answered or replaced: refused, with
+  # nothing written, and `guard_answer` is never called on it.
+  if { [ -e "$gos_f" ] || [ -L "$gos_f" ]; } && [ ! -f "$gos_f" ]; then
+    guard_refuse "the pending offer could not be recorded: a record of this transcript's is at $gos_f and could not be replaced, so nothing was written to it. Send your prompt again and the question will be asked afresh."
+    return 2
+  fi
   # A RECORD THAT HAS GONE SINCE THE FAILED CREATE (F3): neither `-e` nor `-L`
   # holds, so this invocation read nothing and has nothing to answer or drop (a
   # `guard_answer` on a missing file would call it unreadable, say it was
