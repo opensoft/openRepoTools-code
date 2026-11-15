@@ -22806,6 +22806,20 @@ guard_site_offer_kept() {   # <1 where the restore failed> <the attempts the loa
 guard_bind_site() {   # <offer file> <pane>
   gbt_f="${1-}"; gbt_pane="${2-}"
   if ! guard_bind_load "$gbt_f" || ! guard_bind_readable; then
+    # CASE 11's DROP RESTS ON THIS ONE READ (lane 1's R1, SHOULD-2, its other
+    # half): every caller took the bind mode from an earlier, separate read, and
+    # the record can have become an offer or an allowance since. Where this load
+    # read it whole and found one (`GBR_MODE`, from the same read), it is not
+    # unreadable: nothing is removed, and the prompt is refused as
+    # `guard_site_moved` refuses a changed record, to be read afresh. Only a
+    # record this load could not read, or read as a bind mode that misses or
+    # malforms a key, is case 11's. THE WINDOW LEFT is this load to its `rm`: a
+    # record put in place between them is removed.
+    case "${GBR_MODE-}" in
+      name-drift|allow)
+        guard_refuse "the pending offer at $gbt_f was changed while it was being answered (it says mode=$GBR_MODE now), so nothing was written to it. Send your prompt again and it will be read afresh."
+        return 2 ;;
+    esac
     rm -f -- "$gbt_f"
     guard_refuse "the pending offer at $gbt_f could not be read, so it has been dropped rather than answered on a guess. Send your prompt again and the question will be asked afresh."
     return 2
@@ -23207,6 +23221,23 @@ guard_answer() {   # <offer file> <the prompt> <pane>
   # drops the record alone: a live bind's outer may still write beside it, so
   # its `.bind.*` files are left for the next removal to sweep (lane 3's ruling,
   # #165 6747528875).
+  # BUT A BIND RECORD OR AN ALLOWANCE IS NOT AN UNREADABLE OFFER (lane 1's R1,
+  # SHOULD-2, #165 6894040564; lane 3's ruling "fix it, not a limit", #165
+  # 6894385553): each caller read the mode before this function did, and the
+  # record can have become one of those since. So it is answered as
+  # `guard_answer_moved` answers it, before the drop below: a bind mode by
+  # `guard_bind_site`, and an allowance by 3, which does not consume the prompt.
+  # A live `binding` is then never removed as "could not be read", and its `.out`
+  # never left behind. THE WINDOW LEFT is this function's own: its separate
+  # reads of `mode`, `from` and `bind` above, to the `rm` below, where a record
+  # removed or replaced between them can still be read as an offer missing a
+  # key, and whatever is there at the `rm` is removed.
+  case "$ga_mode" in
+    binding|bound|bind-failed)
+      guard_bind_site "$ga_f" "$ga_pane"
+      return 2 ;;
+    allow) return 3 ;;
+  esac
   if [ "$ga_mode" != name-drift ] || [ -z "$ga_from" ] || [ "$ga_bindok" = 0 ]; then
     rm -f -- "$ga_f"
     guard_refuse "the pending offer at $ga_f could not be read, so it has been dropped rather than answered on a guess. Send your prompt again and the question will be asked afresh."
