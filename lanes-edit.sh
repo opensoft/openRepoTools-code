@@ -794,7 +794,8 @@
 #      publish act outside the loop, R16). Never files mode instead.
 #      Every other failure of the question — a configuration `lanes-index`
 #      refuses, a `lanes-index` too old to know `mode`, none to run, a crash,
-#      no answer within 2 s — runs the verb in files mode with one warning,
+#      no answer within 2 s where `timeout` is installed (where it is not, the
+#      question runs unbounded) — runs the verb in files mode with one warning,
 #      and is never 69. THE WRITERS' MARKER CHECK (feature 007, T419;
 #      FR-004) is 69 too, with nothing written: where that answer is not
 #      primary (no configuration, `index`, or a question that failed), a
@@ -867,9 +868,9 @@
 #      one of the four it refuses (see 2): no `lanes-index` to run or no
 #      place to put the question, an exit other than 0 and 2 (the 64 of a
 #      `lanes-index` that has no `classify`, a crash, a signal, its 2 s
-#      timer), or an exit 0 without exactly one line of five tab-separated
-#      fields (contract §2.7, "No other code"; §2.8). It never writes the text
-#      unclassified.
+#      timer where `timeout` is installed), or an exit 0 without exactly one
+#      line of five tab-separated fields (contract §2.7, "No other code";
+#      §2.8). It never writes the text unclassified.
 #   3  PUSHED, NOT CONFIRMED: <sha> (Amendment 23 S4, its one cause in files
 #      mode). The write
 #      committed and pushed — or its push timed out, and a hung push often
@@ -6619,10 +6620,10 @@ reg_open() {   # <arm> [<its arguments>...]
 #   2. THE MODE, one answer per process: one this process already holds is
 #      kept. Otherwise, where no configuration exists (`reg_config_present`,
 #      D3) nothing is started and the mode is files; where one does, ONE
-#      `lanes-index mode`, under the 2 s timer (`reg_mode_query mirror`), which
-#      reads only the configuration (contract 3.1): no network, and no register
-#      call. A question that fails is files mode with one warning, as for a
-#      writer.
+#      `lanes-index mode`, under the 2 s timer where `timeout` is installed
+#      (`reg_mode_query mirror`), which reads only the configuration (contract
+#      3.1): no network, and no register call. A question that fails is files
+#      mode with one warning, as for a writer.
 #   3. 78, Q6(c)'s refusal: a failed read, so the mirror, with its line naming
 #      the cause (W:4833).
 #   4. PRIMARY: the mirror, with its line on stderr in the words below, since
@@ -32827,8 +32828,9 @@ EOF
   # a stale one. `git_net` is the only door to the network in this file, and
   # nothing on this path opens it. FEATURE 007, T508: its one `lanes-index`
   # question is `lanes-index mode`, asked once, only where a configuration
-  # exists, under its 2 s timer (`reg_session_read`), and it reads only the
-  # configuration (contract 3.1): no network, and no register call (R39).
+  # exists, under its 2 s timer where `timeout` is installed
+  # (`reg_session_read`), and it reads only the configuration (contract 3.1): no
+  # network, and no register call (R39).
   # T513's `serve --start`, on primary only and after the answer, is no
   # register call either: it reads the configuration and the run directory,
   # and asks the service nothing (socket API §9).
@@ -32842,9 +32844,10 @@ EOF
     session_start_block "$ss_json" "$ss_win" || :
     # FEATURE 007, T513 - THE START, LAST (`reg_service_start`): on primary,
     # after the block's whole answer, keyed on the block's own one mode answer,
-    # and never branched on. THE HOOK'S 5 s, WITH MARGIN: the block stays
-    # under about 4.5 s at worst on primary (lane 5's bound). `mode`'s timer
-    # can take 3 s, `timeout -k 1 2`, and a start under the same timer 3 more,
+    # and never branched on. THE HOOK'S 5 s, WITH MARGIN: where `timeout` is
+    # installed, the block stays under about 4.5 s at worst on primary (lane 5's
+    # bound). `mode`'s timer can take 3 s, `timeout -k 1 2`, and a start under
+    # the same timer 3 more,
     # so the start runs under a 1 s timer, at most 2 s, and is skipped where
     # `SECONDS` shows 2 s or more spent in this arm. `SECONDS` counts whole
     # seconds, so a reading of 1 or less means under 2 s, and the block then

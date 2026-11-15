@@ -133,7 +133,8 @@
 #      helper gave them in place of that 2 (feature 007, T429; ERR-36): the
 #      database could not be reached, the register was busy, or it could not
 #      confirm whether the line landed — and then the line MAY NOT be written,
-#      and the rerun the helper printed settles it. Any other code from that
+#      and the rerun the helper printed, where it printed one, settles it
+#      (where it printed none, what it printed does). Any other code from that
 #      write is still 2. A 69 is also what a late PAUSED that was NOT SENT exits
 #      with, where `act-begin` answered 69 or this run read the mirror: the
 #      PAUSED record's writes are held then, in every mode of this command
@@ -3534,7 +3535,8 @@ paused_69=""
 # WHERE ANOTHER WRITE OF THE ACT EXITED 3, UNDER A SEQ BASE, each of the notes
 # below names that rerun first, in the stop's own sentence (T429; lane 3, #165
 # 6837908956, the rulings on lane 4's questions 1 to 3): the rerun the writer
-# printed is what settles it, and the way the note names is no way to settle it.
+# printed, where it printed one, and else what it printed, is what settles it,
+# and the way the note names is no way to settle it.
 # `p69_also3` is that sentence, set where the three writes are known (below); it
 # is empty everywhere else, `--late`'s own arm and files mode included, so those
 # notes keep their words.
@@ -3565,14 +3567,15 @@ paused_69_landed_note() {
 # note says to run the act again from its start once the register answers
 # (Y:5601), as the stop does: a late PAUSED would be a first PAUSED, and the act
 # run again would write a second. Where W9 exited 3, it names W9's printed
-# `LANES_WRITE_ID` rerun first, and then the act again (Y:5199, Y:5222): before
-# the rerun settles it `--late` would write a late PAUSED that the rerun then
-# repeats, and after it `--late` refuses, since the line is the lane's last.
+# `LANES_WRITE_ID` rerun first, where the writer printed one (else what it
+# printed), and then the act again (Y:5199, Y:5222): before the rerun settles
+# it `--late` would write a late PAUSED that the rerun then repeats, and after
+# it `--late` refuses, since the line is the lane's last.
 paused_69_w9_stopped_note() {
 	note "THE PAUSED RECORD IS INCOMPLETE and lane $lane stays SWAPPING, an interrupted swap. The object log's PAUSED line was NOT written (the helper's own words are above), so \`$prog --late\` is not the way to complete it: it would write that one line and never the LANES.md file-level line or the row, and the act run again would then write a second PAUSED. Once the register answers, run $prog again from its start (Y:5601): it takes a fresh base and supersedes this operation.$p69_also3"
 }
 paused_69_w9_3_note() {
-	note "THE PAUSED RECORD IS INCOMPLETE and lane $lane stays SWAPPING, an interrupted swap. The object log's PAUSED line may or may not have landed (its write exited 3), so \`$prog --late\` is not the way to complete it: where the line landed it refuses, and where it did not it would write a late PAUSED that the rerun the writer printed above would then repeat. Run that rerun first, which writes the line once or finds it (Y:5222). Then, once the register answers, run $prog again from its start (Y:5601): it takes a fresh base and supersedes this operation.$p69_also3"
+	note "THE PAUSED RECORD IS INCOMPLETE and lane $lane stays SWAPPING, an interrupted swap. The object log's PAUSED line may or may not have landed (its write exited 3), so \`$prog --late\` is not the way to complete it: where the line landed it refuses, and where it did not it would write a late PAUSED that the rerun the writer printed above would then repeat. Run that rerun first, which writes the line once or finds it (Y:5222), where the writer printed one; where it printed none, follow what it printed first. Then, once the register answers, run $prog again from its start (Y:5601): it takes a fresh base and supersedes this operation.$p69_also3"
 }
 
 # ------------------------------------------------------------ the LATE branch
@@ -3609,7 +3612,8 @@ if [ "$do_late" = 1 ]; then
 		# AND A 3 IS NOT "NOT WRITTEN" (F9, item 4): it is the register saying it
 		# cannot confirm whether the line landed, so the text says what D8 says
 		# and sends the reader to the rerun the writer printed above, which writes
-		# it once or finds it.
+		# it once or finds it, where it printed one, and to what it printed where
+		# it printed none.
 		late_exit=2
 		late_cause="the late PAUSED record was refused by the helper"
 		late_text="the late PAUSED was NOT written (the helper refused it — its own message is above). Nothing else was done."
@@ -3861,7 +3865,7 @@ else
 	# lifecycle's unfinished list only under a seq base, and W9's own 3 is named
 	# by `paused_69_w9_3_note` already, so this is W11's or W12's.
 	if act_on_seq_base && { [ -n "$w11_in_doubt" ] || [ -n "$row_in_doubt" ]; }; then
-		p69_also3=" A write of this act also exited 3 (the notes above): run the rerun the writer printed for it, which writes it once or finds it, before that."
+		p69_also3=" A write of this act also exited 3 (the notes above): before that, run the rerun the writer printed for it (which writes it once or finds it), where it printed one; where it printed none, follow what it printed."
 	fi
 	# UNDER A SEQ BASE THE NOTE NAMES `--late` ONLY WHERE W9 ITSELF EXITED 69 OR
 	# WAS NOT SENT, AND NO WRITE STOPPED THE ACT (T429; #165 6835210568 and, for
@@ -3960,7 +3964,7 @@ if [ -n "$act_stop" ]; then
 	if [ "$act_stop_n75" = "$act_stop_n" ] && [ -z "$record_in_doubt$row_in_doubt$w11_in_doubt" ]; then act_stop_rc=75; fi
 	as_text="a write of this act ended with a code other than 0, 3 and 69 under its seq base ($act_stop_names; the helper's own words are above), so this act stops here with $act_stop_rc: the handoff file is written, and no READY line, restart intent, respawn or \`/exit\` follows, in any mode. Nothing else was done, this pane is left as it is, and the lane is not recorded SWAPPED. Run $prog again from its start (Y:5601): it takes a fresh base and supersedes this operation."
 	if [ -n "$record_in_doubt$row_in_doubt$w11_in_doubt" ]; then
-		as_text="$as_text A write of this act also exited 3 (the notes above): run the rerun the writer printed for it, which writes it once or finds it, before that."
+		as_text="$as_text A write of this act also exited 3 (the notes above): before that, run the rerun the writer printed for it (which writes it once or finds it), where it printed one; where it printed none, follow what it printed."
 	fi
 	if [ "$act_stop_rc" = 2 ] && [ "$act_stop_n75" != 0 ]; then
 		as_text="$as_text A write that gave 75 is among them, but this act exits 75 only where every write that stopped it gave 75 and none of its writes exited 3, because 75 promises that nothing was written and that a retry in seconds is safe: another refusal here, or a write in doubt, may not clear in seconds, so the code is 2."
@@ -4023,8 +4027,9 @@ if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
 	# each names only its own write: the gates behind the one that refuses never
 	# run, so a rerun they would have named was left unsaid. So the gate that
 	# refuses first names the printed rerun of EVERY write of the act that exited
-	# 3, W9's, W11's and W12's in that order (the writer printed each one above:
-	# Y:5199, Y:5222), and then gives its own way out:
+	# 3, W9's, W11's and W12's in that order (the writer printed each one above,
+	# where it printed one: Y:5199, Y:5222; where it printed none, the gate says
+	# to follow what it printed), and then gives its own way out:
 	#   - where a write exited 69, the 69's way: W9's is the late path the note
 	#     names (W9 first, as the note does), and W11's or W12's are the two ways
 	#     (`gate_69_ways`, above);
@@ -4051,7 +4056,7 @@ if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
 			gate_way="restart by hand (this command run again would append a second file-level line, since that line carries a UTC of its own; Y:5224):  $restart_cmd"; gate_join=", and then "
 		fi
 		if [ -n "$w3_words" ]; then
-			gate_tail="Run the printed rerun above of each write of this act that exited 3, in this order: $w3_words (each writes its line once or finds it)$gate_join$gate_way"
+			gate_tail="Run the printed rerun above of each write of this act that exited 3, in this order: $w3_words (each writes its line once or finds it), where the writer printed one; for a write it printed none for, follow what it printed$gate_join$gate_way"
 		else
 			gate_tail="$gate_way"
 		fi
@@ -4061,7 +4066,7 @@ if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
 			die "the lane's PAUSED record $d8_text So this pane is left exactly as it is: a pane is never respawned over an unrecorded lane, and a session is never ended without one (Amendment 17(f)). $gate_tail" 2
 		fi
 		[ -z "$record_in_doubt" ] ||
-			die "the lane's PAUSED record $d8_text So this pane is left exactly as it is: a pane is never respawned over an unrecorded lane, and a session is never ended without one (Amendment 17(f)). Run the printed rerun above, then re-run this." 2
+			die "the lane's PAUSED record $d8_text So this pane is left exactly as it is: a pane is never respawned over an unrecorded lane, and a session is never ended without one (Amendment 17(f)). Run the printed rerun above, where the writer printed one; where it printed none, follow what it printed. Then re-run this." 2
 		# After the PAUSED line's 69, held or sent, no write is there to fix, and a
 		# re-run while the register is down holds again: the note above is the way
 		# (REV429b NIT-3).
@@ -4104,7 +4109,7 @@ if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
 			die "the lane's PAUSED line is written and the row's state cell $d8_text So this pane is left exactly as it is: ${gate_act} ${gate_act_on} could leave the register reading RUNNING for a session that has just been ${gate_gone}, and every other lane reads the row. $gate_tail" 2
 		fi
 		[ -z "$row_in_doubt" ] ||
-			die "the lane's PAUSED line is written and the row's state cell $d8_text So this pane is left exactly as it is: ${gate_act} ${gate_act_on} could leave the register reading RUNNING for a session that has just been ${gate_gone}, and every other lane reads the row. Run the printed rerun above and re-run this, or restart by hand:  $restart_cmd" 2
+			die "the lane's PAUSED line is written and the row's state cell $d8_text So this pane is left exactly as it is: ${gate_act} ${gate_act_on} could leave the register reading RUNNING for a session that has just been ${gate_gone}, and every other lane reads the row. Run the printed rerun above, where the writer printed one (where it printed none, follow what it printed), and re-run this, or restart by hand:  $restart_cmd" 2
 		# A 69 UNDER A SEQ BASE (T429; #165 6836816821, question 2): "Flip it and
 		# re-run" is a hand `set-row-state`, which the note above rules out (no hand
 		# command is printed, Y:5587), so this says the two ways above instead.
@@ -4119,19 +4124,21 @@ if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
 	# 6835210568, question 1): W11 is on the lifecycle's unfinished list for each,
 	# as W9's and W12's are, so these two gates are theirs (the two above) one more
 	# time, and a refused W11 no longer lets the pane be respawned, or the session
-	# ended, over it. A 3's text names the writer's printed rerun and then a restart
-	# by hand, and never "re-run this": a re-run of this command appends a second
-	# file-level line, since the line carries its own UTC (Y:5224), and the rerun
-	# the writer printed is the only one that finds the first (Y:5222). The process
-	# that holds that rerun is the one a respawn or an `/exit` would end, and the
-	# next session never sees it, because the handoff's top block was written
+	# ended, over it. A 3's text names the writer's printed rerun, where it printed
+	# one, and then a restart by hand, and never "re-run this": a re-run of this
+	# command appends a second file-level line, since the line carries its own UTC
+	# (Y:5224), and the rerun the writer printed is the only one that finds the
+	# first (Y:5222); where it printed none, what it printed is what settles it.
+	# The process that holds what the writer printed is the one a respawn or an
+	# `/exit` would end, and the next session never sees it, because the handoff's
+	# top block was written
 	# first. A 2, a 75 or any other code never gets here: the act stopped above.
 	# The 69 gate says the two ways out outright (`gate_69_ways`, above; #165
 	# 6836816821, question 2): W9 landed to get here, so the note above is the
 	# landed note, and its way is this command again from its start.
 	if [ -n "$w11_open" ]; then
 		[ -z "$w11_in_doubt" ] ||
-			die "the lane's PAUSED record and the row are written and the LANES.md file-level PAUSED line $d8_text So this pane is left exactly as it is: respawning it, or ending its session, would end the process that holds the printed rerun, and the next session never sees it, because the handoff's top block was written before the writes. $gate_tail" 2
+			die "the lane's PAUSED record and the row are written and the LANES.md file-level PAUSED line $d8_text So this pane is left exactly as it is: respawning it, or ending its session, would end the process that holds what the writer printed (its rerun, where it printed one), and the next session never sees it, because the handoff's top block was written before the writes. $gate_tail" 2
 		[ "$w11_rc" != 69 ] ||
 			die "the lane's PAUSED record and the row are written and the LANES.md file-level PAUSED line was NOT appended (its write exited 69), and the lane stays SWAPPING for it, so this pane is left exactly as it is: respawning it, or ending its session, would take the process that holds the note above away. $gate_tail" 2
 	fi

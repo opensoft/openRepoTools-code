@@ -1400,7 +1400,7 @@ EOF
 	# ruling G3 and T432's question 3; `lane-rename`'s `3)` arm at `eb53b2ec`):
 	# D8's words for primary (Y:468–469), then the files-mode meaning that D8
 	# adds to and does not replace. This word prints no rerun of its own: the
-	# writer's is above, on its stderr, which is not redirected (Y:5698–5699).
+	# writer's words are above, on its stderr, which is not redirected (Y:5698–5699).
 	3) die "\`$LANES_EDIT request-handoff $R_LANE\` exited 3, the writer's own code (its report is
     above). On primary the request may not be written; run the printed
     \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer

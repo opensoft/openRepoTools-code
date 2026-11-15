@@ -298,9 +298,10 @@
 #   fragment: through `set -e` under `@files` or after `act-begin`'s 2, and under
 #   a seq base through its own arm, which keeps the writer's stderr and prints
 #   one note. For a 3 the note relays the writer's rerun (G3) and says the
-#   object-log line and the fragment are still owed, so this command is run again
-#   from its start once the rerun has settled the row; for any other code it says
-#   the row was NOT closed and that neither W14 nor the fragment ran, so this
+#   object-log line and the fragment are still owed, so this command is run
+#   again from its start once the rerun, or what the writer printed where it
+#   printed none, has settled the row; for any other code it says the row was
+#   NOT closed and that neither W14 nor the fragment ran, so this
 #   command is run again from its start (Y:5601; Y:5692's partial states; lane
 #   3's Q4, #165 6836816821). W14 does it by hand: the object-log line is the
 #   one write this command used to NOTE and carry on past, and on primary a
@@ -5073,7 +5074,8 @@ LE_WALK_NAMES
 # with the writer's code before W14 and the fragment:
 #   a 3  relays the writer's rerun (G3, as W14's note does) and says the
 #        object-log line and the fragment are still owed, so this command is run
-#        again from its start once the rerun has settled the row;
+#        again from its start once the rerun, or what the writer printed where
+#        it printed none, has settled the row;
 #   any other code, 69 and 75 included, says the row was NOT closed, that
 #        neither W14 nor the fragment ran, and that this command is run again
 #        from its start (Y:5601); no hand command is printed.
@@ -5090,7 +5092,7 @@ else
     if [ "$w13_rc" != 0 ]; then
       case "$w13_rc" in
         3)
-          note "the row's closing write ($state_word) may not have landed: the writer answered 3, and its printed \`LANES_WRITE_ID\` rerun is above; run it, which writes the row once or finds it. The object log's line ($state_word) and the handoff fragment are still owed: this command ended here, so neither was written or printed. Once the rerun has settled the row, run this \`lane-end\` again from its start, as it was typed: it takes a new base and reads again what it rests on." ;;
+          note "the row's closing write ($state_word) may not have landed: the writer answered 3. Where it printed a \`LANES_WRITE_ID\` rerun (it is above), run it, which writes the row once or finds it; where it printed none, follow what it printed. The object log's line ($state_word) and the handoff fragment are still owed: this command ended here, so neither was written or printed. Once that has settled the row, run this \`lane-end\` again from its start, as it was typed: it takes a new base and reads again what it rests on." ;;
         *)
           note "the row was NOT closed ($state_word): the writer answered $w13_rc under this act's base (its words are above), and this command ended here, so neither the object log's line nor the handoff fragment ran. No hand command is printed, since one without this act's base and expectations would write unchecked, and one with them would only be refused again. Run this \`lane-end\` again from its start, as it was typed: it takes a new base and reads again what it rests on." ;;
       esac

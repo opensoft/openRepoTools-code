@@ -196,8 +196,9 @@ RESERVED = ("managed owner", "managed binding", "mode=managed", "managed:")
 #: On a primary register a write in doubt that cannot settle exits 3, and the
 #: transaction it sent may never have committed. So a 3 is no "NOT WRITTEN", and
 #: the line is never written by hand over it, which could make it twice: the
-#: writer prints a rerun with `LANES_WRITE_ID`, which writes the line once or
-#: finds it already written. The sweep relays that rerun as printed.
+#: writer prints a rerun with `LANES_WRITE_ID`, where it prints one, which
+#: writes the line once or finds it already written. The sweep relays what it
+#: printed as printed.
 WRITE_IN_DOUBT_TEXT = ("may not be written; run the printed `LANES_WRITE_ID` rerun, which "
                        "writes it once or finds it")
 #: The files-mode meaning of the same 3 (Amendment 23 S4, "PUSHED, NOT
