@@ -587,7 +587,9 @@ CACHED_MODULE = "lanes_index_main.py"
 
 #: The install's compile of the cached module: checked-hash bytecode, as
 #: `openRepoTools --install` writes it (T347), at `py_compile`'s own place.
+#: Its `dfile` is the module's name, the filename check 1 compiles it under (T347).
 CHECKED_HASH_COMPILE = ("import py_compile, sys; py_compile.compile(sys.argv[1], doraise=True, "
+                        f"dfile={CACHED_MODULE!r}, "
                         "invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH)")
 
 
