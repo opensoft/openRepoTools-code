@@ -20400,10 +20400,16 @@ guard_record_says() {   # <offer file> <mode> [<key>=<value> …]
   done
   return 0
 }
+# THE RECORD IS THERE AND ITS LAST `guard_record_says` COULD NOT READ IT (lane 5's
+# adversarial review of parts 42 to 47, NIT-3): a caller then says only that it
+# could not be read again, and never what it is or is not.
+guard_record_unread() {   # <offer file>
+  [ "${GRS_THERE:-0}" = 0 ] && { [ -e "${1-}" ] || [ -L "${1-}" ]; }
+}
 # WHAT IS THERE NOW, IN WORDS, after `guard_record_says` read it.
 guard_record_now() {   # <offer file>
   if [ "${GRS_THERE:-0}" = 1 ]; then printf 'it says mode=%s now\n' "${GRS_MODE:-none}"
-  elif [ -e "${1-}" ] || [ -L "${1-}" ]; then printf 'it cannot be read now\n'
+  elif [ -e "${1-}" ] || [ -L "${1-}" ]; then printf 'it could not be read again\n'
   else printf 'it is gone now\n'
   fi
 }
@@ -20787,7 +20793,11 @@ guard_bind_bound_s() {   # <offer file>
 #   record is gone, or no longer says `name-drift`, and nothing was written
 #   (`--offer`: lane 3's ruling on lane 5's rule "No rewrite creates a record",
 #   #165 6885771975, ruling 5, and lane 5's rule for the hook's own writes)
+# `GHC_WROTE` is 1 only where its rewrite wrote (lane 5's adversarial review of
+# parts 42 to 47, NIT-2), so a later refusal can say that this answer's one write
+# to the record was this copy.
 guard_bind_head_copy() {   # <offer file>; the answered offer's identity is `GAM_MATCH`
+  GHC_WROTE=0
   [ -n "${SE_CACHE_FILE:-}" ] && [ -f "$SE_CACHE_FILE.head" ] || return 0
   ghc_kv=()
   for ghc_k in c n_a w_s_ms; do
@@ -20796,7 +20806,10 @@ guard_bind_head_copy() {   # <offer file>; the answered offer's identity is `GAM
     ghc_kv+=("$ghc_k=$ghc_v")
   done
   [ "${#ghc_kv[@]}" -gt 0 ] || return 0
-  guard_bind_rewrite "${GAM_MATCH[@]}" "${1-}" "" "${ghc_kv[@]}"
+  ghc_rc=0
+  guard_bind_rewrite "${GAM_MATCH[@]}" "${1-}" "" "${ghc_kv[@]}" || ghc_rc=$?
+  [ "$ghc_rc" != 0 ] || GHC_WROTE=1
+  return "$ghc_rc"
 }
 
 # FEATURE 007, T510 - THE OFFER'S `act` (W:5378, the bind record's keys;
@@ -21992,7 +22005,7 @@ guard_offer() {   # <offer file> <pane>
         # is this writer's create where `$go_f` is the very file written.
         if [ "$go_f" -ef "$go_t" ]; then go_made=1; else go_made=there; guard_offer_unlink_inside "$go_f" "$go_t"; fi
       elif go_nc=0
-           ( set -C; umask 077; { cat -- "$go_t" >&3 || { [ "$go_f" -ef /dev/fd/3 ] && exit 4; exit 5; }; [ "$go_f" -ef /dev/fd/3 ] || exit 5; } 3>"$go_f" ) 2>/dev/null || go_nc=$?
+           ( set -C; umask 077; { cat -- "$go_t" >&3 || { [ "$go_f" -ef /dev/fd/3 ] && [ -f "$go_f" ] && exit 4; exit 5; }; [ "$go_f" -ef /dev/fd/3 ] && [ -f "$go_f" ] || exit 5; } 3>"$go_f" ) 2>/dev/null || go_nc=$?
            [ "$go_nc" != 1 ]; then
         # THE CONTENT IS WRITTEN THROUGH THE DESCRIPTOR THAT WAS OPENED
         # EXCLUSIVELY (NIT 4; lane 5's re-check of parts 27 to 34, C): `3>` under
@@ -22006,13 +22019,22 @@ guard_offer() {   # <offer file> <pane>
         # and no other record is written over.
         # AND "MADE" IS PROVED ON THE DESCRIPTOR (Codex's NIT 1 on spec#47's draft
         # 17; lane 5's final check, C): while it is still open, the record's path
-        # must name the very file it opened (`-ef /dev/fd/3`, which bash answers
-        # from the descriptor itself on every system). A 5 is a file this writer
-        # made and that the path no longer names: dropped in the empty instant,
-        # then the question is asked with its note, or replaced by another
-        # invocation's record, which is then answered as a record that is there,
-        # and never taken for this writer's. Nothing is removed for a 5, and a
-        # failed `cat` is a 4 only where the path still names this writer's file.
+        # must name the very file it opened (`-ef /dev/fd/3`). Where bash has
+        # `/dev/fd` support it calls `stat()` on `/dev/fd/3` (lane 5's adversarial
+        # review of parts 42 to 47, NIT-4): that names the descriptor on Linux and
+        # macOS, and on Linux without `/proc` it fails, and the answer is a 5,
+        # "not made". And it must be a regular file (`-f`): `noclobber` opens an
+        # existing file that is not regular without `O_EXCL`, so a link to
+        # `/dev/null` put in place after the `-e` test above is opened, and is the
+        # very file the descriptor names; it is not a create, and gives a 5. A 5 is
+        # a file this writer did not make, or made and that the path no longer
+        # names: dropped in the empty instant, then the question is asked with its
+        # note, or replaced by another invocation's record, which is then answered
+        # as a record that is there, and never taken for this writer's. Nothing is
+        # removed for a 5, and a failed `cat` is a 4 only where the path still
+        # names this writer's regular file. A FIFO PUT THERE IN THAT SAME INSTANT
+        # IS A WINDOW LEFT, and not a new one: the open blocks for a reader, until
+        # the hook's time budget ends it.
         # THE INSTANT LEFT is the 4's test to its `rm`, outside the descriptor: a
         # record put in place there is removed, its `.bind.*` files are not.
         case "$go_nc" in
@@ -22597,7 +22619,19 @@ guard_site_moved() {   # <offer file> <pane>
 # record this prompt loaded (its mode, `bind` and `started_utc`), and the next
 # prompt answers it the same way; anything else, and this prompt changed nothing
 # there and the next prompt reads whatever is there. The first clause is the
-# same in both forms.
+# same in both forms. WHERE THE RECORD IS THERE AND COULD NOT BE READ AGAIN (lane
+# 5's adversarial review of parts 42 to 47, NIT-3), the words claim no more than
+# that: this prompt changed nothing, and the next prompt reads whatever is there.
+guard_site_unrestored() {   # <offer file> <the mode loaded>
+  if guard_record_says "${1-}" "${2-}" "bind=$GBR_BIND" "started_utc=$GBR_STARTED"; then
+    note "…and the offer could not be restored in ${1-}, so this prompt's answer is the same as the last one's until it can: the record still says ${2-} for that attempt."
+  elif guard_record_unread "${1-}"; then
+    note "…and the offer could not be restored in ${1-}. This prompt changed nothing there, and the record could not be read again, so the next prompt reads whatever is there."
+  else
+    note "…and the offer could not be restored in ${1-}. This prompt changed nothing there, and the record is no longer the one it read ($(guard_record_now "${1-}")), so the next prompt reads whatever is there."
+  fi
+  return 0
+}
 # THE RENAME-BACK NOTE'S FORM FOR CASES 6, 7 AND 9 WHERE THEIR RESTORE FAILED (an
 # I/O 1; lane 5's check of parts 42 to 47, part 48): the record is read again
 # first. Still the record loaded (its mode, `bind` and `started_utc`), the next
@@ -22608,14 +22642,6 @@ guard_site_back_form() {   # <offer file> <the mode loaded>
   guard_record_says "${1-}" "${2-}" "bind=$GBR_BIND" "started_utc=$GBR_STARTED" && return 0
   guard_record_says "${1-}" name-drift "from=$GBR_FROM" "to=$GBR_TO" && return 0
   printf 'changed\n'
-}
-guard_site_unrestored() {   # <offer file> <the mode loaded>
-  if guard_record_says "${1-}" "${2-}" "bind=$GBR_BIND" "started_utc=$GBR_STARTED"; then
-    note "…and the offer could not be restored in ${1-}, so this prompt's answer is the same as the last one's until it can: the record still says ${2-} for that attempt."
-  else
-    note "…and the offer could not be restored in ${1-}. This prompt changed nothing there, and the record is no longer the one it read ($(guard_record_now "${1-}")), so the next prompt reads whatever is there."
-  fi
-  return 0
 }
 
 guard_bind_site() {   # <offer file> <pane>
@@ -22642,13 +22668,21 @@ guard_bind_site() {   # <offer file> <pane>
       # `ended_utc` loaded. Where it does not, nothing is removed, and the record
       # is read once and answered (`guard_site_moved`): a newer bind record by
       # `guard_bind_site`, once; gone, by the refusal. THE WINDOW LEFT is the
-      # drop's read to its `rm`, in which a record put in place is removed with
-      # the names listed before the read, and never a `.out` made after it. No
-      # rewrite turns a `bound` into another record in one step, so the record
-      # removed there can only be one that another prompt made after dropping
-      # this `bound`: a new offer, which the next prompt makes again, or, where
-      # that offer was also answered `2` inside the same instant, its `binding`,
-      # whose outer then runs nothing or, where it had started, keeps its `.out`.
+      # drop's read to its `rm` (lane 5's adversarial review of parts 42 to 47,
+      # SHOULD-1). A record put in place there is removed, and so are the names
+      # listed before the read; but those are names, not files, and names are
+      # reused: `guard_bind_next_index` gives one above the highest index
+      # present, so once another prompt has heard this `bound` and dropped it
+      # with its files, a new offer's answer `2` takes index 1 again, and its
+      # `.out` has a name listed here. No rewrite turns a `bound` into another
+      # record in one step, so the record removed there can only be one that
+      # another prompt made after dropping this `bound`: a new offer, which the
+      # next prompt makes again; or, where that offer was also answered `2`, all
+      # between this read and this `rm`, its `binding` record and its `.out`.
+      # That newer attempt is then lost: its outer runs nothing (its start
+      # rewrite finds no record), or, where its body had started, the bind runs
+      # on and how it ends is written only to the unlinked `.out`, and is lost;
+      # and this prompt still says MOVED.
       if ! guard_drop_if bound "$gbt_f" all "bind=$GBR_BIND" "started_utc=$GBR_STARTED" "pid=$GBR_PID" "ended_utc=$GBR_ENDED"; then
         guard_site_moved "$gbt_f" "$gbt_pane"
         return 2
@@ -22904,7 +22938,23 @@ guard_answer_unrecorded() {
     guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and the offer is KEPT. Answer \`2\` again once that directory is writable, or choose \`1\` or \`3\`."
     [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
   else
-    guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and this answer changed nothing at $ga_f, where the record is no longer the offer that was answered ($(guard_record_now "$ga_f")). Send your prompt again: the next prompt reads whatever is there."
+    # WHAT THIS ANSWER WROTE THERE (lane 5's adversarial review of parts 42 to 47,
+    # NIT-2): on primary the head copy may already have rewritten the offer with
+    # the prefetch's `c`, `n_a` and `w_s_ms`, and then "changed nothing" is false:
+    # the words name that one write. And where the record is there and could not
+    # be read again (NIT-3), they say only that.
+    if [ "${GHC_WROTE:-0}" = 1 ]; then
+      gau_did="this answer's one write at $ga_f was its copy of the prefetch's \`c\`, \`n_a\` and \`w_s_ms\` into the offer"
+    else
+      gau_did="this answer changed nothing at $ga_f"
+    fi
+    if guard_record_unread "$ga_f"; then
+      guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and $gau_did, and the record there could not be read again. Send your prompt again: the next prompt reads whatever is there."
+    elif [ "${GHC_WROTE:-0}" = 1 ]; then
+      guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and $gau_did; the record there is no longer the offer that was answered ($(guard_record_now "$ga_f")). Send your prompt again: the next prompt reads whatever is there."
+    else
+      guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and $gau_did, where the record is no longer the offer that was answered ($(guard_record_now "$ga_f")). Send your prompt again: the next prompt reads whatever is there."
+    fi
     [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" none || :
   fi
   return 2
@@ -23030,8 +23080,19 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     # outcome, which goes to its `.out` alone. So the `.bind.*` sweep (point 13)
     # removes only the names LISTED BEFORE THE TEST, and of those only the
     # offer's own: an index at most that of the `out` the offer names at the
-    # test, or, where it names none, every name so listed. A newer attempt's
-    # files are never swept.
+    # test, or, where it names none, every name so listed. An attempt of an
+    # answer `2` to the same offer, made in the window, is never swept: its index
+    # is above every name listed. BUT NAMES ARE REUSED (lane 5's adversarial
+    # review of parts 42 to 47, SHOULD-2): `guard_bind_next_index` gives one
+    # above the highest index present, so where, in the same window, another
+    # prompt dropped this offer with its `.bind.*` files (choice 3, or a stale
+    # identity) and a new offer was made and answered `2`, that attempt takes
+    # index 1 again, its `.out` has a name listed here at or below the offer's
+    # own, and it is swept: this allowance is written over its `binding`; its
+    # outer runs nothing where its start rewrite comes after the `mv`, and
+    # otherwise how that bind ends goes only to its unlinked `.out` and is lost;
+    # the read below does not see it (its name was listed before); and the
+    # person is told ALLOWED for an offer that is no longer there.
     # And after the `mv` the names are read again: one not listed before, above
     # the offer's own, is that answer `2`'s attempt, whose record this allowance
     # replaced, and the person is told so plainly, with its output named.
@@ -23069,7 +23130,8 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     if [ "$ga_own" = 0 ]; then
       # AN OFFER THAT NAMES NO ATTEMPT (a fresh one, or one a back-out left with
       # no `out`) owns every canonical name listed before the check, as point
-      # 13 swept them: nothing made after that list is among them.
+      # 13 swept them: no file made after that list is among them, save one
+      # that reused a listed name (SHOULD-2, above).
       for ga_x in ${ga_bl[@]+"${ga_bl[@]}"}; do
         [ -e "$ga_x" ] || continue
         ga_i="${ga_x#"$ga_f".bind.}"; ga_i="${ga_i%%.*}"
@@ -23096,7 +23158,11 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     done
     guard_triple
     if [ -n "$ga_new" ]; then
-      note "THIS ANSWER \`1\` MET AN ANSWER \`2\` MADE AT THE SAME MOMENT: that answer started a bind of this window to lane ${ga_to:-none} (its output is $ga_new), and this allowance was written over its record at $ga_f. The allowance is recorded, but that bind is NOT stopped: its outer leaves a record that is no longer its own, so how the bind ends is written only to that output, which is kept. Read it to see whether this window was bound to lane ${ga_to:-none}; the next prompt reads the record and the window as they are then. This answer is consumed; send your work again."
+      # MAY HAVE STARTED (lane 5's adversarial review of parts 42 to 47, NIT-6):
+      # the read above also sees a `.out` whose outer has not yet made its start
+      # rewrite, and that outer then finds the allowance, runs nothing, and says
+      # so in that output.
+      note "THIS ANSWER \`1\` MET AN ANSWER \`2\` MADE AT THE SAME MOMENT: that answer may have started a bind of this window to lane ${ga_to:-none} (its output is $ga_new), and this allowance was written over its record at $ga_f. The allowance is recorded. If that bind started, it is NOT stopped: its outer leaves a record that is no longer its own, so how the bind ends is written only to that output, which is kept; if its outer had not yet made its start rewrite, it runs nothing, and says so there. Read that output to see which, and whether this window was bound to lane ${ga_to:-none}; the next prompt reads the record and the window as they are then. This answer is consumed; send your work again."
       return 2
     fi
     note "ALLOWED: this lane/session name mismatch is explicitly allowed for this transcript. This answer is consumed; send your work again. Future prompts will warn without blocking while the lane remains $ga_from and the session remains '${ga_session:-none}'."
@@ -23254,13 +23320,16 @@ guard_answer() {   # <offer file> <the prompt> <pane>
         # again, and "it still says binding" is said only where it is still this
         # answer's `binding` (its `bind`, `started_utc` and `out`). Where it is
         # not, or the back-out found it changed (2), this answer keeps no offer,
-        # and the rename back's note says so (`none`).
-        ga_bstill=0; ga_bform=""
+        # and the rename back's note says so (`none`). Where it is there and could
+        # not be read again (lane 5's adversarial review of parts 42 to 47, NIT-3),
+        # the words say only that.
+        ga_bstill=0; ga_bform=""; ga_bunread=0
         case "$ga_brc" in
           2) ga_bform=none ;;
           1)
             if guard_record_says "$ga_f" binding "bind=$ga_k" "started_utc=${ga_now#* }" "out=$ga_out"; then ga_bstill=1
             else ga_bform=none; ga_bnow="$(guard_record_now "$ga_f")"
+              ! guard_record_unread "$ga_f" || ga_bunread=1
             fi ;;
         esac
         # THE RENAME BACK IS TRIED FIRST (F5), and the refusal is worded on its
@@ -23278,6 +23347,8 @@ guard_answer() {   # <offer file> <the prompt> <pane>
           guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been written; the offer was dropped or changed meanwhile, so there is none of this answer's to keep. Send your prompt again and the question will be asked afresh."
         elif [ "$ga_brc" = 1 ] && [ "$ga_bstill" = 1 ]; then
           guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been started; but the record could not be written back to the question, so it still says binding: the next prompts say BINDING IN PROGRESS until its deadline, and the first after it finds the record stale and asks afresh. Answer \`2\` again then, or choose \`1\` or \`3\`."
+        elif [ "$ga_brc" = 1 ] && [ "$ga_bunread" = 1 ]; then
+          guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been started; the record could not be written back to the question, and it could not be read again: this answer changed nothing more there, and the next prompt reads whatever is there. Send your prompt again."
         elif [ "$ga_brc" = 1 ]; then
           guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been started; the record could not be written back to the question, and it is no longer this answer's binding ($ga_bnow): this answer changed nothing more there, and the next prompt reads whatever is there. Send your prompt again."
         else
