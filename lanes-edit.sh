@@ -4531,7 +4531,11 @@ reg_session_read() {
 # after the block's whole answer, and only where the block's own one mode
 # answer (`reg_session_read`) was primary: there is no second mode question.
 # A compact returns before that question, so it starts nothing; so do files
-# mode, `mode index`, the 78 and T413's flag. Its one call is `lanes-index
+# mode, `mode index` and the 78. T413's flag does not stop it: an honoured flag
+# sets `REG_MODE=primary`, `reg_session_read` returns on the flag without
+# changing that, and the arm tests `REG_MODE` alone. That is harmless, because
+# no write path runs `session-start` as an attempt's child, and the mode is
+# primary anyway. Its one call is `lanes-index
 # serve --start`, which loads the configuration, checks the run directory and
 # the socket path's length, holds back where a failure stamp is younger than
 # 60 s, and otherwise starts `serve` from Python, detached in a session of its
