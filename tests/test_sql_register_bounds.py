@@ -2589,6 +2589,37 @@ def test_over_a_delayed_tls_link_no_healthy_call_meets_its_timer(tls_cluster, tm
         _record(f"link-{kind}", took, LINK_TIMERS[kind], "AT-D9c (d), recorded")
 
 
+def _burst_report(logins: str, writers: list, ends: list, rows: list, calls: list) -> str:
+    """What the burst test's assertions print when one fails (T257o; lane 4's
+    6899167909): each writer's index, login, exit, time and stderr tail, from
+    `ends`; the journal's new rows, `seq|write_id`, in `rows`; and each
+    `commit_write` call in the shim's log, `calls`, in the log's order, with its
+    write id, whether and where the journal has it, its `PGUSER`, and the
+    `burst N` its state text names (`?` where the log holds none). It reads
+    nothing and decides nothing."""
+    seq_of = {write_id: seq for seq, _, write_id in (row.partition("|") for row in rows)}
+    lines = [f"burst [{logins}]: {len(ends)} writers' ends, {len(rows)} new journal rows, "
+             f"and the shim's commit_write calls:"]
+    for i, (code, took, err) in enumerate(ends):
+        lines.append(f"  writer {i} ({writers[i]}): exit {code} after {took:.2f} s, "
+                     f"stderr tail {(err or '')[-300:]!r}")
+    for row in rows:
+        seq, _, write_id = row.partition("|")
+        lines.append(f"  journal seq {seq}: write id {write_id}")
+    for call in calls:
+        script = call.get("stdin", "")
+        if "commit_write" not in script:
+            continue
+        sent = re.search(r"commit_write\([0-9-]+, '([0-9a-f-]{36})'", script)
+        write_id = sent.group(1) if sent else "?"
+        burst = re.findall(r"burst ([0-9]+)", script)
+        lines.append(f"  shim call {call.get('call', '?')}: commit_write of {write_id}, in the "
+                     f"journal as seq {seq_of.get(write_id, 'NONE')}, login "
+                     f"{(call.get('pg') or {}).get('PGUSER', '?')}, state text names burst "
+                     f"{' '.join(burst) or '?'}")
+    return "\n".join(lines)
+
+
 @pytest.mark.parametrize("logins", ["one-login", "two-logins"])
 def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_with_nothing_written(
         tls_cluster, tmp_path, request, logins):
@@ -2635,17 +2666,27 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
             _, err = proc.communicate(timeout=300)
             ends.append((proc.returncode, time.monotonic() - release, err))
     codes = [code for code, _, _ in ends]
-    assert set(codes) <= {0, 75}, f"a writer ended another way: {[(c, e[-200:]) for c, _, e in ends]}"
     rows = db.psql(f"SELECT seq, write_id FROM {SCHEMA}.journal WHERE seq > {head} "
                    f"ORDER BY seq;").stdout.split()
+
+    def told() -> str:
+        return _burst_report(logins, writers, ends, rows, _shim_calls(where))
+
+    assert set(codes) <= {0, 75}, f"a writer ended another way:\n{told()}"
+    # A writer whose `lanes-index mode` question fails warns on stderr, writes to git in files
+    # mode and ends 0 with no journal row (lane 4's 6899400726; `reg_mode_files`' own words).
+    files_mode = [f"  writer {i} ({writers[i]}): stderr tail {(err or '')[-300:]!r}"
+                  for i, (_, _, err) in enumerate(ends) if "runs in files mode" in (err or "")]
+    assert not files_mode, ("a writer says it ran in files mode, so its write is in git and not "
+                            "the journal:\n" + "\n".join(files_mode) + f"\n{told()}")
     seqs = [int(row.split("|")[0]) for row in rows]
     assert seqs == list(range(head + 1, head + 1 + codes.count(0))), \
-        f"one entry for each writer that committed, no gap, no repeat: {seqs}, {codes}"
+        f"one entry for each writer that committed, no gap, no repeat: {seqs}, {codes}\n{told()}"
     sent = set(re.findall(r"commit_write\([0-9-]+, '([0-9a-f-]{36})'",
                           "".join(e["stdin"] for e in _shim_calls(where))))
     written = [row.split("|")[1] for row in rows]
     assert len(set(written)) == len(written) and set(written) <= sent, \
-        f"each write id committed once, and only the burst's: {written}"
+        f"each write id committed once, and only the burst's: {written}\n{told()}"
     snapshots = sum(1 for e in _shim_calls(where) if "commit_write" not in e["stdin"])
     for i, (code, took, _) in enumerate(ends):
         print(f"D9c burst [{logins}] writer {i} ({writers[i]}): exit {code} after {took:.2f} s")
