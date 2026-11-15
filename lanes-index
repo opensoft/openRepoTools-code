@@ -8116,11 +8116,13 @@ REGISTER_SERVE_MODULE = "lanes_index_main.py"
 def register_serve_install() -> tuple:
     """THE INSTALL'S IDENTITY (Y:3915-3916; lane 5's choice (a) on lane 1's
     T124 prototype, #165 6890257498 and lane 5's answer, #165 6890303231):
-    the size, mtime in nanoseconds and inode of `__file__`'s file (the
-    launcher, once T124 has moved the body; `stat` follows a symbolic link),
-    and then, where `REGISTER_SERVE_MODULE` is in the directory of
-    `os.path.realpath(__file__)`, the same three of that module: six numbers
-    in all, the launcher's first.
+    the size, mtime in nanoseconds and inode of the file
+    `os.path.realpath(__file__)` names (the launcher, once T124 has moved
+    the body), taken once and used for the `stat` and for the module's
+    directory alike, and then, where `REGISTER_SERVE_MODULE` is in that
+    directory, the same three of that module: six numbers in all, the
+    launcher's first. (`abspath` would join `a/link/../lanes-index` lexically,
+    and name the wrong file or none; lane 1's R2, #165 6892234131, NIT 1.)
 
     - Where there is no module file (`FileNotFoundError` for it: every tree
       before T124), it is the first three alone, as it was, so this change
@@ -8133,12 +8135,13 @@ def register_serve_install() -> tuple:
     The client's test is as it was: the owner file's `install=` against
     this value, as text. An owner file of three numbers read by a client of
     six is another install, which starts a service."""
+    launcher = os.path.realpath(__file__)
     try:
-        st = os.stat(os.path.abspath(__file__))
+        st = os.stat(launcher)
     except OSError:
         return ()
     ident = (st.st_size, st.st_mtime_ns, st.st_ino)
-    module = os.path.join(os.path.dirname(os.path.realpath(__file__)), REGISTER_SERVE_MODULE)
+    module = os.path.join(os.path.dirname(launcher), REGISTER_SERVE_MODULE)
     try:
         mst = os.stat(module)
     except FileNotFoundError:
