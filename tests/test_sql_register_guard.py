@@ -290,6 +290,8 @@ REGISTER_HEADER = ["# LANES.md", "",
 #: `not_after` is the stand-in's clock, so a lookup may decide at once.
 #: With `not_after_offsets` (T254zj), a list of seconds, it writes one `call=`
 #: line per offset, its clock and `not_after` the stand-in's clock plus it.
+#: Each entry carries the start time of each pid it logs, `start` and
+#: `fork_start`, by which the teardown signals it (T237zzg; RZ-27's NIT 3).
 _STUB_LANE_START = r'''#!@PY@ -I
 import json, os, signal, subprocess, sys, time
 CTL = @CTL@
@@ -305,7 +307,13 @@ def ctl(name, default=None):
 def ids():
     with open("/proc/self/stat", encoding="utf-8") as handle:
         f = handle.read().rsplit(") ", 1)[1].split()
-    return {"ppid": int(f[1]), "pgid": int(f[2]), "sid": int(f[3])}
+    return {"ppid": int(f[1]), "pgid": int(f[2]), "sid": int(f[3]), "start": f[19]}
+def start_of(pid):
+    try:
+        with open("/proc/%d/stat" % pid, encoding="utf-8") as handle:
+            return handle.read().rsplit(") ", 1)[1].split()[19]
+    except OSError:
+        return None
 def log(entry):
     with open(os.path.join(CTL, "lane-start.log"), "a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, sort_keys=True) + "\n")
@@ -332,6 +340,7 @@ if ctl("fork") is not None:
          "time.sleep(%s)" % float(ctl("fork"))],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     entry["fork"] = child.pid
+    entry["fork_start"] = start_of(child.pid)
 if ctl("pending-record") is not None:
     import hashlib, uuid
     spec = json.loads(ctl("pending-record"))
@@ -382,7 +391,8 @@ sys.exit(code)
 #: parent's argv (`timeout`'s, where the outer bounds it) to `<ctl>/body.log`.
 #: `body-ignore-term` makes it ignore TERM in its own process;
 #: `body-grandchild` leaves a child that ignores TERM; `body-sleep` and
-#: `body-rc` say how long it runs and how it ends.
+#: `body-rc` say how long it runs and how it ends. Each entry carries the
+#: start of each pid it logs, `start` and `grandchild_start` (T237zzg).
 _STUB_BODY = r'''#!@PY@ -I
 import json, os, signal, subprocess, sys, time
 CTL = @CTL@
@@ -395,7 +405,13 @@ def ctl(name, default=None):
 def ids():
     with open("/proc/self/stat", encoding="utf-8") as handle:
         f = handle.read().rsplit(") ", 1)[1].split()
-    return {"ppid": int(f[1]), "pgid": int(f[2]), "sid": int(f[3])}
+    return {"ppid": int(f[1]), "pgid": int(f[2]), "sid": int(f[3]), "start": f[19]}
+def start_of(pid):
+    try:
+        with open("/proc/%d/stat" % pid, encoding="utf-8") as handle:
+            return handle.read().rsplit(") ", 1)[1].split()[19]
+    except OSError:
+        return None
 def argv_of(pid):
     try:
         with open("/proc/%d/cmdline" % pid, "rb") as handle:
@@ -414,6 +430,7 @@ if ctl("body-grandchild") is not None:
          "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     entry["grandchild"] = child.pid
+    entry["grandchild_start"] = start_of(child.pid)
 with open(os.path.join(CTL, "body.log"), "a", encoding="utf-8") as handle:
     handle.write(json.dumps(entry, sort_keys=True) + "\n")
 if ctl("body-sleep") is not None:
@@ -499,16 +516,20 @@ def _alive(pid) -> bool:
     return _stat(pid).get("state", "Z") not in ("Z", "X", "x", "Z")
 
 
-def _members(field: str, value: int) -> list:
+def _members(field: str, value: int) -> dict:
     """The live processes whose `sid` or `pgid` is `value` (zombies left out,
-    as the guard's session test leaves them out)."""
-    found = []
+    as the guard's session test leaves them out), as `{pid: start}`, each
+    start taken from the one `/proc/<pid>/stat` read that found it (T237zzg;
+    RZ-27's NIT 2), so the teardown signals a member only while it is that
+    process. A caller that tests, counts or walks it reads it as it read
+    the list it was."""
+    found = {}
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
             continue
         st = _stat(entry.name)
         if st and st[field] == value and st["state"] not in ("Z", "X", "x"):
-            found.append(int(entry.name))
+            found[int(entry.name)] = st["start"]
     return found
 
 
@@ -520,9 +541,11 @@ def _argv(pid) -> list:
     return [a.decode("utf-8", "replace") for a in raw.split(b"\0")[:-1]]
 
 
-def _homed(state_home) -> dict:
+def _homed(state_home, *more) -> dict:
     """THIS ESTATE'S PROCESSES (T237zzd), `{pid: start}`: the live processes
-    of this uid whose environment's `XDG_STATE_HOME` is exactly `state_home`.
+    of this uid whose environment's `XDG_STATE_HOME` is exactly `state_home`,
+    or exactly one of `more`: the other state homes the estate's commands
+    were given under its own root (T237zzg; `Estate.swept_homes`).
     Each estate's state home is a `mkdtemp` of its own (`_state_home`) that
     only its `env()` passes on, and a child inherits it; every service of the
     estate carries it, whether `_Service` started it with `est.env()` or the
@@ -538,7 +561,7 @@ def _homed(state_home) -> dict:
     - The start time is read before and after the environment, and kept only
       where both agree, so the start recorded is that process's: the
       teardown signals a pid only while it still has it (`_kill_same`)."""
-    want = os.fsencode(str(state_home))
+    want = {os.fsencode(str(home)) for home in (state_home, *more)}
     uid = os.getuid()
     found = {}
     for entry in Path("/proc").iterdir():
@@ -555,7 +578,7 @@ def _homed(state_home) -> dict:
             continue
         home = next((pair[len(b"XDG_STATE_HOME="):] for pair in environ.split(b"\0")
                      if pair.startswith(b"XDG_STATE_HOME=")), None)
-        if home != want:
+        if home not in want:
             continue
         if _stat(entry.name).get("start") == before["start"]:
             found[int(entry.name)] = before["start"]
@@ -588,15 +611,27 @@ SWEEP_PASSES, SWEEP_STEP_S = 20, 0.1
 def _teardown_round(targets: dict, own: set) -> None:
     """One round of `Estate.close` (T237zzd): each of `targets`, `{pid:
     start}`, and the members of the session and of the group each one leads,
-    each member's start read as it is found, signalled through `_kill_same`;
-    never a pid of 1 or less, nor one of `own` (this process, its group, its
-    session). A leader already gone still names the members that keep its
-    number (T214u)."""
+    each member's start read in `_members`' own pass (T237zzg; RZ-27's NIT
+    2), signalled through `_kill_same`; never a pid of 1 or less, nor one of
+    `own` (this process, its group, its session).
+
+    A leader already gone still names the members that keep its number
+    (T214u): the kernel gives no new process a number that a session or a
+    group still holds. So a number a live process holds with another start
+    than its target's was given again after its session and group had
+    ended, and its members are the new owner's: they are not taken
+    (T237zzg; lane 1's NIT 1, #165 6892179926, where `_Service.stop` reaps
+    a pid that stays in `spare`). Nor are they where the target's start was
+    never read and its number is live."""
     every = dict(targets)
-    for pid in targets:
-        if pid > 1 and pid not in own:
-            for member in (*_members("sid", pid), *_members("pgid", pid)):
-                every.setdefault(member, _stat(member).get("start"))
+    for pid, start in targets.items():
+        if pid <= 1 or pid in own:
+            continue
+        now = _stat(pid).get("start")
+        if now is not None and (start is None or now != start):
+            continue
+        for member, began in {**_members("sid", pid), **_members("pgid", pid)}.items():
+            every.setdefault(member, began)
     for pid, start in every.items():
         if pid > 1 and pid not in own:
             _kill_same(pid, start)
@@ -862,6 +897,31 @@ def _state_home() -> Path:
     return home
 
 
+class _Spare(list):
+    """THE CASE'S OWN PIDS, `Estate.spare`, EACH WITH ITS START TIME READ AS
+    IT IS ADDED, in `starts` (T237zzg; lane 1's NIT 1, #165 6892179926):
+    the teardown signals each only while it is still that process, so a pid
+    reaped meanwhile (`_Service.stop`) is never taken from its next owner. A
+    pid already gone when it is added has no start, and only the members
+    that keep its number are taken (`_teardown_round`)."""
+
+    def __init__(self):
+        super().__init__()
+        self.starts = {}
+
+    def append(self, pid) -> None:
+        self.starts[pid] = _stat(pid).get("start")
+        super().append(pid)
+
+    def extend(self, pids) -> None:
+        for pid in pids:
+            self.append(pid)
+
+    def __iadd__(self, pids):
+        self.extend(pids)
+        return self
+
+
 class Estate:
     """T203c's estate with the guard's offer for this session: the window is
     `FROM`, whose row names the session; the session is named `TO`, whose row
@@ -886,6 +946,8 @@ class Estate:
         for d in (self.wip.parent, root / "t", self.bin, self.ctl):
             d.mkdir(parents=True, exist_ok=True)
         self.state_home = _state_home()
+        #: Every other `XDG_STATE_HOME` its `env()` has handed out (T237zzg).
+        self.given_homes = []
         env = guard_strip_env(os.environ)
         if path is not None:
             env["PATH"] = path
@@ -917,7 +979,7 @@ class Estate:
         self.session = guard_session(self.home, self.bin, self.wip, window=FROM,
                                      session_id=self.sid, name=to)
         self.sessions = [self.session]
-        self.spare = []
+        self.spare = _Spare()
 
     def primary(self, pg) -> None:
         """T254: the estate on `mode=primary` against the session cluster
@@ -1052,9 +1114,39 @@ class Estate:
         (self.ctl / name).write_text(str(value), encoding="utf-8")
 
     def env(self, **extra) -> dict:
+        """The estate's environment, `extra` over `self.extra`. Another
+        `XDG_STATE_HOME` it hands out, through `self.extra` (T254zg's
+        `_state_home_with_no_service`) or `extra` (`[start-fails]`), is
+        noted, so that the teardown sweeps it too (T237zzg; `swept_homes`)."""
         merged = dict(self.extra)
         merged.update(extra)
-        return self.session.env(self.base, **merged)
+        env = self.session.env(self.base, **merged)
+        home = env.get("XDG_STATE_HOME")
+        if home and home != str(self.state_home) and home not in self.given_homes:
+            self.given_homes.append(home)
+        return env
+
+    def swept_homes(self) -> list:
+        """THE STATE HOMES THE TEARDOWN SWEEPS AND REMOVES (T237zzg; lane 1's
+        SHOULD 1, #165 6892179926): its own, and each other one its commands
+        were given (`env()`, or `self.extra` as it stands) that lies under
+        its own `root`, and so is this estate's alone. One given elsewhere
+        is printed and is neither swept nor removed, since it may be another
+        estate's or another lane's (rule 4)."""
+        root = os.path.realpath(self.root)
+        homes = [self.state_home]
+        given = list(self.given_homes)
+        if self.extra.get("XDG_STATE_HOME"):
+            given.append(self.extra["XDG_STATE_HOME"])
+        for home in dict.fromkeys(given):
+            if home == str(self.state_home):
+                continue
+            if os.path.commonpath([os.path.realpath(home), root]) == root:
+                homes.append(home)
+            else:
+                print(f"Estate.close: XDG_STATE_HOME {home} is not under the estate's root "
+                      f"{self.root}, so it is neither swept nor removed")
+        return homes
 
     def hook(self, prompt="hello", timeout=HOOK_TIMEOUT, **extra) -> Hook:
         """One guard run. On primary, the register is put in the SQL store
@@ -1162,6 +1254,14 @@ class Estate:
           `sleep 60`, starts none.
         - Every target is signalled only while it has the start time read at
           its scan (`_kill_same`; `_homed` reads it in the same pass).
+        - T237zzg (lane 1's review, #165 6892179926, and RZ-27's NITs): the
+          sweep also takes, and then removes, each other state home the
+          estate's commands were given under its root (`swept_homes`:
+          T254zg's and `[start-fails]`'s); each pid is signalled by the
+          start recorded with it (`spare` as it was added, the record's
+          `pidstart`, the stand-ins' logs), read now only where none was;
+          and a sweep that gives up fails the case, naming the estate's
+          processes outside pytest's session that outlived it.
         - The sessions are closed first. Then the sweep is repeated, at most
           `SWEEP_PASSES` times `SWEEP_STEP_S` apart, until no process of the
           estate is left outside pytest's session, and only then is the
@@ -1169,34 +1269,45 @@ class Estate:
         self.release()
         mine = os.getsid(0)
         own = {os.getpid(), os.getpgrp(), mine}
-        pids = set(self.spare)
+        targets = {pid: self.spare.starts.get(pid) for pid in self.spare}
         record = self.record()
         outer = _record_pid(record)
         if outer is not None:
-            pids.add(outer)
+            written = record.get("pidstart", "")
+            targets.setdefault(outer, written if re.fullmatch(r"[0-9]+", written)
+                               else _stat(outer).get("start"))
         elif record.get("pid"):
             print(f"Estate.close: the record's pid {record['pid']!r} is no bind's pid "
                   f"(guard_bind_pid_ok), so it is not signalled")
         for entry in self.log("lane-start.log") + self.log("body.log"):
             for key in ("pid", "fork", "grandchild"):
                 if isinstance(entry.get(key), int):
-                    pids.add(entry[key])
-        targets = {pid: _stat(pid).get("start") for pid in pids}
-        targets.update(_homed(self.state_home))
+                    logged = entry.get("start" if key == "pid" else f"{key}_start")
+                    targets.setdefault(entry[key], logged or _stat(entry[key]).get("start"))
+        homes = self.swept_homes()
+        targets.update(_homed(*homes))
         _teardown_round(targets, own)
         for session in self.sessions:
             session.close()
+        left = {}
         for _ in range(SWEEP_PASSES):
-            left = {pid: start for pid, start in _homed(self.state_home).items()
+            left = {pid: start for pid, start in _homed(*homes).items()
                     if _stat(pid).get("sid") != mine}
             if not left:
                 break
             _teardown_round(left, own)
             time.sleep(SWEEP_STEP_S)
         else:
-            print(f"Estate.close: after {SWEEP_PASSES} sweeps, still live in {self.state_home}: "
-                  f"{sorted(_homed(self.state_home))}")
-        shutil.rmtree(self.state_home, ignore_errors=True)
+            left = {pid: start for pid, start in _homed(*homes).items()
+                    if _stat(pid).get("sid") != mine}
+        for home in homes:
+            shutil.rmtree(home, ignore_errors=True)
+        # A SWEEP THAT GIVES UP FAILS THE CASE (T237zzg; lane 1's NIT 2), and
+        # names the estate's processes outside pytest's session that outlived
+        # every pass, and only those: one in pytest's session is never waited on.
+        assert not left, (f"Estate.close: after {SWEEP_PASSES} sweeps, still live outside "
+                          f"pytest's session in {[str(home) for home in homes]}: "
+                          f"{[(pid, _argv(pid)) for pid in sorted(left)]}")
 
 
 @pytest.fixture
@@ -1229,12 +1340,20 @@ def estate(tmp_path, request):
         return est
 
     yield make
+    # EVERY ESTATE IS CLOSED, though an earlier one's close fails (T237zzg: a
+    # sweep that gives up fails it), and the first failure is raised after.
+    failed = []
     try:
         for est in made:
-            est.close()
+            try:
+                est.close()
+            except Exception as exc:
+                failed.append(exc)
     finally:
         for cluster, name in own:
             cluster.drop_database(name)
+    if failed:
+        raise failed[0]
 
 
 def _sleeper() -> subprocess.Popen:
@@ -3354,7 +3473,8 @@ def test_a_malformed_bind_pid_waits_for_the_deadline_then_is_stale(signals_recor
     for the estate's teardown, whose SIGKILL to it is the one the stubs
     record, and it ends on its own, with no signal, once that teardown has
     removed the estate's state home, or after 300 s, `_sleeper`'s bound,
-    whichever is first (T237zzd)."""
+    whichever is first (T237zzd), or once its parent is no longer pytest
+    (T237zzg)."""
     est = estate()
     # T237zzd: THE HOLDER IS LIVE AT THE ESTATE'S TEARDOWN, which signals
     # only a live process with the start it had at the scan (`_kill_same`).
@@ -3362,12 +3482,16 @@ def test_a_malformed_bind_pid_waits_for_the_deadline_then_is_stale(signals_recor
     # reaped pid by its number alone, and v3's signalled nothing, which
     # `signals_recorded` fails. Not `est.env()`: it is not of the estate's
     # state home, so the sweep never waits on it; it ends once that home is
-    # gone, or after 300 s, `_sleeper`'s bound, whichever is first.
+    # gone, or after 300 s, `_sleeper`'s bound, whichever is first, or once
+    # its parent is no longer pytest, as when pytest is killed (T237zzg;
+    # lane 1's NIT 3): pytest's pid is its `argv[2]`, so a parent gone before
+    # its first look is seen too.
     holder = subprocess.Popen([sys.executable, "-I", "-c",
                                "import os, sys, time\n"
                                "end = time.monotonic() + 300\n"
-                               "while os.path.isdir(sys.argv[1]) and time.monotonic() < end:\n"
-                               "    time.sleep(0.05)\n", str(est.state_home)],
+                               "while (os.path.isdir(sys.argv[1]) and time.monotonic() < end\n"
+                               "       and os.getppid() == int(sys.argv[2])):\n"
+                               "    time.sleep(0.05)\n", str(est.state_home), str(os.getpid())],
                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL, start_new_session=True)
     est.spare.append(holder.pid)
