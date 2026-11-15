@@ -7761,20 +7761,26 @@ def register_serve_launch(paths: dict) -> str | None:
     be another launcher or none: the service it starts would run another
     install, or none, and its `install=` would differ from every client's,
     so every client would read "another install". The un-normalized path
-    opens the real file, since the kernel resolves `link/..` physically, and
-    it keeps the symbolic link in the service's own `__file__`, so the
-    service's install check, which takes `register_serve_install`'s
-    `realpath` on each request, still sees a repoint of an install link.
+    opens the real file, since the kernel resolves `link/..` physically.
+    That closes the lexical join, which is what lane 3's ruling asked.
 
-    THE ALTERNATIVE, `os.path.realpath(__file__)`, was built and given up
-    (T512's commit e2212236), for its cost: a service started by the real
-    path has that path as its `__file__`, so after the install link is
-    repointed its install check never notices. A client run by the link
-    reads "another install" and starts a `serve`, which finds `register.lock`
-    held (`register_serve_run`) and exits 0; the client goes on using the old
-    service's answer, and every request spawns one more futile `serve`, until
-    the old service stops for another cause. That breaks an upgrade by
-    repointing a symbolic link, which this launch handles."""
+    A REPOINT IS SEEN ONLY BY A SERVICE STARTED THROUGH THE LINK (lane 5's
+    correction, #165 6894693645; lane 3 is to rule how v1.3 takes this
+    limit, and until it rules the code stays as it is). The service's install
+    check takes `register_serve_install`'s `realpath` of its own `__file__`
+    on each request. Where the service was started through an install link,
+    its `__file__` keeps the link, so after the link is repointed the check
+    finds another install and the service stops. But `lanes-edit.sh`
+    resolves itself with `readlink -f` (`lanes-edit.sh`:1226-1232) and
+    `lanes_index_bin` returns `$SCRIPT_DIR/lanes-index` (:6178-6184), so a
+    service it starts is started by the real path, and does not see a link
+    repointed above that path: the same as with the real-path launch that
+    T512's commit e2212236 built and gave up. The consequence: a client of
+    the new install reads "another install" and starts a `serve`, which finds
+    `register.lock` held (`register_serve_run`) and exits 0; the client goes
+    on using the old service's answer, and every request spawns one more
+    futile `serve`, until the old service stops for another cause. An
+    upgrade that replaces the files at the same real path is seen."""
     try:
         log = os.open(paths["log"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
                       | os.O_CLOEXEC, 0o600)
@@ -8137,9 +8143,14 @@ def register_serve_launch_file() -> str:
     launcher called as `a/link/../lanes-index` keeps that path, which the
     kernel resolves physically, through `link`, to the real launcher.
     `os.path.abspath` would collapse it lexically to `a/lanes-index`, which
-    can be another launcher or none. On a tree of T124's form this module's
-    code runs in the launcher's namespace, so `__file__` is the launcher's,
-    as it was invoked (see `register_serve_launch`)."""
+    can be another launcher or none. (On Python 3.9 and later the main
+    script's `__file__` is always absolute, so the join to the working
+    directory is a fallback.) The link stays in `__file__`, and a repoint is
+    seen, only where the launcher was invoked through that link; a launcher
+    invoked by its real path, as `lanes-edit.sh` does, has the real path
+    (see `register_serve_launch`, and lane 5's correction, #165 6894693645).
+    On a tree of T124's form this module's code runs in the launcher's
+    namespace, so `__file__` is the launcher's, as it was invoked."""
     return __file__ if os.path.isabs(__file__) else os.path.join(os.getcwd(), __file__)
 
 
