@@ -20620,10 +20620,16 @@ guard_bind_rewrite() {   # [--own | --binding | --exist | --offer | --mode <m> |
         [ "$gbw_bd" = 0 ] || [ "$gbw_m" = binding ] || exit 2
         [ "$gbw_of" = 0 ] || [ "$gbw_m" = name-drift ] || exit 2
         if [ -n "$gbw_wl" ]; then
-          while IFS= read -r gbw_w; do
+          # BY PARAMETER EXPANSION, NEVER A HERE-STRING (lane 5's re-check of parts
+          # 27 to 34, A; the rule at `wr_call_fields`, REV-W10a M1): bash before
+          # 5.1 writes a here-string to a temporary file in TMPDIR, and where none
+          # can be made the loop never ran and the rewrite went ahead unchecked.
+          gbw_nl=$'\n'; gbw_rest="$gbw_wl"
+          while [ -n "$gbw_rest" ]; do
+            gbw_w="${gbw_rest%%"$gbw_nl"*}"; gbw_rest="${gbw_rest#*"$gbw_nl"}"
             [ -n "$gbw_w" ] || continue
-            case $'\n'"$gbw_got" in *$'\n'"$gbw_w"$'\n'*) : ;; *) exit 2 ;; esac
-          done <<<"$gbw_wl"
+            case "$gbw_nl$gbw_got" in *"$gbw_nl$gbw_w$gbw_nl"*) : ;; *) exit 2 ;; esac
+          done
         fi
       elif [ "$gbw_two" = 1 ]; then
         exit 2
