@@ -22012,7 +22012,7 @@ guard_answer() {   # <offer file> <the prompt> <pane>
         if [ "$ga_brc" = 2 ]; then
           guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been written; the offer was dropped or changed meanwhile, so there is none of this answer's to keep. Send your prompt again and the question will be asked afresh."
         elif [ "$ga_brc" = 1 ]; then
-          guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been started; but the record could not be written back to the question, so it still says binding: the next prompt finds that stale and asks afresh. Answer \`2\` again then, or choose \`1\` or \`3\`."
+          guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been started; but the record could not be written back to the question, so it still says binding: the next prompts say BINDING IN PROGRESS until its deadline, and the first after it finds the record stale and asks afresh. Answer \`2\` again then, or choose \`1\` or \`3\`."
         else
           guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been written. The offer is KEPT: answer \`2\` again, or choose \`1\` or \`3\`."
         fi
