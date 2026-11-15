@@ -25,7 +25,9 @@ pass. The four `r10-red-p48-*` cases (BRIEF-T502P48-1115.md) also fail at
 (BRIEF-T502P49-1115.md, lane 5's adversarial review of parts 42 to 47) fail at
 `3e6dc617` (part 48) and pass at part 49. The `r10-red-p50-*` case (lane 5's
 ruling on part 49's doubt) fails at `88d76394` (part 49) and passes at part 50.
-Run: `tests/run.sh -k t502r10`.
+The four `r10-control-fold-*` cases show spec#47's draft 19 at bind-record.md:458:
+the outer folds the body's facts into its outcome only where the body ended on
+its own. Run: `tests/run.sh -k t502r10`.
 """
 
 from __future__ import annotations
@@ -189,6 +191,10 @@ R10_CASES = [
     "r10-red-p49-nit4-a-link-to-dev-null-put-before-the-noclobber-open-is-not-made",
     "r10-red-p49-nit6-the-s3-note-says-the-answer-2-may-have-started-a-bind",
     "r10-red-p50-case-6-whose-restore-fails-on-a-record-that-cannot-be-read-again-renames-back-in-unreads-words",
+    "r10-control-fold-a-body-stopped-by-its-bound-has-neither-its-facts-why-nor-its-note-in-the-outcome",
+    "r10-control-fold-a-body-stopped-by-a-signal-has-neither-its-facts-why-nor-its-note-in-the-outcome",
+    "r10-control-fold-a-body-that-ends-on-its-own-with-0-has-its-facts-note-in-the-outcome",
+    "r10-control-fold-a-body-that-ends-on-its-own-nonzero-has-its-facts-why-in-the-outcome",
 ]
 
 
