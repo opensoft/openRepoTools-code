@@ -21866,7 +21866,7 @@ guard_offer() {   # <offer file> <pane>
   # exists, a bind record, an allowance or an offer alike: so no record is ever
   # written over, and no reader sees half of one. Where hard links are refused
   # the fallback is bash's `noclobber`, whose `>` opens with `O_EXCL` and fails
-  # the same way, though it creates the record before its content is whole. The
+  # the same way, though it creates the record EMPTY and writes it after (NIT 4). The
   # temporary file is removed after, which is best effort (a name left in
   # `offers/` holds only this offer). No window is left between the test and the
   # create: they are one call.
@@ -21898,8 +21898,17 @@ guard_offer() {   # <offer file> <pane>
         if [ "$go_f" -ef "$go_t" ]; then go_made=1; else go_made=there; fi
       elif [ -e "$go_f" ] || [ -L "$go_f" ]; then
         go_made=there
-      elif ( set -C; umask 077; cat -- "$go_t" > "$go_f" ) 2>/dev/null; then
-        go_made=1
+      elif ( set -C; umask 077; : > "$go_f" ) 2>/dev/null; then
+        # THIS WRITER MADE THE FILE (NIT 4), empty, exclusively: the content
+        # follows. THE EMPTY INSTANT IS THE WINDOW LEFT on this path alone: a
+        # reader that meets the empty record calls it unreadable (case 11 drops
+        # it), and the `cat` then writes to the name again. A `cat` that fails is
+        # this writer's own partial file, which is removed, not another's record.
+        if cat -- "$go_t" > "$go_f" 2>/dev/null; then
+          go_made=1
+        else
+          rm -f -- "$go_f" 2>/dev/null || :
+        fi
       elif [ -e "$go_f" ] || [ -L "$go_f" ]; then
         go_made=there
       fi
@@ -21999,7 +22008,14 @@ guard_offer_site() {   # <offer file> <pane> <the prompt>
       *)
         gos_arc=0
         guard_answer "$gos_f" "$gos_prompt" "$gos_pane" || gos_arc=$?
-        [ "$gos_arc" = 3 ] || return 2 ;;
+        [ "$gos_arc" = 3 ] || return 2
+        # A 3 MAY BE AN ALLOWANCE that `guard_answer` found where it meant to write
+        # (NIT 3): read once more, and passed where it fits, as the allow branch
+        # above passes one. Any other record meets the retry below.
+        if [ -f "$gos_f" ] && guard_allow_active "$gos_f"; then
+          guard_allow_pass
+          return 0
+        fi ;;
     esac
   fi
   gos_rc=0
@@ -22357,7 +22373,7 @@ guard_bind_pidstart_ok() {   # <pidstart>
 # removed, since there is nothing there, and nothing else is done for a record
 # that is gone: it was dropped by another prompt, which has done its own part.
 guard_bind_gone() {   # <offer file>
-  guard_refuse "the pending offer at ${1-} was gone when it came to be answered, so nothing was written to it. Send your prompt again and the question will be asked afresh."
+  guard_refuse "the pending offer at ${1-} was gone when it came to be answered, so nothing was written to it. Send your prompt again and it will be read afresh."
   return 2
 }
 
@@ -22593,7 +22609,11 @@ guard_answer_match() {   # <from> <to> <session> <utc>
 #                                (`guard_offer_site`) passes an allowance that
 #                                still fits, with its warning, or drops one that
 #                                does not and asks once; a window this answer
-#                                renamed is renamed back first
+#                                renamed is renamed back first. Inside
+#                                `guard_offer_site`, which calls `guard_answer`
+#                                itself, that 3 is read again there (NIT 3): an
+#                                allowance that fits passes, any other record is
+#                                refused (nothing is lost)
 #   gone, or any other mode      (A), K4's path: the refusal, a window this
 #                                answer renamed renamed back, and 2
 guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 where this answer renamed the window>
@@ -22737,6 +22757,10 @@ guard_answer() {   # <offer file> <the prompt> <pane>
            printf 'uuid=%s\n' "$G_ID" || exit 1
            printf 'utc=%s\n' "$(utc_now)" || exit 1
          } > "$ga_t" ) 2>/dev/null; then
+      ga_wrc=1
+    elif [ -e "$ga_f" ] && [ ! -r "$ga_f" ]; then
+      # A RECORD THAT IS THERE AND CANNOT BE READ is K4's 1, as `--offer` gives it
+      # (NIT 8), not "changed (it says mode=none)".
       ga_wrc=1
     elif ! guard_offer_still "$ga_f" "$ga_from" "$ga_to" "$ga_session" "$ga_utc"; then
       ga_wrc=2
@@ -22919,6 +22943,8 @@ guard_answer() {   # <offer file> <the prompt> <pane>
         fi
         if [ "$ga_brc" = 2 ]; then
           guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been written; the offer was dropped or changed meanwhile, so there is none of this answer's to keep. Send your prompt again and the question will be asked afresh."
+        elif [ "$ga_brc" = 1 ]; then
+          guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been started; but the record could not be written back to the question, so it still says binding: the next prompt finds that stale and asks afresh. Answer \`2\` again then, or choose \`1\` or \`3\`."
         else
           guard_refuse "the bind's child could not be started, so $gba_win and NOTHING has been written. The offer is KEPT: answer \`2\` again, or choose \`1\` or \`3\`."
         fi
