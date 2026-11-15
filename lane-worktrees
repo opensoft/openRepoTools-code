@@ -39,9 +39,10 @@ never removes their archive). The same question is the SELF-CHECK right
 before the removal: anything neither on origin nor in a verified bundle is
 refused, exit 2, and nothing after it is acted on; so is everything after a
 register line that could not be written, or that may not have been (a writer's
-exit 3: on a primary register the sweep relays the rerun the writer printed,
-which writes the line once or finds it, and never writes it by hand over it;
-off primary the same 3 is the line's commit left local, and the text says both).
+exit 3: on a primary register the sweep relays what the writer printed, its
+rerun, which writes the line once or finds it, where it printed one, and never
+writes it by hand over it; off primary the same 3 is the line's commit left
+local, and the text says both).
 Untracked files are never pushed
 (the bundle only) unless `--push-untracked`, and untracked git-lfs content,
 which a bundle would carry as a pointer only, keeps its tree; a branch an open
@@ -202,9 +203,14 @@ WRITE_IN_DOUBT_TEXT = ("may not be written; run the printed `LANES_WRITE_ID` rer
 #: The files-mode meaning of the same 3 (Amendment 23 S4, "PUSHED, NOT
 #: CONFIRMED"), which D8's text beside it does not replace (Y:468 says the row
 #: "gains a primary clause"). This sweep reads no register, so it cannot tell the
-#: two modes apart and says both, as T433 does, in these words.
-WRITE_IN_DOUBT_OFF_PRIMARY_TEXT = ("Where the writer printed no such rerun (off primary), the "
-                                   "commit is local and may already be on origin.")
+#: two modes apart and says both, as T433 does, in these words: the rule for a
+#: writer that printed no rerun (spec#58 review, NIT 8, D9), with the files-mode
+#: meaning as one case of it. On primary the writer prints the rerun in two of
+#: its five 3s, and in two more only under a `LANES_WRITE_ID`, which this sweep
+#: does not set.
+WRITE_IN_DOUBT_OFF_PRIMARY_TEXT = ("Where the writer printed no such rerun, follow what it "
+                                   "printed; off primary, the commit is local and may "
+                                   "already be on origin.")
 
 GIT_NET_TIMEOUT = 180
 GIT_TIMEOUT = 120
@@ -4584,9 +4590,10 @@ class Sweep:
             self.halt = self.halt or ("the register line may not have been written (exit 3); "
                                       "nothing more is acted on until the printed "
                                       "`LANES_WRITE_ID` rerun has written it once or found it, "
-                                      "or, where the writer printed no such rerun (off primary), "
-                                      "until its commit is on origin, which the next write's S3 "
-                                      "finds by content (Amendment 23 S4)")
+                                      "or, where the writer printed no such rerun, until what "
+                                      "it printed has settled it (off primary, until its commit "
+                                      "is on origin, which the next write's S3 finds by "
+                                      "content: Amendment 23 S4)")
             self._relay_rerun(t, proc)
         elif proc.returncode != 0:
             self.failed += 1

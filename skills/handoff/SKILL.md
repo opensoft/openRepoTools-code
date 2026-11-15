@@ -874,7 +874,7 @@ act_69_again_note() {
 # above, and this block prints no hint of its own beside it.
 act_in_doubt() {   # act_in_doubt <which write>
   act_d3=1
-  echo "IN DOUBT: $1 exited 3 (the writer's own code, above). On primary it may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun (off primary), the commit is local and may already be on origin."
+  echo "IN DOUBT: $1 exited 3 (the writer's own code, above). On primary it may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun, follow what it printed; off primary, the commit is local and may already be on origin."
 }
 # NO HAND COMMAND AFTER A WRITE THAT DID NOT END 0, UNDER A SEQ BASE (lane 3, #165
 # 6779688808, Q11; Y:5587, Y:5601). A hand re-run of a write that left out the act's
@@ -1496,9 +1496,10 @@ ends the block 1 and the identity's (its own `REFUSED` line, or Amendment 15(d)'
 **A write that exits 3 is in doubt, not refused** (Y:5698; the register's in-doubt code). On primary the transaction
 may or may not have committed, so the block goes on to the next write, as it does after any write that did not land,
 and prints one line after the write: it exited 3, it may not be written, and the printed `LANES_WRITE_ID` rerun, which
-writes it once or finds it, is what to run (off primary, where the writer prints no such rerun, the commit is local
-and may already be on origin). The writers' own stderr is kept, so that rerun is printed above the line, and the block
-adds no hint of its own beside it. Say in the report which of the three exited 3, and relay that rerun. A 3 from the
+writes it once or finds it, is what to run (where the writer printed no such rerun, follow what it printed; off
+primary, the commit is local and may already be on origin). The writers' own stderr is kept, so that rerun is printed
+above the line, and the block adds no hint of its own beside it. Say in the report which of the three exited 3, and
+relay that rerun. A 3 from the
 row write also sets `row_write_refused`, so that step 5 names the lane in the restart command, and step 5 then says
 the row write may not be written, never that it was refused (Y:5700; lane 3, #165 6774499606, T431's question 1). Where
 any write of the act exited 3 and a later one exits 69, the 69 note names that rerun first (below): the object log's own in

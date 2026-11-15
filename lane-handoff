@@ -3459,12 +3459,16 @@ relay_writer_words() {   # <what the writer printed on stderr, empty where nothi
 
 # D8's TEXT FOR A WRITE THAT EXITED 3, in T433's form (design D8, Y:463–469;
 # FR-028; lane 3, #165 6770733371, shared ruling G3): D8's words, then the
-# clause for a files-mode 3. A 3 is neither "written" nor "NOT written": on
-# primary the commit may never have happened, and the writer prints the rerun
-# that writes it once or finds it; off primary it was committed locally and
-# origin did not confirm it. Every note, gate and lifecycle line below that
-# follows a 3 uses it, whole and byte for byte, and prints no hint of its own.
-d8_text="may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun (off primary), the commit is local and may already be on origin."
+# rule for a writer that printed no such rerun (spec#58 review, NIT 8, D9). A
+# 3 is neither "written" nor "NOT written": on primary the commit may never
+# have happened, and the writer prints the rerun that writes it once or finds
+# it in two of its five 3s, in two more only where this run was under a
+# `LANES_WRITE_ID` (this file sets none), and in the fifth, a record it cannot
+# read, not at all. So where it printed none, what it printed is what to
+# follow; off primary it was committed locally and origin did not confirm it.
+# Every note, gate and lifecycle line below that follows a 3 uses it, whole and
+# byte for byte, and prints no hint of its own.
+d8_text="may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun, follow what it printed; off primary, the commit is local and may already be on origin."
 d8_cause="${d8_text%.}"   # the same, without its last full stop, where a sentence goes on
 
 # THE PAUSED RECORD'S WRITES, HELD (lane 3, #165 6770733371, shared ruling G1).

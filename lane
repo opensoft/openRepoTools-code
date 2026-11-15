@@ -1404,9 +1404,9 @@ EOF
 	3) die "\`$LANES_EDIT request-handoff $R_LANE\` exited 3, the writer's own code (its report is
     above). On primary the request may not be written; run the printed
     \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer
-    printed no such rerun (off primary), the commit is local and may already be
-    on origin. That is neither 'the lane is free' nor the refusal that says it
-    is not. Nothing was launched or attached." 3 ;;
+    printed no such rerun, follow what it printed; off primary, the commit is
+    local and may already be on origin. That is neither 'the lane is free' nor
+    the refusal that says it is not. Nothing was launched or attached." 3 ;;
 	*) die "\`$LANES_EDIT request-handoff $R_LANE\` exited $ge_rh_rc, which is neither 'the lane is
     free' nor the refusal that says it is not. Nothing was launched or attached." 1 ;;
 	esac

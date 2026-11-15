@@ -5176,7 +5176,7 @@ else
   else
     case "$w14_rc" in
       3)
-        note "the lane's object log line ($lane_verb) may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun (off primary), the commit is local and may already be on origin." ;;
+        note "the lane's object log line ($lane_verb) may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun, follow what it printed; off primary, the commit is local and may already be on origin." ;;
       *)
         w14_seq=0
         case "${LANES_ACT:-}" in '' | *@files) : ;; *) w14_seq=1 ;; esac

@@ -3170,9 +3170,9 @@ if [ "$bind_rc" = 0 ]; then
       # A WRITE'S ARM (Y:5731), AND IT PASSES THE CODE NOW (feature 007, T428;
       # lane 3's ruling 6747281902, T402 item 2; ERR-33): 69 and the busy 75
       # say nothing was sent; the in-doubt 3 says the request may be in the
-      # lane's log or may not, and the writer's own words above carry its
-      # printed rerun, in T433's text (G3). Every other code
-      # keeps 1, as the read arms keep theirs (ERR-36).
+      # lane's log or may not, and the writer's own words above carry what it
+      # printed, its rerun where it printed one, in T433's text (G3). Every
+      # other code keeps 1, as the read arms keep theirs (ERR-36).
       69 | 75)
         ls_rh_why="the register is busy"
         [ "$ls_rh_rc" = 75 ] || ls_rh_why="the register could not be read, or refused the write"
@@ -5219,11 +5219,14 @@ else
         die "lane ${LANE}'s bind was REFUSED: \`$LANES_EDIT start-record\` exited 2 (its words are above), and none of ${ls_sr_what} was written. A 2 refuses the whole write: on primary a scope this launch read changed after its base, which is another place binding or changing lane $LANE, a SECOND BINDING this launch does not write over; or LR010, a key that is not a scope, or a refusal of the write's own words (spec:317; FR-029). This window has been renamed to $LANE, and nothing has been launched. No command is printed for the write: read the lane (\`$LANES_EDIT binding $LANE\`), then run \`$prog\` again from its start (Y:5601)." 2 ;;
       *)
         # THE TEXTS FOR 3, AND THE WRITER'S RERUN (T428; review M11; D8;
-        # Y:5698-5699). On 69, 75 and 3 the writer prints the rerun that
+        # Y:5698-5699). On 69 and 75 the writer prints the rerun that
         # settles the write, with its write id and generation where it has
-        # one, or says nothing was sent where it has none (T415, T417); this
-        # script relays it as printed and prints no command of its own. A 3
-        # is in doubt, never "NOT added" or "NOT written".
+        # one, or says nothing was sent where it has none (T415, T417); on a
+        # 3 it prints that rerun in two of its five forms, and where it
+        # printed none, what it printed is what to follow (`LS_D8`; spec#58
+        # review, NIT 8, D9). This script relays it as printed and prints no
+        # command of its own. A 3 is in doubt, never "NOT added" or "NOT
+        # written".
         if [ -n "$LS_SR_ROW" ]; then
           case "$ls_sr_rc" in
             3) die "the register row for $LANE MAY NOT have been added, with its STARTED line: \`$LANES_EDIT start-record\` exited 3, and it ${LS_D8}. This window has been renamed and nothing has been launched: a lane whose row is in doubt is not started until that is settled." 3 ;;
