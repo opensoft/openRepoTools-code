@@ -22339,6 +22339,10 @@ GB_REFILLED=0
 # `guard_site_moved`'S ONE ROUND (lane 5's re-check, F): set here, so that a value
 # the environment carries cannot skip the first round.
 GBT_MOVED=0
+# THE WINDOW `guard_answer_moved` RENAMED, for `guard_bind_site` (lane 1's check
+# of part 55, NIT 3): empty here, so that a value the environment carries never
+# renames a window this prompt did not.
+GBT_REN_FROM=""; GBT_REN_TO=""
 guard_bind_refill() {
   [ "$GB_REFILLED" = 0 ] || return 0
   reg_flush
@@ -22894,13 +22898,37 @@ guard_bind_site() {   # <offer file> <pane>
     # unreadable: nothing is removed, and the prompt is refused as
     # `guard_site_moved` refuses a changed record, to be read afresh. Only a
     # record this load could not read, or read as a bind mode that misses or
-    # malforms a key, is case 11's. THE WINDOW LEFT is this load to its `rm`: a
-    # record put in place between them is removed.
+    # malforms a key, is case 11's; and outside the window the next sentence
+    # states, a live `binding` is never removed here (lane 1's check of part 55,
+    # NIT 2). THE WINDOW LEFT is this load to its `rm`: a record put in place
+    # between them is removed. A record gone by the existence test just before
+    # the `rm` is `guard_bind_gone`'s (NIT 1), so the window that removes one is
+    # that test to the `rm`. ITS COST, as case 5's comment gives its own: where
+    # what is removed there is another prompt's live `binding`, its outer then
+    # runs nothing (its start rewrite finds no record), or, where its body had
+    # started, the bind runs on and how it ends is written only to its `.out`,
+    # which case 11 never removes.
+    # A WINDOW THE CALLER RENAMED IS RENAMED BACK (lane 1's check of part 55,
+    # NIT 3): `guard_answer_moved` calls this for a bind mode after its answer
+    # `2` renamed the window to `<to>` (`GBT_REN_FROM`, `GBT_REN_TO`). Where this
+    # load finds an offer or an allowance instead, no bind of anyone's holds the
+    # window, and the answer started none, so it is renamed back in `none`'s
+    # words, as that function's own offer branch does. Left named for `<to>`, the
+    # next prompt would drop the offer as one about another window.
     case "${GBR_MODE-}" in
       name-drift|allow)
+        guard_triple
+        [ -z "${GBT_REN_FROM-}" ] || guard_window_back "$GBT_REN_FROM" "${GBT_REN_TO-}" none || :
         guard_refuse "the pending offer at $gbt_f was changed while it was being answered (it says mode=$GBR_MODE now), so nothing was written to it. Send your prompt again and it will be read afresh."
         return 2 ;;
     esac
+    # A RECORD GONE BY NOW WAS NEITHER READ NOR DROPPED (NIT 1): the caller read
+    # a bind mode, and another prompt removed the record since. It is
+    # `guard_bind_gone`'s, in its words, and nothing is removed.
+    if [ ! -e "$gbt_f" ] && [ ! -L "$gbt_f" ]; then
+      guard_bind_gone "$gbt_f"
+      return 2
+    fi
     # A FAILED `rm` (lane 3's SHOULD-1) is said, and never "dropped".
     if ! rm -f -- "$gbt_f" 2>/dev/null && { [ -e "$gbt_f" ] || [ -L "$gbt_f" ]; }; then
       guard_drop_refuse "$gbt_f" "the pending offer at $gbt_f could not be read, so it was to be dropped rather than answered on a guess"
@@ -23176,7 +23204,14 @@ guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 whe
   fi
   case "$gam_m" in
     binding|bound|bind-failed)
+      # A WINDOW THIS ANSWER RENAMED is named for `guard_bind_site`, whose
+      # refusal of a record that became an offer or an allowance renames it back
+      # (lane 1's check of part 55, NIT 3). Its other answers leave the window
+      # as that bind record's answer leaves it, as before.
+      GBT_REN_FROM=""; GBT_REN_TO=""
+      [ "$gam_ren" = 0 ] || { GBT_REN_FROM="$gam_from"; GBT_REN_TO="$gam_to"; }
       guard_bind_site "$gam_f" "$gam_pane"
+      GBT_REN_FROM=""; GBT_REN_TO=""
       return 2 ;;
     allow)
       # NO OFFER IS KEPT: another prompt's choice 1 made it an allowance, and
@@ -23333,11 +23368,18 @@ guard_answer() {   # <offer file> <the prompt> <pane>
   # record can have become one of those since. So it is answered as
   # `guard_answer_moved` answers it, before the drop below: a bind mode by
   # `guard_bind_site`, and an allowance by 3, which does not consume the prompt.
-  # A live `binding` is then never removed as "could not be read", and its `.out`
-  # never left behind. THE WINDOW LEFT is this function's own: its separate
-  # reads of `mode`, `from` and `bind` above, to the `rm` below, where a record
-  # removed or replaced between them can still be read as an offer missing a
-  # key, and whatever is there at the `rm` is removed.
+  # Outside the window the next sentence states, a live `binding` is then never
+  # removed as "could not be read", and its `.out` never left behind (lane 1's
+  # check of part 55, NIT 2). THE WINDOW LEFT is this function's own: its
+  # separate reads of `mode`, `from` and `bind` above, to the `rm` below, where a
+  # record removed or replaced between them can still be read as an offer
+  # missing a key, and whatever is there at the `rm` is removed. A record gone
+  # by the existence test just before the `rm` is `guard_bind_gone`'s (NIT 1),
+  # so the window that removes one is that test to the `rm`. ITS COST, as case
+  # 5's comment gives its own: where what is removed there is another prompt's
+  # live `binding`, its outer then runs nothing (its start rewrite finds no
+  # record), or, where its body had started, the bind runs on and how it ends
+  # is written only to its `.out`, which case 11 never removes.
   case "$ga_mode" in
     binding|bound|bind-failed)
       guard_bind_site "$ga_f" "$ga_pane"
@@ -23345,6 +23387,13 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     allow) return 3 ;;
   esac
   if [ "$ga_mode" != name-drift ] || [ -z "$ga_from" ] || [ "$ga_bindok" = 0 ]; then
+    # A RECORD GONE BY NOW WAS NEITHER READ NOR DROPPED (lane 1's check of part
+    # 55, NIT 1): the caller read a mode, and another prompt removed the record
+    # since. It is `guard_bind_gone`'s, in its words, and nothing is removed.
+    if [ ! -e "$ga_f" ] && [ ! -L "$ga_f" ]; then
+      guard_bind_gone "$ga_f"
+      return 2
+    fi
     # A FAILED `rm` (lane 3's SHOULD-1) is said, and never "dropped".
     if ! rm -f -- "$ga_f" 2>/dev/null && { [ -e "$ga_f" ] || [ -L "$ga_f" ]; }; then
       guard_drop_refuse "$ga_f" "the pending offer at $ga_f could not be read, so it was to be dropped rather than answered on a guess"
