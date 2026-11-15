@@ -2178,7 +2178,8 @@ def test_noted_line_unconfirmed_is_never_written_again(sweep):
 #: A PRIMARY `log`'S 3, in each of its five forms: one `die` each in
 #: `lanes-edit.sh` (`pw_lookup_3`, `pw_owner_live_end`'s three and
 #: `pw_owner_untested_end`), shortened, each with its own opening, which is
-#: what `lane-end` reads the mode by.
+#: what `lane-end` reads the mode by; and the in-doubt form once more in its
+#: real shape, below.
 _PRIMARY_RERUN = ("LANES_WRITE_ID=a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d "
                   "LANES_WRITE_GENERATION=0f1e2d3c-4b5a-4968-8776-655443322110 "
                   f"LANES_LANE={RUNNER} LANES_SESSION={UUID[RUNNER]} "
@@ -2211,6 +2212,14 @@ _PRIMARY_3 = {
         "(DEC-25), and this run's deadline of 30 s passed first; this run sent nothing. A run "
         "may take that claim after 2026-11-15T12:05:00Z: run it again then."),
 }
+#: THE IN-DOUBT FORM IN ITS REAL SHAPE (lane 2's SHOULD 1, #165 6896763830):
+#: `pw_doubt_end` passes `lanes-index journal`'s stderr on first, here its
+#: LR011 note, and then `pw_lookup_3` dies, so the writer's opening is not at
+#: the start of what the sweep keeps, and the kept words are two lines.
+_PRIMARY_3["in-doubt-after-journal"] = (
+    "lanes-index: journal: the lookup of write a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d was too early "
+    "(LR011), so it proves nothing: write a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d stays in doubt: keep "
+    "its pending record, and look it up again under the same id\n" + _PRIMARY_3["in-doubt"])
 
 
 @pytest.mark.parametrize("form", sorted(_PRIMARY_3))
@@ -2219,9 +2228,13 @@ def test_noted_line_3_on_primary_relays_the_writers_words_with_no_publish_act(sw
     takes lane 4's fix, #165 6889006976 item 3). `log` there is one register
     transaction and ends 3 in five forms, each with its own words, its
     `LANES_WRITE_ID` rerun where it has one; the publish act sends nothing for
-    a register write. So the sweep relays the writer's words once, prints no
-    command of its own (no publish act, no line by hand), says to settle the
-    line by what the writer printed, and exits 1, as files mode's 3 does."""
+    a register write. So the sweep relays the writer's words once, above its
+    own note, prints no command of its own (no publish act, no line by hand),
+    says to settle the line by what the writer printed, its rerun first, and
+    exits 1, as files mode's 3 does. `in-doubt-after-journal` is the in-doubt
+    form after `journal`'s line, as the writer prints it, so the words are
+    read anywhere in what the sweep keeps, never only at its start or in its
+    first line (lane 2's SHOULD 1 and NIT 1, #165 6896763830)."""
     box = sweep.box
     words = _PRIMARY_3[form]
     said = box.root / "primary-3-words.txt"
@@ -2235,7 +2248,10 @@ def test_noted_line_3_on_primary_relays_the_writers_words_with_no_publish_act(sw
     assert not _noted_on_origin(box)
     assert result.stderr.count(words) == 1, result.stderr
     assert "`lanes-edit.sh log` exited 3 on primary (its words are above)" in result.stderr, result.stderr
+    assert result.stderr.index(words) < result.stderr.index("exited 3 on primary"), result.stderr
     assert "Settle it by what the writer printed, and by nothing else" in result.stderr, result.stderr
+    assert ("run its printed `LANES_WRITE_ID` rerun, which writes the line once or finds it"
+            in result.stderr), result.stderr
     assert _remedies(result.stderr) == [], result.stderr
     assert "lanes-edit.sh commit" not in result.stderr, result.stderr
     assert "may be on origin already" not in result.stderr, result.stderr
@@ -2257,32 +2273,45 @@ _FILES_3_NOTE = (
     "already, and it is not to be written again. Nothing was lost: each checkout removed held "
     "nothing unpublished. The publish act sends its commit only where origin lacks it by content, "
     "and says so where origin has it:\n")
+#: The publish act files mode's 3 hands out, byte for byte (`sc_publish`).
+_PUBLISH_ACT = f"LANES_LANE={RUNNER} lanes-edit.sh commit the\\ NOTED\\ line\\ of\\ lane-end\\ --sweep-checkouts"
 
 
-@pytest.mark.parametrize("said", ["files-words", "no-words"])
+@pytest.mark.parametrize("said", ["files-words", "success-words", "no-words"])
 def test_noted_line_3_off_primary_keeps_files_modes_note_and_the_publish_act(sweep, said):
     """A NOTED WRITE'S 3 IN NONE OF PRIMARY'S FIVE FORMS keeps files mode's
     note and the publish act, byte for byte as before T430's fix (lane 3, #165
-    6894116246): files mode's own `pushed, not confirmed` words, and a 3 whose
-    words say nothing of the mode, where the sweep falls back to today's
-    behaviour. The line did land here: the publish act, run, finds nothing to
-    send, and origin holds the line once."""
+    6894116246). The real `log` lands the line each time, and then the 3:
+    - `files-words`: files mode's own `pushed, not confirmed` words follow
+      the writer's success lines;
+    - `success-words`: the writer's success lines alone (`1 line appended`,
+      `committed:`, `pushed origin/<branch>`), words that say nothing of the
+      mode, where the sweep falls back to today's behaviour;
+    - `no-words`: the real `log`'s words are thrown away, so the sweep keeps
+      an empty capture, a 3 with no words at all (lane 2's NIT 2, #165
+      6896763830). A capture that cannot be made is not one of these: the
+      sweep refuses before any removal when `mktemp` fails at its listing,
+      so only a race could reach that branch.
+    The publish act, run, finds nothing to send, and origin holds the line
+    once."""
     box = sweep.box
     words = box.root / "files-3-words.txt"
     words.write_text(_FILES_3 if said == "files-words" else "", encoding="utf-8")
+    quiet = " >/dev/null 2>&1" if said == "no-words" else ""
     exit3 = _wrapped(box, "lanes-edit-files-3-log", "log", (
-        '  bash "$REAL" "$@"; rc=$?\n'
+        f'  bash "$REAL" "$@"{quiet}; rc=$?\n'
         f'  if [ "$rc" = 0 ]; then cat {words} >&2; exit 3; fi\n'
         '  exit "$rc"\n'))
     result, rows = sweep("--yes", LANES_LANE=RUNNER, LANES_EDIT=exit3)
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert _tagged(rows, "removed") == {str(box.checkout(CLOSED))}, rows
     assert len(_noted_on_origin(box)) == 1
+    assert ("lanes-edit: 1 line appended to " in result.stderr) == (said != "no-words"), result.stderr
+    assert (_FILES_3 in result.stderr) == (said == "files-words"), result.stderr
     assert _FILES_3_NOTE in result.stderr, result.stderr
     assert "exited 3 on primary" not in result.stderr, result.stderr
     remedies = _remedies(result.stderr)
-    assert len(remedies) == 1, remedies
-    assert remedies[0].startswith(f"LANES_LANE={RUNNER} lanes-edit.sh commit "), remedies
+    assert remedies == [_PUBLISH_ACT], remedies
     done = _by_hand(box, remedies[0])
     assert done.returncode == 0, (done.stdout, done.stderr)
     assert len(_noted_on_origin(box)) == 1, "the publish act wrote no second line"
@@ -2304,13 +2333,17 @@ def test_noted_line_3_on_primary_patterns_open_the_writers_five_exit_3_dies_and_
     a primary 3 from files mode's by two patterns in its `3)` arm, and the
     cases above feed it copies of the writer's words. This reads both sides
     from the repository: the patterns from `lane-end`'s arm, the prefix from
-    `lanes-edit.sh`'s `die`, and the five `die ... 3`s a primary write ends 3
-    with, by their functions (`pw_lookup_3`, `pw_owner_live_end`'s three and
-    `pw_owner_untested_end`). Each of the five opens, after the prefix, with
-    one of the patterns, each pattern opens one at least, and no other line
-    of `lanes-edit.sh` but a comment holds either pattern's words, so files
-    mode's 3 cannot take the primary arm. A reword of either side alone fails
-    here, where the sweep would otherwise fall back to files mode's note."""
+    `lanes-edit.sh`'s `die`, and every `die ... 3` of `lanes-edit.sh`, by the
+    function it is in. Those functions are exactly the five a primary write
+    ends 3 with (`pw_lookup_3`, `pw_owner_live_end`'s three and
+    `pw_owner_untested_end`) and files mode's `cp_not_confirmed`, which holds
+    neither pattern's words, so a primary 3 in a new function fails here too
+    (lane 2's NIT 3, #165 6896763830). Each of the five opens, after the
+    prefix, with one of the patterns, each pattern opens one at least, and no
+    other line of `lanes-edit.sh` but a comment holds either pattern's words,
+    so files mode's 3 cannot take the primary arm. A reword of either side
+    alone fails here, where the sweep would otherwise fall back to files
+    mode's note."""
     arm = [line.strip() for line in (REPO / "lane-end").read_text(encoding="utf-8").splitlines()]
     at = arm.index('case "$sc_noted_rc" in')
     assert arm[at + 1:at + 3] == ["3)", 'case "$sc_log_err" in'], arm[at:at + 4]
@@ -2326,12 +2359,26 @@ def test_noted_line_3_on_primary_patterns_open_the_writers_five_exit_3_dies_and_
     openings = [pattern[len(prefix[0]):] for pattern in patterns if pattern.startswith(prefix[0])]
     assert len(openings) == 2, (prefix, patterns)
 
-    dies = {}
-    for name, count in (("pw_lookup_3", 1), ("pw_owner_live_end", 3), ("pw_owner_untested_end", 1)):
-        found = {n: m.group(1) for n, line in _bash_function(text, name)
-                 for m in [re.fullmatch(r'\s*die "(.*)" 3', line)] if m}
-        assert len(found) == count, (name, found)
-        dies.update(found)
+    # EVERY `die ... 3`, BY THE FUNCTION IT IS IN: a `name() {` at column 0
+    # opens one, and a `}` alone at column 0 ends it.
+    dies, owners, owner = {}, [], "<top level>"
+    for n, line in enumerate(text.splitlines(), 1):
+        head = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\(\) *\{", line)
+        if head:
+            owner = head.group(1)
+        elif line == "}":
+            owner = "<top level>"
+        if line.lstrip().startswith("#") or not re.search(r"\bdie\b.*\s3\s*$", line):
+            continue
+        owners.append(owner)
+        if owner == "cp_not_confirmed":
+            assert not any(opening in line for opening in openings), (n, line)
+            continue
+        m = re.fullmatch(r'\s*die "(.*)" 3', line)
+        assert m, (n, owner, line)
+        dies[n] = m.group(1)
+    assert sorted(owners) == ["cp_not_confirmed", "pw_lookup_3", "pw_owner_live_end", "pw_owner_live_end",
+                              "pw_owner_live_end", "pw_owner_untested_end"], owners
     for n, message in dies.items():
         assert any((prefix[0] + message).startswith(pattern) for pattern in patterns), (n, message)
     for opening in openings:
