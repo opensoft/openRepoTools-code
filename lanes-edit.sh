@@ -20360,14 +20360,19 @@ guard_offer_file() {   # <session uuid>
 # outer left, as after case 9 (lane 3's ruling on the facts file's two
 # removers, opensoft/openRepoTools#165 6747528875). Case 11 alone drops the
 # record and leaves `<uuid>.bind.*` for the next removal to sweep, and never
-# unlinks a live outer's `.out` itself. Every other removal of `.bind.*` files
-# (`guard_drop_if`'s, for case 5, a stale offer and choice 3, and choice 1's
-# sweep) takes only names listed before its read or check, so it meets a newer
-# attempt's live `.out` only where that reuses a listed name: after a full
-# sweep the next attempt takes index 1 again (`guard_bind_next_index`), and
-# where `.bind.1.out` was listed, that removal unlinks it in its window (lane
-# 5's adversarial review of parts 42 to 47, SHOULD-1 and SHOULD-2; of parts 48
-# to 50, its held item (D)).
+# unlinks a live outer's `.out` itself. Every other removal of the record's
+# `.bind.*` names (`guard_drop_if`'s, for case 5, a stale offer and choice 3,
+# and choice 1's sweep) takes only names listed before its read or check, so it
+# meets a newer attempt's live `.out` only where that reuses a listed name:
+# after a full sweep the next attempt takes index 1 again
+# (`guard_bind_next_index`), and where `.bind.1.out` was listed, that removal
+# unlinks it in its window (lane 5's adversarial review of parts 42 to 47,
+# SHOULD-1 and SHOULD-2; of parts 48 to 50, its held item (D)). Besides those,
+# an outer removes only its own facts file, by the name it derived from the
+# record's `out=` at its start, at that start and at each outcome, and its body
+# removes that same name where its account could not be written: under a reused
+# index that name can be a newer attempt's (lane 5's check of part 51, NIT-1;
+# the window is stated at the outer's read of the facts, in `guard_bind_outer`).
 
 # THE RECORD AS IT IS NOW (Codex's S2 and S6 on spec#47's draft 17): read ONCE,
 # through one open, and its first `mode` line, and the first line of each key
@@ -22686,14 +22691,20 @@ guard_site_unrestored() {   # <offer file> <the mode loaded>; after `guard_site_
 #   offer    an offer between the same two lanes: another prompt restored it
 #   unread   there, and it could not be read again (part 49's NIT-3)
 #   changed  anything else, gone included: no offer of this window's is kept
-# and `GSR_NOW` says what that read found, in `guard_record_now`'s words.
+# and `GSR_NOW` says what that read found, in `guard_record_now`'s words, worded
+# from that read's own results and never from a second look at the path (lane
+# 5's check of part 51, NIT-2): a record that appears after a read that found
+# nothing is "gone now" to these words, as it was to the read.
 guard_site_reread() {   # <offer file> <the mode loaded>
   GSR_FORM=changed
   if guard_record_says "${1-}" "${2-}" "bind=$GBR_BIND" "started_utc=$GBR_STARTED"; then GSR_FORM=still
   elif guard_record_unread "${1-}"; then GSR_FORM=unread
   elif guard_record_got name-drift "from=$GBR_FROM" "to=$GBR_TO"; then GSR_FORM=offer
   fi
-  GSR_NOW="$(guard_record_now "${1-}")"
+  if [ "$GSR_FORM" = unread ]; then GSR_NOW="it could not be read again"
+  elif [ "${GRS_THERE:-0}" = 1 ]; then GSR_NOW="it says mode=${GRS_MODE:-none} now"
+  else GSR_NOW="it is gone now"
+  fi
   return 0
 }
 # THE RENAME-BACK NOTE'S FORM FOR CASES 6, 7 AND 9 WHERE THEIR RESTORE FAILED (an
@@ -23737,6 +23748,24 @@ guard_bind_outer() {   # <session uuid>
   # gives `why` and the `note=` lines; where the bound or a signal stopped it,
   # the `why` is Y:5488's and the facts, if any, are not read: what it wrote is
   # not known.
+  # THE WINDOW LEFT BY THE FACTS FILE'S NAME (lane 5's check of part 51, NIT-1;
+  # not new in part 51, and point 27's to rule): this read, and this outer's
+  # removals of the facts file at its start and at each outcome, go by the name
+  # it derived at its start, which is a name and not a file. Where case 11 drops
+  # this live outer's record, a later removal of the record's `.bind.*` names
+  # sweeps this attempt's files, and, after a full sweep, a new offer's answer
+  # `2` takes index 1 again (`guard_bind_next_index`): where this attempt's
+  # index is 1, the newer attempt's body makes and writes its account under
+  # this very name. Two attempts then share one facts file: each body writes
+  # its account there (the later write is what is there), each outer removes
+  # it at its start, reads it at its end and removes it at its outcome, and a
+  # body whose write fails removes it too. So where this body ends on its own with the newer account
+  # there, this outer folds the newer attempt's `why=` and `note=` lines into
+  # its own outcome, which goes only to its own `.out`, unlinked by that sweep,
+  # since the record is no longer its own (`--own`'s 2); and it removes that
+  # file at its outcome. The newer attempt's outer, reading after that, finds
+  # no facts file: its outcome loses those lines and says the body gave no
+  # account (point 16(d)) or no reason (point 16(c)).
   gbo_fhave=0; gbo_fwhy=""; gbo_fnotes=()
   if [ "$gbo_how" = self ] && [ -n "$gbo_facts" ] && [ -f "$gbo_facts" ]; then
     gbo_fhave=1
