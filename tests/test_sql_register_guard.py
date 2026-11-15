@@ -4972,7 +4972,19 @@ def test_the_session_start_block_reads_the_mirror_and_only_starts_the_service(es
 
 def test_the_first_call_starts_the_service_with_no_supervisor(estate):
     """A7: the first guard call starts the service detached, with no
-    supervisor: its parent is init or a subreaper, not the hook."""
+    supervisor: its parent is init or a subreaper, not the hook.
+
+    AND ITS OWN REQUEST IS ANSWERED, by the direct read, since the guard
+    never waits for a start (TP:2051-2053, SVC-4; lane 3's erratum, on lane
+    5's SHOULD 3, row 1). Since T237zza (lane 5, opensoft/openRepoTools#165
+    6881986067) the case asserts that answer, not only the start: the
+    estate's first prompt gets what `Estate.make_offer` asserts of it, exit 2
+    with the name offer and the offer's record, from `FROM` to the session's
+    name; inside the guard's budget and not stopped by the runner; and with
+    the fallback line on stderr exactly once, the client's own word that the
+    service was unavailable and it read directly (`FALLBACK`). A first call
+    that started the service and then dropped its own request, or answered
+    it otherwise, passed the start's assertions alone."""
     est = estate(mode="primary")
     hook = est.hook("hello")
     assert _until(lambda: _service_dir(est), 10), "the first call started no service"
@@ -4981,6 +4993,16 @@ def test_the_first_call_starts_the_service_with_no_supervisor(estate):
         and _argv(e.name)[-1:] == ["serve"]]
     assert servers and all(_stat(p).get("ppid") != hook.pgid for p in servers), servers
     est.spare.extend(servers)
+    # T237zza: THE FIRST CALL'S OWN ANSWER, after the start's assertions, so
+    # the service it started is already in `spare` when one of these fails.
+    record = est.record()
+    assert not hook.killed and hook.t_exit - hook.t0 < BUDGET, repr(hook)
+    assert hook.code == 2 and OFFER in hook.text, \
+        f"the first call's own request was not answered with the name offer: {hook!r}"
+    assert record.get("mode") == "name-drift" and record.get("from") == FROM \
+        and record.get("to") == est.to, f"the first call wrote no offer: {record}\n{hook!r}"
+    assert hook.err.splitlines().count(FALLBACK) == 1, \
+        f"the first call was not answered by the direct read, once: {hook.err}"
 
 
 @pytest.mark.parametrize("case", ["start-fails", "psql-14"])
