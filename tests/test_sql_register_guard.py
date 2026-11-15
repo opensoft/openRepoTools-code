@@ -90,7 +90,16 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: (:2419), tasks.md at lane 3's commit 17 `204145ae`, each row's owner and
 #: cite beside it. T214n's five rows, lane 5's five cases of
 #: `bind-record.md`'s section 8, are from T214's Order at the follow-up's
-#: commit 24 `f9d6069e` (tasks:2013), which keeps that line number. T213r's
+#: commit 24 `f9d6069e` (tasks:2013), which keeps that line number. T214o's
+#: nine rows, section 8's other bullets at spec#47's draft 14 `96d14916`, are
+#: from the same Order (lane 2, #165 6882026139, Part B). T254zw's row, its
+#: :376, is from T254's Order (tasks:2419; K1). T214t's
+#: row, for T502's part 21 (lane 5, opensoft/openRepoTools#165 6885608994),
+#: is keyed by the same Order: its case fails until T502 lands. T214v's
+#: and T214w's rows, for T502's part 22 and its rule for the hook's writes
+#: (lane 3's ruling 5, (A), opensoft/openRepoTools#165 6885771975, and its
+#: confirmation, 6886113842), are keyed by the same Order, and so is
+#: T214x's, for the back-out of the same rule (6dd8bbbd:23333-23384). T213r's
 #: row for `test_no_session_environment_carries_a_database_url_or_password`
 #: adds T512 to T213's Order: its `PGPASSFILE` assertions read the
 #: service's own held `psql` child (TP:1952 at `f9d6069e`), which only
@@ -102,14 +111,19 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: off primary, is keyed by analogy with T513's verify case's,
 #: `test_the_session_start_block_reads_the_mirror_and_only_starts_the_service`
 #: (T237's Order, tasks:2302 at commit 24 `f9d6069e`: its tests fail until
-#: L5-S1 lands, lane 5's T511 to T513). No task is common to every row, so
-#: there is no "*" row.
+#: L5-S1 lands, lane 5's T511 to T513). T237zze's row, for the client's own
+#: check of the server's uid, is the row of SVC-2's other case,
+#: `test_a_client_of_another_uid_is_closed_by_so_peercred`: tasks:2278 at
+#: lane 3's commit 31 `8f50d105` says it fails until L5-S1, lane 5's T512,
+#: under the same Order (tasks:2302 there). No task is common to every row,
+#: so there is no "*" row.
 SQL_REGISTER_GATE_TABLE = {
     "test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither": ("T512", "T513"),  # T237; tasks:2302
     "test_a_bind_body_past_its_bound_ends_with_the_bounds_code_and_leaves_no_process": ("T502",),  # T214; tasks:2013
     "test_a_bind_in_doubt_looks_its_write_up_before_a_rerun": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
     "test_a_bind_killed_mid_commit_waits_for_ended_utc_plus_c_before_its_lookup": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
     "test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
+    "test_a_bind_whose_write_id_no_pending_record_holds_makes_no_lookup": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
     "test_a_bind_with_no_timeout_says_bounded_no_and_kill_stops_its_group_once": ("T502",),  # T214; tasks:2013
     "test_a_binding_from_another_host_or_container_is_not_judged_by_its_pid_until_the_deadline_plus_60_s": ("T502",),  # T214; tasks:2013
     "test_a_cache_miss_at_the_service_answers_unavailable_and_fetches_in_the_background": ("T302", "T512", "T513"),  # T237; tasks:2302
@@ -121,6 +135,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_failed_bind_renames_back_keeps_the_offer_and_allows_three_attempts": ("T502",),  # T214; tasks:2013
     "test_a_guard_that_starts_too_late_refuses_2_without_a_read": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_a_live_bind_past_its_bound_that_timeout_has_not_ended_answers_2_and_names_the_pid_to_kill": ("T502",),  # T214; tasks:2013
+    "test_a_malformed_bind_pid_waits_for_the_deadline_then_is_stale": ("T502",),  # T214; tasks:2013
     "test_a_noncanonical_out_names_no_facts_file_and_no_words": ("T502",),  # T214; tasks:2013
     "test_a_prompt_mid_bind_is_not_passed_and_leaves_the_record": ("T502",),  # T214; tasks:2013
     "test_a_rerun_after_a_failed_stamp_push_writes_one_stamp": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
@@ -132,12 +147,19 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_whole_file_fetch_the_start_line_cuts_fills_the_image_cache_for_the_next_prompt": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_a_write_between_two_requests_is_in_the_next_answer": ("T107", "T227", "T228", "T512", "T513"),  # T237; tasks:2302
     "test_after_bound_one_moved_then_the_next_prompt_passes": ("T502",),  # T214; tasks:2013
+    "test_an_outer_that_wrote_pid_alone_still_writes_its_outcome": ("T502",),  # T214; tasks:2013
     "test_an_owner_file_from_another_namespace_or_boot_is_no_service": ("T512", "T513"),  # T237; tasks:2302
+    "test_answer_2_binds_nothing_where_its_offer_is_gone_or_no_longer_the_one_answered": ("T502",),  # T214; tasks:2013
     "test_answer_2_exits_2_binding_before_t0_plus_1_s_and_the_runner_sees_eof": ("T502",),  # T214; tasks:2013
     "test_answer_2_survives_a_group_sigterm_at_the_hooks_timeout": ("T502",),  # T214; tasks:2013
+    "test_answer_2s_back_out_writes_nothing_where_its_binding_is_gone_or_no_longer_binding": ("T502",),  # T214; tasks:2013
+    "test_case_11_with_a_live_outer_drops_the_record_and_keeps_its_files": ("T502",),  # T214; tasks:2013
+    "test_choice_1_allows_nothing_where_its_offer_is_gone_or_no_longer_the_one_answered": ("T502",),  # T214; tasks:2013
     "test_claude_no_lane_still_skips_before_any_input": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_each_service_request_is_one_query": ("T229", "T512", "T513"),  # T237; tasks:2302
+    "test_every_bind_rewrite_is_0600_and_a_failed_one_leaves_the_record": ("T502",),  # T214; tasks:2013
     "test_guard_bind_computes_bound_s_from_c_n_a_and_the_service": ("T502", "T507"),  # T214; tasks:2013
+    "test_guard_bind_exits_as_section_7_gives": ("T502",),  # T214; tasks:2013
     "test_kill_of_the_bind_outer_ends_the_record_with_the_signals_code": ("T502",),  # T214; tasks:2013
     "test_no_session_environment_carries_a_database_url_or_password": ("T103", "T113", "T502", "T507", "T512"),  # T213; tasks:1992, and T512 (T213r)
     "test_one_instance_holds_register_lock_and_a_second_starter_exits_0": ("T512", "T513"),  # T237; tasks:2302
@@ -151,9 +173,12 @@ SQL_REGISTER_GATE_TABLE = {
     "test_the_bind_child_survives_a_group_kill_and_hangup_and_ends_bound": ("T502",),  # T214; tasks:2013
     "test_the_bind_childs_lookup_sends_the_five_copied_values": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
     "test_the_bind_is_one_register_write_and_refuses_a_changed_row": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
+    "test_the_bind_records_grammar_as_every_reader_takes_it": ("T502",),  # T214; tasks:2013
     "test_the_bind_resume_path_makes_at_most_n_r_read_calls": ("T502",),  # T214; tasks:2013
+    "test_the_client_treats_a_service_of_another_uid_as_unavailable": ("T512", "T513"),  # T237; tasks:2302, with :2278
     "test_the_database_unreachable_with_the_service_up_is_2_never_a_cached_ok": ("T512", "T513"),  # T237; tasks:2302
     "test_the_direct_read_connects_as_its_engineers_reader_login": ("T103", "T113", "T507"),  # T213; tasks:1992
+    "test_the_facts_file_is_made_empty_first_and_its_absence_is_reported": ("T502",),  # T214; tasks:2013
     "test_the_files_index_passes_six_digits": ("T502",),  # T214; tasks:2013
     "test_the_first_call_starts_the_service_with_no_supervisor": ("T512", "T513"),  # T237; tasks:2302
     "test_the_guard_answer_time_is_recorded_beside_todays_direct_guard": ("T512", "T513"),  # T237; tasks:2302
@@ -162,9 +187,12 @@ SQL_REGISTER_GATE_TABLE = {
     "test_the_guards_last_budget_line_is_below_guard_timeout": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_the_guards_register_parse_is_timed_on_a_real_sized_register_beside_todays_six_reads_through_git": ("T111", "T112", "T507"),  # T226; tasks:2177
     "test_the_guards_request_carries_only_file_names": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_next_offers_files_index_runs_above_a_case_11_leftover": ("T502",),  # T214; tasks:2013
     "test_the_outcome_rewrite_has_three_results": ("T502",),  # T214; tasks:2013
     "test_the_outer_gathers_its_copies_before_its_last_ownership_read": ("T502",),  # T214; tasks:2013
+    "test_the_outer_leaves_a_record_no_longer_its_own": ("T502",),  # T214; tasks:2013
     "test_the_outer_matches_host_and_container_without_regard_to_case": ("T502",),  # T214; tasks:2013
+    "test_the_outer_runs_nothing_where_its_record_is_not_binding_at_its_start": ("T502",),  # T214; tasks:2013
     "test_the_post_bind_refill_is_one_register_read_and_never_git": ("T502", "T507"),  # T214; tasks:2013
     "test_the_service_reaches_the_database_only_through_psql": ("T512", "T513"),  # T237; tasks:2302
     "test_the_service_stops_after_its_idle_time_and_unlinks_its_socket": ("T512", "T513"),  # T237; tasks:2302
@@ -492,11 +520,124 @@ def _argv(pid) -> list:
     return [a.decode("utf-8", "replace") for a in raw.split(b"\0")[:-1]]
 
 
+def _homed(state_home) -> dict:
+    """THIS ESTATE'S PROCESSES (T237zzd), `{pid: start}`: the live processes
+    of this uid whose environment's `XDG_STATE_HOME` is exactly `state_home`.
+    Each estate's state home is a `mkdtemp` of its own (`_state_home`) that
+    only its `env()` passes on, and a child inherits it; every service of the
+    estate carries it, whether `_Service` started it with `est.env()` or the
+    client did (`register_serve_launch` keeps every `XDG_*`). Neither pytest
+    nor another estate's process holds it.
+
+    - Only this uid's (`/proc/<pid>`'s owner), so a run as root never takes
+      another user's process.
+    - The variable's FIRST entry, the one `getenv` answers, decides, where a
+      process has two; and it must equal `state_home` byte for byte, so a
+      trailing `/`, a longer name, a subdirectory and a symlink's spelling
+      are never this estate's.
+    - The start time is read before and after the environment, and kept only
+      where both agree, so the start recorded is that process's: the
+      teardown signals a pid only while it still has it (`_kill_same`)."""
+    want = os.fsencode(str(state_home))
+    uid = os.getuid()
+    found = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        before = _stat(entry.name)
+        if not before or before["state"] in ("Z", "X", "x"):
+            continue
+        try:
+            if entry.stat().st_uid != uid:
+                continue
+            environ = (entry / "environ").read_bytes()
+        except OSError:
+            continue
+        home = next((pair[len(b"XDG_STATE_HOME="):] for pair in environ.split(b"\0")
+                     if pair.startswith(b"XDG_STATE_HOME=")), None)
+        if home != want:
+            continue
+        if _stat(entry.name).get("start") == before["start"]:
+            found[int(entry.name)] = before["start"]
+    return found
+
+
+def _kill_same(pid, start, sig=signal.SIGKILL) -> bool:
+    """`sig` to `pid` only while it is the process its scan saw, by the start
+    time read then (T237zzd; T214u's `_record_pid` test), and never to a
+    member of pytest's own session, whatever its number (rule 2): such a pid
+    is printed and left. True where it was sent, through `_kill` alone. A
+    pidfd would close the gap between the check and the signal, but
+    `signals_recorded` (T214o) records `os.kill` and `os.killpg` only, and a
+    `pidfd_send_signal` would pass it by, so the check is `_record_pid`'s."""
+    st = _stat(pid)
+    if start is None or not st or st.get("start") != start:
+        return False
+    if st.get("sid") == os.getsid(0):
+        print(f"Estate.close: pid {pid} is in pytest's own session, so it is not signalled: "
+              f"{_argv(pid)}")
+        return False
+    _kill(pid, sig)
+    return True
+
+
+#: THE TEARDOWN'S LAST SWEEP (T237zzd): passes, and the seconds between them.
+SWEEP_PASSES, SWEEP_STEP_S = 20, 0.1
+
+
+def _teardown_round(targets: dict, own: set) -> None:
+    """One round of `Estate.close` (T237zzd): each of `targets`, `{pid:
+    start}`, and the members of the session and of the group each one leads,
+    each member's start read as it is found, signalled through `_kill_same`;
+    never a pid of 1 or less, nor one of `own` (this process, its group, its
+    session). A leader already gone still names the members that keep its
+    number (T214u)."""
+    every = dict(targets)
+    for pid in targets:
+        if pid > 1 and pid not in own:
+            for member in (*_members("sid", pid), *_members("pgid", pid)):
+                every.setdefault(member, _stat(member).get("start"))
+    for pid, start in every.items():
+        if pid > 1 and pid not in own:
+            _kill_same(pid, start)
+
+
 def _kill(pid, sig=signal.SIGKILL) -> None:
+    """`sig` to the one process `pid`, and never to more (T214u). A pid of 1
+    or less is refused, and so is this process's own: `os.kill(0, ...)`
+    signals this process's whole group, which `tests/run.sh`'s `set -m`
+    makes pytest's; a negative pid signals a group, and -1 every process this
+    user owns; and 1 is the container's init."""
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1 or pid == os.getpid():
+        return
     try:
         os.kill(pid, sig)
     except (ProcessLookupError, PermissionError):
         pass
+
+
+def _record_pid(record: dict):
+    """THE RECORD'S `pid` AS THE ESTATE'S TEARDOWN MAY SIGNAL IT (T214u), else
+    None: well-formed by the guard's own rule, `guard_bind_pid_ok` (decimal
+    digits, no leading 0, above 1, at most 10 digits); and, where the record
+    holds an all-digit `pidstart` and that pid is live, live with that start
+    (`pid_start_of`'s test), so a pid a case wrote dead is never taken once
+    another process has it. A dead pid is still taken, for the members of the
+    session or group it led, which keep its number from being reused.
+
+    T214o's :371 writes `pid=0`, `1`, `0<pid>` and eleven digits. Taken as
+    digits, `0` was `os.kill(0, SIGKILL)` to pytest's own process group,
+    which ended S8-26's three runs with 137 at `[pid-0]`'s teardown; `1`
+    swept session 1, which in a container holds its init and its main
+    process; and eleven digits raised `OverflowError` out of the teardown."""
+    pid = record.get("pid", "")
+    if not re.fullmatch(r"[1-9][0-9]{0,9}", pid) or int(pid) <= 1:
+        return None
+    start = record.get("pidstart", "")
+    now = _stat(pid).get("start")
+    if re.fullmatch(r"[0-9]+", start) and now is not None and now != start:
+        return None
+    return int(pid)
 
 
 def _until(predicate, limit: float, step: float = 0.05):
@@ -991,23 +1132,70 @@ class Estate:
         return self.session
 
     def close(self) -> None:
+        """Every process the bind left, ended: the case's own (`spare`), the
+        record's outer (`_record_pid`: only a value a bind's pid can take),
+        the stand-ins' logged pids, and the members of each one's session and
+        group; never this process, its group or its session (T214u).
+
+        AND EVERY PROCESS OF THIS ESTATE (T237zzd), whoever started it: each
+        live process whose environment's `XDG_STATE_HOME` is this estate's
+        own state home (`_homed`), the estate's services among them and an
+        outer a case held and never released, with the members of the session
+        and group it leads. So a service a client of the case started, which
+        no case puts in `spare`, ends with its estate even where the case
+        fails first, and no process of the estate is left to start one once
+        the state home is gone. A service left running outlived its estate,
+        and a later case's look for "another service" saw it: merge 151's and
+        158's c2 runs, `[namespace|boot]`'s four leftover pids.
+
+        - The selector is the state home alone, which only this estate's
+          `env()` passes on; never the path of `Estate.index`, which a
+          files-mode estate shares with every other (`REPO/lanes-index`).
+        - Nothing in pytest's own session is signalled, however it was
+          reached (`_kill_same` prints it and leaves it). A case that runs an
+          estate command in pytest's session, a `subprocess.run` with
+          `est.env()` and no new session, leaves any process that outlives
+          the command to end on its own. Any service such a command starts
+          is in a session of its own (`register_serve_launch` starts it with
+          `start_new_session=True`), which the sweep takes; what it leaves in
+          pytest's session, such as `lane-checkout --create`'s heartbeat
+          `sleep 60`, starts none.
+        - Every target is signalled only while it has the start time read at
+          its scan (`_kill_same`; `_homed` reads it in the same pass).
+        - The sessions are closed first. Then the sweep is repeated, at most
+          `SWEEP_PASSES` times `SWEEP_STEP_S` apart, until no process of the
+          estate is left outside pytest's session, and only then is the
+          state home removed, so nothing forked meanwhile outlives it."""
         self.release()
+        mine = os.getsid(0)
+        own = {os.getpid(), os.getpgrp(), mine}
         pids = set(self.spare)
         record = self.record()
-        if record.get("pid", "").isdigit():
-            pids.add(int(record["pid"]))
+        outer = _record_pid(record)
+        if outer is not None:
+            pids.add(outer)
+        elif record.get("pid"):
+            print(f"Estate.close: the record's pid {record['pid']!r} is no bind's pid "
+                  f"(guard_bind_pid_ok), so it is not signalled")
         for entry in self.log("lane-start.log") + self.log("body.log"):
             for key in ("pid", "fork", "grandchild"):
                 if isinstance(entry.get(key), int):
                     pids.add(entry[key])
-        for pid in list(pids):
-            pids.update(_members("sid", pid))
-            pids.update(_members("pgid", pid))
-        for pid in pids:
-            if pid != os.getpid():
-                _kill(pid)
+        targets = {pid: _stat(pid).get("start") for pid in pids}
+        targets.update(_homed(self.state_home))
+        _teardown_round(targets, own)
         for session in self.sessions:
             session.close()
+        for _ in range(SWEEP_PASSES):
+            left = {pid: start for pid, start in _homed(self.state_home).items()
+                    if _stat(pid).get("sid") != mine}
+            if not left:
+                break
+            _teardown_round(left, own)
+            time.sleep(SWEEP_STEP_S)
+        else:
+            print(f"Estate.close: after {SWEEP_PASSES} sweeps, still live in {self.state_home}: "
+                  f"{sorted(_homed(self.state_home))}")
         shutil.rmtree(self.state_home, ignore_errors=True)
 
 
@@ -1322,7 +1510,9 @@ def test_a_bind_body_past_its_bound_ends_with_the_bounds_code_and_leaves_no_proc
     sweeps the same way. Each ends with its `why` and "what it wrote is not
     known", the outcome written inside `deadline_epoch`, and no process of the
     group `timeout` led left. The body binds through no `start-record` in
-    either mode, so the case takes no mode id (A1)."""
+    either mode, so the case takes no mode id (A1). Where the stub body runs,
+    section 8's seam (T214o): the outer ran it, with the uuid alone, under
+    `timeout`, and `LANES_BIND_BODY` was unset in it."""
     est = estate()
     extra = {"LANES_BIND_BOUND_S": "15"}
     if case == "term":
@@ -1355,6 +1545,17 @@ def test_a_bind_body_past_its_bound_ends_with_the_bounds_code_and_leaves_no_proc
     assert why in record["why"] and UNKNOWN in record["why"], record
     assert _epoch(record["ended_utc"]) <= int(record["deadline_epoch"]), record
     assert not _members("pgid", group), f"the group timeout led ({group}) was left running"
+    if "LANES_BIND_BODY" in extra:
+        # SECTION 8's SEAM (spec#47's draft 14, :353-357; T214o): the outer
+        # keeps `LANES_BIND_BODY` and runs it, with the uuid alone, in place of
+        # `guard-bind --body`, under its `timeout`; and the body runs with it
+        # unset.
+        body = est.log("body.log")
+        assert body and body[0]["argv"] == [est.sid], body
+        assert os.path.basename(body[0]["parent"][0]) == "timeout" \
+            and body[0]["parent"][-2:] == [str(est.body), est.sid], body
+        assert body[0]["env"]["LANES_BIND_BODY"] is None, \
+            f"LANES_BIND_BODY was not unset in the body: {body[0]['env']}"
     if case == "slow-set-row-state":
         assert [e for e in est.log("lanes-edit.log") if e["argv"][:1] == ["set-row-state"]], \
             "the bind's set-row-state never ran"
@@ -1791,8 +1992,16 @@ def test_kill_of_the_bind_outer_ends_the_record_with_the_signals_code(estate, mo
     assert BY_SIGNAL in record["why"] and UNKNOWN in record["why"], record
 
 
-def _no_timeout_path(root: Path) -> str:
-    """A `PATH` that holds every tool this host has but `timeout`."""
+def _no_timeout_path(root: Path, *first: Path) -> str:
+    """A `PATH` that holds every tool this host has but `timeout`: each
+    directory in `first` as it is, then a farm of links to the tools of
+    `/usr/local/bin`, `/usr/bin` and `/bin`. On primary, `first` is the
+    engine's own directory, which the session's `PATH` holds first: the
+    guard's read runs `psql`, which a `PG_BIN` outside those three, as a
+    workstation's non-root build, holds nowhere else, and whose tools there
+    are wrappers that find their tree from their own path, so a link to one
+    runs nothing (a GitHub runner's `postgresql-16` also puts a `psql` in
+    `/usr/bin`, lane 1's census, #165 6807454856)."""
     farm = root / "no-timeout"
     farm.mkdir()
     for d in ("/usr/local/bin", "/usr/bin", "/bin"):
@@ -1804,12 +2013,12 @@ def _no_timeout_path(root: Path) -> str:
             src = os.path.join(d, name)
             if os.path.isfile(src) and os.access(src, os.X_OK):
                 (farm / name).symlink_to(src)
-    return str(farm)
+    return os.pathsep.join([*map(str, first), str(farm)])
 
 
 @pytest.mark.parametrize("mode", ["files", "primary"])
 def test_a_bind_with_no_timeout_says_bounded_no_and_kill_stops_its_group_once(
-        estate, tmp_path, mode):
+        estate, tmp_path, mode, request):
     """AT-F6 case 16: with `timeout` hidden from `PATH` and
     `LANES_BIND_BOUND_S=15`, the record says `bounded=no` and the body leads a
     process group of its own, outside the outer's. A prompt after
@@ -1818,7 +2027,8 @@ def test_a_bind_with_no_timeout_says_bounded_no_and_kill_stops_its_group_once(
     that this host has no `timeout`, so nothing stops it, what `kill <p>`
     costs, and "Your prompt was NOT sent". Then `kill <p>` stops the body's
     group and the outer writes the outcome."""
-    est = estate(mode=mode, path=_no_timeout_path(tmp_path))
+    engine = [request.getfixturevalue("pg_engine").bindir] if mode == "primary" else []
+    est = estate(mode=mode, path=_no_timeout_path(tmp_path, *engine))
     est.set("hold", 60)
     est.make_offer()
     hook = est.answer_2(LANES_BIND_BOUND_S="15")
@@ -2203,9 +2413,23 @@ ANCHOR_MV = 'mv -f -- "$gbw_t" "$gbw_f" 2>/dev/null || { rm -f -- "$gbw_t"; retu
 ANCHOR_DROP = 'for gbw_a in "$@"; do gbw_drop="$gbw_drop${gbw_a%%=*} "; done'
 ANCHOR_COPIES = 'guard_bind_copies "$gbo_u"'
 ANCHOR_LOAD = 'guard_bind_load() {   # <offer file>'
+#: The rewrite's test that the record exists, before it opens it
+#: (`guard_bind_rewrite`): the window of T502's part 17, `f67f76a7` (T214q).
+#: `lanes-edit.sh` holds it once at line R's merge144 and at every T502 head
+#: from `12eddddf` to `ae702c74`.
+ANCHOR_EXISTS = 'if [ -e "$gbw_f" ]; then'
 #: The outcome's rewrite is the one whose drop list holds `mode` (the outer's
 #: start drops `pid` and `pidstart`, and the body rewrites nothing).
 OUTCOME_REWRITE = 'case "$gbw_drop" in *" mode "*)'
+#: THE FIRST WRITES (T214s, `[failed-first-write]`; lane 2, #165 6885568373):
+#: the line `guard_bind_rewrite` writes first, the `mode=` it is given, which
+#: of the hook's rewrites only answer 2's gives (`mode=binding`; the offer's
+#: own write and the head copy's rewrite give none); and choice 1's first
+#: `mode=allow` line. `lanes-edit.sh` holds each once at line R's merge144
+#: and at every T502 head from `12eddddf` to `beeae571`. A copy appends
+#: `>/dev/full` to each, so that write fails as a full disk fails it.
+ANCHOR_FIRST_WRITE = "mode=*) printf '%s\\n' \"$gbw_a\""
+ANCHOR_ALLOW_WRITE = "{ printf 'mode=allow\\n'"
 
 
 def _bind_copy(est: Estate, edits) -> Path:
@@ -2271,7 +2495,11 @@ def _outer(est: Estate, program: Path, out: Path) -> subprocess.Popen:
     return proc
 
 
-@pytest.mark.parametrize("result", ["written", "io-failure", "not-its-own"])
+@pytest.mark.parametrize("result", [
+    "written", "io-failure", "not-its-own", "gone-at-its-open",
+    pytest.param("unreadable-at-its-open", marks=pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root opens a mode-000 record, so its open cannot fail"))])
 def test_the_outcome_rewrite_has_three_results(estate, result):
     """S1, the outcome's rewrite gives three results, and the outer's exit
     and its facts file follow each. The stand-in `lane-start` exits 0, so
@@ -2295,7 +2523,24 @@ def test_the_outcome_rewrite_has_three_results(estate, result):
       record that is not the outer's own, a `binding` of another `pid`. The
       rewrite's own test leaves it byte for byte; the outcome is in the
       `.out` alone; the facts file, there at the hold, is removed; and the
-      outer exits 0."""
+      outer exits 0.
+    - `[gone-at-its-open]`, its 2 by a second way (T214q; T502's part 17,
+      `f67f76a7`; spec#47's draft 16 `5e095c52`, section 8, d16:382): a
+      test-only copy holds the outcome's rewrite after its test that the
+      record exists and before its open (`ANCHOR_EXISTS`), and the case
+      removes the record there. No record is made; no temporary file is
+      left; the outcome is in the `.out` alone, named as the record now
+      stands, `mode=none`, since the outer's re-load finds nothing; the
+      facts file is removed; and the outer exits 0. Before part 17 the
+      rewrite gave 1 there, and the outer exited 1.
+    - `[unreadable-at-its-open]`, its control, the same hold with the record
+      made mode 000: the record is still there, so the rewrite's 1 stands.
+      The record is unchanged (read after 0600 is restored); no temporary
+      file is left; the outcome is in the `.out` alone; the facts file is
+      removed; and the outer exits 1. It passes at every T502 head, and is
+      red only where a 2 is given for any failed open, so it shows part 17
+      kept the 1 for a record that is still there. Skipped as root, which
+      opens a mode-000 file (lane 2's reader AF6-27, #165 6885568373)."""
     est = estate()
     out = _direct_record(est)
     facts = Path(f"{est.offer}.bind.1.facts")
@@ -2306,7 +2551,26 @@ def test_the_outcome_rewrite_has_three_results(estate, result):
     elif result == "not-its-own":
         program = _bind_copy(est, [(ANCHOR_DROP, (
             f"{ANCHOR_DROP}\n{OUTCOME_REWRITE} {_hold_sh(est, 'rewrite')} ;; esac"))])
+    elif result in ("gone-at-its-open", "unreadable-at-its-open"):
+        program = _bind_copy(est, [(ANCHOR_EXISTS, (
+            f"{ANCHOR_EXISTS}\n{OUTCOME_REWRITE} {_hold_sh(est, 'open')} ;; esac"))])
     proc = _outer(est, program, out)
+    planted = None
+    if result in ("gone-at-its-open", "unreadable-at-its-open"):
+        held = _until(lambda: (est.ctl / "open.held").exists(), 60)
+        mine, had_facts = est.record(), facts.exists()
+        try:
+            if held and result == "gone-at-its-open":
+                est.offer.unlink()
+            elif held:
+                planted = est.offer.read_bytes()
+                est.offer.chmod(0o000)
+        finally:
+            est.set("open.release")
+        assert held, f"the outer's outcome rewrite never came to its open: {out.read_text()}"
+        assert mine.get("mode") == "binding" and mine.get("pid") == str(proc.pid), \
+            f"the record at the rewrite's open was not the outer's own binding: {mine}"
+        assert had_facts, "the body's facts file was not there when the outer came to write"
     installed = None
     if result == "not-its-own":
         held = _until(lambda: (est.ctl / "rewrite.held").exists(), 60)
@@ -2325,9 +2589,36 @@ def test_the_outcome_rewrite_has_three_results(estate, result):
             f"the record at the outer's rewrite was not its own binding: {mine}"
         assert had_facts, "the body's facts file was not there when the outer came to write"
     code = proc.wait(60)
+    if result == "unreadable-at-its-open" and est.offer.exists():
+        est.offer.chmod(0o600)
     said = out.read_text(encoding="utf-8", errors="replace")
     record = est.record()
     ends = [line for line in said.splitlines() if "mode=bound rc=0" in line]
+    temporaries = [p.name for p in est.offer.parent.iterdir() if p.name.startswith(f".{est.sid}.")]
+    if result == "gone-at-its-open":
+        assert code == 0, \
+            (f"guard-bind exited {code}, not 0, where its record went between the outcome "
+             f"rewrite's test that it exists and its open (before T502's part 17 the rewrite "
+             f"gives 1 there, and the outer exits 1): {said}")
+        assert not est.offer.exists(), \
+            f"the outer's rewrite made a record where it found none: {record}\n{said}"
+        assert not temporaries, f"the rewrite left its temporary file: {temporaries}"
+        assert [line for line in ends if f"{NOT_ITS_OWN} (mode=none," in line
+                and NO_FACTS_NOTE not in line], \
+            f"the outcome, its facts folded in, is not in the .out alone, with mode=none: {said}"
+        assert not facts.exists(), f"the outer left its facts file after its rewrite's 2: {facts}"
+        return
+    if result == "unreadable-at-its-open":
+        assert code == 1, \
+            (f"guard-bind exited {code}, not 1, where its record was still there and could not "
+             f"be opened, so the rewrite's 1 stands: {said}")
+        assert est.offer.exists() and est.offer.read_bytes() == planted, \
+            f"the record that could not be opened was changed or removed: {record}\n{said}"
+        assert not temporaries, f"the rewrite left its temporary file: {temporaries}"
+        assert [line for line in ends if NOT_WRITTEN in line and NO_FACTS_NOTE not in line], \
+            f"the outcome, its facts folded in, is not in the .out alone: {said}"
+        assert not facts.exists(), f"the outer left its facts file after its rewrite's 1: {facts}"
+        return
     if result == "written":
         assert code == 0 and record.get("mode") == "bound" and record.get("rc") == "0", \
             f"guard-bind {code}: {record}\n{said}"
@@ -2353,6 +2644,78 @@ def test_the_outcome_rewrite_has_three_results(estate, result):
     assert [line for line in ends if NOT_ITS_OWN in line and NO_FACTS_NOTE not in line], \
         f"the outcome, its facts folded in, is not in the .out alone: {said}"
     assert not facts.exists(), f"the outer left its facts file after its rewrite's 2: {facts}"
+
+
+@pytest.mark.parametrize("case", ["gone-before-its-start", "no-longer-binding-at-its-start"])
+def test_the_outer_runs_nothing_where_its_record_is_not_binding_at_its_start(estate, case):
+    """T502's part 21 (T214t; lane 5, #165 6885608994): the outer's start
+    rewrite, which writes its `pid`, `pidstart` and the start's keys, runs
+    only on a record that still says `mode=binding`. Where the record is
+    gone, or reads otherwise, it writes nothing, and the outer runs nothing
+    and exits 2, as it does where its own load finds no record or one that
+    is not `binding`. A rewrite never creates a record: `guard_offer`'s
+    write is its only creation (lane 3's ruling on spec#47's point 26), and
+    the record is the bind's authority.
+
+    A test-only copy (`_bind_copy`, point 23) holds the outer after its load
+    and before its start rewrite, at its own start token
+    (`ANCHOR_PIDSTART`). At the hold the record is the `binding` the outer
+    loaded, with no `pid` yet; then the case changes it and releases:
+
+    - `[gone-before-its-start]`: the record is removed. No record is made.
+    - `[no-longer-binding-at-its-start]`: the record is replaced, by a
+      temporary file and a rename, with a `name-drift` offer the guard made
+      in this estate. It is left byte for byte.
+
+    In both, the outer exits 2, no temporary file is left, and the bind does
+    not run: the stand-in `lane-start` logs no start, and no facts file is
+    made. Red at every T502 head through `ae702c74`, whose start rewrite has
+    no `--own`: it makes a record of the start's keys alone, or writes them
+    into the offer, and the bind runs (lane 2's reader AF6-27, #165
+    6885568373, "Not one of the four")."""
+    est = estate()
+    drift = None
+    if case == "no-longer-binding-at-its-start":
+        est.make_offer()
+        drift = est.offer.read_bytes()
+    out = _direct_record(est)
+    facts = Path(f"{est.offer}.bind.1.facts")
+    program = _bind_copy(est, [(ANCHOR_PIDSTART, f"{_hold_sh(est, 'start')}\n{ANCHOR_PIDSTART}")])
+    proc = _outer(est, program, out)
+    held = _until(lambda: (est.ctl / "start.held").exists(), 60)
+    mine = est.record()
+    try:
+        if held and drift is None:
+            est.offer.unlink()
+        elif held:
+            tmp = est.offer.parent / f".{est.offer.name}.t214t"
+            tmp.write_bytes(drift)
+            tmp.chmod(0o600)
+            os.replace(tmp, est.offer)
+    finally:
+        est.set("start.release")
+    assert held, f"the outer never came to its start rewrite: {out.read_text()}"
+    assert mine.get("mode") == "binding" and "pid" not in mine, \
+        f"the record at the outer's start was not the binding it loaded, with no pid yet: {mine}"
+    code = proc.wait(60)
+    said = out.read_text(encoding="utf-8", errors="replace")
+    record = est.record()
+    temporaries = [p.name for p in est.offer.parent.iterdir() if p.name.startswith(f".{est.sid}.")]
+    was = "gone" if drift is None else "a name-drift offer"
+    assert code == 2, \
+        (f"guard-bind exited {code}, not 2, where its record was {was} at its start rewrite "
+         f"(through T502's ae702c74 that rewrite has no --own, writes the start's keys, and "
+         f"the bind runs): {record}\n{said}")
+    if drift is None:
+        assert not est.offer.exists(), \
+            f"the outer's start rewrite made a record where it found none: {record}\n{said}"
+    else:
+        assert est.offer.read_bytes() == drift, \
+            f"the outer's start rewrite wrote over the name-drift offer: {record}\n{said}"
+    assert not temporaries, f"the start rewrite left its temporary file: {temporaries}"
+    assert not est.starts(), \
+        f"the bind ran, though its record was {was} at its start: {est.starts()}\n{said}"
+    assert not facts.exists(), f"the bind's body made its facts file: {facts}"
 
 
 #: S2's records: the key each case gives the record, and its value, the
@@ -2404,7 +2767,8 @@ def test_the_outer_matches_host_and_container_without_regard_to_case(estate, cas
     assert NOT_ITS_OWN in said, f"the outer's outcome is not in its .out: {said}"
 
 
-@pytest.mark.parametrize("index", ["0", "01"], ids=["bind-0", "bind-01"])
+@pytest.mark.parametrize("index", ["0", "01", "١"],
+                         ids=["bind-0", "bind-01", "bind-u0661"])
 def test_a_noncanonical_out_names_no_facts_file_and_no_words(estate, index):
     """S3, an `out` whose index is not canonical, `[1-9][0-9]*` (contract
     section 3's `out` row), names no facts file: nothing is read from,
@@ -2413,7 +2777,17 @@ def test_a_noncanonical_out_names_no_facts_file_and_no_words(estate, index):
     where a derivation would put it, and the stand-in `lane-start` refuses
     1, its words in the `out`. The sentinel is left byte for byte, no other
     file is made beside the `out`, and the record ends `bind-failed` with
-    point 16(c)'s `why`, not the stand-in's line."""
+    point 16(c)'s `why`, not the stand-in's line.
+
+    `[bind-0]` and `[bind-01]` stop at the predicate's `0*` branch.
+    `[bind-u0661]` (T214r) is an index of U+0661, the Arabic-Indic digit
+    one, which reaches its non-digit branch, `*[!0123456789]*` (T502's part
+    19, `a6ee7c0b`), the branch that keeps an `out` from naming an arbitrary
+    facts path. Its id is ASCII, set by `ids=`. It is coverage, not a red
+    for part 19: bash 5.x's `*[!0-9]*` before it already rejects U+0661 on
+    this host, so it goes red only where the non-digit test is dropped
+    (lane 5's `[non-ascii-digit]`, #165 6884069915; lane 2's reader AF6-27,
+    #165 6885568373)."""
     est = estate()
     est.set("rc", 1)
     out = _direct_record(est, index=index)
@@ -2510,6 +2884,1551 @@ def test_the_outer_gathers_its_copies_before_its_last_ownership_read(estate):
         f"the outer read its record again after it gathered the copies: {lines}"
     assert code == 0 and record.get("mode") == "bind-failed" and record.get("rc") == "1", \
         f"guard-bind {code}: {record}\n{said}"
+
+
+# ------------------------------------------------ T214: section 8's other bullets
+#
+# SECTION 8's OTHER BULLETS (T214o; spec#47's draft 14 `96d14916`, section 8,
+# its bullets at :359 to :375; lane 5's names, #165 6881714002; lane 2's
+# confirmation with K1 to K5, #165 6882026139, Part B). Each binds through the
+# stand-in `lane-start` and the real body, or calls `guard-bind` itself, with
+# no `start-record` and no mode id (tasks:2005). They are coverage cases: each
+# passes on line R's merge106 and on lane 5's T502 head, whose guard and
+# `guard-bind` they read, and each fails on code `main` until L5-A1, lane 5's
+# T502, and waits for no other task (tasks:2013). Where a case needs the
+# shipped script to do what it will not do on its own, it runs a test-only
+# copy (`_bind_copy`; lane 3's ruling, #165 6879754335, point 23). Section 8's
+# :374 is case 22's `[c3-w473]` and `[c3-w474]` (T214m), its :376 is T254's
+# (K1), and its optional :352 is not written.
+
+#: The outcome the outer says in its `.out`, beside `NOT_ITS_OWN`, where it
+#: leaves a record that is not its own after a bind that ended 0.
+OUTCOME_BOUND = "mode=bound rc=0"
+#: The outer's own read before its start, the anchor of `[was-0644]`'s hold
+#: there: one line, once in `lanes-edit.sh` at line R's merge106, T502's
+#: round 2 `12eddddf` and its part 14 `66a0f1e3` alike.
+ANCHOR_OUTER_START = 'gbo_k="$GBR_BIND"'
+
+
+def _offer_lines(est: Estate, now: float) -> list:
+    """A fresh `mode=name-drift` offer of this session, in the keys and the
+    order `guard_offer` writes them."""
+    return ["mode=name-drift", f"from={FROM}", f"to={est.to}", f"session={est.to}",
+            f"uuid={est.sid}", f"utc={_utc(now)}", "window=testsess:@1", f"pane={GUARD_PANE}"]
+
+
+def _mode_bits(path: Path) -> int:
+    return path.stat().st_mode & 0o777
+
+
+def _temporaries(est: Estate) -> list:
+    """The temporary files a rewrite left in `offers/`, `.<uuid>.XXXXXX`."""
+    offers = est.offer.parent
+    if not offers.is_dir():
+        return []
+    return sorted(p.name for p in offers.iterdir() if p.name.startswith(f".{est.sid}."))
+
+
+def _fail_mv(pattern: str) -> str:
+    """The test-only copy's text for `ANCHOR_MV`: the rewrite whose written
+    keys hold one that matches `pattern`, a `case` glob, fails at its `mv`,
+    as an I/O failure would. The shipped text after the `mv`, which removes
+    the temporary file and returns 1, is kept as it is, so the case reads
+    the shipped failure path."""
+    return (f't214o_f=0; for t214o_a in "$@"; do case "$t214o_a" in {pattern}) t214o_f=1 ;; '
+            'esac; done\n'
+            '  if [ "$t214o_f" = 1 ]; then false; else mv -f -- "$gbw_t" "$gbw_f"; fi 2>/dev/null '
+            '|| { rm -f -- "$gbw_t"; return 1; }')
+
+
+def _guard_bind(est: Estate, *args, program: Path = GUARD, **extra) -> subprocess.CompletedProcess:
+    """`guard-bind` called directly, as case 22 calls it."""
+    return subprocess.run(["bash", str(program), "guard-bind", *args], capture_output=True,
+                          text=True, env=est.env(**extra), cwd=str(est.wip), timeout=60)
+
+
+@pytest.mark.parametrize("code", ["0", "1"], ids=["lane-start-0", "lane-start-1"])
+def test_an_outer_that_wrote_pid_alone_still_writes_its_outcome(estate, code):
+    """Section 8's :359 (lane 3's ruling, #165 6879754335, point 19): an outer
+    whose own `pid_start_of $$` exits 2, made so by a test-only copy, writes
+    `pid` alone at its start, and still writes its outcome over its own
+    `binding`, whose `pidstart` is then none. While the stand-in `lane-start`
+    holds, the record holds the outer's `pid` and no `pidstart`.
+
+    - `[lane-start-0]`: the stand-in exits 0; the record ends `bound`, still
+      with that `pid` and no `pidstart`, and the next prompt says "MOVED"
+      and removes it.
+    - `[lane-start-1]`: it exits 1; the record ends `bind-failed`, and the
+      next prompt answers as case 6: the failure, the window renamed back to
+      `<from>`, and the offer KEPT at `bind=1`."""
+    est = estate()
+    est.set("hold", 60)
+    est.set("rc", code)
+    out = _direct_record(est)
+    program = _bind_copy(est, [(ANCHOR_PIDSTART, 'gbo_ps=""; gbo_psrc=2')])
+    proc = _outer(est, program, out)
+    started = _until(est.starts, 60)
+    mid = est.record()
+    est.release()
+    rc = proc.wait(60)
+    said = out.read_text(encoding="utf-8", errors="replace")
+    record = est.record()
+    assert started, f"the stand-in lane-start never started: {said}"
+    assert mid.get("mode") == "binding" and mid.get("pid") == str(proc.pid) \
+        and "pidstart" not in mid, f"the outer did not write its pid alone at its start: {mid}"
+    assert rc == 0 and record.get("pid") == str(proc.pid) and "pidstart" not in record, \
+        f"guard-bind {rc}: {record}\n{said}"
+    calls = len(est.session.tmux_calls())
+    hook = est.hook("the next prompt")
+    if code == "0":
+        assert record.get("mode") == "bound" and record.get("rc") == "0", \
+            f"the outer that wrote pid alone wrote no outcome over its own binding: {record}\n{said}"
+        moved = f"MOVED: this window is lane {TO}, bound to this session ({est.sid}) at "
+        assert hook.code == 2 and moved + record["ended_utc"] in hook.err, repr(hook)
+        assert not est.offer.exists(), "MOVED left the record in place"
+        return
+    assert record.get("mode") == "bind-failed" and record.get("rc") == "1" \
+        and STAND_IN_REFUSES in record.get("why", ""), \
+        f"the outer that wrote pid alone wrote no failure over its own binding: {record}\n{said}"
+    assert hook.code == 2 and f"THE BIND TO LANE {TO} FAILED (exit 1)" in hook.err \
+        and KEPT in hook.err and NO_LONGER_2 not in hook.err, repr(hook)
+    assert [c for c in _renames(est, calls) if c[-1] == FROM], \
+        f"the window was not renamed back to {FROM}: {est.session.tmux_calls()[calls:]}"
+    after = est.record()
+    assert after.get("mode") == "name-drift" and after.get("bind") == "1", after
+
+
+@pytest.mark.parametrize("change", ["other-pid", "binding-no-pid", "new-offer"])
+def test_the_outer_leaves_a_record_no_longer_its_own(estate, change):
+    """Section 8's :360 (lane 3's ruling, #165 6751772589, point 18): while
+    the stand-in `lane-start` holds, before the outer reads its record again,
+    the case rewrites the record, and the outer leaves it as it is, exits 0,
+    and says its outcome in its `.out` alone; its facts file goes, as on each
+    of its ends. `[other-pid]`: another outer's `binding`, a live process
+    with its own start token; `[binding-no-pid]`: a `binding` with no `pid`;
+    `[new-offer]`: a fresh `name-drift` offer. A record of another `host` or
+    `container` with the outer's own `pid` is S2's `[other-host]` and
+    `[other-container]`, and a change after the outer's read is S1's
+    `[not-its-own]` (K2)."""
+    est = estate()
+    est.set("hold", 60)
+    out = _direct_record(est)
+    facts = Path(f"{est.offer}.bind.1.facts")
+    proc = _outer(est, GUARD, out)
+    started = _until(est.starts, 60)
+    mine, installed = est.record(), None
+    if started:
+        now = time.time()
+        if change == "other-pid":
+            # ANOTHER OUTER: a live process of its own session, with its own
+            # start token, which the estate stops at its close.
+            other = _sleeper()
+            est.spare.append(other.pid)
+            lines = _binding(est, started=now, pid=other.pid, pidstart=_stat(other.pid)["start"])
+        elif change == "binding-no-pid":
+            lines = _binding(est, started=now)
+        else:
+            lines = _offer_lines(est, now)
+        write_record(est.offer, lines)
+        installed = est.offer.read_bytes()
+    est.release()
+    code = proc.wait(60)
+    said = out.read_text(encoding="utf-8", errors="replace")
+    assert started, f"the stand-in lane-start never started: {said}"
+    assert mine.get("mode") == "binding" and mine.get("pid") == str(proc.pid), \
+        f"the record while lane-start held was not the outer's own binding: {mine}"
+    assert code == 0, f"guard-bind exited {code}, not 0, over a record not its own: {said}"
+    assert est.offer.read_bytes() == installed, \
+        f"the outer's outcome was written over a record that is not its own: {est.record()}\n{said}"
+    assert [line for line in said.splitlines() if NOT_ITS_OWN in line and OUTCOME_BOUND in line], \
+        f"the outcome is not in the .out: {said}"
+    assert not facts.exists(), f"the outer left its facts file: {facts}"
+
+
+def test_the_next_offers_files_index_runs_above_a_case_11_leftover(estate):
+    """Section 8's :368 (lane 3's correction, #165 6751818233): an earlier
+    offer's `<uuid>.bind.4.out`, left by a real case 11 (an unreadable
+    `binding` record, dropped with its `.bind.*` files left), and then the
+    next offer's `2`: its attempt's `out` is `<uuid>.bind.5.out`, one above
+    the leftover, while its `bind`, the attempt, is 1 again. The leftover is
+    as it was."""
+    est = estate()
+    est.offer.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    left = Path(f"{est.offer}.bind.4.out")
+    left.write_text("an earlier offer's output, left by a case 11\n", encoding="utf-8")
+    kept = left.read_bytes()
+    write_record(est.offer, ["mode=binding", f"from={FROM}", "to=", "bind=3", f"out={left}"])
+    hook = est.hook("hello")
+    assert hook.code == 2 and UNREADABLE in hook.err, repr(hook)
+    assert not est.offer.exists() and left.read_bytes() == kept, \
+        "case 11 did not drop the record alone"
+    est.make_offer()
+    est.answer_2()
+    record = est.record()
+    want = f"{est.sid}.bind.5.out"
+    assert record.get("bind") == "1" and Path(record.get("out", "")).name == want, \
+        f"the next offer's first attempt is not bind=1 with out {want}: {record}"
+    record = est.ended()
+    assert record["mode"] == "bound" and Path(record["out"]).name == want, record
+    assert left.read_bytes() == kept, f"the leftover {left.name} was changed"
+
+
+@pytest.mark.parametrize("case", ["made-empty-first", "none-after-0", "none-after-nonzero"])
+def test_the_facts_file_is_made_empty_first_and_its_absence_is_reported(estate, case):
+    """Section 8's :369 (lane 3's ruling, #165 6747528875, point 16; lane 3's
+    ruling, #165 6752064118; TP:6413 and tasks:2009 at spec#48's commit 29,
+    after Codex's delta review 7i of commit 26, its second BLOCKING finding):
+    the parts of the facts file the S1 and S3 cases leave open. Before the
+    body, an old facts file stands at the attempt's name, not empty, with a
+    `why=` and a `note=` of its own.
+
+    - `[made-empty-first]`: the body truncates it. The real body is called
+      as its outer calls it, `guard-bind --body <uuid>` with the path in
+      `LANES_BIND_FACTS`, and with no outer, so the old file is still there
+      when the body starts; the stand-in `lane-start` holds. At the body's
+      first step the case can hold, `lane-start`, the facts file is `out`'s
+      stem with `.facts`, the only one, and empty (spec#47's `bind-record.md`
+      at `5e095c52`, :135, "The body creates it, empty, before its first
+      step"). The body exits 0, and none of the old lines is in the file it
+      leaves.
+    - `[none-after-0]` and `[none-after-nonzero]`: through the outer, which
+      removes the old file before its body starts (a hard link keeps the old
+      bytes and inode, so the case tells a file removed from one emptied in
+      place), and the stub body (`LANES_BIND_BODY`), handed that path in
+      `LANES_BIND_FACTS`, which writes no facts file and exits 0 or 1: the
+      record ends `bound` with point 16(d)'s `note=` naming the `out`, or
+      `bind-failed` with point 16(c)'s `why`, and nothing of the old file;
+      the old file's bytes are as they were, and no facts file is left."""
+    est = estate()
+    out = _direct_record(est)
+    facts = Path(f"{est.offer}.bind.1.facts")
+    old_lines = ["why=an old account, from before this outer",
+                 "note=an old act, from before this outer"]
+    write_record(facts, old_lines)
+    assert facts.read_bytes(), f"the old facts file {facts} is empty before the body"
+    if case == "made-empty-first":
+        est.set("hold", 60)
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            body = subprocess.Popen(["bash", str(GUARD), "guard-bind", "--body", est.sid],
+                                    stdin=subprocess.DEVNULL, stdout=fd, stderr=fd,
+                                    env=est.env(LANES_BIND_FACTS=str(facts)),
+                                    cwd=str(est.wip), start_new_session=True)
+        finally:
+            os.close(fd)
+        est.spare.append(body.pid)
+        seen = None
+        if _until(est.starts, 60):
+            made = sorted(p.name for p in est.offer.parent.glob(f"{est.sid}.bind.*.facts"))
+            seen = (made, facts.read_bytes() if facts.exists() else None)
+        est.release()
+        code = body.wait(60)
+        said = out.read_text(encoding="utf-8", errors="replace")
+        assert seen, f"the stand-in lane-start never started: {said}"
+        assert seen[0] == [facts.name] and seen[1] == b"", \
+            (f"at the body's first step the facts file was not {facts.name} alone and empty: "
+             f"{seen[0]}, {seen[1]!r}\n{said}")
+        left = facts.read_text(encoding="utf-8") if facts.exists() else ""
+        assert code == 0, f"the body exited {code}: {said}"
+        assert not [line for line in left.splitlines() if line in old_lines], \
+            f"an old line is in the facts file the body left: {left!r}"
+        return
+    keep = est.root / "facts-before"
+    os.link(facts, keep)
+    old = keep.read_bytes()
+    est.extra["LANES_BIND_BODY"] = str(est.body)
+    if case == "none-after-nonzero":
+        est.set("body-rc", 1)
+    proc = _outer(est, GUARD, out)
+    code = proc.wait(60)
+    said = out.read_text(encoding="utf-8", errors="replace")
+    record = est.record()
+    assert keep.read_bytes() == old, \
+        "the old facts file was written over in place, not removed before the body started"
+    assert not facts.exists(), f"the outer left its facts file: {facts}"
+    body = est.log("body.log")
+    assert body and body[0]["env"]["LANES_BIND_FACTS"] == str(facts), \
+        f"the outer did not hand its body the facts path {facts}: {body}"
+    assert code == 0, f"guard-bind exited {code}: {record}\n{said}"
+    if case == "none-after-0":
+        assert record.get("mode") == "bound" and record.get("rc") == "0" \
+            and [n for n in record["note"] if n.startswith(NO_FACTS_NOTE) and str(out) in n] \
+            and not [n for n in record["note"] if "from before this outer" in n], \
+            f"a 0 with no facts file did not end bound with point 16(d)'s note: {record}"
+        return
+    why = record.get("why", "")
+    assert record.get("mode") == "bind-failed" and record.get("rc") == "1" \
+        and why.startswith(NO_REASON_WHY) and str(out) in why, \
+        f"a 1 with no facts file did not end bind-failed with point 16(c)'s why: {record}"
+
+
+def test_case_11_with_a_live_outer_drops_the_record_and_keeps_its_files(estate):
+    """Section 8's :370 (lane 3's ruling, #165 6747528875, points 6 and 13):
+    case 11 met by a live outer, held in the stand-in `lane-start`. The
+    record is dropped; `<uuid>.bind.*`, its `.out` and its facts file, stays;
+    and the live outer's `.out` is not unlinked: it is still the file the
+    outer writes to. Released, the outer finds no record of its own, writes
+    none, and says its outcome in its `.out`. The `.out` then stays until
+    the next removal, choice 1's `mode=allow` on the next offer, which sweeps
+    `<uuid>.bind.*`."""
+    est = estate()
+    est.set("hold", 60)
+    out = _direct_record(est)
+    facts = Path(f"{est.offer}.bind.1.facts")
+    proc = _outer(est, GUARD, out)
+    started = _until(est.starts, 60)
+    hook, files, same = None, [], False
+    if started:
+        write_record(est.offer, ["mode=binding", f"from={FROM}", "to="])
+        hook = est.hook("hello")
+        files = sorted(p.name for p in est.offer.parent.glob(f"{est.sid}.bind.*"))
+        try:
+            same = os.stat(out).st_ino == os.stat(f"/proc/{proc.pid}/fd/1").st_ino
+        except OSError:
+            same = False
+    dropped = not est.offer.exists()
+    est.release()
+    code = proc.wait(60)
+    said = out.read_text(encoding="utf-8", errors="replace")
+    assert started, f"the stand-in lane-start never started: {said}"
+    assert hook.code == 2 and UNREADABLE in hook.err, repr(hook)
+    assert dropped, "case 11 left the unreadable record"
+    assert files == sorted([out.name, facts.name]), f"case 11 did not leave <uuid>.bind.*: {files}"
+    assert same, "case 11 unlinked the live outer's .out"
+    assert code == 0 and not est.offer.exists() and NOT_ITS_OWN in said, \
+        f"the live outer wrote a record after case 11 dropped it: {est.record()}\n{said}"
+    est.make_offer()
+    assert out.exists(), "the .out went before the next removal"
+    hook = est.hook("1")
+    assert hook.code == 2 and "ALLOWED" in hook.err, repr(hook)
+    left = sorted(p.name for p in est.offer.parent.glob(f"{est.sid}.bind.*"))
+    assert not left, f"the next removal, choice 1's allow, left {left}"
+
+
+#: Section 8's :371, with K5's names: each malformed `pid`, beside a
+#: well-formed `pidstart`, and a well-formed `pid` beside each malformed
+#: `pidstart` on Linux. `{live}` is a live process's pid, and `{start}` its
+#: start token, so a guard that tested the value would find it live, or its
+#: pid reused, and never wait for the deadline.
+MALFORMED_PIDS = {
+    "pid-0": ("0", "{start}"),
+    "pid-1": ("1", "{start}"),
+    "pid-leading-0": ("0{live}", "{start}"),
+    "pid-eleven-digits": ("12345678901", "{start}"),
+    "pid-non-digit": ("{live}x", "{start}"),
+    "pidstart-empty": ("{live}", ""),
+    "pidstart-non-digit": ("{live}", "{start}x"),
+}
+
+#: :371's RECORDING STUBS, SO THAT NO PROCESS OF THE CASE SENDS A SIGNAL
+#: (T214o). Its record holds `pid=0`, `pid=1` and other values that no bind's
+#: pid takes, and a signal to one of them reaches a whole process group, or
+#: the container's init and its main process; so every call that can send a
+#: signal is written to `<ctl>/calls.log` and none is sent.
+#:
+#: THE SHELL'S BUILTIN `kill`, which no `PATH` entry can shadow, is the case's
+#: `BASH_ENV`, which every non-interactive bash reads before its first line:
+#: the guard's copy, and any bash it starts. It disables the builtin
+#: (`enable -n kill`), so neither `builtin kill` nor `command kill` reaches
+#: it, and defines a function `kill`, which bash finds before any builtin or
+#: file. `kill -0 <pid>` alone is answered from `/proc`, as the builtin
+#: answers it for this user's processes (`pid_alive`'s test of the session's
+#: live process); every other call is answered 1, not sent. `@LOG@` is the
+#: log, quoted for the shell.
+T214O_BASH_ENV = r"""# T214o's recording stub: no bash of this case sends a signal.
+enable -n kill 2>/dev/null || :
+kill() {
+  { printf 'kill'; printf ' %s' "$@"; printf '\n'; } >> @LOG@
+  if [ "$#" -eq 2 ] && [ "$1" = -0 ]; then
+    case "$2" in ''|0*|*[!0-9]*) return 1 ;; esac
+    [ -e "/proc/$2" ]
+    return
+  fi
+  return 1
+}
+"""
+
+#: THE COMMANDS THAT SEND SIGNALS, first on `PATH` (`@NAME@` each one's):
+#: each logs its argv, sends nothing, and exits 1.
+T214O_NO_SIGNAL = r"""#!/bin/sh
+{ printf '%s' @NAME@; printf ' %s' "$@"; printf '\n'; } >> @LOG@
+exit 1
+"""
+
+#: `timeout`, first on `PATH`: it logs its argv and runs the command with no
+#: timer, so it sends nothing.
+T214O_TIMEOUT = r"""#!/bin/sh
+{ printf 'timeout'; printf ' %s' "$@"; printf '\n'; } >> @LOG@
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -k|-s|--kill-after|--signal) shift 2 ;;
+    --) shift; break ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+[ "$#" -gt 0 ] && shift
+exec "$@"
+"""
+
+#: `lanes-index` beside the guard's copy, where the guard finds it: it logs
+#: its argv, then runs the copy's own `lanes-index` (`@REAL@`) in a Python
+#: whose `os.kill` and `os.killpg` log each call and send nothing.
+T214O_INDEX = r"""#!/bin/sh
+{ printf 'lanes-index'; printf ' %s' "$@"; printf '\n'; } >> @LOG@
+exec @PY@ -c '
+import os, runpy, sys
+log, real = sys.argv[1], sys.argv[2]
+def stub(name):
+    def record(pid, sig):
+        with open(log, "a", encoding="utf-8") as handle:
+            handle.write("%s %s %s\n" % (name, pid, int(sig)))
+    return record
+os.kill, os.killpg = stub("os.kill"), stub("os.killpg")
+sys.argv = [real] + sys.argv[3:]
+runpy.run_path(real, run_name="__main__")
+' @LOG@ @REAL@ "$@"
+"""
+
+#: The words of the case's log whose arguments are pids: no call of these may
+#: carry the record's `pid` (`timeout` and `lanes-index` are logged, and
+#: their arguments are not pids).
+T214O_PID_CALLS = ("kill", "pkill", "killall", "pgrep", "pid_start_of")
+
+
+@pytest.fixture
+def signals_recorded(monkeypatch):
+    """THE PYTEST PROCESS SENDS NO SIGNAL (T214o): `os.kill`, `os.killpg` and
+    `signal.pidfd_send_signal`, through which `_kill`, `run_hook`'s timer and
+    a `subprocess.Popen`'s `kill` and `terminate` all go, record each call
+    and send nothing, from before the estate is made until after its
+    teardown, since a case requests this fixture before `estate`, and
+    fixtures end in the reverse of the order they were made. At the end the
+    calls are printed; one that would have reached a pid of 1 or less, or
+    this process, its group or its session, fails the case; and so does none
+    at all, since the estate's teardown always signals the case's own
+    holder, so an empty list means the teardown ran after the stubs were
+    gone."""
+    made = []
+
+    def stub(name):
+        def record(target, sig, *rest):
+            made.append((name, int(target), int(sig)))
+        return record
+
+    monkeypatch.setattr(os, "kill", stub("os.kill"))
+    monkeypatch.setattr(os, "killpg", stub("os.killpg"))
+    monkeypatch.setattr(signal, "pidfd_send_signal", stub("signal.pidfd_send_signal"),
+                        raising=False)
+    yield made
+    own = {os.getpid(), os.getpgrp(), os.getsid(0)}
+
+    def signame(sig: int) -> str:
+        try:
+            return signal.Signals(sig).name
+        except ValueError:
+            return str(sig)
+
+    said = ", ".join(f"{name}({target}, {signame(sig)})" for name, target, sig in made)
+    print(f"signals_recorded: the pytest process would have sent: {said or 'nothing'}")
+    bad = [m for m in made if m[1] <= 1 or m[1] in own]
+    assert not bad, f"a signal would have reached init, a whole group or this process: {bad}"
+    assert made, "no signal was recorded: the estate's teardown ran after the stubs had gone"
+
+
+@pytest.mark.parametrize("case", list(MALFORMED_PIDS))
+def test_a_malformed_bind_pid_waits_for_the_deadline_then_is_stale(signals_recorded, estate,
+                                                                    case):
+    """Section 8's :371 (lane 3's rulings, #165 6746215510, point 4,
+    6747528875, point 15, and 6751772589, point 17): a `binding` record of
+    this host and container without a well-formed `pid` and `pidstart`
+    answers "BINDING IN PROGRESS" with no pid until `deadline_epoch`, the
+    record unchanged, and after it case 9 with no session test: "no
+    outcome", `name-drift` and `rc=unknown`. The guard is a test-only copy
+    that logs each `pid_start_of` it makes; every `kill`, `pkill`,
+    `killall`, `timeout`, `pgrep` and `lanes-index` call of the guard and of
+    what it runs is logged by a stub (`T214O_BASH_ENV` and the stand-ins
+    first on `PATH`), and the stubs send no signal; so the case reads that
+    no call is made with the record's `pid`. The pytest process sends none
+    either (`signals_recorded`). The live process the values name is left
+    for the estate's teardown, whose SIGKILL to it is the one the stubs
+    record, and it ends on its own, with no signal, once that teardown has
+    removed the estate's state home, or after 300 s, `_sleeper`'s bound,
+    whichever is first (T237zzd)."""
+    est = estate()
+    # T237zzd: THE HOLDER IS LIVE AT THE ESTATE'S TEARDOWN, which signals
+    # only a live process with the start it had at the scan (`_kill_same`).
+    # The case ended and reaped it first, so T214u's teardown signalled a
+    # reaped pid by its number alone, and v3's signalled nothing, which
+    # `signals_recorded` fails. Not `est.env()`: it is not of the estate's
+    # state home, so the sweep never waits on it; it ends once that home is
+    # gone, or after 300 s, `_sleeper`'s bound, whichever is first.
+    holder = subprocess.Popen([sys.executable, "-I", "-c",
+                               "import os, sys, time\n"
+                               "end = time.monotonic() + 300\n"
+                               "while os.path.isdir(sys.argv[1]) and time.monotonic() < end:\n"
+                               "    time.sleep(0.05)\n", str(est.state_home)],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, start_new_session=True)
+    est.spare.append(holder.pid)
+    start = _stat(holder.pid)["start"]
+    pid, pidstart = (v.format(live=holder.pid, start=start) for v in MALFORMED_PIDS[case])
+    calls = est.ctl / "calls.log"
+    where = shlex.quote(str(calls))
+    est.guard = _bind_copy(est, [(ANCHOR_LOAD, (
+        "# T214o's copy: each pid_start_of logged\n"
+        "eval \"$(declare -f pid_start_of | sed '1s/^pid_start_of /t214o_pid_start_of_shipped /')\"\n"
+        f"pid_start_of() {{ {{ printf 'pid_start_of'; printf ' %s' \"$@\"; printf '\\n'; }} >> {where}; "
+        't214o_pid_start_of_shipped "$@"; }\n'
+        f"{ANCHOR_LOAD}"))])
+    bash_env = _script(est.ctl / "t214o-bash-env.sh", T214O_BASH_ENV, LOG=where)
+    est.extra["BASH_ENV"] = str(bash_env)
+    for name in ("kill", "pkill", "killall"):
+        _script(est.bin / name, T214O_NO_SIGNAL, LOG=where, NAME=shlex.quote(name))
+    _script(est.bin / "timeout", T214O_TIMEOUT, LOG=where)
+    index = est.guard.parent / "lanes-index"
+    if index.exists():
+        real_index = index.rename(est.guard.parent / "lanes-index.t214o-real")
+        _script(index, T214O_INDEX, LOG=where, PY=shlex.quote(sys.executable),
+                REAL=shlex.quote(str(real_index)))
+    real = shutil.which("pgrep")
+    if real:
+        _script(est.bin / "pgrep", "#!/bin/sh\n"
+                f"{{ printf 'pgrep'; printf ' %s' \"$@\"; printf '\\n'; }} >> {where}\n"
+                f"exec {shlex.quote(real)} \"$@\"\n")
+    now = time.time()
+    write_record(est.offer, _binding(est, started=now - 30, deadline=int(now) + 100,
+                                     pid=pid, pidstart=pidstart))
+    before = est.offer.read_bytes()
+    hook = est.hook("hello")
+    assert hook.code == 2 and IN_PROGRESS in hook.err and "its outer's pid not recorded" \
+        in hook.err, f"[{case}] pid={pid!r} pidstart={pidstart!r}: {hook!r}"
+    assert est.offer.read_bytes() == before, "the record changed before its deadline"
+    write_record(est.offer, _binding(est, started=now - 600, deadline=int(now) - 1,
+                                     pid=pid, pidstart=pidstart))
+    hook = est.hook("hello")
+    assert hook.code == 2 and NO_OUTCOME in hook.err \
+        and "it recorded no well-formed pid and start for its outer" in hook.err, \
+        f"[{case}] pid={pid!r} pidstart={pidstart!r}: {hook!r}"
+    record = est.record()
+    assert record.get("mode") == "name-drift" and record.get("rc") == "unknown", record
+    logged = calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
+    print(f"[{case}] pid={pid!r} pidstart={pidstart!r}; the stubs logged "
+          f"{len(logged)} call(s), none sent:")
+    for line in logged:
+        print(f"  {line}")
+    made = []
+    for line in logged:
+        words = line.split(" ")
+        if words[0] not in T214O_PID_CALLS:
+            continue
+        tail = words[words.index("--") + 1:] if "--" in words else []
+        if pid in words[1:] or f"-{pid}" in tail:
+            made.append(line)
+    assert not made, f"a kill, pgrep or pid_start_of call was made with pid {pid!r}: {made}"
+
+
+@pytest.mark.parametrize("case", ["was-0644", "new-offers-dir", "failed-write",
+                                  "failed-first-write"])
+def test_every_bind_rewrite_is_0600_and_a_failed_one_leaves_the_record(estate, case):
+    """Section 8's :372 (lane 3's ruling, #165 6746215510, points 1 and 2;
+    lane 3's Codex review, #165 6877006381, finding 2), under a umask of
+    022, so the modes are the guard's own.
+
+    - `[was-0644]`: the record made 0644 before each rewrite of one bind,
+      and 0600 after it: the hook's answer 2 (the outer held, by a test-only
+      copy, before its own start), the outer's start, its outcome, the
+      guard's restored offer after the failure, and choice 1's `mode=allow`.
+    - `[new-offers-dir]`: the offer makes `offers/`, which was not there,
+      0700, and its record 0600.
+    - `[failed-write]` (K4): the hook's answer-2 rewrite failing at its `mv`
+      in a test-only copy: the offer kept as it was, byte for byte, no
+      temporary file in `offers/`, exit 2 with "the bind could not be
+      recorded", no attempt started, and the window renamed back to `<from>`
+      after the hook named it `<to>`.
+    - `[failed-first-write]` (T214s; lane 2, #165 6885568373; lane 5's
+      `[failed-first-write]`, #165 6884069915): a test-only copy fails each
+      first write at `/dev/full`. Half (i): the hook's answer-2 rewrite, its
+      first line, `mode=binding`, failing (`ae702c74`:22453-22459), answers
+      as `[failed-write]` does, K4's oracle: exit 2 with "the bind could not
+      be recorded", KEPT and no BINDING, the offer byte for byte, no
+      temporary file, nothing started, and the window renamed back. Before
+      T502's part 16 the rewrite lost the line and returned 0. Half (ii),
+      on the same offer: choice 1's `mode=allow` record failing at its first
+      write (:22346-22358) exits 2 with "the explicit allow could not be
+      recorded", the offer byte for byte, no temporary file, and nothing
+      renamed. Before T502's part 20 it said ALLOWED and the record lost
+      its mode line."""
+    est = estate()
+    offers = est.offer.parent
+    mask = os.umask(0o022)
+    try:
+        if case == "new-offers-dir":
+            assert not offers.exists(), f"{offers} was there before the offer"
+            est.make_offer()
+            assert _mode_bits(offers) == 0o700 and _mode_bits(est.offer) == 0o600, \
+                (oct(_mode_bits(offers)), oct(_mode_bits(est.offer)))
+            return
+        if case == "failed-write":
+            est.guard = _bind_copy(est, [(ANCHOR_MV, _fail_mv("mode=binding"))])
+            est.make_offer()
+            before = est.offer.read_bytes()
+            calls = len(est.session.tmux_calls())
+            hook = est.hook("2")
+            renames = [c[-1] for c in _renames(est, calls)]
+            assert hook.code == 2 and "the bind could not be recorded" in hook.err \
+                and KEPT in hook.err and BINDING not in hook.err, repr(hook)
+            assert est.offer.read_bytes() == before, \
+                f"the failed rewrite changed the offer: {est.record()}"
+            assert not _temporaries(est), f"the failed rewrite left {_temporaries(est)}"
+            assert not list(offers.glob(f"{est.sid}.bind.*")) and not est.starts(), \
+                "an attempt started after its record could not be written"
+            assert TO in renames and renames[-1] == FROM, \
+                f"the window was not named {TO} and then renamed back to {FROM}: {renames}"
+            return
+        if case == "failed-first-write":
+            est.guard = _bind_copy(est, [(ANCHOR_FIRST_WRITE, f"{ANCHOR_FIRST_WRITE} >/dev/full"),
+                                         (ANCHOR_ALLOW_WRITE, f"{ANCHOR_ALLOW_WRITE} >/dev/full")])
+            est.make_offer()
+            before = est.offer.read_bytes()
+            calls = len(est.session.tmux_calls())
+            hook = est.hook("2")
+            renames = [c[-1] for c in _renames(est, calls)]
+            assert hook.code == 2 and "the bind could not be recorded" in hook.err \
+                and KEPT in hook.err and BINDING not in hook.err, \
+                f"half (i), answer 2's rewrite failing at its first write: {hook!r}"
+            assert est.offer.read_bytes() == before, \
+                f"half (i): the failed first write changed the offer: {est.record()}"
+            assert not _temporaries(est), f"half (i) left {_temporaries(est)}"
+            assert not list(offers.glob(f"{est.sid}.bind.*")) and not est.starts(), \
+                "half (i): an attempt started after its record could not be written"
+            assert TO in renames and renames[-1] == FROM, \
+                f"half (i): the window was not named {TO} and then renamed back to {FROM}: {renames}"
+            calls = len(est.session.tmux_calls())
+            hook = est.hook("1")
+            assert hook.code == 2 and "the explicit allow could not be recorded" in hook.err \
+                and "ALLOWED:" not in hook.err, \
+                f"half (ii), choice 1's allow failing at its first write: {hook!r}"
+            assert est.offer.read_bytes() == before, \
+                f"half (ii): the failed allow changed the offer: {est.record()}"
+            assert not _temporaries(est), f"half (ii) left {_temporaries(est)}"
+            assert not _renames(est, calls), f"half (ii) renamed the window: {_renames(est, calls)}"
+            return
+        est.guard = _bind_copy(est, [(ANCHOR_OUTER_START, (
+            f"{_hold_sh(est, 'start')}\n  {ANCHOR_OUTER_START}"))])
+        est.set("hold", 60)
+        est.set("rc", 1)
+        est.make_offer()
+        modes = {}
+        os.chmod(est.offer, 0o644)
+        est.answer_2()
+        held = _until(lambda: (est.ctl / "start.held").exists(), 30)
+        at_hold = est.record()
+        modes["the hook's answer 2"] = _mode_bits(est.offer)
+        os.chmod(est.offer, 0o644)
+        est.set("start.release")
+        assert held and at_hold.get("mode") == "binding" and "pid" not in at_hold, \
+            f"the outer was not held before its start: {at_hold}"
+        est.outer()
+        modes["the outer's start"] = _mode_bits(est.offer)
+        assert _until(est.starts, 30), "the stand-in lane-start never started"
+        os.chmod(est.offer, 0o644)
+        est.release()
+        assert est.ended()["mode"] == "bind-failed", est.record()
+        modes["the outer's outcome"] = _mode_bits(est.offer)
+        os.chmod(est.offer, 0o644)
+        hook = est.hook("after the failure")
+        assert hook.code == 2 and est.record().get("mode") == "name-drift", repr(hook)
+        modes["the guard's restored offer"] = _mode_bits(est.offer)
+        os.chmod(est.offer, 0o644)
+        hook = est.hook("1")
+        assert hook.code == 2 and est.record().get("mode") == "allow", repr(hook)
+        modes["choice 1's allow"] = _mode_bits(est.offer)
+        assert all(bits == 0o600 for bits in modes.values()), \
+            {name: oct(bits) for name, bits in modes.items()}
+    finally:
+        os.umask(mask)
+
+
+# ------------------------------------- T214v and T214w: ruling 5's (A), the hook's writes
+#
+# NO REWRITE CREATES A RECORD, AND THE HOOK'S WRITES GO ONLY TO THE OFFER IT
+# ANSWERED (T214v and T214w; lane 3's ruling, opensoft/openRepoTools#165
+# 6885771975, ruling 5, with (A) for the hook's answer 2; lane 5's rule for
+# the hook's own writes, #165 6886054653, which lane 3 confirmed, #165
+# 6886113842, choice 1's mirror of (A) among it; T502's parts 22 to 26,
+# `2497b864`, and part 32, `820bbf11`, at its head `6253b0ed`; spec#47's
+# draft 17 `8bc6b29e`, section 5's case 1 and choice 1, and section 7; lane
+# 5's check of these ids and its additions, #165 6888777622). Each case
+# holds the hook in a test-only copy (point 23) before one of its writes on
+# the offer, changes the record there, and releases the hold: the window is
+# made by the hold, never by a sleep.
+
+#: THE HOLDS' ANCHORS, each text that `lanes-edit.sh` holds once at T502's
+#: part 21 `beeae571`, at part 26 `2497b864` and at `6253b0ed`:
+#: - the head copy's test that `.head` gave it a key to copy, just before its
+#:   write (`guard_bind_head_copy`), so a hold there is reached only where
+#:   the head copy writes (lane 5's precondition A; d17:377);
+#: - the head copy's definition and its one call in `guard_answer`, through
+#:   which the copy logs the head copy's result, so a case knows which write
+#:   met the change;
+#: - answer 2's bound, after the head copy and before its rewrite to
+#:   `binding`;
+#: - choice 1's temporary file: a hold just before it is before the
+#:   temporary file and before `guard_offer_still` (6253b0ed:22809), never
+#:   between that test and the `mv`, the window draft 17 accepts (d17:148).
+ANCHOR_HEAD_COPY = '[ "${#ghc_kv[@]}" -gt 0 ] || return 0'
+ANCHOR_HEAD_COPY_DEF = 'guard_bind_head_copy() {'
+ANCHOR_HEAD_COPY_CALL = 'guard_bind_head_copy "$ga_f"'
+ANCHOR_ANSWER_2_BOUND = 'ga_bs="$(guard_bind_bound_s "$ga_f")"'
+ANCHOR_ALLOW_TEMP = ("ga_t=\"$(umask 077; mktemp \"${ga_f%/*}/.${ga_f##*/}.XXXXXX\" "
+                     "2>/dev/null || printf '')\"")
+#: (A)'s words, and choice 1's mirror of them (`guard_answer_moved`,
+#: 6253b0ed:22675-22697); the I/O paths' words, which say the offer is
+#: KEPT (:22915, :22945) or that the allow could not be recorded (:22820);
+#: and the outer's start, which no case here may reach (:22999, :23001).
+DROPPED_BIND = "the offer was dropped before the bind could be recorded, so the bind was NOT started"
+CHANGED_BIND = ("was changed before the bind could be recorded (it is another offer now, not "
+                "the one that was answered), so the bind was NOT started")
+NO_OUTER = "and no outer was started"
+BIND_IO = "could not be recorded in"
+DROPPED_ALLOW = ("the offer was dropped before the allow could be recorded, so the mismatch "
+                 "remains unapproved. Nothing was renamed or written")
+ALLOW_IO = "the explicit allow could not be recorded at"
+ALLOWED = "ALLOWED:"
+
+
+def _renamed_back(lane: str) -> str:
+    """`guard_window_back`'s note (6253b0ed:22216), only as far as lane 5
+    asks it asserted: the clause after it, "so the offer it keeps is still
+    this window's", is lane 5's to reword for (A) (#165 6888777622)."""
+    return f"This window has been renamed back to {lane}, the lane it was before the answer `2`"
+
+
+def _answer_preconditions(est: Estate) -> None:
+    """Lane 5's precondition B (#165 6888777622): the stand-in `tmux` first
+    on the hook's `PATH`, so the rename to `<to>` and back is made, and the
+    stand-in `lane-start` executable at `LANES_LANE_START`, so answer 2 gets
+    past its test of it (6253b0ed:22836-22837) to the rename."""
+    env = est.env()
+    first = env["PATH"].split(os.pathsep)[0]
+    assert first == str(est.session.directory) and os.access(est.session.tmux, os.X_OK), \
+        f"the stand-in tmux is not first on PATH: {first}, {est.session.tmux}"
+    start = Path(env.get("LANES_LANE_START", ""))
+    assert start.is_file() and os.access(start, os.X_OK), \
+        f"the stand-in lane-start is not executable at LANES_LANE_START: {start}"
+
+
+def _head_copy_logged(est: Estate) -> list:
+    """The edits that make a test-only copy log the head copy's result, 0,
+    1 or 2, to `<ctl>/head-copy.rc`, through a wrapper at its one call: so a
+    case knows whether the head copy's own rewrite met the change (2), or
+    wrote nothing (0) and left it to the rewrite to `binding`."""
+    rc = shlex.quote(str(est.ctl / "head-copy.rc"))
+    wrapper = ('t214v_head_copy() { t214v_hrc=0; guard_bind_head_copy "$@" || t214v_hrc=$?; '
+               f'echo "$t214v_hrc" > {rc}; return "$t214v_hrc"; }}')
+    return [(ANCHOR_HEAD_COPY_DEF, f"{wrapper}\n{ANCHOR_HEAD_COPY_DEF}"),
+            (ANCHOR_HEAD_COPY_CALL, 't214v_head_copy "$ga_f"')]
+
+
+def _estate_on_the_stub(estate, tmp_path, edits_of) -> Estate:
+    """Case 22's `[answer-2]` estate (`_bound_through_answer_2_on_the_stub`),
+    with the stub's constants as T207 writes them, so its `.head` gives
+    `c=2`, `n_a=1` and `w_s_ms=0`, each a whole number, and the hook's head
+    copy writes (lane 5's precondition A): the contract's stub `lanes-index`
+    beside a copy of `lanes-edit.sh`, `repos.tsv` and `lane-start`, and a
+    configuration naming the store. The copy takes `edits_of(est)`'s
+    (anchor, text) pairs, each made once, as `_bind_copy` makes them."""
+    code = tmp_path / "code"
+    code.mkdir()
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        shutil.copy2(REPO / name, code / name)
+    est = estate(guard=code / "lanes-edit.sh")
+    copy = code / "lanes-edit.sh"
+    text = copy.read_text(encoding="utf-8")
+    for anchor, new in edits_of(est):
+        text, made = re.subn(re.escape(anchor), lambda _found, new=new: new, text)
+        assert made == 1, f"the test-only copy's anchor was found {made} times, not once: {anchor}"
+    copy.write_text(text, encoding="utf-8")
+    contract_stub(code, register={
+        "lanes/LANES.md": (est.wip / "lanes" / "LANES.md").read_text(encoding="utf-8")})
+    conf = tmp_path / "lanes-index.conf"
+    conf.write_text(f"register_url=postgresql:///register?host={tmp_path}/sock\n",
+                    encoding="utf-8")
+    est.extra["LANES_INDEX_CONFIG"] = str(conf)
+    return est
+
+
+def _answer_held(est: Estate, prompt: str, hold: str, change):
+    """The hook answering `prompt`, from a test-only copy that holds at
+    `hold` (`_hold_sh`), run in a thread with a 30 s timeout, so that the
+    hold is not cut short as the hook's own 5 s would cut it. At the hold,
+    `change()` runs and its value is kept; the hold is released whatever
+    `change` does. Returns the hook and that value."""
+    box = {}
+    thread = threading.Thread(target=lambda: box.update(hook=est.hook(prompt, timeout=30.0)),
+                              daemon=True)
+    thread.start()
+    held = _until(lambda: (est.ctl / f"{hold}.held").exists(), 30)
+    seen = None
+    try:
+        if held:
+            seen = change()
+    finally:
+        est.set(f"{hold}.release")
+    thread.join(45)
+    assert held, f"the hook never came to its hold at its {hold}: {box.get('hook')!r}"
+    assert "hook" in box, f"the hook did not end within 45 s of its release at its {hold}"
+    return box["hook"], seen
+
+
+def _other_binding(est: Estate):
+    """ANOTHER INVOCATION'S `binding`, put in the offer's place as a writer
+    puts a record (`write_record`): a live process of its own session, with
+    its own start token, which the estate stops at its close (`spare`), as
+    `[not-its-own]`'s is; a `deadline_epoch` ahead, and the guard's own
+    `host` and `container`, so the guard's site answers it in progress, not
+    stale and not as another host's (lane 5, #165 6888777622); and its
+    attempt's `.bind.1.out`, which its `out` names. Returns the record's
+    bytes, that `.out` and its bytes."""
+    other = _sleeper()
+    est.spare.append(other.pid)
+    now = time.time()
+    write_record(est.offer, _binding(est, started=now, pid=other.pid,
+                                     pidstart=_stat(other.pid)["start"]))
+    record = est.record()
+    assert int(record["deadline_epoch"]) > now and record.get("host") == HOST \
+        and record.get("container") == CONTAINER, f"the other binding is not live here: {record}"
+    out = Path(record["out"])
+    out.write_text("the other bind's output, which no answer may touch\n", encoding="utf-8")
+    out.chmod(0o600)
+    return est.offer.read_bytes(), out, out.read_bytes()
+
+
+def _guard_bind_processes(est: Estate) -> list:
+    """Every live process whose argv holds `guard-bind` and this estate's
+    uuid: an outer this answer started."""
+    found = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            argv = (entry / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if b"guard-bind" in argv and est.sid.encode() in argv:
+            found.append(int(entry.name))
+    return found
+
+
+def _nothing_new(est: Estate, before: set, made: set, who: str) -> None:
+    """After the hook's exit, `offers/` holds nothing that was not there
+    before it, or that the case put there itself: no temporary file, no
+    record made and no `.bind.<N>.out`; and no outer was started: no
+    `lane-start` start and no `guard-bind` process (lane 5, #165
+    6888777622)."""
+    offers = est.offer.parent
+    new = sorted(set(os.listdir(offers)) - before - made) if offers.is_dir() else []
+    assert not new, f"{who} left new files in offers/: {new}"
+    assert not est.starts() and not _guard_bind_processes(est), \
+        f"{who} started an outer: {est.starts()}, {_guard_bind_processes(est)}"
+
+
+#: T214x: THE OTHER RECORDS A HOLD CAN MEET IN THE OFFER'S PLACE (lane 5's
+#: list of what T214v's and T214w's first ids leave out, #165 6888777622), by
+#: id, each answered once by `guard_answer_moved` (6dd8bbbd:22904-22952):
+#: another invocation's `bound` (heard as MOVED) or `bind-failed` (case 6),
+#: another prompt's allowance (3, judged afresh), and a record of another mode.
+IN_PLACE = {"bound-at-its-rewrite": "bound", "bind-failed-at-its-rewrite": "bind-failed",
+            "allow-at-its-rewrite": "allow", "another-mode-at-its-rewrite": "weird",
+            "bound-before-its-mv": "bound", "bind-failed-before-its-mv": "bind-failed",
+            "allow-before-its-mv": "allow", "another-mode-before-its-mv": "weird"}
+#: Their words: case 5's MOVED and its last line (6dd8bbbd:22710, :22718),
+#: case 6's failure (:22726), the allowance's pass (`guard_allow_pass`,
+#: :21921-21925), the default rename-back note's last clause, which says an
+#: offer is kept (:22372), and the why of the bind that failed.
+MOVED_TO = f"MOVED: this window is lane {TO}, bound to this session ("
+HEARS = "This prompt was NOT sent: it is the one that hears how the bind ended"
+FAILED_TO = f"THE BIND TO LANE {TO} FAILED (exit 1)"
+OTHER_WHY = "the other bind's stand-in failed"
+ALLOW_PASS = ("WARNING: this lane/session name mismatch was explicitly allowed for this "
+              "transcript")
+OFFER_KEPT_NOTE = "so the offer it keeps is still this window's"
+NOT_STARTED = "so the bind was NOT started"
+UNAPPROVED = "so the mismatch remains unapproved"
+
+
+def _put_in_place(est: Estate, kind: str) -> bytes:
+    """T214x: ANOTHER RECORD IN THE OFFER'S PLACE, put there at the hold as
+    a writer puts a record (`write_record`), for this offer's two lanes, and
+    its bytes:
+
+    - `bound`: another answer 2's bind, ended `bound` (`rc=0`, `ended_utc`);
+    - `bind-failed`: its attempt 1, ended `bind-failed` (`rc=1`, a `why`);
+    - `allow`: another prompt's choice 1, the allowance as `guard_answer`
+      writes it (6dd8bbbd:23130-23135), for this session and this transcript;
+    - `weird`: the offer itself, its `mode` line saying `weird`."""
+    now = time.time()
+    if kind in ("bound", "bind-failed"):
+        ended = ["rc=0"] if kind == "bound" else ["rc=1", f"why={OTHER_WHY}"]
+        lines = ([f"mode={kind}"] + _binding(est, started=now - 60)[1:]
+                 + ended + [f"ended_utc={_utc(now)}"])
+    elif kind == "allow":
+        lines = ["mode=allow", f"from={FROM}", f"to={est.to}",
+                 f"session={read_record(est.offer)['session']}", f"uuid={est.sid}",
+                 f"utc={_utc(now)}"]
+    else:
+        text, n = re.subn(r"(?m)^mode=name-drift$", f"mode={kind}",
+                          est.offer.read_text(encoding="utf-8"), count=1)
+        assert n == 1, f"the offer holds no mode=name-drift line: {est.offer.read_text()!r}"
+        lines = text.splitlines()
+    write_record(est.offer, lines)
+    return est.offer.read_bytes()
+
+
+def _changed_to(est: Estate, kind: str, what: str) -> str:
+    """`guard_answer_moved`'s why for a record of another mode, `<what>` being
+    `bind` or `allow` (6dd8bbbd:22928-22929; d18, section 5)."""
+    return (f"the offer at {est.offer} was changed before the {what} could be recorded "
+            f"(it says mode={kind} now)")
+
+
+def _in_place_answered(est: Estate, hook, kind: str, installed: bytes, renames: list,
+                       answer: str) -> None:
+    """T214x: the answer `answer` (`2`, which renamed the window to `TO`
+    before its hold, or `1`, which renames nothing) met another
+    invocation's `bound` or `bind-failed`, or another prompt's allowance,
+    in the offer's place, and wrote nothing over it (d18, section 5):
+
+    - `bound`: `guard_bind_site`'s case 5, as the guard's first read hears
+      it: exit 2, MOVED for this session, "This prompt was NOT sent: it is
+      the one that hears how the bind ended", the record dropped as the one
+      loaded; nothing renamed back.
+    - `bind-failed`: case 6: exit 2, "THE BIND TO LANE `TO` FAILED (exit
+      1)", the record rewritten to the question with `bind=1`, the offer
+      KEPT, and the window renamed back to `FROM` by case 6 itself.
+    - `allow`: `guard_answer` answers 3 and the prompt is judged afresh: the
+      allowance still fits, so it passes with its warning, exit 0, the
+      allowance left byte for byte. Answer 2 renames the window back first,
+      in `none`'s words, not the default's, which says an offer is kept
+      (part 48, `3e6dc617`; 6dd8bbbd:22914-22918).
+
+    In none of them is (A) or its mirror said, BINDING or ALLOWED printed."""
+    err = hook.err
+    who = f"answer {answer}"
+    assert "BINDING:" not in err and ALLOWED not in err, \
+        f"{who} wrote its own record over another's {kind}: {hook!r}"
+    assert NOT_STARTED not in err and UNAPPROVED not in err, \
+        f"{who} refused with (A) or its mirror where the record in place said {kind}: {hook!r}"
+    if kind == "bound":
+        assert not hook.killed and hook.code == 2, f"{who} did not exit 2: {hook!r}"
+        assert MOVED_TO + f"{est.sid}) at " in err and HEARS in err, \
+            f"{who} did not hear the bound record in place as MOVED: {hook!r}"
+        assert not est.offer.exists(), f"case 5 did not drop the bound it heard: {est.record()}"
+        assert renames == ([TO] if answer == "2" else []), \
+            f"tmux saw {renames}, where case 5 renames nothing back"
+    elif kind == "bind-failed":
+        assert not hook.killed and hook.code == 2, f"{who} did not exit 2: {hook!r}"
+        assert FAILED_TO in err and KEPT in err and _renamed_back(FROM) in err, \
+            f"{who} did not answer the bind-failed record in place as case 6: {hook!r}"
+        record = est.record()
+        assert record.get("mode") == "name-drift" and record.get("bind") == "1" \
+            and record.get("from") == FROM and record.get("to") == TO, \
+            f"case 6 did not rewrite the record to the question with bind=1: {record}"
+        assert renames == ([TO, FROM] if answer == "2" else [FROM]), \
+            f"tmux saw {renames}, where case 6 renames the window back to {FROM}"
+    else:
+        assert not hook.killed and hook.code == 0 and ALLOW_PASS in err, \
+            f"{who} did not pass the prompt on the allowance in place, with its warning: {hook!r}"
+        assert est.offer.read_bytes() == installed, \
+            f"{who} wrote over the allowance in place: {est.record()}"
+        if answer == "2":
+            back = _renamed_back(FROM)
+            assert back in err and OFFER_KEPT_NOTE not in err \
+                and err.index(back) < err.index(ALLOW_PASS), \
+                f"answer 2 did not rename the window back first, in none's words: {hook!r}"
+            assert renames == [TO, FROM], f"tmux saw {renames}, not {TO} and then {FROM}"
+        else:
+            assert renames == [], f"choice 1 renamed the window: {renames}"
+
+
+@pytest.mark.parametrize("case", ["gone-at-its-head-copy", "gone-at-its-rewrite",
+                                  "another-offer-at-its-rewrite", "binding-at-its-rewrite",
+                                  "bound-at-its-rewrite", "bind-failed-at-its-rewrite",
+                                  "allow-at-its-rewrite", "another-mode-at-its-rewrite"])
+def test_answer_2_binds_nothing_where_its_offer_is_gone_or_no_longer_the_one_answered(
+        estate, tmp_path, case):
+    """T214v, ruling 5's (A) for the hook's answer 2, and the hook's writes
+    on the offer it answered (draft 17's section 5, case 1; section 7). The
+    hook's head copy of `.head`'s `c`, `n_a` and `w_s_ms` and its rewrite to
+    `binding` each run only on a record that is there, still says
+    `name-drift` and is still the offer that was answered, by its `from`,
+    `to`, `session` and `utc` (`--offer` with `guard_answer_match`;
+    6253b0ed:20744, :22908-22913, :22935-22943). Where it is not, they write
+    nothing, and the record's mode is read once and answered for
+    (`guard_answer_moved`, :22641-22700). With the stand-in `tmux` and
+    `lane-start` in place (lane 5's precondition B), a test-only copy holds
+    the hook after it has renamed the window to `<to>`, and logs what the
+    head copy returned; at the hold the record is still the offer answered.
+    Each id exits 2, but `[allow-at-its-rewrite]`, which exits 0, leaves
+    nothing new in `offers/` and starts no outer.
+
+    - `[gone-at-its-head-copy]`: on the contract's stub, whose `.head` gives
+      the head copy keys to write, held just before that write, and the
+      offer removed there; the head copy's own rewrite returns 2 (lane 5's
+      precondition A). (A): "the offer was dropped before the bind could be
+      recorded, so the bind was NOT started: this window has NOT moved to
+      `<to>` (this answer renamed it, and it was renamed back to `<from>`)
+      ... and no outer was started", after "This window has been renamed
+      back to `<from>`, the lane it was before the answer `2`"; no `KEPT`,
+      no `BINDING:` and no "could not be recorded in"; no record made; tmux
+      renamed to `<to>`, then back to `<from>`. At `beeae571` the head copy
+      made a record of `c`, `n_a` and `w_s_ms` alone, the rewrite then wrote
+      `binding` with no `from` and no `to`, and an outer started.
+    - `[gone-at-its-rewrite]`: with no `.head`, so the head copy writes
+      nothing (0), held after it and before the rewrite to `binding`, the
+      offer removed there. (A), as above. At `beeae571` the rewrite made the
+      record again with its own keys, and an outer started.
+    - `[another-offer-at-its-rewrite]`: the same hold, with the offer, which
+      carries a `utc` line, put back by a temporary file and a rename with a
+      later `utc`: a re-made offer, not the one answered. (A) with "the
+      offer at `<file>` was changed before the bind could be recorded (it is
+      another offer now, not the one that was answered)"; that offer left
+      byte for byte. At `beeae571`, and at `2497b864` before part 32, the
+      rewrite wrote `binding` over it.
+    - `[binding-at-its-rewrite]`: the same hold, with another invocation's
+      live `binding` put in the offer's place, its deadline ahead, on the
+      guard's own host and container, with its own `.bind.1.out`.
+      `guard_bind_site`'s answer, as the guard's first read gives it: that
+      record and its `.out` left byte for byte; "BINDING IN PROGRESS" and
+      not "BINDING: this window is now named"; tmux renamed to `<to>` only,
+      nothing renamed back (section 5). At `beeae571` the rewrite wrote this
+      answer's `binding` over it and started a second outer.
+
+    T214x, the records lane 5 listed as not yet covered (#165 6888777622),
+    each put in the offer's place at the same hold (`_put_in_place`) and
+    answered as `_in_place_answered` says, by draft 18's section 5 at
+    `f8e5cfa8` and `guard_answer_moved` at T502's `6dd8bbbd`:22904-22952:
+
+    - `[bound-at-its-rewrite]`: another invocation's `bound`: MOVED, the
+      record dropped, tmux renamed to `<to>` only.
+    - `[bind-failed-at-its-rewrite]`: another invocation's `bind-failed`:
+      case 6, the record back to the question with `bind=1`, the offer
+      KEPT, tmux renamed to `<to>` and back to `<from>` by case 6.
+    - `[allow-at-its-rewrite]`: another prompt's allowance: the window
+      renamed back first, not in the default form's words, then the prompt
+      passed on the allowance with its warning, exit 0.
+    - `[another-mode-at-its-rewrite]`: the offer saying `mode=weird`: (A),
+      with "the offer at `<file>` was changed before the bind could be
+      recorded (it says mode=weird now)", that record left byte for byte."""
+    if case == "gone-at-its-head-copy":
+        hold = "head-copy"
+        est = _estate_on_the_stub(estate, tmp_path, lambda e: _head_copy_logged(e) + [(
+            ANCHOR_HEAD_COPY, f"{ANCHOR_HEAD_COPY}\n  {_hold_sh(e, hold)}")])
+    else:
+        hold = "rewrite"
+        est = estate()
+        est.guard = _bind_copy(est, _head_copy_logged(est) + [(ANCHOR_ANSWER_2_BOUND, (
+            f"{_hold_sh(est, hold)}\n    {ANCHOR_ANSWER_2_BOUND}"))])
+    _answer_preconditions(est)
+    est.make_offer()
+    offers = est.offer.parent
+    offer = est.offer.read_bytes()
+    assert re.search(rb"(?m)^utc=", offer), f"the offer carries no utc= line: {offer!r}"
+    before = set(os.listdir(offers))
+    calls = len(est.session.tmux_calls())
+    made = set()
+
+    def change():
+        at_hold = est.offer.read_bytes() if est.offer.exists() else None
+        renamed = [c[-1] for c in _renames(est, calls)]
+        other = None
+        if case.startswith("gone-"):
+            est.offer.unlink()
+        elif case == "another-offer-at-its-rewrite":
+            text, n = re.subn(r"(?m)^utc=.*$", f"utc={_utc(time.time() + 60)}",
+                              offer.decode("utf-8"), count=1)
+            assert n == 1, f"the offer holds no utc= line: {offer!r}"
+            write_record(est.offer, text.splitlines())
+            other = (est.offer.read_bytes(), None, None)
+        elif case in IN_PLACE:
+            other = (_put_in_place(est, IN_PLACE[case]), None, None)
+        else:
+            other = _other_binding(est)
+            made.add(other[1].name)
+        return at_hold, renamed, other
+
+    hook, (at_hold, renamed, other) = _answer_held(est, "2", hold, change)
+    err = hook.err
+    renames = [c[-1] for c in _renames(est, calls)]
+    rc_file = est.ctl / "head-copy.rc"
+    head_copy = rc_file.read_text(encoding="utf-8").strip() if rc_file.exists() else None
+    assert at_hold == offer, f"the record at the hook's {hold} was not the offer answered: {at_hold!r}"
+    assert TO in renamed, f"the window was not named {TO} before the hook's {hold}: {renamed}"
+    site = IN_PLACE.get(case) in ("bound", "bind-failed", "allow")
+    if not site:
+        assert not hook.killed and hook.code == 2, f"answer 2 did not exit 2: {hook!r}"
+    if site:
+        _in_place_answered(est, hook, IN_PLACE[case], other[0], renames, "2")
+    elif case == "binding-at-its-rewrite":
+        installed, out, out_bytes = other
+        assert est.offer.read_bytes() == installed, \
+            f"another invocation's bind record did not survive answer 2: {est.record()}\n{err}"
+        assert out.exists() and out.read_bytes() == out_bytes, \
+            f"another invocation's {out.name} did not survive answer 2"
+        assert IN_PROGRESS in err and BINDING not in err, \
+            f"answer 2 did not give guard_bind_site's answer for the bind record at its rewrite: {hook!r}"
+        assert renames == [TO], \
+            f"tmux saw {renames}, where section 5 has this answer rename to {TO} and nothing back"
+    else:
+        why = {"another-offer-at-its-rewrite": CHANGED_BIND,
+               "another-mode-at-its-rewrite": f"{_changed_to(est, 'weird', 'bind')}, {NOT_STARTED}",
+               }.get(case, DROPPED_BIND)
+        back = (f"this window has NOT moved to {TO} (this answer renamed it, and it was renamed "
+                f"back to {FROM})")
+        assert why in err and "BINDING:" not in err, \
+            f"answer 2 did not refuse with (A) where its offer was {case}: {hook!r}"
+        assert "KEPT" not in err and BIND_IO not in err, \
+            f"answer 2 refused on its I/O path, or said the offer is KEPT: {hook!r}"
+        assert _renamed_back(FROM) in err and back in err and NO_OUTER in err, repr(hook)
+        assert renames == [TO, FROM], f"tmux saw {renames}, not {TO} and then {FROM}"
+        if case.startswith("gone-"):
+            assert not est.offer.exists(), \
+                f"answer 2 made a record where its offer was gone: {est.record()}"
+        else:
+            assert est.offer.read_bytes() == other[0], \
+                f"answer 2 wrote over an offer that is not the one answered: {est.record()}"
+    if case == "gone-at-its-head-copy":
+        assert head_copy == "2", \
+            f"the head copy's own rewrite did not meet the offer gone: it returned {head_copy!r}"
+    else:
+        assert head_copy == "0", \
+            f"the head copy did not write nothing before the hold at the rewrite: {head_copy!r}"
+    _nothing_new(est, before, made, "answer 2")
+
+
+@pytest.mark.parametrize("case", ["gone-before-its-mv", "binding-before-its-mv",
+                                  "bound-before-its-mv", "bind-failed-before-its-mv",
+                                  "allow-before-its-mv", "another-mode-before-its-mv"])
+def test_choice_1_allows_nothing_where_its_offer_is_gone_or_no_longer_the_one_answered(
+        estate, case):
+    """T214w, choice 1's mirror of (A) (lane 3's confirmation, #165
+    6886113842; draft 17's section 5, "Choice 1, where the offer is gone").
+    Just before its `mv`, choice 1's `mode=allow` record tests that the
+    offer answered is still there, still says `name-drift` and is still the
+    one answered (`guard_offer_still`, 6253b0ed:22706, :22809). Where it is
+    not, its temporary file is removed, nothing is written, and the record's
+    mode is read once and answered for (`guard_answer_moved`, :22817). A
+    test-only copy holds choice 1 before its temporary file, so before that
+    test, never between it and the `mv` (d17:148; lane 5, #165 6888777622,
+    whose names these ids are). Each id exits 2, but `[allow-before-its-mv]`,
+    which exits 0; renames nothing, but `[bind-failed-before-its-mv]`, whose
+    case 6 renames the window back to `<from>`; leaves nothing new in
+    `offers/` and starts no outer.
+
+    - `[gone-before-its-mv]`: the offer removed at the hold. "the offer was
+      dropped before the allow could be recorded, so the mismatch remains
+      unapproved. Nothing was renamed or written"; no ALLOWED, and not the
+      I/O path's "the explicit allow could not be recorded at" (:22820); no
+      record made. At `beeae571` the write and its `mv` made an `allow`
+      record, and the hook said ALLOWED.
+    - `[binding-before-its-mv]`: another invocation's live `binding` put in
+      the offer's place, its deadline ahead, on the guard's own host and
+      container, with its own `.bind.1.out`. `guard_bind_site`'s answer:
+      that record and its `.out` left byte for byte; "BINDING IN PROGRESS",
+      and no ALLOWED and no "BINDING: this window is now named". At
+      `beeae571` the `allow` record was written over it, and its sweep,
+      `rm -f "$ga_f".bind.*` (:22376), removed the other's `.out`.
+
+    T214x, the records lane 5 listed as not yet covered (#165 6888777622),
+    each put in the offer's place at the same hold (`_put_in_place`) and
+    answered as `_in_place_answered` says, by draft 18's section 5 at
+    `f8e5cfa8` and `guard_answer_moved` at T502's `6dd8bbbd`:22904-22952,
+    choice 1 itself renaming nothing and writing nothing:
+
+    - `[bound-before-its-mv]`: another invocation's `bound`: MOVED, the
+      record dropped, nothing renamed.
+    - `[bind-failed-before-its-mv]`: another invocation's `bind-failed`:
+      case 6, the record back to the question with `bind=1`, the offer
+      KEPT, the window renamed to `<from>` by case 6, the one rename here.
+    - `[allow-before-its-mv]`: another prompt's allowance: the prompt
+      passed on it with its warning, exit 0, nothing renamed.
+    - `[another-mode-before-its-mv]`: the offer saying `mode=weird`: the
+      mirror of (A), "the offer at `<file>` was changed before the allow
+      could be recorded (it says mode=weird now), so the mismatch remains
+      unapproved. Nothing was renamed or written"; that record left byte
+      for byte."""
+    est = estate()
+    est.guard = _bind_copy(est, [(ANCHOR_ALLOW_TEMP, (
+        f"{_hold_sh(est, 'choice-1')}\n    {ANCHOR_ALLOW_TEMP}"))])
+    _answer_preconditions(est)
+    est.make_offer()
+    offers = est.offer.parent
+    offer = est.offer.read_bytes()
+    before = set(os.listdir(offers))
+    calls = len(est.session.tmux_calls())
+    made = set()
+
+    def change():
+        at_hold = est.offer.read_bytes() if est.offer.exists() else None
+        if case == "gone-before-its-mv":
+            est.offer.unlink()
+            return at_hold, None
+        if case in IN_PLACE:
+            return at_hold, (_put_in_place(est, IN_PLACE[case]), None, None)
+        other = _other_binding(est)
+        made.add(other[1].name)
+        return at_hold, other
+
+    hook, (at_hold, other) = _answer_held(est, "1", "choice-1", change)
+    err = hook.err
+    assert at_hold == offer, f"the record at choice 1's hold was not the offer answered: {at_hold!r}"
+    site = IN_PLACE.get(case) in ("bound", "bind-failed", "allow")
+    if not site:
+        assert not hook.killed and hook.code == 2, f"choice 1 did not exit 2: {hook!r}"
+    if site:
+        _in_place_answered(est, hook, IN_PLACE[case], other[0],
+                           [c[-1] for c in _renames(est, calls)], "1")
+    elif case == "another-mode-before-its-mv":
+        why = f"{_changed_to(est, 'weird', 'allow')}, {UNAPPROVED}. Nothing was renamed or written"
+        assert why in err and ALLOWED not in err, \
+            f"choice 1 did not refuse with (A)'s mirror where the offer said mode=weird: {hook!r}"
+        assert ALLOW_IO not in err, f"choice 1 refused on its I/O path: {hook!r}"
+        assert est.offer.read_bytes() == other[0], \
+            f"choice 1 wrote over a record of another mode: {est.record()}"
+    elif case == "gone-before-its-mv":
+        assert DROPPED_ALLOW in err and ALLOWED not in err, \
+            f"choice 1 did not refuse with (A)'s mirror where its offer was gone: {hook!r}"
+        assert ALLOW_IO not in err, f"choice 1 refused on its I/O path: {hook!r}"
+        assert not est.offer.exists(), \
+            f"choice 1 made a record where its offer was gone: {est.record()}"
+    else:
+        installed, out, out_bytes = other
+        assert out.exists() and out.read_bytes() == out_bytes, \
+            f"another invocation's {out.name} did not survive choice 1"
+        assert est.offer.read_bytes() == installed, \
+            f"another invocation's bind record did not survive choice 1: {est.record()}\n{err}"
+        assert IN_PROGRESS in err and ALLOWED not in err and BINDING not in err, \
+            f"choice 1 did not give guard_bind_site's answer for the bind record: {hook!r}"
+    if IN_PLACE.get(case) != "bind-failed":
+        assert not _renames(est, calls), f"choice 1 renamed the window: {_renames(est, calls)}"
+    _nothing_new(est, before, made, "choice 1")
+
+
+#: T214x's back-out anchors, each found once in `lanes-edit.sh` at T502's
+#: `6253b0ed` and `6dd8bbbd`: the fork of the bind's child, which the
+#: test-only copy makes start nothing (a child that could not be started:
+#: its subshell prints no pid), and the case on that pid, before which the
+#: copy holds, after the rewrite to `binding` and before the back-out.
+ANCHOR_FORK = 'ga_p="$( ( umask 077'
+ANCHOR_NO_CHILD = 'case "$ga_p" in'
+#: The back-out's refusal where the record is gone or no longer `binding`
+#: (6dd8bbbd:23373-23374; d18, section 5).
+NO_CHILD = "the bind's child could not be started, so "
+BACKED_OUT_NOTHING = ("and NOTHING has been written; the offer was dropped or changed "
+                      "meanwhile, so there is none of this answer's to keep")
+
+
+@pytest.mark.parametrize("case", ["gone-at-its-back-out", "not-binding-at-its-back-out"])
+def test_answer_2s_back_out_writes_nothing_where_its_binding_is_gone_or_no_longer_binding(
+        estate, case):
+    """T214x, THE HOOK'S BACK-OUT under lane 3's ruling 5, "No rewrite
+    creates a record" (opensoft/openRepoTools#165 6885771975), the last of
+    the cases lane 5 listed as not yet covered (#165 6888777622). Where no
+    child started, answer 2 puts the record back to the question, by a
+    rewrite that runs only on a record still saying `binding` (`--binding`,
+    6dd8bbbd:23338-23344). Where the record is gone or no longer `binding`,
+    there is nothing of this answer's to back out: nothing is written, the
+    window is renamed back first in `guard_window_back`'s `none` form, and
+    the refusal is "the bind's child could not be started, so this window
+    has NOT moved to `<to>` (it was renamed back to `<from>`) and NOTHING has
+    been written; the offer was dropped or changed meanwhile, so there is
+    none of this answer's to keep" (:23353-23374; draft 18's section 5 at
+    `f8e5cfa8`, "The hook's back-out, where no child started").
+
+    A test-only copy (point 23) makes the fork start nothing, so the
+    subshell prints no pid (`ANCHOR_FORK`), and holds before the case on
+    that pid (`ANCHOR_NO_CHILD`), with the stand-in `tmux` and `lane-start`
+    in place (lane 5's precondition B). At the hold the record is this
+    answer's `binding`, attempt 1 with no `pid`, and the window is named
+    `<to>`; the case changes the record and releases the hold.
+
+    - `[gone-at-its-back-out]`: the record removed there; none is made.
+    - `[not-binding-at-its-back-out]`: the offer made again in its place,
+      with a later `utc`; it is left byte for byte.
+
+    Each id exits 2 with that refusal, says no KEPT, no "still says
+    binding" and no BINDING, renames the window to `<to>` and back to
+    `<from>`, not in the default form's words, which say an offer is kept,
+    leaves nothing new in `offers/` and starts no outer."""
+    est = estate()
+    est.guard = _bind_copy(est, [
+        (ANCHOR_FORK, ANCHOR_FORK.replace("( umask", "( exit 1; umask")),
+        (ANCHOR_NO_CHILD, f"{_hold_sh(est, 'back-out')}\n    {ANCHOR_NO_CHILD}")])
+    _answer_preconditions(est)
+    est.make_offer()
+    offers = est.offer.parent
+    offer = est.offer.read_bytes()
+    assert re.search(rb"(?m)^utc=", offer), f"the offer carries no utc= line: {offer!r}"
+    before = set(os.listdir(offers))
+    calls = len(est.session.tmux_calls())
+
+    def change():
+        at_hold = est.record() if est.offer.exists() else {}
+        renamed = [c[-1] for c in _renames(est, calls)]
+        if case == "gone-at-its-back-out":
+            est.offer.unlink()
+            return at_hold, renamed, None
+        text, n = re.subn(r"(?m)^utc=.*$", f"utc={_utc(time.time() + 60)}",
+                          offer.decode("utf-8"), count=1)
+        assert n == 1, f"the offer holds no utc= line: {offer!r}"
+        write_record(est.offer, text.splitlines())
+        return at_hold, renamed, est.offer.read_bytes()
+
+    hook, (at_hold, renamed, installed) = _answer_held(est, "2", "back-out", change)
+    err = hook.err
+    renames = [c[-1] for c in _renames(est, calls)]
+    assert at_hold.get("mode") == "binding" and at_hold.get("bind") == "1" \
+        and not at_hold.get("pid"), \
+        f"the record at the back-out's hold was not this answer's binding: {at_hold}"
+    assert TO in renamed, f"the window was not named {TO} before the back-out's hold: {renamed}"
+    assert not hook.killed and hook.code == 2, f"answer 2 did not exit 2: {hook!r}"
+    window = f"this window has NOT moved to {TO} (it was renamed back to {FROM}) "
+    assert NO_CHILD + window + BACKED_OUT_NOTHING in err, \
+        f"the back-out did not refuse with nothing of this answer's to keep: {hook!r}"
+    assert "KEPT" not in err and "still says binding" not in err and "BINDING:" not in err, \
+        f"the back-out said the offer is kept, or that the record still says binding: {hook!r}"
+    assert _renamed_back(FROM) in err and OFFER_KEPT_NOTE not in err, \
+        f"the window was not renamed back in none's words: {hook!r}"
+    assert renames == [TO, FROM], f"tmux saw {renames}, not {TO} and then {FROM}"
+    if case == "gone-at-its-back-out":
+        assert not est.offer.exists(), \
+            f"the back-out made a record where its binding was gone: {est.record()}"
+    else:
+        assert est.offer.read_bytes() == installed, \
+            f"the back-out wrote over a record that is not its binding: {est.record()}"
+    _nothing_new(est, before, set(), "answer 2's back-out")
+
+
+#: `[unknown-key]`'s line, which no reader of the record knows.
+UNKNOWN_KEY = "t214o_unknown=a key that no reader of the record knows"
+
+
+@pytest.mark.parametrize("case", ["key-twice", "unknown-key", "bounded-other", "bound-rc-nonzero"])
+def test_the_bind_records_grammar_as_every_reader_takes_it(estate, case):
+    """Section 8's :373 (the contract's section 3, its grammar; lane 3's
+    Codex review, #165 6877006381, finding 3).
+
+    - `[key-twice]`: a key given twice is read by its first line, by each
+      reader: the guard's site (`mode=binding` then `mode=bound`, and a
+      `deadline_epoch` ahead then one past: "BINDING IN PROGRESS", the record
+      unchanged); the outer's bound (`c=3` then `c=2`: `bound_s=530`); and
+      the hook's answer 2 (`bind=1` then `bind=7`: attempt 2).
+    - `[unknown-key]`: a line no reader knows survives every rewrite of the
+      record: the hook's and the outer's start, the outcome, the guard's
+      restored offer, the stale row and case 10's.
+    - `[bounded-other]`: `bounded=maybe` reads as `yes`: "at the latest"
+      inside the deadline, `timeout`'s text past it, and on another host no
+      word that the child there may still be running.
+    - `[bound-rc-nonzero]`: a `bound` record whose `rc` is 1 is case 11:
+      dropped with today's text, its `.out` left."""
+    est = estate()
+    now = time.time()
+    if case == "key-twice":
+        holder = _sleeper()
+        est.spare.append(holder.pid)
+        lines = _binding(est, started=now - 30, deadline=int(now) + 100, pid=holder.pid,
+                         pidstart=_stat(holder.pid)["start"])
+        write_record(est.offer, lines + ["mode=bound", "rc=0", f"deadline_epoch={int(now) - 1000}"])
+        before = est.offer.read_bytes()
+        hook = est.hook("hello")
+        assert hook.code == 2 and IN_PROGRESS in hook.err and "MOVED" not in hook.err, repr(hook)
+        assert est.offer.read_bytes() == before, "the guard's site took a key's second line"
+        lines = [line for line in _binding(est, started=time.time())
+                 if not line.startswith(("pid=", "pidstart="))]
+        write_record(est.offer, lines + ["c=3", "n_a=1", "w_s_ms=0", "c=2"])
+        proc = _guard_bind(est, est.sid, LANES_BIND_BODY=str(est.body))
+        record = est.record()
+        assert proc.returncode == 0 and record.get("bound_s") == "530", \
+            f"the outer's bound took c's second line: {record}\n{proc.stderr}"
+        hook = est.hook("the next prompt")
+        assert hook.code == 2 and "MOVED" in hook.err, repr(hook)
+        est.make_offer()
+        write_record(est.offer, est.offer.read_text(encoding="utf-8").splitlines()
+                     + ["bind=1", "bind=7"])
+        est.answer_2()
+        assert est.record().get("bind") == "2", \
+            f"the hook's answer 2 took bind's second line: {est.record()}"
+        assert est.ended()["mode"] == "bound", est.record()
+        return
+    if case == "unknown-key":
+        est.set("rc", 1)
+        est.make_offer()
+        write_record(est.offer, est.offer.read_text(encoding="utf-8").splitlines() + [UNKNOWN_KEY])
+
+        def kept() -> bool:
+            return UNKNOWN_KEY in est.offer.read_text(encoding="utf-8").splitlines()
+
+        survived = {}
+        est.answer_2()
+        est.outer()
+        survived["the hook's answer 2 and the outer's start"] = kept()
+        est.ended()
+        survived["the outer's outcome"] = kept()
+        hook = est.hook("after the failure")
+        assert hook.code == 2 and est.record().get("mode") == "name-drift", repr(hook)
+        survived["the guard's restored offer"] = kept()
+        dead = _dead_pid()
+        write_record(est.offer, _binding(est, started=now - 600, deadline=int(now) - 1, pid=dead,
+                                         pidstart="1") + [UNKNOWN_KEY])
+        hook = est.hook("hello")
+        assert hook.code == 2 and NO_OUTCOME in hook.err, repr(hook)
+        survived["the stale row"] = kept()
+        write_record(est.offer, _binding(est, started=now - 700, deadline=int(now) - 62, pid=dead,
+                                         pidstart="1", host="Elsewhere") + [UNKNOWN_KEY])
+        hook = est.hook("hello")
+        assert hook.code == 2 and NO_OUTCOME in hook.err, repr(hook)
+        survived["case 10's"] = kept()
+        assert all(survived.values()), f"a rewrite dropped {UNKNOWN_KEY!r}: {survived}"
+        return
+    if case == "bounded-other":
+        holder = _sleeper()
+        est.spare.append(holder.pid)
+        start = _stat(holder.pid)["start"]
+        write_record(est.offer, _binding(est, started=now - 30, bounded="maybe",
+                                         deadline=int(now) + 100, pid=holder.pid, pidstart=start))
+        hook = est.hook("hello")
+        assert hook.code == 2 and IN_PROGRESS in hook.err and "at the latest" in hook.err, repr(hook)
+        write_record(est.offer, _binding(est, started=now - 600, bounded="maybe",
+                                         deadline=int(now) - 95, pid=holder.pid, pidstart=start))
+        hook = est.hook("hello")
+        assert hook.code == 2 and "has not ended it; it is likely stuck on the disk or the network" \
+            in hook.err and "This host has no" not in hook.err, repr(hook)
+        write_record(est.offer, _binding(est, started=now - 30, bounded="maybe",
+                                         deadline=int(now) + 100, pid=_dead_pid(), pidstart="1",
+                                         host="Elsewhere"))
+        hook = est.hook("hello")
+        assert hook.code == 2 and "A BIND OF THIS TRANSCRIPT IS RUNNING ON Elsewhere/" in hook.err \
+            and "may still be running" not in hook.err, repr(hook)
+        return
+    est.offer.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    out = Path(f"{est.offer}.bind.1.out")
+    out.write_text("the attempt's output\n", encoding="utf-8")
+    write_record(est.offer, ["mode=bound"] + _binding(est, started=now - 60)[1:]
+                 + ["rc=1", f"ended_utc={_utc(now)}"])
+    hook = est.hook("hello")
+    assert hook.code == 2 and UNREADABLE in hook.err and "MOVED" not in hook.err, repr(hook)
+    assert not est.offer.exists() and out.exists(), \
+        "a bound record whose rc is 1 was not dropped as case 11, its .out left"
+
+
+#: Section 8's :375, with K3: section 7's table, row by row, for the outer and
+#: the body, but for the rows other cases take (S1, :360, S2, case 6, case 5
+#: and T254's cases 10 and 19).
+EXIT_CASES = ["outer-usage", "outer-unsafe-name", "outer-no-record", "outer-not-binding",
+              "outer-has-pid", "outer-start-rewrite-fails", "body-usage", "body-unsafe-name",
+              "body-not-binding-with-facts", "body-not-binding-without-facts", "body-lane-start-0"]
+
+
+@pytest.mark.parametrize("case", EXIT_CASES)
+def test_guard_bind_exits_as_section_7_gives(estate, case):
+    """Section 8's :375 (lane 3's Codex review, #165 6877006381, finding 6;
+    K3): `guard-bind` called directly, as case 22 calls it, exits as section
+    7's table gives, and where nothing ran, the record is as it was and no
+    `lane-start` started.
+
+    - The outer's 2: its usage, no argument or two; a name that is no safe
+      name for `offers/<uuid>`; no record; a record not `binding`; and one
+      that already holds a `pid`.
+    - `[outer-start-rewrite-fails]`, its 1: a test-only copy fails its start
+      rewrite at the `mv`. Nothing ran, the record is as it was, no
+      temporary file is in `offers/`, and the guard reads the `binding`,
+      which holds no pid, as in progress.
+    - The body's 2: its usage; an unsafe name; and a record not `binding`,
+      with a `why=` in its facts file where `LANES_BIND_FACTS` hands it a
+      valid path, and with no facts file where it has none.
+    - `[body-lane-start-0]`: `lane-start` ends 0 and the act after it fails,
+      the lane left's `set-row-state` through a `LANES_EDIT` that refuses
+      with 1: a `note=` in the facts file, no `why=`, and the body exits 0."""
+    est = estate()
+    facts = Path(f"{est.offer}.bind.1.facts")
+    if case in ("outer-no-record",):
+        done = [_guard_bind(est, est.sid)]
+        assert [d.returncode for d in done] == [2], [(d.returncode, d.stderr) for d in done]
+        assert not est.offer.exists() and not est.starts(), "an outer with no record ran"
+        return
+    if case in ("outer-not-binding", "body-not-binding-with-facts",
+                "body-not-binding-without-facts"):
+        est.make_offer()
+    elif case == "outer-has-pid":
+        holder = _sleeper()
+        est.spare.append(holder.pid)
+        write_record(est.offer, _binding(est, started=time.time(), pid=holder.pid,
+                                         pidstart=_stat(holder.pid)["start"]))
+    else:
+        _direct_record(est)
+    before = est.offer.read_bytes()
+    program = GUARD
+    if case == "outer-start-rewrite-fails":
+        program = _bind_copy(est, [(ANCHOR_MV, _fail_mv("pid=*"))])
+    unsafe = [f"../{est.sid}", f"x/{est.sid}"]
+    calls = {
+        "outer-usage": [(), (est.sid, est.sid)],
+        "outer-unsafe-name": [(name,) for name in unsafe],
+        "outer-not-binding": [(est.sid,)],
+        "outer-has-pid": [(est.sid,)],
+        "outer-start-rewrite-fails": [(est.sid,)],
+        "body-usage": [("--body",), ("--body", est.sid, est.sid)],
+        "body-unsafe-name": [("--body", name) for name in unsafe],
+        "body-not-binding-with-facts": [("--body", est.sid)],
+        "body-not-binding-without-facts": [("--body", est.sid)],
+        "body-lane-start-0": [("--body", est.sid)],
+    }[case]
+    extra = {}
+    if case in ("body-unsafe-name", "body-not-binding-with-facts", "body-lane-start-0"):
+        extra["LANES_BIND_FACTS"] = str(facts)
+    if case == "body-lane-start-0":
+        refusals = est.ctl / "refusing-edit.log"
+        extra["LANES_EDIT"] = str(_script(
+            est.root / "refusing-lanes-edit",
+            f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {shlex.quote(str(refusals))}\n"
+            "echo 'lanes-edit.sh: the stand-in refuses with 1 (T214o)' >&2\nexit 1\n"))
+    done = [_guard_bind(est, *args, program=program, **extra) for args in calls]
+    codes = [d.returncode for d in done]
+    said = "\n".join(d.stderr for d in done)
+    if case == "body-lane-start-0":
+        lines = facts.read_text(encoding="utf-8").splitlines() if facts.exists() else []
+        assert codes == [0], f"the body exited {codes}, not 0: {said}"
+        assert len(est.starts()) == 1, est.starts()
+        assert refusals.exists() and refusals.read_text(encoding="utf-8").startswith(
+            "set-row-state "), "the body's set-row-state never ran"
+        assert [line for line in lines
+                if line.startswith(f"note=lane {FROM}'s row was not marked PAUSED")] \
+            and not [line for line in lines if line.startswith("why=")], \
+            f"the failed act after lane-start's 0 is not a note= alone: {lines}\n{said}"
+        return
+    want = 1 if case == "outer-start-rewrite-fails" else 2
+    assert codes == [want] * len(calls), f"guard-bind exited {codes}, not {want}: {said}"
+    assert est.offer.read_bytes() == before, f"the record changed: {est.record()}"
+    assert not est.starts(), f"lane-start ran: {est.starts()}"
+    if case.endswith("-usage"):
+        usage = "usage: guard-bind --body <session uuid>" if case.startswith("body") \
+            else "usage: guard-bind <session uuid>"
+        assert all(usage in d.stderr for d in done), said
+    if case == "outer-start-rewrite-fails":
+        assert not _temporaries(est), f"the failed start rewrite left {_temporaries(est)}"
+        assert not list(est.offer.parent.glob(f"{est.sid}.bind.*")), \
+            "the outer made its attempt's files though nothing ran"
+        hook = est.hook("hello")
+        assert hook.code == 2 and IN_PROGRESS in hook.err \
+            and "its outer's pid not recorded" in hook.err, repr(hook)
+        return
+    if case == "body-not-binding-with-facts":
+        why = read_record(facts).get("why", "")
+        assert "mode=binding" in why, f"the body's 2 left no why= in its facts file: {why!r}"
+        return
+    assert not list(est.offer.parent.glob(f"{est.sid}.bind.*")), \
+        f"a file was made beside the record: {sorted(est.offer.parent.glob(f'{est.sid}.bind.*'))}"
 
 
 # ============================================================ T254: AT-F6's writes, primary
@@ -2997,6 +4916,83 @@ def test_the_stale_row_copies_a_dead_outers_pending_call_and_the_next_2_looks_it
 #: clock: the largest, 0, is neither first nor last, and none is in the
 #: future, so the lookup decides at once.
 NOT_AFTER_OFFSETS = [-30, 0, -20]
+
+
+@pytest.mark.parametrize("copy", ["no-write-id", "no-pending-record", "write-id-not-uuid"])
+def test_a_bind_whose_write_id_no_pending_record_holds_makes_no_lookup(estate, copy):
+    """Section 8's :376 (spec#47's draft 14 `96d14916`; the contract's section
+    3, its `write_id` row; lane 5's name, #165 6881714002; T254's, lane 2's
+    K1, #165 6882026139: phase 2 on primary, AT-F6's writes). A first bind,
+    whose stand-in `lane-start` writes a whole `start-record` pending record
+    of this session with a `call=` line, as case 20's does, and exits 3,
+    leaves a record holding the five copies; the bind-failed reply restores
+    the offer with them. Then its `write_id` is changed, and `ended_utc` set
+    to now, so a `w₀` wait would hold the body `N_a`*`c` + 6 s, 8 s at the
+    defaults:
+
+    - `[no-write-id]`: the record holds no `write_id`, the other four kept;
+    - `[no-pending-record]`: a new uuid, which no pending record holds,
+      while the first attempt's pending record of this session is still
+      there with its own;
+    - `[write-id-not-uuid]`: the first attempt's id in upper case, which is
+      no uuid in the record's grammar.
+
+    At the next `2` the body makes no lookup, no `find_write` call in the
+    shim's log after it, and no `w₀` wait: the stand-in `lane-start` starts
+    before `ended_utc` plus that `C`, and the record ends `bound`, holding
+    none of the copies. The first attempt's pending record is left, as
+    nothing looked it up or settled it."""
+    est = estate(mode="primary")
+    est.shim()
+    est.extra["LANES_HOST"] = HOST
+    est.make_offer()
+    generation = est.pg.psql("SELECT generation FROM lanes_register.register_switch;"
+                             ).stdout.split()[-1]
+    head = est.pg.psql("SELECT seq FROM lanes_register.register_head;").stdout.split()[-1]
+    est.set("pending-record", json.dumps({
+        "generation": generation, "lane": TO, "session": est.sid, "host": HOST,
+        "container": CONTAINER, "database": "register-test", "base": int(head),
+        "not_after_offsets": [0]}))
+    est.set("rc", 3)
+    est.answer_2()
+    first = est.ended(120)
+    written = [e["pending"] for e in est.starts() if e.get("pending")]
+    assert first["mode"] == "bind-failed" and first["rc"] == "3" \
+        and all(k in first for k in COPIES), first
+    assert written and read_record(Path(written[0])).get("write_id") == first["write_id"], \
+        (written, first)
+    est.hook("hello")
+    # THE SECOND ATTEMPT'S STAND-IN WRITES NO PENDING RECORD, AND ENDS 0.
+    (est.ctl / "pending-record").unlink()
+    est.set("rc", 0)
+    lines = [line for line in est.offer.read_text(encoding="utf-8").splitlines()
+             if not line.startswith(("write_id=", "ended_utc="))]
+    if copy == "no-pending-record":
+        lines.append(f"write_id={uuid.uuid4()}")
+    elif copy == "write-id-not-uuid":
+        upper = first["write_id"].upper()
+        assert upper != first["write_id"], first["write_id"]
+        lines.append(f"write_id={upper}")
+    ended = int(time.time())
+    write_record(est.offer, lines + [f"ended_utc={_utc(ended)}"])
+    record = est.record()
+    assert record.get("mode") == "name-drift" and record.get("write_id") != first["write_id"] \
+        and all(k in record for k in COPIES if k != "write_id"), record
+    c = max(2, int(record.get("c") or 2))
+    n_a = max(1, int(record.get("n_a") or 1))
+    before = len(est.shim_calls())
+    est.answer_2()
+    end = est.ended(120)
+    calls = est.shim_calls()[before:]
+    starts = est.starts()
+    assert not [call for call in calls if "find_write" in call.get("sent", "")], \
+        f"[{copy}]: the body looked up a write no pending record holds: {calls}"
+    assert len(starts) == 2 and starts[1]["t"] < ended + n_a * c + 6, \
+        (f"[{copy}]: the second lane-start started {starts[-1]['t'] - ended:.1f} s after "
+         f"ended_utc, at or past C = {n_a * c + 6} s: a w0 wait")
+    assert end["mode"] == "bound" and end["rc"] == "0" \
+        and not [k for k in COPIES if k in end], end
+    assert Path(written[0]).exists(), "the first attempt's pending record was settled"
 
 
 def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, request):
@@ -4177,9 +6173,13 @@ class _Listener:
     a rename (`write_record`), after its bind and before its listen, as the
     service writes its own before its socket can be reached (section 2.4,
     "How it is written"). Nothing removes it, as nothing removes the
-    service's: the next service replaces it."""
+    service's: the next service replaces it.
 
-    def __init__(self, est: Estate, hang: bool, whole: bool = False):
+    WITH `answer` (T237zze), a connection that sent any bytes is answered
+    with `answer` before it is closed, as a service answers a request; one
+    that sent none is closed with nothing sent, and its record is `b""`."""
+
+    def __init__(self, est: Estate, hang: bool, whole: bool = False, answer: bytes = None):
         import socket
         run = _run_dir(est)
         run.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -4210,6 +6210,11 @@ class _Listener:
                 except OSError:
                     pass
                 self.got.append(data)
+                if answer is not None and data:
+                    try:
+                        conn.sendall(answer)
+                    except OSError:
+                        pass
                 if hang:
                     self.held.append(conn)
                 else:
@@ -5028,8 +7033,12 @@ def _estate_servers(est: Estate) -> list:
     copy (`Estate.index`), with `serve` among the words after it: a start,
     `serve --start`, or the service one starts, whose argv is that path and
     `serve` (`register_serve_launch`). The path is compared by its real
-    path, as the guard resolves its own directory (`readlink -f`); it is
-    under the estate's own root, so no other estate's process carries it."""
+    path, as the guard resolves its own directory (`readlink -f`). For a
+    primary estate on the module's own guard it is the estate's own copy,
+    under its root, so no other estate's process carries it; a files-mode
+    estate's `Estate.index` is the checkout's `lanes-index`, which every
+    such estate shares. So it is a lookup for the primary cases that call
+    it, and never what the teardown signals by (T237zzd)."""
     index = os.path.realpath(est.index)
     found = []
     for entry in Path("/proc").iterdir():
@@ -5575,6 +7584,135 @@ def test_a_client_of_another_uid_is_closed_by_so_peercred(estate):
          f"{answer[:80]!r}; 'closed a client of another uid' lines {before} then {after}")
 
 
+#: T237zze: THE GUARD'S `lanes-index` WHOSE SERVER IS ANOTHER UID, the
+#: client's half of `_OTHER_UID_SERVE` (tasks:2278 at lane 3's commit 31
+#: `8f50d105`). It goes beside a copy of the estate's `lanes-edit.sh`, where
+#: `lanes_index_bin` looks first. It loads the estate's own `lanes-index`,
+#: @INDEX@, so `register_serve_install` still states that file, the one the
+#: owner file names, and replaces its one peer-credential read,
+#: `register_peercred` (`lanes-index:7709` at line R's merge161), with one
+#: that logs each call, its pid and its caller, to @LOG@ and answers
+#: `os.getuid() + 1`. Then it runs `main` as the script does.
+_OTHER_UID_CLIENT = r'''#!@PY@ -I
+import importlib.machinery, importlib.util, os, sys
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("lanes_index_other_uid_client", @INDEX@)
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+sys.modules[loader.name] = module
+loader.exec_module(module)
+if not callable(getattr(module, "register_peercred", None)):
+    sys.exit("lanes-index reads no peer credential through register_peercred (T512)")
+
+
+def register_peercred(conn):
+    with open(@LOG@, "a", encoding="utf-8") as log:
+        log.write(f"{os.getpid()} {sys._getframe(1).f_code.co_name}\n")
+    return os.getuid() + 1
+
+
+module.register_peercred = register_peercred
+sys.exit(module.main(sys.argv[1:]))
+'''
+
+
+def test_the_client_treats_a_service_of_another_uid_as_unavailable(estate):
+    """SVC-2, THE CLIENT'S HALF: the guard's client treats a server of
+    another uid as unavailable and trusts no answer from it (tasks:2278 at
+    lane 3's commit 31 `8f50d105`, with T237's Tests at :2272 and T512's
+    verify at :1604; test-map row 634; design:3838-3843; socket API section
+    3, `fa613b9d`:157-158, at draft 13). CI has no second uid, so, as
+    `test_a_client_of_another_uid_is_closed_by_so_peercred` does for the
+    service, the guard runs a stand-in `lanes-index`, `_OTHER_UID_CLIENT`,
+    whose `register_peercred` answers `os.getuid() + 1`.
+
+    THE ORACLE (tasks:2278): a server of the case's own at the socket path
+    answers every request with the `ok` state's answer, in an estate whose
+    state is `refuse`. The guard prints `guard: direct (service
+    unavailable)` once, and its exit, stdout and stderr are the `refuse`
+    state's direct read, byte for byte. An answer it trusted would show:
+    the `ok` state's guard run is checked to differ from that direct read,
+    the fallback line aside.
+
+    CODEX'S SHOULD ON COMMIT 31 (its delta review of `8f50d105`, which lane
+    2 takes): the client reads the owner file after its connect and before
+    its uid check (socket API section 2.4, `fa613b9d`:143-145), and a file
+    it cannot use falls back the same way for another reason. So the server
+    is `_Listener`, which writes a whole, matching, 0600 `register.owner`
+    with `install=`, `pidns=` and `boot=` (`_owner_lines`). The case asserts
+    exactly one `register_peercred` call by the guard's client, and that
+    the one connection the server accepted got no request bytes: the
+    client sends none to a server of another uid (`lanes-index:9704-9705`,
+    before `sendall` at :9709, at line R's merge161;
+    `bc9ed80b:lanes-index:9102-9106`).
+
+    THE `ok` STATE'S ANSWER is the real service's, on this estate's own
+    register. In the `ok` state (`_guard_state`'s), a `_Listener` records
+    the guard's request; the service is started and warmed (`_warm`, whose
+    run is the `ok` state's guard answer), and `_ask_service` sends it that
+    request. Then one write brings the register to `refuse`, as
+    `_guard_state` makes it, and the direct read is the guard's own
+    fallback from a `_Listener` that answers nothing: a client of this uid,
+    which sends the same request and starts no service. It fails until
+    L5-S1, lane 5's T512, whose client check it runs."""
+    est = estate(mode="primary", to=FROM, to_row=False)
+    est.sql_register = _Register(est)
+    probe = _Listener(est, hang=False, whole=True)
+    try:
+        est.hook("hello")
+    finally:
+        probe.close()
+    assert len(probe.got) == 1 and probe.got[0].endswith(b"\nend\n"), \
+        f"the guard's client sent no whole request to a server of this uid: {probe.got!r}"
+    request = probe.got[0]
+
+    def text_answer():
+        got = _ask_service(est, request)
+        return got if got.startswith(b"text ") else None
+
+    svc = _Service(est)
+    try:
+        ok = _warm(est)
+        answer = _until(text_answer, WARM_S, 0.2)
+    finally:
+        svc.stop()
+    assert answer, "the service gave the guard's request no text answer in the ok state"
+    _live_other(est)
+    est.push_register([_row(FROM, est.other, "LIVE")])
+    plain = _Listener(est, hang=False, whole=True)
+    try:
+        direct = est.hook("hello")
+    finally:
+        plain.close()
+    assert plain.got == [request] and direct.err.count(FALLBACK) == 1 and not direct.killed, \
+        (f"the refuse state's direct read did not send the ok state's request and fall back: "
+         f"{plain.got!r} {direct!r}")
+    unfallen = [line for line in direct.err.splitlines() if line != FALLBACK]
+    assert (ok.code, ok.out, ok.err.splitlines()) != (direct.code, direct.out, unfallen), \
+        f"the ok state's guard answer is the refuse state's direct read: {ok!r}"
+    seam = est.root / "seam-other-uid"
+    seam.mkdir()
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        if (est.guard.parent / name).exists():
+            shutil.copy2(est.guard.parent / name, seam / name)
+    calls = seam / "register_peercred.calls"
+    _script(seam / "lanes-index", _OTHER_UID_CLIENT, PY=sys.executable, INDEX=_q(est.index),
+            LOG=_q(calls))
+    server = _Listener(est, hang=False, whole=True, answer=answer)
+    try:
+        hook = run_hook(["bash", str(seam / "lanes-edit.sh"), "guard"],
+                        est.session.hook_input(prompt="hello"), est.env(), est.session.cwd)
+    finally:
+        server.close()
+    made = calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
+    assert hook.err.count(FALLBACK) == 1 and not hook.killed and \
+        (hook.code, hook.out, hook.err) == (direct.code, direct.out, direct.err), \
+        (f"the guard did not treat a server of another uid as unavailable with the refuse "
+         f"state's direct read: register_peercred calls {made}, the server got "
+         f"{server.got!r}\nthrough the server: {hook!r}\ndirect: {direct!r}")
+    assert len(made) == 1, f"the guard's client made {len(made)} register_peercred calls: {made}"
+    assert server.got == [b""], f"a server of another uid was sent request bytes: {server.got!r}"
+
+
 @pytest.mark.parametrize("case", ["namespace", "boot"])
 def test_an_owner_file_from_another_namespace_or_boot_is_no_service(estate, case):
     """SVC-2: an owner file naming another pid namespace or another boot is no
@@ -5593,11 +7731,16 @@ def test_an_owner_file_from_another_namespace_or_boot_is_no_service(estate, case
                                   "00000000-0000-0000-0000-000000000000"), encoding="utf-8")
     # A SOCKET THAT ANSWERS (section 2.4, 13.8): the client treats the service
     # as unavailable, reads directly and starts none.
+    # T237zzd: ONLY THIS ESTATE'S OWN SERVICES ARE COUNTED (`_estate_servers`,
+    # the `serve` its client would start), as T237zzc counts them. The look
+    # took every process on the workstation whose argv ended in `serve`, so a
+    # service an earlier case left, or another lane's, failed this case as
+    # one its client started: merge 151's and 158's c2 runs, four leftover
+    # pids, the same four in both ids.
     try:
         hook = est.hook("hello")
-        serves = [int(e.name) for e in Path("/proc").iterdir() if e.name.isdigit()
-                  and _argv(e.name)[-1:] == ["serve"] and int(e.name) != svc.proc.pid
-                  and _stat(e.name).get("sid") != _stat(svc.proc.pid).get("sid")]
+        serves = [p for p in _estate_servers(est) if _argv(p)[-1:] == ["serve"]
+                  and p != svc.proc.pid and _stat(p).get("sid") != _stat(svc.proc.pid).get("sid")]
     finally:
         svc.stop()
     assert hook.err.count(FALLBACK) == 1 and not hook.killed, repr(hook)
