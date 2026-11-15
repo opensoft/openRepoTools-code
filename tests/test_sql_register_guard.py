@@ -90,7 +90,11 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: (:2419), tasks.md at lane 3's commit 17 `204145ae`, each row's owner and
 #: cite beside it. T214n's five rows, lane 5's five cases of
 #: `bind-record.md`'s section 8, are from T214's Order at the follow-up's
-#: commit 24 `f9d6069e` (tasks:2013), which keeps that line number. T214's
+#: commit 24 `f9d6069e` (tasks:2013), which keeps that line number. T213r's
+#: row for `test_no_session_environment_carries_a_database_url_or_password`
+#: adds T512 to T213's Order: its `PGPASSFILE` assertions read the
+#: service's own held `psql` child (TP:1952 at `f9d6069e`), which only
+#: T512's `serve` starts, and T512's verify runs it (tasks:1604). T214's
 #: two cases that pass today,
 #: `test_the_hook_string_and_guard_timeout_are_unchanged` and
 #: `test_an_unreadable_bind_record_is_dropped_with_exit_2` (tasks:2013), have
@@ -131,7 +135,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_each_service_request_is_one_query": ("T229", "T512", "T513"),  # T237; tasks:2302
     "test_guard_bind_computes_bound_s_from_c_n_a_and_the_service": ("T502", "T507"),  # T214; tasks:2013
     "test_kill_of_the_bind_outer_ends_the_record_with_the_signals_code": ("T502",),  # T214; tasks:2013
-    "test_no_session_environment_carries_a_database_url_or_password": ("T103", "T113", "T502", "T507"),  # T213; tasks:1992
+    "test_no_session_environment_carries_a_database_url_or_password": ("T103", "T113", "T502", "T507", "T512"),  # T213; tasks:1992, and T512 (T213r)
     "test_one_instance_holds_register_lock_and_a_second_starter_exits_0": ("T512", "T513"),  # T237; tasks:2302
     "test_pid_start_of_answers_live_dead_and_unreadable": ("T502",),  # T214; tasks:2013
     "test_serve_refuses_unless_the_mode_answer_is_primary": ("T512", "T513"),  # T237; tasks:2302
@@ -238,7 +242,11 @@ REGISTER_HEADER = ["# LANES.md", "",
 #: given code, or forks a `( ... & )` child as `index_nudge` does). It logs one
 #: JSON line at its start and one at its end to `<ctl>/lane-start.log`, with
 #: its argv, its process's ids, the variables lane 4's table names, and where
-#: its stdin points. The files in `<ctl>` steer it: `hold` (wait for
+#: its stdin points. Before that line it writes its whole environment, what
+#: the bind hands `lane-start` and so a session, to
+#: `<ctl>/lane-start.environ.<pid>.json`, whole, by a temporary file and a
+#: rename (T213r reads it for a URL or a password), so the log's lines stay
+#: as short as they were. The files in `<ctl>` steer it: `hold` (wait for
 #: `release`, at most that many seconds), `sleep` (that many seconds),
 #: `rc`, `ignore-term`, `tmux` (make one untargeted `tmux` call) and `fork`
 #: (leave a child that ignores TERM, living that many seconds).
@@ -268,6 +276,10 @@ def ids():
 def log(entry):
     with open(os.path.join(CTL, "lane-start.log"), "a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, sort_keys=True) + "\n")
+environ_file = os.path.join(CTL, "lane-start.environ.%d.json" % os.getpid())
+with open(environ_file + ".tmp", "w", encoding="utf-8") as handle:
+    json.dump(dict(os.environ), handle, sort_keys=True)
+os.replace(environ_file + ".tmp", environ_file)
 entry = dict(event="start", argv=sys.argv[1:], pid=os.getpid(), t=time.time(),
              env={k: os.environ.get(k) for k in KEYS}, **ids())
 try:
@@ -3472,18 +3484,185 @@ def test_the_direct_read_connects_as_its_engineers_reader_login(estate):
     assert all("writer" not in (c.get("pg", {}).get("PGUSER") or "") for c in calls), calls
 
 
+#: How long the case waits for the service's held `psql` child to start: the
+#: service starts its connect as it listens (`begin`, lane 3's ruling, #165
+#: 6827356485, point 3), so the child is there almost at once.
+HELD_CHILD_S = 10.0
+
+
+def _role_passfiles(est: Estate) -> dict:
+    """EACH REGISTER ROLE'S OWN PASSWORD FILE (TP:1952 at `f9d6069e`;
+    `contracts/config.md`'s password-file row; contract section 2.2), as
+    T220's case configures them (`b8785b8b:tests/test_sql_register_bounds.py:316-323`):
+    the estate's configuration gains `reader_passfile=`, the READER's 0600
+    file, which the guard's direct read and the service both connect with
+    (each a `PostgresStore(cfg, "register_reader")`), and
+    `register_passfile=`, the REGISTER-WRITER's, which no read may carry.
+    Each file is one libpq line, `*:*:*:*:<password>`, its password a new
+    uuid's hex, so the case can look for it in any variable. The cluster
+    trusts its own socket, so libpq never sends either. Returns
+    {key: (path, password)}."""
+    made = {}
+    for key, role in (("reader_passfile", "reader"), ("register_passfile", "writer")):
+        path = est.root / "conf" / f"{role}.pgpass"
+        password = f"{role}-{uuid.uuid4().hex}"
+        handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(handle, "w", encoding="utf-8") as out:
+            out.write(f"*:*:*:*:{password}\n")
+        path.chmod(0o600)
+        made[key] = (path, password)
+    _db_config(est, est.pg.url(), **{key: path for key, (path, _) in made.items()})
+    return made
+
+
+def _json_file(path: Path):
+    """A JSON file a stand-in wrote whole, by a temporary file and a rename,
+    or None where it is not there."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+
+
+def _held_children(stream) -> list:
+    """The service's held `psql` children whose start `stream` (a
+    `_StreamPsql`) logged, by their `VERBOSITY=sqlstate`; none yet where the
+    log's last line is still being written."""
+    try:
+        return [r for r in stream.log("stream-begin.log") if r.get("held")]
+    except ValueError:
+        return []
+
+
+def _carried(where: str, env: dict, secrets) -> list:
+    """Each variable of `env` whose value holds a secret of `secrets`, each
+    (what, text), or a `postgresql://` or `postgres://` URL (libpq's two
+    schemes), one line each, naming `where`."""
+    found = []
+    for key, value in sorted(env.items()):
+        value = value or ""
+        found += [f"{where}: {key} carries {what}" for what, text in secrets if text in value]
+        if "postgresql://" in value or "postgres://" in value:
+            found.append(f"{where}: {key} carries a URL, {value!r}")
+    return found
+
+
+def _child_findings(where: str, argv, passfile: str, pgpassword: bool, variables: dict,
+                    role_file: Path, secrets) -> list:
+    """TP:1952-1953 FOR ONE `psql` CHILD, the service's or a direct read's:
+    its `PGPASSFILE` is its role's configured file, `PGPASSWORD` is not set,
+    and no variable or argument carries a password, the other role's file,
+    a configured URL or any `postgresql://` string, since the connection is
+    the URL's mapping into `PGHOST`, `PGPORT`, `PGDATABASE` and `PGUSER`
+    alone (contract section 2.2). One line per finding."""
+    found = []
+    if passfile != str(role_file):
+        found.append(f"{where}: PGPASSFILE is {passfile!r}, not its role's file {role_file}")
+    if pgpassword:
+        found.append(f"{where}: PGPASSWORD is set")
+    found += _carried(where, variables, secrets)
+    found += [f"{where}: an argument carries {what}" for what, text in secrets
+              if any(text in arg for arg in argv)]
+    found += [f"{where}: an argument is a URL, {arg!r}" for arg in argv if "://" in arg]
+    return found
+
+
 def test_no_session_environment_carries_a_database_url_or_password(estate):
-    """AT-10: no variable of the session's environment, as the guard and the
-    bind's child see it, carries a database URL or a password."""
+    """AT-10 (TP:1949-1953 at `f9d6069e`; tasks:1979): no variable of an
+    environment a session inherits carries a database URL or a password,
+    while each `psql` child, the service's own and each direct read's,
+    carries its role's 0600 password file as `PGPASSFILE` and no password,
+    URL or `PGPASSWORD`.
+
+    THE ORACLE ASSERTED, NOT ONLY OWNED (T213r; RC-26's section A, whose four
+    gaps lane 2's post opensoft/openRepoTools#165 6881947623 names): the
+    estate configures each role's own file (`_role_passfiles`), so a call
+    that drops it, or carries the writer's, differs from the role's file,
+    which the empty `lanes-index.nopass` never could; and the case reads
+    four records:
+
+    - THE SERVICE'S OWN HELD `psql` CHILD, through `_StreamPsql` on the
+      service's `PATH` alone, as SVC-10 does: the stand-in records the
+      child's whole environment, `PGPASSWORD` written `*`, and the child is
+      the one call that carries the service's `VERBOSITY=sqlstate`
+      (`REGISTER_SERVE_PSQL_ARGS`). The service starts it by its connect at
+      listen, so no request is needed. PSQL_SHIM never runs that child,
+      since it reads its stdin to the end first. The service is stopped
+      before the first prompt, so the hook's own first call starts the next
+      one, with PSQL_SHIM as its `psql`, which never connects.
+    - EACH DIRECT READ'S `psql`, through PSQL_SHIM's log: its `passfile`,
+      `pgpassword`, `pg` (the call's `PG*` variables) and `url` (the shim's
+      own `postgresql://` rendering of those variables, which may hold no
+      second URL).
+    - THE SESSION'S ENVIRONMENT, which the runner hands the hook
+      (`Estate.env`), with no `PG*` variable at all, as before.
+    - WHAT THE BIND HANDS `lane-start`, and so a session: the stand-in's
+      whole environment (`lane-start.environ.<pid>.json`). The test plan's
+      fake `claude` records what `lane-start` hands a session (TP:1916); the
+      bind's `lane-start --no-launch` starts none, so the stand-in in its
+      place records it.
+
+    Neither session environment may hold either role's password or file's
+    path, either configured URL or any `postgresql://` string. Every finding
+    is gathered first and asserted once, so one red run names every record
+    a fault reaches. Fails until T512, whose `serve` starts the held child
+    and whose verify runs this case (tasks:1604), besides T502 and T507."""
     est = estate(mode="primary")
+    files = _role_passfiles(est)
+    (reader_file, reader_pw), (writer_file, writer_pw) = (files["reader_passfile"],
+                                                          files["register_passfile"])
+    conf = dict(line.split("=", 1) for line in Path(est.extra["LANES_INDEX_CONFIG"]).read_text(
+        encoding="utf-8").splitlines() if "=" in line)
+    urls = [("register_url='s value", conf["register_url"])]
+    if conf["reader_url"] != conf["register_url"]:
+        urls.append(("reader_url='s value", conf["reader_url"]))
+    passwords = [("the reader's password", reader_pw), ("the writer's password", writer_pw)]
+    child_secrets = passwords + urls + [("the writer's password file's path", str(writer_file))]
+    session_secrets = child_secrets + [("the reader's password file's path", str(reader_file))]
+    est.shim()
+    stream = _StreamPsql(est, est.root / "service-bin")
+    svc = _Service(est, PATH=stream.path(est))
+    try:
+        _until(lambda: _held_children(stream), HELD_CHILD_S, 0.1)
+    finally:
+        svc.stop()
+    held = _held_children(stream)
+    assert held, (f"the service started no held psql child in {HELD_CHILD_S:.0f} s: "
+                  f"{stream.log('stream-begin.log')}")
+    envs = {r["pid"]: _json_file(stream.dir / f"stream-env.{r['pid']}.json") for r in held}
+    assert None not in envs.values(), f"a held child recorded no environment: {envs}"
     est.make_offer()
     est.answer_2()
     est.ended()
-    env = est.starts()[0]["env"]
-    leaked = {k: v for k, v in env.items() if v and ("postgresql://" in v or "PGPASSWORD" in k)}
-    assert not leaked, leaked
-    child = est.session.env(est.base, **est.extra)
-    assert not [k for k, v in child.items() if k.startswith("PG") or "postgresql://" in v]
+    calls = est.shim_calls()
+    assert calls, "the guard made no direct read"
+    starts = est.starts()
+    assert starts, "the bind never started lane-start"
+    handed = _json_file(est.ctl / f"lane-start.environ.{starts[0]['pid']}.json")
+    assert handed, f"the lane-start stand-in recorded no environment: {starts[0]}"
+    found = []
+    for record in held:
+        env = envs[record["pid"]]
+        found += _child_findings(f"the service's held psql child (pid {record['pid']})",
+                                 record["argv"], env.get("PGPASSFILE", ""), "PGPASSWORD" in env,
+                                 env, reader_file, child_secrets)
+    for call in calls:
+        where = f"direct read call {call['call']}"
+        found += _child_findings(where, call["argv"], call.get("passfile", ""),
+                                 call.get("pgpassword", False), call.get("pg") or {},
+                                 reader_file, child_secrets)
+        rendered = call.get("url") or ""
+        rest = rendered.split("://", 1)[1] if rendered.startswith("postgresql://") else rendered
+        found += _carried(f"{where}'s url", {"url": rest}, passwords + urls)
+    session = est.env()
+    found += [f"the session's environment: {key} is set" for key in session
+              if key.startswith("PG")]
+    found += _carried("the session's environment", session, session_secrets)
+    found += [f"what the bind hands lane-start: {key} is set" for key in handed
+              if "PGPASSWORD" in key]
+    found += _carried("what the bind hands lane-start", handed, session_secrets)
+    assert not found, "\n".join([f"{len(found)} finding(s), over {len(held)} held child(ren) "
+                                 f"and {len(calls)} direct read(s):"] + found)
 
 
 def test_claude_no_lane_still_skips_before_any_input(estate):
@@ -4094,7 +4273,11 @@ def _both(est: Estate) -> tuple:
 #: read as each chunk comes) after it was read where the call is the service's
 #: held child, known by its own argv's `VERBOSITY=sqlstate` (d8:229), and at
 #: once for every other call, the guard's direct reads among them. It logs
-#: each call's argv in `stream-begin.log`, and each chunk as it reads it, with
+#: each call's argv in `stream-begin.log`, after it has written the call's
+#: whole environment, `PGPASSWORD`'s value written `*` as PSQL_SHIM writes
+#: it, to `stream-env.<pid>.json` beside it, by a temporary file and a rename
+#: (T213r reads the held child's `PGPASSFILE`, `PGPASSWORD` and any URL
+#: there, since PSQL_SHIM never runs that child); and each chunk as it reads it, with
 #: its monotonic time, the hold in force and whether the call is the held
 #: child, in `stream-chunks.log`, so a chunk that the service's SIGINT
 #: overtakes is logged all the same. SIGINT and SIGTERM go on to the real
@@ -4120,6 +4303,11 @@ def hold_ms():
         return 0.0
 
 
+env_file = os.path.join(HERE, "stream-env.%d.json" % os.getpid())
+with open(env_file + ".tmp", "w", encoding="utf-8") as handle:
+    json.dump({k: "*" if k == "PGPASSWORD" else v for k, v in os.environ.items()}, handle,
+              sort_keys=True)
+os.replace(env_file + ".tmp", env_file)
 log("stream-begin.log", {"argv": args, "pid": os.getpid(), "held": held, "t": time.monotonic()})
 if args == ["--version"]:
     os.execv(REAL, [REAL] + args)
