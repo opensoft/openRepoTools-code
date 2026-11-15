@@ -1480,15 +1480,18 @@ esac
 
 # THE TEXT FOR A WRITE THAT EXITED 3 (T428; design D8, Y:463-469; FR-028;
 # review M11), IN T433's FORM, BOTH SENTENCES (lane 3's G3 and shared ruling
-# 3, #165 6770733371; tasks:1400 at B12b): D8's words, then the off-primary
-# sentence. A 3 is not "written" and not "NOT written": on primary the write
-# is in doubt and may never have committed, and the writer prints the rerun
-# that settles it (Y:2661-2665); off primary the commit is local and may
-# already be on origin. The writer's stderr is kept, and this script prints
-# no command or hint of its own for it (Y:5698-5699): a second write by
-# another command line could write it twice. Defined here, above its first
-# user, W8's arm.
-LS_D8="may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun (off primary), the commit is local and may already be on origin"
+# 3, #165 6770733371; tasks:1400 at B12b): D8's words, then the rule for a
+# writer that printed no such rerun (spec#58 review, NIT 8, item D9). A 3 is
+# not "written" and not "NOT written": on primary the write is in doubt and
+# may never have committed, and the writer prints the rerun that settles it
+# (Y:2661-2665) in two of its five 3s, in two more only where this run was
+# under a `LANES_WRITE_ID`, and in the fifth, a record it cannot read, not
+# at all. So where it printed none, what it printed is what to follow; off
+# primary the commit is local and may already be on origin. The writer's
+# stderr is kept, and this script prints no command or hint of its own for
+# it (Y:5698-5699): a second write by another command line could write it
+# twice. Defined here, above its first user, W8's arm.
+LS_D8="may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun, follow what it printed; off primary, the commit is local and may already be on origin"
 # NO HAND COMMAND OF ITS OWN AFTER A WRITE THAT DID NOT END 0, UNDER A SEQ
 # BASE (lane 3's REV-ACT Q4, #165 6774499606, widened by Q11, #165
 # 6779688808; Y:5601). A command run by hand without this launch's
