@@ -2175,6 +2175,262 @@ def test_noted_line_unconfirmed_is_never_written_again(sweep):
     assert len(_noted_on_origin(box)) == 1, "the publish act wrote no second line"
 
 
+#: A PRIMARY `log`'S 3, in each of its five forms: one `die` each in
+#: `lanes-edit.sh` (`pw_lookup_3`, `pw_owner_live_end`'s three and
+#: `pw_owner_untested_end`), shortened, each with its own opening, which is
+#: what `lane-end` reads the mode by.
+_PRIMARY_RERUN = ("LANES_WRITE_ID=a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d "
+                  "LANES_WRITE_GENERATION=0f1e2d3c-4b5a-4968-8776-655443322110 "
+                  f"LANES_LANE={RUNNER} LANES_SESSION={UUID[RUNNER]} "
+                  f"lanes-edit.sh log NOTED lane:{RUNNER} 'sweep-checkouts (Amendment 23 S6.2): removed 1'")
+_PRIMARY_3 = {
+    "in-doubt": (
+        "lanes-edit: cannot confirm whether register write a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d "
+        "committed; nothing else was written. A commit call of it may have committed, and F3's "
+        "lookup could not settle it: no try took the lock. On primary this write may not be "
+        "written; run the printed `LANES_WRITE_ID` rerun, which writes it once or finds it. "
+        f"Or run it again: {_PRIMARY_RERUN}"),
+    "still-running": (
+        "lanes-edit: an identical write is still running in pid 4242 (write "
+        "a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d, started 2026-11-15T12:00:00Z); this run sent "
+        "nothing, and that write's outcome is not known. Once pid 4242 has ended, run "
+        f"{_PRIMARY_RERUN}, which finds it or writes it once."),
+    "record-unreadable": (
+        "lanes-edit: an identical write is still running in pid 4242 (started "
+        "2026-11-15T12:00:00Z), and its pending record cannot be read as one, so its write id "
+        "is not known here; this run sent nothing, and that write's outcome is not known. Once "
+        "pid 4242 has ended, lanes-index status lists the pending records."),
+    "being-started": (
+        "lanes-edit: an identical write is being started in pid 4242 on h/c (claimed "
+        "2026-11-15T12:00:00Z); its record is not yet written, so its write id is not yet "
+        "known; this run sent nothing. If it is there, that write was made: do not run this "
+        "command again. If it is not, run the same command again."),
+    "untested-claim": (
+        "lanes-edit: an identical write holds the claim it names, whose owner cannot be tested "
+        "here: it names no pid, or cannot be read. It counts as live for the seam's cap "
+        "(DEC-25), and this run's deadline of 30 s passed first; this run sent nothing. A run "
+        "may take that claim after 2026-11-15T12:05:00Z: run it again then."),
+}
+
+
+@pytest.mark.parametrize("form", sorted(_PRIMARY_3))
+def test_noted_line_3_on_primary_relays_the_writers_words_with_no_publish_act(sweep, form):
+    """ON PRIMARY A NOTED WRITE'S 3 IS NO PUSH (lane 3, #165 6894116246: T430
+    takes lane 4's fix, #165 6889006976 item 3). `log` there is one register
+    transaction and ends 3 in five forms, each with its own words, its
+    `LANES_WRITE_ID` rerun where it has one; the publish act sends nothing for
+    a register write. So the sweep relays the writer's words once, prints no
+    command of its own (no publish act, no line by hand), says to settle the
+    line by what the writer printed, and exits 1, as files mode's 3 does."""
+    box = sweep.box
+    words = _PRIMARY_3[form]
+    said = box.root / "primary-3-words.txt"
+    said.write_text(words + "\n", encoding="utf-8")
+    exit3 = _wrapped(box, "lanes-edit-primary-3-log", "log", (
+        f"  cat {said} >&2\n"
+        "  exit 3\n"))
+    result, rows = sweep("--yes", LANES_LANE=RUNNER, LANES_EDIT=exit3)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert _tagged(rows, "removed") == {str(box.checkout(CLOSED))}, rows
+    assert not _noted_on_origin(box)
+    assert result.stderr.count(words) == 1, result.stderr
+    assert "`lanes-edit.sh log` exited 3 on primary (its words are above)" in result.stderr, result.stderr
+    assert "Settle it by what the writer printed, and by nothing else" in result.stderr, result.stderr
+    assert _remedies(result.stderr) == [], result.stderr
+    assert "lanes-edit.sh commit" not in result.stderr, result.stderr
+    assert "may be on origin already" not in result.stderr, result.stderr
+    assert "committed and pushed" not in result.stderr, result.stderr
+    assert "Write the line by hand" not in result.stderr, result.stderr
+    assert "was NOT written" not in result.stderr, result.stderr
+
+
+#: FILES MODE'S 3 (`cp_not_confirmed`), in its own words.
+_FILES_3 = (
+    "lanes-edit: this write committed 0123abc (NOTED lane:repoS4-1) and cannot say whether it "
+    "reached origin/main: the read-back fetch of origin main failed.\n"
+    "lanes-edit: pushed, not confirmed: 0123abc — the read-back fetch of origin main failed; "
+    "the commit is kept on HEAD, and this is never reported as success (Amendment 23 S4)\n")
+#: The note files mode's 3 has always printed, byte for byte.
+_FILES_3_NOTE = (
+    "lane-end: the NOTED line recording this sweep was committed and pushed, and the read-back "
+    "could not confirm it on origin (`lanes-edit.sh log` exited 3, above), so it may be on origin "
+    "already, and it is not to be written again. Nothing was lost: each checkout removed held "
+    "nothing unpublished. The publish act sends its commit only where origin lacks it by content, "
+    "and says so where origin has it:\n")
+
+
+@pytest.mark.parametrize("said", ["files-words", "no-words"])
+def test_noted_line_3_off_primary_keeps_files_modes_note_and_the_publish_act(sweep, said):
+    """A NOTED WRITE'S 3 IN NONE OF PRIMARY'S FIVE FORMS keeps files mode's
+    note and the publish act, byte for byte as before T430's fix (lane 3, #165
+    6894116246): files mode's own `pushed, not confirmed` words, and a 3 whose
+    words say nothing of the mode, where the sweep falls back to today's
+    behaviour. The line did land here: the publish act, run, finds nothing to
+    send, and origin holds the line once."""
+    box = sweep.box
+    words = box.root / "files-3-words.txt"
+    words.write_text(_FILES_3 if said == "files-words" else "", encoding="utf-8")
+    exit3 = _wrapped(box, "lanes-edit-files-3-log", "log", (
+        '  bash "$REAL" "$@"; rc=$?\n'
+        f'  if [ "$rc" = 0 ]; then cat {words} >&2; exit 3; fi\n'
+        '  exit "$rc"\n'))
+    result, rows = sweep("--yes", LANES_LANE=RUNNER, LANES_EDIT=exit3)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert _tagged(rows, "removed") == {str(box.checkout(CLOSED))}, rows
+    assert len(_noted_on_origin(box)) == 1
+    assert _FILES_3_NOTE in result.stderr, result.stderr
+    assert "exited 3 on primary" not in result.stderr, result.stderr
+    remedies = _remedies(result.stderr)
+    assert len(remedies) == 1, remedies
+    assert remedies[0].startswith(f"LANES_LANE={RUNNER} lanes-edit.sh commit "), remedies
+    done = _by_hand(box, remedies[0])
+    assert done.returncode == 0, (done.stdout, done.stderr)
+    assert len(_noted_on_origin(box)) == 1, "the publish act wrote no second line"
+
+
+def _bash_function(text: str, name: str) -> list:
+    """The numbered lines of the bash function `name` in `text`: from its one
+    `name() {` line to the first `}` alone at column 0 after it."""
+    lines = text.splitlines()
+    starts = [n for n, line in enumerate(lines) if line.startswith(f"{name}() {{")]
+    assert len(starts) == 1, (name, starts)
+    end = lines.index("}", starts[0])
+    return list(enumerate(lines[starts[0]:end + 1], starts[0] + 1))
+
+
+def test_noted_line_3_on_primary_patterns_open_the_writers_five_exit_3_dies_and_nothing_else():
+    """THE TWO PATTERNS ARE THE WRITER'S OWN OPENINGS, AND ONLY ITS PRIMARY 3s
+    PRINT THEM (V3F-L4's SHOULD 1 on T430's NOTED `3)` fix). The sweep tells
+    a primary 3 from files mode's by two patterns in its `3)` arm, and the
+    cases above feed it copies of the writer's words. This reads both sides
+    from the repository: the patterns from `lane-end`'s arm, the prefix from
+    `lanes-edit.sh`'s `die`, and the five `die ... 3`s a primary write ends 3
+    with, by their functions (`pw_lookup_3`, `pw_owner_live_end`'s three and
+    `pw_owner_untested_end`). Each of the five opens, after the prefix, with
+    one of the patterns, each pattern opens one at least, and no other line
+    of `lanes-edit.sh` but a comment holds either pattern's words, so files
+    mode's 3 cannot take the primary arm. A reword of either side alone fails
+    here, where the sweep would otherwise fall back to files mode's note."""
+    arm = [line.strip() for line in (REPO / "lane-end").read_text(encoding="utf-8").splitlines()]
+    at = arm.index('case "$sc_noted_rc" in')
+    assert arm[at + 1:at + 3] == ["3)", 'case "$sc_log_err" in'], arm[at:at + 4]
+    patterns = re.findall(r'\*"([^"]*)"\*', arm[at + 3])
+    assert len(patterns) == 2 and arm[at + 3].endswith(")"), arm[at + 3]
+    for pattern in patterns:
+        assert not set(pattern) & set("$`\\*?["), pattern   # a plain substring, as the glob reads it
+
+    text = (REPO / "lanes-edit.sh").read_text(encoding="utf-8")
+    prefix = [m.group(1) for _, line in _bash_function(text, "die")
+              for m in [re.search(r"""printf '([^'%]*)%s\\n' "\$\{1-\}" >&2""", line)] if m]
+    assert prefix == ["lanes-edit: "], prefix
+    openings = [pattern[len(prefix[0]):] for pattern in patterns if pattern.startswith(prefix[0])]
+    assert len(openings) == 2, (prefix, patterns)
+
+    dies = {}
+    for name, count in (("pw_lookup_3", 1), ("pw_owner_live_end", 3), ("pw_owner_untested_end", 1)):
+        found = {n: m.group(1) for n, line in _bash_function(text, name)
+                 for m in [re.fullmatch(r'\s*die "(.*)" 3', line)] if m}
+        assert len(found) == count, (name, found)
+        dies.update(found)
+    for n, message in dies.items():
+        assert any((prefix[0] + message).startswith(pattern) for pattern in patterns), (n, message)
+    for opening in openings:
+        assert any(message.startswith(opening) for message in dies.values()), opening
+
+    elsewhere = [f"{n}: {line.strip()}" for n, line in enumerate(text.splitlines(), 1)
+                 if n not in dies and not line.lstrip().startswith("#")
+                 and any(opening in line for opening in openings)]
+    assert not elsewhere, elsewhere
+
+
+@pytest.mark.parametrize("form", sorted(_PRIMARY_3))
+def test_a_signal_while_the_noted_line_is_written_on_primary_relays_the_writers_3(sweep, form):
+    """ON PRIMARY A SIGNAL DURING THE NOTED WRITE ADDS NOTHING TO THE
+    WRITER'S 3 (lane 4's #165 6895094501: the signal path of T430's NOTED
+    `3)` fix). bash runs the sweep's trap once the writer has ended; here
+    the writer ends 3 in one of a primary write's five forms, and the sweep
+    is sent TERM while it runs. The sweep relays the writer's words once,
+    says to settle the line by what the writer printed, prints no command
+    of its own (no publish act, no line by hand), and keeps the signal's
+    code, 143. The `3)` arm never runs: the trap ends the run first."""
+    box = sweep.box
+    words = _PRIMARY_3[form]
+    said = box.root / "primary-3-words.txt"
+    said.write_text(words + "\n", encoding="utf-8")
+    stopped = _wrapped(box, "lanes-edit-stopped-primary-3-log", "log", (
+        f"  cat {said} >&2\n"
+        "  trap '' TERM; kill -TERM 0\n"
+        "  exit 3\n"))
+    result, rows = _run_own_group(box, "--yes", LANES_LANE=RUNNER, LANES_EDIT=stopped)
+    assert result.returncode == 143, (result.stdout, result.stderr)
+    assert _tagged(rows, "removed") == {str(box.checkout(CLOSED))}, rows
+    assert not _noted_on_origin(box)
+    assert result.stderr.count(words) == 1, result.stderr
+    assert "a signal stopped this sweep while its NOTED line was being written" in result.stderr
+    assert "`lanes-edit.sh log` ended 3 on primary (its words are above)" in result.stderr, result.stderr
+    assert "Settle it by what the writer printed, and by nothing else" in result.stderr, result.stderr
+    assert _remedies(result.stderr) == [], result.stderr
+    assert "lanes-edit.sh commit" not in result.stderr, result.stderr
+    assert "may be on origin already" not in result.stderr, result.stderr
+    assert "written by hand" not in result.stderr, result.stderr
+    assert "exited 3 on primary" not in result.stderr, result.stderr
+
+
+#: The note a signal during the NOTED write has always printed off primary,
+#: byte for byte, before its two commands.
+_SIGNAL_NOTE = (
+    "lane-end: a signal stopped this sweep while its NOTED line was being written, so the line "
+    "may be on origin already, or committed in the checkout it went through and not yet "
+    "published. Nothing was lost: each checkout removed held nothing unpublished. Look at lane "
+    f"{RUNNER}'s log on origin first. Where origin lacks the line, the publish act sends a commit "
+    "that is kept:\n")
+
+
+@pytest.mark.parametrize("said", ["files-words", "no-words"])
+def test_a_signal_while_the_noted_line_is_written_off_primary_keeps_its_note(sweep, said):
+    """A SIGNAL DURING THE NOTED WRITE WHOSE WORDS ARE NONE OF PRIMARY'S
+    FIVE 3s keeps the note it has always printed, byte for byte, and its two
+    commands in their order, the publish act first (lane 4's #165
+    6895094501): files mode's own `pushed, not confirmed` words, and no
+    words at all. A primary writer that ended 0, or that a Ctrl-C ended,
+    prints none of the five, so it meets this note too: nothing it printed
+    tells the sweep its mode."""
+    box = sweep.box
+    words = box.root / "signal-words.txt"
+    words.write_text(_FILES_3 if said == "files-words" else "", encoding="utf-8")
+    stopped = _wrapped(box, "lanes-edit-stopped-files-log", "log", (
+        f"  cat {words} >&2\n"
+        "  trap '' TERM; kill -TERM 0\n"
+        f"  exit {3 if said == 'files-words' else 0}\n"))
+    result, rows = _run_own_group(box, "--yes", LANES_LANE=RUNNER, LANES_EDIT=stopped)
+    assert result.returncode == 143, (result.stdout, result.stderr)
+    assert _tagged(rows, "removed") == {str(box.checkout(CLOSED))}, rows
+    assert _SIGNAL_NOTE in result.stderr, result.stderr
+    assert "ended 3 on primary" not in result.stderr, result.stderr
+    remedies = _remedies(result.stderr)
+    assert len(remedies) == 2, remedies
+    assert remedies[0].startswith(f"LANES_LANE={RUNNER} lanes-edit.sh commit "), remedies
+    assert remedies[1].startswith(
+        f"LANES_LANE={RUNNER} LANES_SESSION={UUID[RUNNER]} lanes-edit.sh log NOTED "), remedies
+
+
+def test_a_signal_on_primary_reads_the_noted_3_arms_two_patterns():
+    """THE SIGNAL PATH TELLS A PRIMARY 3 BY THE `3)` ARM'S OWN TWO PATTERNS
+    (lane 4's #165 6895094501). `sc_on_signal` matches the words the sweep
+    kept against the same two openings as the NOTED `3)` arm, which the
+    guard above ties to the writer's five exit-3 `die`s. This reads both
+    pattern lines from `lane-end` and holds them equal, so a reword of one
+    of them alone fails here."""
+    lines = [line.strip() for line in (REPO / "lane-end").read_text(encoding="utf-8").splitlines()]
+    at = lines.index('case "$sc_noted_rc" in')
+    assert lines[at + 1:at + 3] == ["3)", 'case "$sc_log_err" in'], lines[at:at + 4]
+    start = lines.index("sc_on_signal() {   # <the exit code, 128 plus the signal>")
+    body = lines[start:lines.index("}", start)]
+    cases = [n for n, line in enumerate(body) if line == 'case "$sc_sig_err" in']
+    assert len(cases) == 1, cases
+    assert body[cases[0] + 1] == lines[at + 3], (body[cases[0] + 1], lines[at + 3])
+
+
 def test_noted_line_kept_unpublished_is_published_not_written_again(sweep):
     """A NOTED write that exits 6 with its commit KEPT in the checkout it was
     made in (rv4's SHOULD 2): every push is refused here with origin unmoved.
@@ -2236,6 +2492,70 @@ def test_noted_line_whose_commit_fails_is_put_back_then_written_by_hand(sweep):
     assert remedies[1].startswith(
         f"LANES_LANE={RUNNER} LANES_SESSION={UUID[RUNNER]} lanes-edit.sh log NOTED "), remedies
     hook.rename(hook.with_name("pre-commit.off"))
+    _run_in_order(box, remedies)
+    assert len(_noted_on_origin(box)) == 1, _noted_on_origin(box)
+
+
+def test_noted_line_whose_git_add_fails_on_primary_puts_nothing_back(sweep):
+    """ON PRIMARY A NOTED WRITE WHOSE `git add` FAILS LEFT NOTHING TO PUT
+    BACK (lane 4's #165 6895094501; V3F-L4's NIT 4(b)). There the verb runs
+    in an attempt's child on the write's own scratch tree, so the run's 6
+    carries files mode's words, `git add failed`, while the checkout the
+    line goes through is as its HEAD has it and the register holds none of
+    the line. A `log` wrapper says so and exits 6, touching no checkout. The
+    sweep exits 1, says nothing is left there to put back, and hands out
+    the line by hand alone, with no `restore`; run, it lands the line once."""
+    box = sweep.box
+    runner = box.checkout(RUNNER)
+    failing = _wrapped(box, "lanes-edit-primary-add-6-log", "log", (
+        "  printf 'lanes-edit: git add failed\\n' >&2\n"
+        "  exit 6\n"))
+    result, rows = sweep("--yes", LANES_LANE=RUNNER, LANES_EDIT=failing)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert _tagged(rows, "removed") == {str(box.checkout(CLOSED))}, rows
+    assert not _noted_on_origin(box)
+    assert "the NOTED line recording this sweep was NOT committed" in result.stderr, result.stderr
+    assert (f"lanes/log/{RUNNER}.md in {runner} is as its HEAD has it, so nothing of it is left "
+            "there to put back") in result.stderr, result.stderr
+    assert "the register holds none of the line" in result.stderr, result.stderr
+    assert "restore --staged --worktree" not in result.stderr, result.stderr
+    assert "staged or in the working tree" not in result.stderr, result.stderr
+    remedies = _remedies(result.stderr)
+    assert len(remedies) == 1, remedies
+    assert remedies[0].startswith(
+        f"LANES_LANE={RUNNER} LANES_SESSION={UUID[RUNNER]} lanes-edit.sh log NOTED "), remedies
+    assert box.git("-C", str(runner), "status", "--porcelain", "--", f"lanes/log/{RUNNER}.md") == ""
+    _run_in_order(box, remedies)
+    assert len(_noted_on_origin(box)) == 1, _noted_on_origin(box)
+
+
+def test_noted_line_whose_git_add_fails_with_the_line_left_is_put_back_then_written_by_hand(sweep):
+    """FILES MODE'S FAILED `git add` LEAVES ITS LINE IN THE CHECKOUT, and the
+    6 keeps its `restore` (lane 4's #165 6895094501). `log` appends the line
+    to the runner's log in the checkout it writes through, and its `git add`
+    then fails: a wrapper does both and exits 6. The sweep's status read
+    names the log, so the note and its two commands are as before: put the
+    log back, then write the line by hand. Run in order, they land the line
+    once."""
+    box = sweep.box
+    runner = box.checkout(RUNNER)
+    log = runner / "lanes" / "log" / f"{RUNNER}.md"
+    failing = _wrapped(box, "lanes-edit-files-add-6-log", "log", (
+        f"  printf 'FAKE: a line git could not add\\n' >> {log}\n"
+        "  printf 'lanes-edit: git add failed\\n' >&2\n"
+        "  exit 6\n"))
+    result, rows = sweep("--yes", LANES_LANE=RUNNER, LANES_EDIT=failing)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert _tagged(rows, "removed") == {str(box.checkout(CLOSED))}, rows
+    assert not _noted_on_origin(box)
+    assert (f"git could not add or commit it in {runner} (`lanes-edit.sh log` exited 6, above), so "
+            "it is left there, staged or in the working tree") in result.stderr, result.stderr
+    assert "nothing of it is left there to put back" not in result.stderr, result.stderr
+    remedies = _remedies(result.stderr)
+    assert len(remedies) == 2, remedies
+    assert remedies[0] == f"git -C {runner} restore --staged --worktree -- lanes/log/{RUNNER}.md", remedies
+    assert remedies[1].startswith(
+        f"LANES_LANE={RUNNER} LANES_SESSION={UUID[RUNNER]} lanes-edit.sh log NOTED "), remedies
     _run_in_order(box, remedies)
     assert len(_noted_on_origin(box)) == 1, _noted_on_origin(box)
 
