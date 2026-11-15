@@ -22070,7 +22070,20 @@ guard_offer() {   # <offer file> <pane>
         # the hook's time budget ends it. Then (lane 5's adversarial review of
         # parts 48 to 50, NIT-C) the temporary file `.<uuid>.XXXXXX` is left in
         # `offers/`, since the `rm` after the create never runs, and the prompt
-        # goes however Claude Code treats a hook that its timeout ends.
+        # goes however Claude Code treats a hook that its timeout ends. WHAT
+        # OUTLIVES THAT TIMEOUT (lane 2's further notes on part 51, NIT-7, as its
+        # probe found it; bounding this open is point 27's to rule): where the
+        # signal goes to the hook's top process alone, the `( guard_run )`
+        # subshell and this blocked writer survive, re-parented, holding the
+        # hook's stdout and stderr pipes. They hold no lock, write no record and
+        # rename nothing; the next prompts never open the FIFO (each read tests
+        # `[ -f ]` first), and the offer site refuses it. They stay until they are
+        # killed or the machine restarts, or until something opens the FIFO for
+        # reading: this writer then writes the offer's lines into it, and the
+        # subshell removes its temporary file, writes its refusal to the dead
+        # hook's stderr, and exits. Where the signal goes to the process group,
+        # nothing survives, and only the temporary file stays. Which signal Claude
+        # Code sends is not verified.
         # THE INSTANT LEFT is the 4's test to its `rm`, outside the descriptor: a
         # record put in place there is removed, its `.bind.*` files are not.
         case "$go_nc" in
@@ -22700,6 +22713,12 @@ guard_site_unrestored() {   # <offer file> <the mode loaded>; after `guard_site_
 #   offer    an offer between the same two lanes: another prompt restored it,
 #            or made it again
 #   unread   there, and it could not be read again (part 49's NIT-3)
+#   bind     a bind record (`binding`, `bound` or `bind-failed`) that is not the
+#            one loaded: a newer attempt's, or this attempt's outcome. The
+#            window is that bind's, so it is NOT renamed back, and is left as
+#            that bind leaves it, as `guard_answer_moved` leaves it for a bind
+#            mode (lane 2's further notes on part 51, NIT-6); no offer of this
+#            window's is kept, and the note after it is `changed`'s
 #   changed  anything else, gone included: no offer of this window's is kept
 # and `GSR_NOW` says what that read found, in `guard_record_now`'s words, worded
 # from that read's own results and never from a second look at the path (lane
@@ -22720,6 +22739,8 @@ guard_site_reread() {   # <offer file> <the mode loaded>
         gsr_b="${gsr_b#*"${gsr_nl}bind="}"; gsr_b="${gsr_b%%"$gsr_nl"*}"
         case "$gsr_b" in 1|2|3) GSR_K="$gsr_b" ;; esac ;;
     esac
+  elif [ "${GRS_THERE:-0}" = 1 ]; then
+    case "${GRS_MODE-}" in binding|bound|bind-failed) GSR_FORM=bind ;; esac
   fi
   if [ "$GSR_FORM" = unread ]; then GSR_NOW="it could not be read again"
   elif [ "${GRS_THERE:-0}" = 1 ]; then GSR_NOW="it says mode=${GRS_MODE:-none} now"
@@ -22731,12 +22752,28 @@ guard_site_reread() {   # <offer file> <the mode loaded>
 # I/O 1; lane 5's check of parts 42 to 47, part 48), on `guard_site_reread`'s one
 # read: still the record loaded, or an offer between the same two lanes, and the
 # offer is kept, so the default form is printed; there and not readable again,
-# `unread` (part 49's NIT-3, carried to this note in part 50); anything else, and
-# no offer is kept: `changed`.
+# `unread` (part 49's NIT-3, carried to this note in part 50); a bind record
+# that is not the one loaded, `bind`: no rename back at all, and
+# `guard_site_window_left` says so (lane 2's further notes on part 51, NIT-6);
+# anything else, and no offer is kept: `changed`.
 guard_site_back_form() {   # after `guard_site_reread`
   case "${GSR_FORM-}" in
-    changed|unread) printf '%s\n' "$GSR_FORM" ;;
+    changed|unread|bind) printf '%s\n' "$GSR_FORM" ;;
   esac
+  return 0
+}
+# THE RENAME BACK OF CASES 6, 7 AND 9 (lane 2's further notes on part 51,
+# NIT-6): where the one read found a bind record that is not the one loaded
+# (`bind`), the window is not renamed back to `<from>`, since that would undo
+# that bind's rename and its body's `lane-start` would then refuse it (its veto
+# 2); it is left as it is, as `guard_answer_moved` leaves it for a bind mode,
+# and the note says so. Every other form is `guard_window_back`'s.
+guard_site_window_back() {   # <from> <to> <form, from `guard_site_back_form`, or empty>
+  if [ "${3-}" = bind ]; then
+    note "This window is left as it is and NOT renamed back to ${1-}: the record now holds a bind record that is not this prompt's (${GSR_NOW:-it is gone now}), so the window is left as that bind leaves it."
+    return 0
+  fi
+  guard_window_back "${1-}" "${2-}" ${3:+"$3"} || :
   return 0
 }
 # THE CHOICES ARE PRINTED ONLY WHERE THE NEXT PROMPT IS AN ANSWER TO AN OFFER OF
@@ -22841,7 +22878,7 @@ EOF
         guard_site_reread "$gbt_f" bind-failed
         gbt_wf="$(guard_site_back_form)"
       fi
-      guard_window_back "$GBR_FROM" "$GBR_TO" ${gbt_wf:+"$gbt_wf"} || :
+      guard_site_window_back "$GBR_FROM" "$GBR_TO" "$gbt_wf"
       if [ "$gbt_back" = 1 ]; then
         guard_site_unrestored "$gbt_f" bind-failed
       elif [ "$gbt_k" -ge 3 ]; then
@@ -22943,7 +22980,7 @@ EOF
       guard_site_reread "$gbt_f" binding
       gbt_wf="$(guard_site_back_form)"
     fi
-    guard_window_back "$GBR_FROM" "$GBR_TO" ${gbt_wf:+"$gbt_wf"} || :
+    guard_site_window_back "$GBR_FROM" "$GBR_TO" "$gbt_wf"
     if [ "$gbt_back" = 1 ]; then
       guard_site_unrestored "$gbt_f" binding
     else
