@@ -20458,8 +20458,16 @@ guard_offer_drop() {   # <offer file>
 # allowance has none (choice 1 removes them as it writes it), so even in the
 # window left, this read to the `rm`, a drop never unlinks a live outer's `.out`,
 # which the contract allows case 11 alone to meet (`bind-record.md`, section 1).
-#   0 the record said <mode> and was removed (best effort) · 1 it did not, or is
-#   not there, so nothing was removed
+#   0 the record said <mode> and was removed · 1 it did not, or is not there, so
+#   nothing was removed · 2 it said <mode>, and the `rm` failed, so it is still
+#   there
+# A FAILED `rm` IS REPORTED, AS 2 (lane 3's review of `12eddddf..00e2c92e`,
+# SHOULD-1, #165 6894385553; parts 23, 27 and 28): where the offers directory
+# cannot be written, the record is still there after the drop, and a caller that
+# took 0 said it was DROPPED and that the question would be asked afresh. 2 is
+# given where the `rm` failed and a record is still at the path; a `.bind.*`
+# file that could not be removed, the record gone, is 0, and the next sweep
+# takes it.
 # WITH `<key>=<value>` PAIRS after `record` or `all` (Codex's S2 on spec#47's
 # draft 17), the first line of each key must also say that value (an empty value
 # is a key that is absent or empty), all on the one read (`guard_record_says`):
@@ -20479,12 +20487,24 @@ guard_drop_if() {   # <mode> <offer file> [record | all] [<key>=<value> …]
   # parts 42 to 47, SHOULD-1; of parts 48 to 50, its held item (C)).
   gdi_b=("$gdi_f".bind.*)
   guard_record_says "$gdi_f" "${1-}" "${@:4}" || return 1
+  gdi_rc=0
   if [ "${3-}" = record ]; then
-    rm -f -- "$gdi_f" 2>/dev/null || :
+    rm -f -- "$gdi_f" 2>/dev/null || gdi_rc=1
   else
-    rm -f -- "$gdi_f" "${gdi_b[@]}" 2>/dev/null || :
+    rm -f -- "$gdi_f" "${gdi_b[@]}" 2>/dev/null || gdi_rc=1
+  fi
+  if [ "$gdi_rc" = 1 ] && { [ -e "$gdi_f" ] || [ -L "$gdi_f" ]; }; then
+    return 2
   fi
   return 0
+}
+# THE REFUSAL WHERE A RECORD COULD NOT BE REMOVED (lane 3's SHOULD-1): the record
+# is still there, so the question is not asked afresh, and the next prompt meets
+# the same record. The refusal names the offers directory, which removing a
+# record needs to be writable, and the bypass.
+guard_drop_refuse() {   # <offer file> <what this prompt found, as a clause>
+  gdf_f="${1-}"; gdf_d="${gdf_f%/*}"
+  guard_refuse "${2-}, and it could NOT be removed: \`rm\` failed on $gdf_f, and removing a record needs the offers directory, $gdf_d, to be writable. So the record is still there, this prompt changed nothing, and the next prompt meets the same record: make $gdf_d writable, or remove $gdf_f yourself, then send your prompt again. $(guard_bypass)"
 }
 # THE ALLOWANCE'S DROP removes the record and nothing else: no `.bind.*` sweep,
 # because an allowance has none (the contract states that exception). ITS WINDOW,
@@ -21639,8 +21659,10 @@ guard_run() {   # <the hook's JSON, on stdin already read>
       return 2 ;;
   esac
   if [ -f "$gr_off" ] && [ "$gr_mode" != allow ]; then
-    # 3 IS "THE OFFER WAS STALE AND HAS BEEN DROPPED", and it is the one answer
-    # that does not consume the prompt: the table below judges it, which asks
+    # 3 IS "THE OFFER WAS STALE AND HAS BEEN DROPPED", or found changed or gone
+    # at the drop's read (lane 3's SHOULD-1: a drop whose `rm` failed refuses,
+    # 2), and it is the one answer that does not consume the prompt: the table
+    # below judges it, which asks
     # the question again where the mismatch still stands and refuses where the
     # state has become one the amendment keeps closed.
     gr_arc=0
@@ -21811,7 +21833,12 @@ EOF
       # person made about a state they have since left.
       # THE DROP READS THE MODE AGAIN (F1): `gr_mode` is the first read, made
       # before (d), (e) and this table, and a bind record that another invocation
-      # made since must not be removed on it.
+      # made since must not be removed on it. A FAILED `rm` (its 2: an offers
+      # directory that cannot be written; lane 3's SHOULD-1) leaves the allowance
+      # there, and nothing here says it was dropped: the prompt passes on names
+      # that agree, and the allowance is read afresh at the next mismatch, passed
+      # only while `guard_allow_active` holds and refused by `guard_offer_site`
+      # where its drop fails again.
       [ "$gr_mode" != allow ] || guard_allow_drop "$gr_off" || :
       # AMENDMENT 16(f): the window may still have carried a former name a
       # moment ago, in which case it has just been renamed and that is said
@@ -22153,9 +22180,14 @@ guard_offer() {   # <offer file> <pane>
 # Where a drop cannot remove a leftover (a failed `rm`), or `offers/` cannot take
 # the temporary file (`guard_offer` answers 3 for a record that is there then too,
 # F2), the leftover is no longer written over, as it was: the prompt is refused
-# here, and the next one meets the same record and the same refusal, until the
-# drop works. Nothing is lost: the record is as it was, and the person's prompt
-# is theirs to send again.
+# here, and the next one meets the same record, until the drop works. Nothing is
+# lost: the record is as it was, and the person's prompt is theirs to send again.
+# A DROP THAT FAILED IS NEVER FOLLOWED BY "ASKED AFRESH" (lane 3's review of
+# `12eddddf..00e2c92e`, SHOULD-1): the dangling link's `rm` here, the
+# allowance's drop below, and `guard_answer`'s drops each refuse by
+# `guard_drop_refuse` where the record is still there, naming the offers
+# directory and the bypass, so the retry's last refusal follows only a drop that
+# worked, or none.
 guard_offer_site() {   # <offer file> <pane> <the prompt>
   gos_f="${1-}"; gos_pane="${2-}"; gos_prompt="${3-}"
   gos_rc=0
@@ -22172,7 +22204,10 @@ guard_offer_site() {   # <offer file> <pane> <the prompt>
     # A DANGLING LINK (lane 5's re-check, E) is dropped, as case 11 drops a record
     # that cannot be read, so it heals as it did at 2497b864: the retry below
     # makes the offer.
-    rm -f -- "$gos_f" 2>/dev/null || :
+    if ! rm -f -- "$gos_f" 2>/dev/null && [ -L "$gos_f" ]; then
+      guard_drop_refuse "$gos_f" "the pending offer at $gos_f is a link to nothing"
+      return 2
+    fi
   elif [ -e "$gos_f" ] && [ ! -f "$gos_f" ]; then
     # A DIRECTORY, OR A LINK TO ONE, OR ANY OTHER PATH THAT IS NOT A REGULAR FILE,
     # is not for this guard to remove: the person is told to, and the question is
@@ -22203,6 +22238,12 @@ guard_offer_site() {   # <offer file> <pane> <the prompt>
         fi
         gos_dr=0
         guard_allow_drop "$gos_f" || gos_dr=$?
+        # ITS `rm` FAILED (2, lane 3's SHOULD-1): the allowance is still there,
+        # and the offer cannot be made over it.
+        if [ "$gos_dr" = 2 ]; then
+          guard_drop_refuse "$gos_f" "the pending offer could not be recorded: a record of this transcript's is at $gos_f, an allowance that does not fit this window's lane and session now, so it was to be dropped and the question asked afresh"
+          return 2
+        fi
         if [ "$gos_dr" != 0 ] && { [ -e "$gos_f" ] || [ -L "$gos_f" ]; }; then
           # THE ALLOWANCE HAS BECOME ANOTHER RECORD since this site read it (H):
           # a bind record is answered once, as `guard_site_moved` answers one, and
@@ -22241,6 +22282,8 @@ guard_offer_site() {   # <offer file> <pane> <the prompt>
   gos_rc=0
   guard_offer "$gos_f" "$gos_pane" || gos_rc=$?
   [ "$gos_rc" = 3 ] || return 2
+  # ONLY A DROP THAT WORKED, OR NONE, COMES HERE (lane 3's SHOULD-1): each drop
+  # above whose `rm` failed has refused by `guard_drop_refuse`.
   guard_refuse "the pending offer could not be recorded: a record of this transcript's is at $gos_f and could not be replaced, so nothing was written to it. Send your prompt again and the question will be asked afresh."
   return 2
 }
@@ -22820,7 +22863,11 @@ guard_bind_site() {   # <offer file> <pane>
         guard_refuse "the pending offer at $gbt_f was changed while it was being answered (it says mode=$GBR_MODE now), so nothing was written to it. Send your prompt again and it will be read afresh."
         return 2 ;;
     esac
-    rm -f -- "$gbt_f"
+    # A FAILED `rm` (lane 3's SHOULD-1) is said, and never "dropped".
+    if ! rm -f -- "$gbt_f" 2>/dev/null && { [ -e "$gbt_f" ] || [ -L "$gbt_f" ]; }; then
+      guard_drop_refuse "$gbt_f" "the pending offer at $gbt_f could not be read, so it was to be dropped rather than answered on a guess"
+      return 2
+    fi
     guard_refuse "the pending offer at $gbt_f could not be read, so it has been dropped rather than answered on a guess. Send your prompt again and the question will be asked afresh."
     return 2
   fi
@@ -22861,7 +22908,11 @@ guard_bind_site() {   # <offer file> <pane>
       # that name was listed, and kept where it was not; and this prompt still
       # says MOVED (lane 5's adversarial review of parts 48 to 50, its held
       # item (A)).
-      if ! guard_drop_if bound "$gbt_f" all "bind=$GBR_BIND" "started_utc=$GBR_STARTED" "pid=$GBR_PID" "ended_utc=$GBR_ENDED"; then
+      # ITS `rm` FAILED (2, lane 3's SHOULD-1): the outcome is heard, and the
+      # record is said to be still there, so the next prompt hears it again.
+      gbt_drc=0
+      guard_drop_if bound "$gbt_f" all "bind=$GBR_BIND" "started_utc=$GBR_STARTED" "pid=$GBR_PID" "ended_utc=$GBR_ENDED" || gbt_drc=$?
+      if [ "$gbt_drc" = 1 ]; then
         guard_site_moved "$gbt_f" "$gbt_pane"
         return 2
       fi
@@ -22874,6 +22925,7 @@ guard_bind_site() {   # <offer file> <pane>
 $GBR_NOTES
 EOF
       fi
+      [ "$gbt_drc" = 0 ] || note "The bind record at $gbt_f could NOT be removed: \`rm\` failed on it, and removing a record needs the offers directory, ${gbt_f%/*}, to be writable. So the next prompt hears this outcome again: make ${gbt_f%/*} writable, or remove $gbt_f yourself. $(guard_bypass)"
       note "This prompt was NOT sent: it is the one that hears how the bind ended. Send your work again."
       return 2 ;;
     bind-failed)
@@ -23239,7 +23291,11 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     allow) return 3 ;;
   esac
   if [ "$ga_mode" != name-drift ] || [ -z "$ga_from" ] || [ "$ga_bindok" = 0 ]; then
-    rm -f -- "$ga_f"
+    # A FAILED `rm` (lane 3's SHOULD-1) is said, and never "dropped".
+    if ! rm -f -- "$ga_f" 2>/dev/null && { [ -e "$ga_f" ] || [ -L "$ga_f" ]; }; then
+      guard_drop_refuse "$ga_f" "the pending offer at $ga_f could not be read, so it was to be dropped rather than answered on a guess"
+      return 2
+    fi
     guard_refuse "the pending offer at $ga_f could not be read, so it has been dropped rather than answered on a guess. Send your prompt again and the question will be asked afresh."
     return 2
   fi
@@ -23255,9 +23311,21 @@ guard_answer() {   # <offer file> <the prompt> <pane>
   # consumed, it is judged by the table below, which asks again where the
   # mismatch still stands and refuses where the state has become one of the
   # unsafe ones. 3 is that status, and `guard_run` is its only caller.
+  # "DROPPED" IS SAID ONLY WHERE THE DROP WORKED (lane 3's review of
+  # `12eddddf..00e2c92e`, SHOULD-1): where its `rm` failed (2), the offer is
+  # still there, and the prompt is refused by `guard_drop_refuse`, naming the
+  # offers directory and the bypass; where the record had changed or gone
+  # before the drop's read (1), nothing was removed, and that is said.
   if [ "$ga_from" != "$G_LANE" ] || [ "$ga_session" != "$G_NAME" ]; then
-    guard_drop_if name-drift "$ga_f" || :
-    note "the pending question was about lane $ga_from and session '${ga_session:-none}', and this window is now lane ${G_LANE:-none} with session '${G_NAME:-none}' — so the offer has been DROPPED rather than answered on a state you were never shown. Nothing was renamed or written. This prompt is judged afresh below."
+    ga_drc=0
+    guard_drop_if name-drift "$ga_f" || ga_drc=$?
+    ga_stale="the pending question was about lane $ga_from and session '${ga_session:-none}', and this window is now lane ${G_LANE:-none} with session '${G_NAME:-none}'"
+    case "$ga_drc" in
+      0) note "$ga_stale — so the offer has been DROPPED rather than answered on a state you were never shown. Nothing was renamed or written. This prompt is judged afresh below." ;;
+      2) guard_drop_refuse "$ga_f" "$ga_stale, so the offer was to be dropped rather than answered on a state you were never shown"
+         return 2 ;;
+      *) note "$ga_stale — so the offer is not answered on a state you were never shown; and it was not dropped, because the record had changed or gone since it was read ($(guard_record_now "$ga_f")), so nothing was removed. Nothing was renamed or written. This prompt is judged afresh below." ;;
+    esac
     return 3
   fi
   case "$ga_ans" in
@@ -23588,6 +23656,9 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     ga_trc=0
     guard_type "$ga_pane" "/rename $ga_from" || ga_trc=$?
     guard_triple
+    # THE DROP'S 2 (a failed `rm`, lane 3's SHOULD-1) leaves the offer, and this
+    # note claims no drop: the next prompt that meets it finds it stale and is
+    # refused by `guard_drop_refuse` while it cannot be removed.
     case "$ga_trc" in
       0) guard_drop_if name-drift "$ga_f" || :; note "ADJUSTED SESSION TO LANE $ga_from: \`/rename $ga_from\` was typed into this pane ($ga_pane). The prompt that answered the question is consumed; send your work again." ;;
       *) note "the rename could NOT be typed into this pane, so the session is still named '${ga_session:-none}'. NOTHING was written; the offer is kept. Type it yourself: /rename $ga_from" ;;
