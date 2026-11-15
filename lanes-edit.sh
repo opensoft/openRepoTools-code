@@ -22497,11 +22497,16 @@ guard_offer_choices() {   # <from> <the lane choice 2 moves to> <binds spent>
 # hook's I/O refusal where the record, read again, is no longer the answered
 # offer (`guard_answer_unrecorded`); and the back-out where it found the record
 # changed (its 2), or where its I/O failure left a record that is not its own
-# `binding`.
-# WITH `changed` (the same check, part 48): cases 6, 7 and 9, whose bind DID
+# `binding`, unless that record is in a bind mode: for a bind mode the back-out
+# now keeps the window and says so (lane 3's review of `00e2c92e..475a04a4`,
+# NIT-1; its delta review of part 62, NIT-1).
+# WITH `changed` (the same check, part 48): cases 6, 7, 9 and 10, whose bind DID
 # start, where their restore of the offer failed (an I/O 1) and the record, read
 # again, is neither the one they loaded nor an offer between the same two lanes
-# (`guard_site_back_form`): no offer is kept there either.
+# (`guard_site_back_form`): no offer is kept there either. And case 10 in a
+# window this answer renamed, where the record it loaded is from another `from`
+# than this answer's (lane 3's delta review of part 62, NIT-2): the offer it
+# keeps there is not this window's.
 # WITH `unread` (part 49's NIT-3, carried to this note in part 50): the same
 # cases where the record, read again, is there and could not be read; the words
 # say only that, and that the next prompt reads whatever is there.
@@ -22910,26 +22915,29 @@ guard_site_reread() {   # <offer file> <the mode loaded>
   fi
   return 0
 }
-# THE RENAME-BACK NOTE'S FORM FOR CASES 6, 7 AND 9 WHERE THEIR RESTORE FAILED (an
-# I/O 1; lane 5's check of parts 42 to 47, part 48), on `guard_site_reread`'s one
-# read: still the record loaded, or an offer between the same two lanes, and the
-# offer is kept, so the default form is printed; there and not readable again,
-# `unread` (part 49's NIT-3, carried to this note in part 50); a bind record
-# that is not the one loaded, `bind`: no rename back at all, and
-# `guard_site_window_left` says so (lane 2's further notes on part 51, NIT-6);
-# anything else, and no offer is kept: `changed`.
+# THE RENAME-BACK NOTE'S FORM FOR CASES 6, 7, 9 AND 10 WHERE THEIR RESTORE FAILED
+# (an I/O 1; lane 5's check of parts 42 to 47, part 48; case 10 since part 62,
+# in a window this answer renamed, lane 3's delta review of part 62, NIT-1), on
+# `guard_site_reread`'s one read: still the record loaded, or an offer between
+# the same two lanes, and the offer is kept, so the default form is printed;
+# there and not readable again, `unread` (part 49's NIT-3, carried to this note
+# in part 50); a bind record that is not the one loaded, `bind`: no rename back
+# at all, and `guard_site_window_back` says so (lane 2's further notes on part
+# 51, NIT-6); anything else, and no offer is kept: `changed`.
 guard_site_back_form() {   # after `guard_site_reread`
   case "${GSR_FORM-}" in
     changed|unread|bind) printf '%s\n' "$GSR_FORM" ;;
   esac
   return 0
 }
-# THE RENAME BACK OF CASES 6, 7 AND 9 (lane 2's further notes on part 51,
-# NIT-6): where the one read found a bind record that is not the one loaded
-# (`bind`), the window is not renamed back to `<from>`, since that would undo
-# that bind's rename and its body's `lane-start` would then refuse it (its veto
-# 2); it is left as it is, as `guard_answer_moved` leaves it for a bind mode,
-# and the note says so. Every other form is `guard_window_back`'s.
+# THE RENAME BACK OF CASES 6, 7, 9 AND 10 (lane 2's further notes on part 51,
+# NIT-6; case 10 since part 62, only in a window this answer renamed, lane 3's
+# delta review of part 62, NIT-1): where the one read found a bind record that
+# is not the one loaded (`bind`), the window is not renamed back to `<from>`,
+# since that would undo that bind's rename and its body's `lane-start` would
+# then refuse it (its veto 2); it is left as it is, as `guard_answer_moved`
+# leaves it for a bind mode, and the note says so. Every other form is
+# `guard_window_back`'s.
 guard_site_window_back() {   # <from> <to> <form, from `guard_site_back_form`, or empty>
   if [ "${3-}" = bind ]; then
     note "This window is left as it is and NOT renamed back to ${1-}: the record now holds a bind record that is not the one this prompt loaded (${GSR_NOW:-it is gone now}), so the window is left as that bind leaves it."
@@ -23172,13 +23180,27 @@ EOF
       guard_site_reread "$gbt_f" binding
       gbt_wf="$(guard_site_back_form)"
     fi
+    # A RECORD FROM ANOTHER `from` (lane 3's delta review of part 62, NIT-2, as
+    # part 59 tests the `from` in `guard_site_moved` and in this function's
+    # load): the offer the restore keeps is about `GBR_FROM`, that record's
+    # lane, and not this window's, `GBT_REN_FROM`, so the next prompt drops it as
+    # stale. The rename back still undoes this answer's own rename, in
+    # `changed`'s words where the default form would be printed, and no choices
+    # are printed.
+    gbt_other=0
+    if [ -n "${GBT_REN_FROM-}" ] && [ "${GBR_FROM-}" != "$GBT_REN_FROM" ]; then
+      gbt_other=1
+      [ -n "$gbt_wf" ] || gbt_wf=changed
+    fi
     [ -z "${GBT_REN_FROM-}" ] || guard_site_window_back "$GBT_REN_FROM" "${GBT_REN_TO-}" "$gbt_wf"
     if [ "$gbt_back" = 1 ]; then
       guard_site_unrestored "$gbt_f" binding
+    elif [ "$gbt_other" = 1 ]; then
+      note "The offer restored there is about lane ${GBR_FROM:-none}, not this window's lane $GBT_REN_FROM, so no choices are printed: the next prompt reads whatever is there."
     else
       note "The offer is KEPT:"
     fi
-    ! guard_site_offer_kept "$gbt_back" "$gbt_k" || guard_offer_choices "$GBR_FROM" "$GBR_TO" "$GSO_K"
+    [ "$gbt_other" = 1 ] || ! guard_site_offer_kept "$gbt_back" "$gbt_k" || guard_offer_choices "$GBR_FROM" "$GBR_TO" "$GSO_K"
     note "This prompt was NOT sent."
     return 2
   fi
@@ -23335,7 +23357,8 @@ guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 whe
       # AND WHERE NOTHING RENAMED IT BACK, THE PERSON IS TOLD (lane 1's check of
       # parts 58 and 59, NIT-3): on every path of `guard_bind_site` and
       # `guard_site_moved` that keeps the window, unless the words already said
-      # so (`GBT_REN_SAID`: `guard_drop_refuse`, case 10), the last note is
+      # so (`GBT_REN_SAID`: `guard_drop_refuse`, and `guard_site_window_back`'s
+      # `bind` form; lane 3's delta review of part 62, NIT-1), the last note is
       # "This window keeps the name <to> that this answer gave it." A call of
       # `guard_window_back` (`GWB_CALLED`) has said what came of the rename back.
       GBT_REN_FROM=""; GBT_REN_TO=""; GWB_CALLED=0; GBT_REN_SAID=0
@@ -23864,7 +23887,15 @@ guard_answer() {   # <offer file> <the prompt> <pane>
         # record is read once (`guard_record_says`, which the I/O path's 1 has
         # made already), and for a bind mode the window is kept and that is said;
         # anything else is renamed back as before.
-        ga_bstill=0; ga_bform=""; ga_bunread=0; ga_bkeep=0
+        # ONLY THIS BLOCK'S OWN READ COUNTS (lane 3's delta review of part 62,
+        # SHOULD-1): on the back-out's 0 no read is made, and `GRS_THERE` and
+        # `GRS_MODE` would hold whatever an earlier `guard_record_says` left in the
+        # same hook run (`guard_drop_if`'s, in a first `guard_answer`'s stale drop
+        # or in `guard_allow_drop`, before `guard_offer_site` calls `guard_answer`
+        # again), and a bind mode there would keep the window, with a false note.
+        # So `GRS_THERE` is 0 before the `case`, and the keep test below reads
+        # only what a read made here left, whatever the back-out returned.
+        ga_bstill=0; ga_bform=""; ga_bunread=0; ga_bkeep=0; GRS_THERE=0
         case "$ga_brc" in
           2) ga_bform=none
              guard_record_says "$ga_f" binding >/dev/null 2>&1 || : ;;
