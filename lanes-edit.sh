@@ -10729,6 +10729,62 @@ pid_alive() {
   [ "${20}" = "$want" ]
 }
 
+# `pid_start_of <pid>` — A LIVE PROCESS'S START TOKEN, which is the liveness
+# test of answer 2's bind record and of F10's pending record (feature 007,
+# `contracts/bind-record.md` section 6; Q-L5-6; R49): the pid is live AND its
+# start equals the one recorded, so a reused pid and a dead pid both read as
+# not live. It is NOT `lock_steal_if_dead`'s test, which is `kill -0` on the pid
+# alone, and under which a reused pid looks live until the lock's 10-minute age.
+#
+#   0  live; the token is printed: on Linux field 22 of `/proc/<pid>/stat`,
+#      counted after the LAST `)` because a comm may hold spaces and brackets
+#      (the cut `pid_alive` makes), and elsewhere `ps -o lstart= -p <pid>`. It
+#      is compared as a string, on the host and container that wrote it only.
+#   1  not live: no such process, or a zombie, which has already exited.
+#   2  its start could not be read. EVERY CALLER READS 2 AS LIVE, never as dead
+#      (R49): a wrong "dead" lets a claim or a bind be stolen, and a wrong
+#      "live" only waits. An argument that is not a pid is a 2 as well, never a
+#      1 (the contract's open point 15, read fail-closed): nothing about such a
+#      process can be read, and a 1 would call it dead.
+#
+# SELF-CONTAINED ON PURPOSE: it calls no helper of this file, so lane 4's
+# pending record and a test can take the function as it stands. `0` and a
+# leading zero are refused, because `kill -0 0` asks about a whole process
+# group and `/proc/007` names nothing.
+pid_start_of() {   # <pid>
+  pso_p="${1-}"
+  case "$pso_p" in ''|0*|*[!0-9]*) return 2 ;; esac
+  [ "${#pso_p}" -le 10 ] || return 2
+  if [ -r /proc/self/stat ]; then
+    [ -e "/proc/$pso_p" ] || return 1
+    pso_l=""
+    read -r pso_l < "/proc/$pso_p/stat" 2>/dev/null || pso_l=""
+    if [ -z "$pso_l" ]; then
+      [ -e "/proc/$pso_p" ] || return 1
+      return 2
+    fi
+    pso_r="${pso_l##*) }"
+    # shellcheck disable=SC2086
+    set -- $pso_r
+    [ "$#" -ge 20 ] || return 2
+    case "$1" in Z|X|x) return 1 ;; esac
+    case "${20}" in ''|*[!0-9]*) return 2 ;; esac
+    printf '%s\n' "${20}"
+    return 0
+  fi
+  # NO `/proc` (macOS): `ps` prints the start for a process that is there and
+  # nothing for one that is not, and exits non-zero for both a missing process
+  # and a `ps` that failed — so where it prints nothing, `kill -0` says which.
+  # A process of another user answers `kill -0` with EPERM: live, unread.
+  pso_s=""
+  command -v ps >/dev/null 2>&1 && pso_s="$(ps -o lstart= -p "$pso_p" 2>/dev/null || :)"
+  pso_s="$(printf '%s' "$pso_s" | tr -s ' ' | sed -e 's/^ //' -e 's/ $//')"
+  if [ -n "$pso_s" ]; then printf '%s\n' "$pso_s"; return 0; fi
+  kill -0 "$pso_p" 2>/dev/null && return 2
+  case "$(kill -0 "$pso_p" 2>&1 || :)" in *[Pp]ermitted*|*EPERM*) return 2 ;; esac
+  return 1
+}
+
 # A session record's `name` is EVIDENCE ABOUT ANOTHER LANE only when a person
 # or a `--name` set it. The values real records carry on this estate are:
 #
@@ -26092,6 +26148,12 @@ EOF
         # live session records, tmux and this checkout's own files are read
         # exactly as they are without it, so the rows are the same rows.
         --index)           lns_index=1; shift ;;
+        # `--decide`, ACCEPTED AND IGNORED (feature 007, T502, `tasks.md:627`;
+        # R38, as lane 3 amended it): the listing reads exactly as it reads
+        # without the flag. T509 gives the flag its meaning. Lane 4's `--decide`
+        # callers, T408's `lane` and T403's `lane-end --retire-dormant`, land
+        # after T502 and not after T509.
+        --decide)          shift ;;
         --)                shift ;;
         *)                 die "unknown argument '$1' for lanes (usage: lanes [--repo <owner/repo>] [--dir <path>] [--prefix <repo>] [--ws <workstation>] [--here] [--all] [--closed] [--fetch] [--index])" 64 ;;
       esac
