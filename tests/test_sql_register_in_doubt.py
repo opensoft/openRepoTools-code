@@ -796,7 +796,7 @@ def until_seen(what: str, ready, w: Optional[Writer] = None, deadline: float = 9
         if said:
             return said
         if w is not None:
-            assert w.ended is None, f"{w.name} exited {w.code} before {what}: {w.err[-400:]}"
+            assert w.ended is None, f"{w.name} exited {w.code} before {what}: {w.err} DIAG(MC4-L4) wall_now={time.time():.3f} mono_now={time.monotonic():.3f} w_started={w.started:.3f} w_ended={w.ended} calls(call,start_wall,kind,exit,psql)={[(c.get('call'), round(c.get('t', 0), 3), ('find_write' if 'find_write' in (c.get('stdin') or '') else 'commit' if 'commit_write' in (c.get('stdin') or '') else 'snapshot' if 'REPEATABLE READ' in (c.get('stdin') or '') else 'other'), (w.ends().get(c.get('call')) or {}).get('exit'), (w.ends().get(c.get('call')) or {}).get('psql')) for c in w.stamps()]}"
         assert time.monotonic() < end_at, f"not seen within {deadline:.0f} s: {what}"
         time.sleep(0.05)
 
