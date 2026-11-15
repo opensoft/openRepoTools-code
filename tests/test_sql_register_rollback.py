@@ -1668,6 +1668,14 @@ def _canned_images(version: int, rendered: dict, store: bytes) -> str:
                          [(0, "import"), (1, "cutover")], edits, files])
 
 
+#: T124'S MODULE (tasks:2850 to :2854; FR-064), which T203's flipped copy has
+#: beside it once T124 lands: `lanes-index` is then a launcher, and the module
+#: holds `REGISTER_SCHEMA_VERSION`. Before T124 the copy holds it itself. The
+#: name is lane 1's, `LANES_INDEX_MODULE` in `sql_register_helpers` at its
+#: T124 prototype's 11b56a1f, which line R does not have (T273j).
+LANES_INDEX_MODULE = "lanes_index_main.py"
+
+
 @pytest.mark.parametrize("code", ["40001", "40P01", "55P03", "LR001"])
 def test_a_rollback_goes_back_to_its_check_on_each_lost_turn_code(tmp_path, code):
     """Test 8 (h), FP (TP:1700-1706): the register's fake `psql` answers the
@@ -1687,8 +1695,10 @@ def test_a_rollback_goes_back_to_its_check_on_each_lost_turn_code(tmp_path, code
     cutover = ws.commit({"lanes/STORE": "store=primary\ndatabase=register-test\n"},
                         "LANES(repoA-2@Eagle): cutover\n\nRegister-Seq: 1")
     copy = imp.flipped_indexer(tmp_path / "flip")
+    module = copy.with_name(LANES_INDEX_MODULE)
     version = int(re.search(r"^REGISTER_SCHEMA_VERSION = ([0-9]+)$",
-                            copy.read_text(encoding="utf-8"), re.M).group(1))
+                            (module if module.is_file() else copy).read_text(encoding="utf-8"),
+                            re.M).group(1))
     bin_ = tmp_path / "bin"
     _script(bin_ / "psql", REGISTER_FAKE_PSQL)
     _script(bin_ / "git", GIT_WRAPPER)
