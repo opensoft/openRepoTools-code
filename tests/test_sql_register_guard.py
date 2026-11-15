@@ -96,9 +96,9 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: :376, is from T254's Order (tasks:2419; K1). T214t's
 #: row, for T502's part 21 (lane 5, opensoft/openRepoTools#165 6885608994),
 #: is keyed by the same Order: its case fails until T502 lands. T214v's
-#: row, for T502's part 22 and its rule for the hook's writes (lane 3's
-#: ruling 5, (A), opensoft/openRepoTools#165 6885771975, and its
-#: confirmation, 6886113842), is keyed by the same Order. T213r's
+#: and T214w's rows, for T502's part 22 and its rule for the hook's writes
+#: (lane 3's ruling 5, (A), opensoft/openRepoTools#165 6885771975, and its
+#: confirmation, 6886113842), are keyed by the same Order. T213r's
 #: row for `test_no_session_environment_carries_a_database_url_or_password`
 #: adds T512 to T213's Order: its `PGPASSFILE` assertions read the
 #: service's own held `psql` child (TP:1952 at `f9d6069e`), which only
@@ -148,6 +148,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_answer_2_exits_2_binding_before_t0_plus_1_s_and_the_runner_sees_eof": ("T502",),  # T214; tasks:2013
     "test_answer_2_survives_a_group_sigterm_at_the_hooks_timeout": ("T502",),  # T214; tasks:2013
     "test_case_11_with_a_live_outer_drops_the_record_and_keeps_its_files": ("T502",),  # T214; tasks:2013
+    "test_choice_1_allows_nothing_where_its_offer_is_gone_or_no_longer_the_one_answered": ("T502",),  # T214; tasks:2013
     "test_claude_no_lane_still_skips_before_any_input": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_each_service_request_is_one_query": ("T229", "T512", "T513"),  # T237; tasks:2302
     "test_every_bind_rewrite_is_0600_and_a_failed_one_leaves_the_record": ("T502",),  # T214; tasks:2013
@@ -3405,15 +3406,15 @@ def test_every_bind_rewrite_is_0600_and_a_failed_one_leaves_the_record(estate, c
         os.umask(mask)
 
 
-# ------------------------------------------------ T214v: ruling 5's (A), the hook's writes
+# ------------------------------------- T214v and T214w: ruling 5's (A), the hook's writes
 #
 # NO REWRITE CREATES A RECORD, AND THE HOOK'S WRITES GO ONLY TO THE OFFER IT
-# ANSWERED (T214v; lane 3's ruling, opensoft/openRepoTools#165 6885771975,
-# ruling 5, with (A) for the hook's answer 2; lane 5's rule for the hook's
-# own writes, #165 6886054653, which lane 3 confirmed, #165 6886113842;
-# T502's parts 22 to 26,
+# ANSWERED (T214v and T214w; lane 3's ruling, opensoft/openRepoTools#165
+# 6885771975, ruling 5, with (A) for the hook's answer 2; lane 5's rule for
+# the hook's own writes, #165 6886054653, which lane 3 confirmed, #165
+# 6886113842, choice 1's mirror of (A) among it; T502's parts 22 to 26,
 # `2497b864`, and part 32, `820bbf11`, at its head `6253b0ed`; spec#47's
-# draft 17 `8bc6b29e`, section 5's case 1, and section 7; lane
+# draft 17 `8bc6b29e`, section 5's case 1 and choice 1, and section 7; lane
 # 5's check of these ids and its additions, #165 6888777622). Each case
 # holds the hook in a test-only copy (point 23) before one of its writes on
 # the offer, changes the record there, and releases the hold: the window is
@@ -3427,20 +3428,30 @@ def test_every_bind_rewrite_is_0600_and_a_failed_one_leaves_the_record(estate, c
 #: - the head copy's definition and its one call in `guard_answer`, through
 #:   which the copy logs the head copy's result, so a case knows which write
 #:   met the change;
-#: - and answer 2's bound, after the head copy and before its rewrite to
-#:   `binding`.
+#: - answer 2's bound, after the head copy and before its rewrite to
+#:   `binding`;
+#: - choice 1's temporary file: a hold just before it is before the
+#:   temporary file and before `guard_offer_still` (6253b0ed:22809), never
+#:   between that test and the `mv`, the window draft 17 accepts (d17:148).
 ANCHOR_HEAD_COPY = '[ "${#ghc_kv[@]}" -gt 0 ] || return 0'
 ANCHOR_HEAD_COPY_DEF = 'guard_bind_head_copy() {'
 ANCHOR_HEAD_COPY_CALL = 'guard_bind_head_copy "$ga_f"'
 ANCHOR_ANSWER_2_BOUND = 'ga_bs="$(guard_bind_bound_s "$ga_f")"'
-#: (A)'s words (`guard_answer_moved`, 6253b0ed:22675-22695); the I/O
-#: path's words, which say the offer is KEPT (:22915, :22945); and the
-#: outer's start, which no case here may reach (:22999, :23001).
+ANCHOR_ALLOW_TEMP = ("ga_t=\"$(umask 077; mktemp \"${ga_f%/*}/.${ga_f##*/}.XXXXXX\" "
+                     "2>/dev/null || printf '')\"")
+#: (A)'s words, and choice 1's mirror of them (`guard_answer_moved`,
+#: 6253b0ed:22675-22697); the I/O paths' words, which say the offer is
+#: KEPT (:22915, :22945) or that the allow could not be recorded (:22820);
+#: and the outer's start, which no case here may reach (:22999, :23001).
 DROPPED_BIND = "the offer was dropped before the bind could be recorded, so the bind was NOT started"
 CHANGED_BIND = ("was changed before the bind could be recorded (it is another offer now, not "
                 "the one that was answered), so the bind was NOT started")
 NO_OUTER = "and no outer was started"
 BIND_IO = "could not be recorded in"
+DROPPED_ALLOW = ("the offer was dropped before the allow could be recorded, so the mismatch "
+                 "remains unapproved. Nothing was renamed or written")
+ALLOW_IO = "the explicit allow could not be recorded at"
+ALLOWED = "ALLOWED:"
 
 
 def _renamed_back(lane: str) -> str:
@@ -3704,6 +3715,76 @@ def test_answer_2_binds_nothing_where_its_offer_is_gone_or_no_longer_the_one_ans
         assert head_copy == "0", \
             f"the head copy did not write nothing before the hold at the rewrite: {head_copy!r}"
     _nothing_new(est, before, made, "answer 2")
+
+
+@pytest.mark.parametrize("case", ["gone-before-its-mv", "binding-before-its-mv"])
+def test_choice_1_allows_nothing_where_its_offer_is_gone_or_no_longer_the_one_answered(
+        estate, case):
+    """T214w, choice 1's mirror of (A) (lane 3's confirmation, #165
+    6886113842; draft 17's section 5, "Choice 1, where the offer is gone").
+    Just before its `mv`, choice 1's `mode=allow` record tests that the
+    offer answered is still there, still says `name-drift` and is still the
+    one answered (`guard_offer_still`, 6253b0ed:22706, :22809). Where it is
+    not, its temporary file is removed, nothing is written, and the record's
+    mode is read once and answered for (`guard_answer_moved`, :22817). A
+    test-only copy holds choice 1 before its temporary file, so before that
+    test, never between it and the `mv` (d17:148; lane 5, #165 6888777622,
+    whose names these ids are). Each id exits 2, renames nothing, leaves
+    nothing new in `offers/` and starts no outer.
+
+    - `[gone-before-its-mv]`: the offer removed at the hold. "the offer was
+      dropped before the allow could be recorded, so the mismatch remains
+      unapproved. Nothing was renamed or written"; no ALLOWED, and not the
+      I/O path's "the explicit allow could not be recorded at" (:22820); no
+      record made. At `beeae571` the write and its `mv` made an `allow`
+      record, and the hook said ALLOWED.
+    - `[binding-before-its-mv]`: another invocation's live `binding` put in
+      the offer's place, its deadline ahead, on the guard's own host and
+      container, with its own `.bind.1.out`. `guard_bind_site`'s answer:
+      that record and its `.out` left byte for byte; "BINDING IN PROGRESS",
+      and no ALLOWED and no "BINDING: this window is now named". At
+      `beeae571` the `allow` record was written over it, and its sweep,
+      `rm -f "$ga_f".bind.*` (:22376), removed the other's `.out`."""
+    est = estate()
+    est.guard = _bind_copy(est, [(ANCHOR_ALLOW_TEMP, (
+        f"{_hold_sh(est, 'choice-1')}\n    {ANCHOR_ALLOW_TEMP}"))])
+    _answer_preconditions(est)
+    est.make_offer()
+    offers = est.offer.parent
+    offer = est.offer.read_bytes()
+    before = set(os.listdir(offers))
+    calls = len(est.session.tmux_calls())
+    made = set()
+
+    def change():
+        at_hold = est.offer.read_bytes() if est.offer.exists() else None
+        if case == "gone-before-its-mv":
+            est.offer.unlink()
+            return at_hold, None
+        other = _other_binding(est)
+        made.add(other[1].name)
+        return at_hold, other
+
+    hook, (at_hold, other) = _answer_held(est, "1", "choice-1", change)
+    err = hook.err
+    assert at_hold == offer, f"the record at choice 1's hold was not the offer answered: {at_hold!r}"
+    assert not hook.killed and hook.code == 2, f"choice 1 did not exit 2: {hook!r}"
+    if case == "gone-before-its-mv":
+        assert DROPPED_ALLOW in err and ALLOWED not in err, \
+            f"choice 1 did not refuse with (A)'s mirror where its offer was gone: {hook!r}"
+        assert ALLOW_IO not in err, f"choice 1 refused on its I/O path: {hook!r}"
+        assert not est.offer.exists(), \
+            f"choice 1 made a record where its offer was gone: {est.record()}"
+    else:
+        installed, out, out_bytes = other
+        assert out.exists() and out.read_bytes() == out_bytes, \
+            f"another invocation's {out.name} did not survive choice 1"
+        assert est.offer.read_bytes() == installed, \
+            f"another invocation's bind record did not survive choice 1: {est.record()}\n{err}"
+        assert IN_PROGRESS in err and ALLOWED not in err and BINDING not in err, \
+            f"choice 1 did not give guard_bind_site's answer for the bind record: {hook!r}"
+    assert not _renames(est, calls), f"choice 1 renamed the window: {_renames(est, calls)}"
+    _nothing_new(est, before, made, "choice 1")
 
 
 #: `[unknown-key]`'s line, which no reader of the record knows.
