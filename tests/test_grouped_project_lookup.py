@@ -272,3 +272,39 @@ def test_logical_family_alias_origin_lookup(home, remotes, estate, tmp_path, com
     assert result.returncode in (0, 1), result.stderr + result.stdout
     assert "nothing at or above" not in result.stderr
     assert alias.is_symlink()
+
+
+@pytest.mark.parametrize("matching_home", [True, False])
+def test_recorded_home_without_directory_keeps_origin_proof(tmp_path, matching_home):
+    box = grouped_box(tmp_path)
+    result = box.start()
+    assert result.returncode == 0, result.stderr
+    log = box.wip / "lanes" / "log" / "repoZ-1.md"
+    # Model an older record: home is known, but the directory field predates it.
+    import re
+    text = re.sub(r"; dir [^;\n]+", "", log.read_text())
+    assert str(box.lane_dir) not in text
+    log.write_text(text)
+    box.git("-C", str(box.wip), "add", "--", str(log))
+    box.git("-C", str(box.wip), "commit", "-q", "-m", "seed old home-only record")
+    box.git("-C", str(box.wip), "push", "-q", "origin", "main")
+    other = box.home / "projects" / "imposter" / "repoZ"
+    other.mkdir(parents=True)
+    box.git("init", "-q", str(other))
+    box.git("-C", str(other), "remote", "add", "origin", "https://github.com/stranger/repoZ.git")
+    if not matching_home:
+        box.git("-C", str(box.lane_dir), "remote", "set-url", "origin", "https://github.com/stranger/also-wrong.git")
+        moved = box.lane_dir.with_name("moved-away")
+        box.lane_dir.rename(moved)
+        box.lane_dir = moved
+    before = box.commits()
+    result = box.start("--dry-run")
+    assert box.commits() == before
+    assert f"cd {other}" not in result.stderr
+    if matching_home:
+        assert result.returncode == 0, result.stderr
+        assert f"cd {box.lane_dir}" in result.stderr
+        assert "Evidence 7" in result.stderr
+    else:
+        assert result.returncode == 2, result.stderr
+        assert "nothing was started" in result.stderr

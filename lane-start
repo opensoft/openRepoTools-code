@@ -1114,8 +1114,9 @@ project_directory_rows() {
 # END GROUPED PROJECT DISCOVERY
 
 project_matches() {
-  local match_name match_dir git_dir common_dir canonical_name _logical_dir
+  local match_name match_dir git_dir common_dir canonical_name _logical_dir scope="${2:-grouped}"
   while IFS=$'\t' read -r match_name _logical_dir match_dir; do
+    if [ "$scope" = flat ] && [ "${_logical_dir%/*}" != "$PROJECTS_ROOT" ]; then continue; fi
     if [ -f "$match_dir/HEAD" ] && [ -d "$match_dir/objects" ]; then continue; fi
     if [ -e "$match_dir/.git" ]; then
       git_dir="$(git -C "$match_dir" rev-parse --git-dir 2>/dev/null)" || continue
@@ -1408,7 +1409,18 @@ if [ -n "$DIR" ] && [ ! -d "$DIR" ]; then
   die "no such directory: $DIR (from $DIR_SOURCE) — pass --dir <path> if this lane's checkout is somewhere else" 1
 fi
 if [ -z "$DIR" ]; then
-  default_matches="$(project_matches "$repo")"
+  ls_home=""; ls_rc=0
+  ls_home="$("$LANES_EDIT" resolve-home "$LANE" 2>/dev/null)" || ls_rc=$?
+  [ "$ls_rc" = 0 ] || ls_home=""
+  case "$ls_home" in */*) : ;; *) ls_home="" ;; esac
+fi
+if [ -z "$DIR" ]; then
+  # Keep the historical flat default ahead of home-based recovery. Grouped
+  # name discovery is a new-lane default only: an older home-only record must
+  # reach rungs 5/6, where origin proves the checkout and rejects imposters.
+  default_scope=grouped
+  [ -z "$ls_home" ] || default_scope=flat
+  default_matches="$(project_matches "$repo" "$default_scope")"
   if [ -n "$default_matches" ]; then
     default_count="$(printf '%s\n' "$default_matches" | wc -l | tr -d ' ')"
     [ "$default_count" -eq 1 ] || die "$PROJECTS_ROOT holds $default_count directories whose names differ only by case or grouping for '$repo': $default_matches — Amendment 15(a) requires one default target; pass --dir <path>" 2
@@ -1456,12 +1468,6 @@ fi
 #
 # BOTH ARE SKIPPED ENTIRELY WHERE THE LANE HAS NO RECORDED HOME, because there
 # is then nothing to prove a candidate against and a match would be a guess.
-if [ -z "$DIR" ]; then
-  ls_home=""; ls_rc=0
-  ls_home="$("$LANES_EDIT" resolve-home "$LANE" 2>/dev/null)" || ls_rc=$?
-  [ "$ls_rc" = 0 ] || ls_home=""
-  case "$ls_home" in */*) : ;; *) ls_home="" ;; esac
-fi
 # Rung 5 — the legs.
 if [ -z "$DIR" ] && [ -n "$ls_home" ]; then
   for ls_m in "$PROJECTS_ROOT"/*/project.yaml "$PROJECTS_ROOT"/*/*/project.yaml; do
