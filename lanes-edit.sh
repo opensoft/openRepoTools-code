@@ -23882,7 +23882,18 @@ guard_answer() {   # <offer file> <the prompt> <pane>
         guard_triple
         gba_win="this window has NOT moved to $ga_to"
         if [ "$ga_ren" != 0 ] && [ "$ga_bkeep" = 1 ]; then
-          note "This window is left as it is and NOT renamed back to $ga_from: the record now holds another attempt's bind record (it says mode=$GRS_MODE now), so the window is left as that bind leaves it."
+          # WHAT COMES NEXT, FOR EACH BIND MODE (the lane 5 coordinator's word on
+          # NIT-1): the window is left to that bind record's own answer, as part
+          # 59's rule leaves it. A `binding` is still running and named the
+          # window itself; a `bound` ended, and the next prompt hears it (case
+          # 5's MOVED); a `bind-failed` is answered by case 6 or 7 at the next
+          # prompt, which renames the window back (ERR-23).
+          case "$GRS_MODE" in
+            binding) gba_next="so the window is left as that bind leaves it" ;;
+            bound)   gba_next="so the window is left as that bind left it, and the next prompt hears how it ended" ;;
+            *)       gba_next="so the window is left to that record's own answer: the next prompt meets it, and its failed bind's answer renames the window back" ;;
+          esac
+          note "This window is left as it is and NOT renamed back to $ga_from: the record now holds another attempt's bind record (it says mode=$GRS_MODE now), $gba_next."
           gba_win="this window keeps the name $ga_to that this answer gave it"
         elif [ "$ga_ren" != 0 ]; then
           if guard_window_back "$ga_from" "$ga_to" ${ga_bform:+"$ga_bform"}; then
