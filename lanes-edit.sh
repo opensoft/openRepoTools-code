@@ -20208,10 +20208,17 @@ guard_bind_rewrite() {   # <offer file> <keys to drop, space-separated> [<key>=<
         case "$gbw_a" in mode=*) printf '%s\n' "$gbw_a" || exit 1; break ;; esac
       done
       if [ -e "$gbw_f" ]; then
-        gbw_seen=" "; gbw_m=""; gbw_p=""; gbw_ps=""; gbw_h=""; gbw_c=""
+        gbw_seen=" "; gbw_m=""; gbw_p=""; gbw_ps=""; gbw_h=""; gbw_c=""; gbw_ms=" "; gbw_got=""
         {
         while { gbw_st=0; IFS= read -r gbw_l <&8 || gbw_st=$?; [ "$gbw_st" = 0 ] || [ -n "$gbw_l" ]; }; do
           if [ "$gbw_two" = 1 ]; then
+            case "$gbw_wk" in
+              *" ${gbw_l%%=*} "*)
+                case "$gbw_ms" in
+                  *" ${gbw_l%%=*} "*) : ;;
+                  *) gbw_ms="$gbw_ms${gbw_l%%=*} "; gbw_got="${gbw_got}${gbw_l}"$'\n' ;;
+                esac ;;
+            esac
             case "$gbw_l" in
               mode=*|pid=*|pidstart=*|host=*|container=*)
                 case "$gbw_seen" in
@@ -20244,6 +20251,12 @@ guard_bind_rewrite() {   # <offer file> <keys to drop, space-separated> [<key>=<
         [ "$gbw_own" = 0 ] || guard_bind_own "$gbw_m" "$gbw_p" "$gbw_ps" "$gbw_h" "$gbw_c" || exit 2
         [ "$gbw_bd" = 0 ] || [ "$gbw_m" = binding ] || exit 2
         [ "$gbw_of" = 0 ] || [ "$gbw_m" = name-drift ] || exit 2
+        if [ -n "$gbw_wl" ]; then
+          while IFS= read -r gbw_w; do
+            [ -n "$gbw_w" ] || continue
+            case $'\n'"$gbw_got" in *$'\n'"$gbw_w"$'\n'*) : ;; *) exit 2 ;; esac
+          done <<<"$gbw_wl"
+        fi
       elif [ "$gbw_two" = 1 ]; then
         exit 2
       fi
@@ -21453,8 +21466,41 @@ guard_bind_gone() {   # <offer file>
   return 2
 }
 
+# WHAT `guard_bind_site`'S STALE ROWS REQUIRE of the record they loaded, beyond its
+# mode (F4): the same attempt, its `bind` and its `started_utc`, so an outer of
+# another attempt, or a record rewritten since, is not turned into a stale one.
+guard_site_match() {
+  GBT_MATCH=(--match "bind=$GBR_BIND")
+  [ -z "$GBR_STARTED" ] || GBT_MATCH+=(--match "started_utc=$GBR_STARTED")
+}
+
+# `guard_bind_site`'S REWRITE FOUND THE RECORD GONE, OR NOT WHAT IT LOADED (F4):
+# nothing was written. The record is read ONCE and answered: gone is
+# `guard_bind_gone`'s refusal; a bind record is `guard_bind_site`'s answer, once
+# more (`GBT_MOVED` is the whole of the loop: a second change is refused); any
+# other record is refused as changed, and the next prompt answers it as the first
+# read does.
+guard_site_moved() {   # <offer file> <pane>
+  gsm2_f="${1-}"; gsm2_m=""
+  if [ ! -e "$gsm2_f" ] && [ ! -L "$gsm2_f" ]; then
+    guard_bind_gone "$gsm2_f"
+    return 2
+  fi
+  [ -f "$gsm2_f" ] && gsm2_m="$(sed -n -e 's/^mode=//p' "$gsm2_f" 2>/dev/null | head -n1)"
+  case "$gsm2_m" in
+    binding|bound|bind-failed)
+      if [ "${GBT_MOVED:-0}" = 0 ]; then
+        GBT_MOVED=1
+        guard_bind_site "$gsm2_f" "${2-}"
+        return 2
+      fi ;;
+  esac
+  guard_refuse "the pending offer at $gsm2_f was changed while it was being answered (it says mode=${gsm2_m:-none} now), so nothing was written to it. Send your prompt again and it will be read afresh."
+  return 2
+}
+
 guard_bind_site() {   # <offer file> <pane>
-  gbt_f="${1-}"
+  gbt_f="${1-}"; gbt_pane="${2-}"
   if ! guard_bind_load "$gbt_f" || ! guard_bind_readable; then
     rm -f -- "$gbt_f"
     guard_refuse "the pending offer at $gbt_f could not be read, so it has been dropped rather than answered on a guess. Send your prompt again and the question will be asked afresh."
@@ -21482,8 +21528,8 @@ EOF
       return 2 ;;
     bind-failed)
       gbt_back=0; gbt_wrc=0
-      guard_bind_rewrite --exist "$gbt_f" "" mode=name-drift || gbt_wrc=$?
-      [ "$gbt_wrc" != 2 ] || { guard_bind_gone "$gbt_f"; return 2; }
+      guard_bind_rewrite --mode bind-failed "$gbt_f" "" mode=name-drift || gbt_wrc=$?
+      [ "$gbt_wrc" != 2 ] || { guard_site_moved "$gbt_f" "$gbt_pane"; return 2; }
       [ "$gbt_wrc" = 0 ] || gbt_back=1
       guard_triple
       note "THE BIND TO LANE $GBR_TO FAILED (exit $GBR_RC): ${GBR_WHY:-the record gives no reason}${GBR_OUT:+ — its output is kept in $GBR_OUT}."
