@@ -1808,6 +1808,20 @@ def test_rollback_refuses_to_start_while_the_mirror_is_diverged(request, tmp_pat
     assert estate.store_on_origin()
 
 
+def _let_go(fifo: Path) -> None:
+    """A push the wrapper holds on `fifo` let go, its write end opened
+    non-blocking and closed, and `fifo` unlinked, so a wrapper that comes to
+    it later finds none and exits. For a rollback ended on a failure path:
+    it shares this process's group, so its git calls are no group signalled
+    here (lane 3's check v97 of code PR 97, SHOULD 4; lane 2's RV7-30, S2
+    and N1)."""
+    try:
+        os.close(os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK))
+    except OSError:
+        pass
+    fifo.unlink(missing_ok=True)
+
+
 def _held_at_push(estate: RollbackEstate):
     """The rollback from ws1, held by the wrapper at its push: (the process,
     the FIFO's write end), or a failure where it ends first."""
@@ -1825,12 +1839,12 @@ def _held_at_push(estate: RollbackEstate):
             # group is signalled), a push parked on the FIFO meanwhile let go,
             # and reaped, bounded (lane 3's check v97 of code PR 97, SHOULD 4).
             proc.kill()
+            _let_go(fifo)
             try:
-                os.close(os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK))
-            except OSError:
-                pass
-            out, err = proc.communicate(timeout=60)
-        pytest.fail(f"the rollback never reached its push: exit {proc.returncode}\n{out}\n{err}")
+                out, err = proc.communicate(timeout=60)
+            except subprocess.TimeoutExpired as exc:  # fails with what came (RV7-30, N6)
+                out, err = exc.stdout, exc.stderr
+        pytest.fail(f"the rollback never reached its push: exit {proc.poll()}\n{out}\n{err}")
     return proc, fd
 
 
@@ -1858,22 +1872,37 @@ def test_the_marker_removal_entry_is_written_with_the_switch_in_step_1(request, 
     k = estate.k
     proc, fd = _held_at_push(estate)
     try:
-        seen = estate.rows(
-            "SELECT s.mode, s.marker_state, h.seq AS head, j.kind, j.operator FROM register_switch "
-            "s, register_head h JOIN journal j ON j.seq = h.seq")[0]
-        count = estate.count()
-        entry = json.dumps(_write_entry_now(estate, "AT-F1: a write meanwhile")).replace("'", "''")
-        gen = estate.switch()["generation"]
-        version = estate.rows("SELECT version FROM schema_version")[0]["version"]
-        tried = estate.db.psql(
-            f"\\set VERBOSITY verbose\nSET search_path TO lanes_register;\nSET ROLE {WRITER};\n"
-            f"BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT commit_write({estate.head()}, "
-            f"'{uuid.uuid4()}'::uuid, {version}, '{gen}'::uuid, '{entry}'::jsonb);\nCOMMIT;\n",
-            check=False)
-        counted = estate.count()
+        try:
+            seen = estate.rows(
+                "SELECT s.mode, s.marker_state, h.seq AS head, j.kind, j.operator FROM "
+                "register_switch s, register_head h JOIN journal j ON j.seq = h.seq")[0]
+            count = estate.count()
+            entry = json.dumps(_write_entry_now(estate, "AT-F1: a write meanwhile")).replace(
+                "'", "''")
+            gen = estate.switch()["generation"]
+            version = estate.rows("SELECT version FROM schema_version")[0]["version"]
+            tried = estate.db.psql(
+                f"\\set VERBOSITY verbose\nSET search_path TO lanes_register;\n"
+                f"SET ROLE {WRITER};\n"
+                f"BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT commit_write({estate.head()}, "
+                f"'{uuid.uuid4()}'::uuid, {version}, '{gen}'::uuid, '{entry}'::jsonb);\nCOMMIT;\n",
+                check=False)
+            counted = estate.count()
+        finally:
+            os.close(fd)
+        out, err = proc.communicate(timeout=300)
     finally:
-        os.close(fd)
-    out, err = proc.communicate(timeout=300)
+        # The rollback owned to the end: where anything above failed it is
+        # killed (it shares this process's group, so never `killpg`), a push
+        # held or parked on the FIFO meanwhile let go, and it is reaped,
+        # bounded (lane 2's RV7-30, S2).
+        if proc.poll() is None:
+            proc.kill()
+            _let_go(estate.root / "push.fifo")
+            try:
+                proc.communicate(timeout=60)
+            except subprocess.TimeoutExpired:
+                pass
     assert seen == {"mode": "files", "marker_state": "removing", "head": k + 1,
                     "kind": "rollback", "operator": True}, f"one snapshot read {seen}"
     assert tried.returncode != 0 and "LR002" in tried.stderr, (
