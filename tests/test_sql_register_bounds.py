@@ -406,6 +406,7 @@ class SilentListener:
         self.sock.listen(64)
         self.port = self.sock.getsockname()[1]
         self.held, self.done = [], False
+        self.lock, self.pumps = threading.Lock(), []
         self.thread = threading.Thread(target=self._accept, daemon=True)
         self.thread.start()
 
@@ -414,13 +415,25 @@ class SilentListener:
         while not self.done:
             try:
                 conn, _ = self.sock.accept()
-                self.held.append(conn)
             except OSError:
                 continue
+            with self.lock:                 # held under close()'s lock, or closed (T220o)
+                if self.done:
+                    conn.close()
+                    return
+                self.held.append(conn)
 
     def close(self):
-        self.done = True
-        for conn in self.held:
+        """No new connection, every pump joined, then every held socket closed
+        (T220o): the snapshot is taken under the lock each accept registers
+        under, so nothing registered after it is left open or unjoined."""
+        with self.lock:
+            self.done = True
+            held, pumps = list(self.held), list(self.pumps)
+        self.thread.join(5)                 # each loop sees `done` within its 0.2 s
+        for pump in pumps:
+            pump.join(5)
+        for conn in held:
             conn.close()
         self.sock.close()
 
@@ -454,10 +467,22 @@ class StartupRelay(SilentListener):
                 continue
             fault = self.armed is None or bool(self.armed())
             upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            upstream.connect(self.unix_path)
-            self.held += [conn, upstream]
-            threading.Thread(target=self._pump, args=(conn, upstream, fault),
-                             daemon=True).start()
+            try:
+                upstream.connect(self.unix_path)
+            except OSError:
+                conn.close()
+                upstream.close()
+                continue
+            with self.lock:                 # registered and started under close()'s lock (T220o)
+                if self.done:
+                    conn.close()
+                    upstream.close()
+                    return
+                self.held += [conn, upstream]
+                pump = threading.Thread(target=self._pump, args=(conn, upstream, fault),
+                                        daemon=True)
+                self.pumps.append(pump)
+                pump.start()
 
     def _pump(self, client, server, fault=True):
         seen, silent = b"", False
