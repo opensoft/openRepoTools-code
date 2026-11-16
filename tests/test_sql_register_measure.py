@@ -94,12 +94,14 @@ import importlib.util
 import json
 import os
 import platform
+import queue
 import re
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -1616,20 +1618,49 @@ SHAPE_READS = ["SET search_path TO pg_catalog", "BEGIN ISOLATION LEVEL REPEATABL
 RTTS_MS = (20, 150)
 
 
+#: How long `_ask` waits for its marker, by the monotonic clock (T255k).
+ASK_S = 60.0
+
+
+def _lines_of(stream, lines: queue.Queue) -> None:
+    """Each line of `stream` onto `lines`, then None at its end (T255k)."""
+    for line in stream:
+        lines.put(line)
+    lines.put(None)
+
+
 def _held(env: dict, psql: str):
-    return subprocess.Popen([psql, "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1"], stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, bufsize=1)
+    """A held `psql` session, its stdout read line by line by a thread of its
+    own into `session.lines`, so `_ask` can wait with a deadline (T255k)."""
+    session = subprocess.Popen([psql, "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1"],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, env=env, bufsize=1)
+    session.lines = queue.Queue()
+    threading.Thread(target=_lines_of, args=(session.stdout, session.lines), daemon=True).start()
+    return session
 
 
 def _ask(session, text: str) -> None:
-    """Send `text` on the held session and wait for its marker line."""
+    """Send `text` on the held session and wait for its marker line, `ASK_S`
+    at most (T255k; Codex's review of P09 at `f4f0ebce`, SHOULD 5; lane 3's
+    ruling 6932114864, by a reader thread): the lines come from
+    `session.lines`, with a monotonic deadline. Past it, or where the session
+    ends first, the session is killed and reaped, and the case fails."""
     marker = f"t255-{uuid.uuid4().hex[:8]}"
     session.stdin.write(text + f"\n\\echo {marker}\n")
     session.stdin.flush()
-    for line in session.stdout:
-        if line.strip() == marker:
-            return
-    raise AssertionError(f"the held session ended: {session.stderr.read()}")
+    end, line = time.monotonic() + ASK_S, ""
+    while line is not None and line.strip() != marker:
+        try:
+            line = session.lines.get(timeout=max(0.0, end - time.monotonic()))
+        except queue.Empty:
+            line = None
+    if line is None:
+        session.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            session.wait(timeout=10)
+        raise AssertionError(f"the held session gave no {marker} line within {ASK_S:.0f} s, or "
+                             f"ended (exit {session.returncode}): {session.stderr.read()}")
 
 
 @pytest.mark.parametrize("rtt", RTTS_MS, ids=[str(r) for r in RTTS_MS])
