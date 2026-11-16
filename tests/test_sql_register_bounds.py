@@ -2739,6 +2739,19 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
     written = [row.split("|")[1] for row in rows]
     assert len(set(written)) == len(written) and set(written) <= sent, \
         f"each write id committed once, and only the burst's: {written}\n{told()}"
+    # Each writer by its write id (T257r): a commit call names its writer's `burst <i>` in the
+    # new row text its entry carries, and only a sha256 of the row it replaces.
+    named: dict = {}
+    for script in (e.get("stdin", "") for e in _shim_calls(where)):
+        call = re.search(r"commit_write\([0-9-]+, '([0-9a-f-]{36})'", script)
+        if call:
+            named.setdefault(call.group(1), set()).update(re.findall(r"burst ([0-9]+)", script))
+    assert all(len(burst) == 1 for burst in named.values()), \
+        f"a write id's commit calls name no writer, or more than one: {named}\n{told()}"
+    owners = sorted(int(min(named[write_id])) for write_id in written)
+    assert owners == [i for i, code in enumerate(codes) if code == 0], \
+        (f"the journal's rows are by writers {owners}, not one by each writer that exited 0 "
+         f"and none by one that exited 75: {codes}\n{told()}")
     snapshots = sum(1 for e in _shim_calls(where) if "commit_write" not in e["stdin"])
     for i, (code, took, _) in enumerate(ends):
         print(f"D9c burst [{logins}] writer {i} ({writers[i]}): exit {code} after {took:.2f} s")
