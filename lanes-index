@@ -12509,8 +12509,8 @@ def _bootstrap(opts: dict) -> int:
         raise Refusal("register_schema= is not a plain lower-case SQL identifier "
                       "([a-z_][a-z0-9_]{0,62})")
     if schema.startswith("pg_") or schema in ("lanes_index", cfg.get("schema") or "lanes_index"):
-        raise Refusal(f"bootstrap: register_schema={schema} is the index half's schema or a "
-                      f"name PostgreSQL reserves; the register takes a schema of its own")
+        raise Refusal("bootstrap: register_schema= is the index half's schema or a name "
+                      "PostgreSQL reserves; the register takes a schema of its own")
     migrations, rest = _register_rendered(schema)
     workstation = ""
     if not roles_only:
@@ -24734,6 +24734,17 @@ The SQL register's subcommands add 3 in doubt, 69 unreachable or refused,
 each subcommand's codes are contracts/exit-codes.md's."""
 
 
+def _named_word(word: str, kinds: str) -> str:
+    """`word`, an unknown subcommand or argument, as a usage line may show it
+    (exit-codes.md section 3.3's form, lane 3's ruling, opensoft/openRepoTools#165
+    6894208108, which 6932662633 extends to these lines): quoted only where all of
+    it matches `--?[A-Za-z][A-Za-z-]{0,30}`, and otherwise named as not one of
+    `kinds`, so a misplaced URL or password never reaches stderr (exit-codes.md:57)."""
+    if re.fullmatch(r"--?[A-Za-z][A-Za-z-]{0,30}", word):
+        return f"'{word}'"
+    return f"that is not one of its {kinds}"
+
+
 def main(argv: list[str]) -> int:
     if not argv:
         sys.stderr.write(USAGE + "\n")
@@ -24798,7 +24809,8 @@ def main(argv: list[str]) -> int:
     # them, is usage before any argument is read: it does nothing and says so,
     # and the 64 is what F8 reads from a `lanes-index` too old to have a verb.
     if verb not in ("sync", "reconcile", "status", "export"):
-        note(f"unknown subcommand '{verb}': this build does not have it - see {PROG} --help")
+        note(f"unknown subcommand {_named_word(verb, 'subcommands')}: this build does not "
+             f"have it - see {PROG} --help")
         return EXIT_USAGE
     source = None
     dry_run = False
@@ -24834,7 +24846,7 @@ def main(argv: list[str]) -> int:
             worktrees = True
             i += 1
             continue
-        note(f"unknown argument '{arg}' for {verb} - see {PROG} --help")
+        note(f"unknown argument {_named_word(arg, 'flags')} for {verb} - see {PROG} --help")
         return 64
     try:
         if verb == "sync":
@@ -24861,7 +24873,7 @@ def main(argv: list[str]) -> int:
     except StoreUnusable as exc:
         note(f"{exc.kind}: {exc.detail}")
         return 1
-    note(f"unknown subcommand '{verb}' - see {PROG} --help")
+    note(f"unknown subcommand {_named_word(verb, 'subcommands')} - see {PROG} --help")
     return 64
 
 
