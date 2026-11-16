@@ -1539,8 +1539,8 @@ def test_tests_yml_package_offline_install_step_holds_its_two_lines_and_28_rows(
 
 def test_tests_yml_synthetic_wheels_are_wheel_md_s_members(head, tmp_path):
     """The wheels above are the one contracts/wheel.md lists: HEAD's
-    modules, the 25 payload files (the 24 before it, then the cached module
-    `lanes_index_main.py` as the 25th) and the five `.dist-info` names, each
+    modules, the 25 payload files (T347 adds the cached module
+    `lanes_index_main.py` to the 24) and the five `.dist-info` names, each
     case differing from the wheel as built in its one member alone, and the
     one that writes a member twice in nothing but that member's second
     entry."""
