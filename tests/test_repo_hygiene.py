@@ -475,6 +475,116 @@ def test_the_estate_commands_carry_the_same_flag_value_byte_for_byte():
         "flag_value no longer refuses a value that begins with `-`")
 
 
+#: THE TWO ANSWERS TO "WHERE IS `<state>`" (feature 007's write path, T412 and
+#: T123). `lanes-edit.sh`'s `wr_state_dir` writes the pending records, their
+#: claims, the done marks and the attempt directories there, in bash, with no
+#: Python start for each write; `lanes-index`'s `state_dir()` is where
+#: `lanes-index status` looks (`pending-record.md`'s `<state>`). The two are
+#: written twice and must be one answer. Each row is `(id, the WHOLE
+#: environment each side gets, the answer)`; the answer is None where it is
+#: the password entry's home, which the test reads from `pwd` for the user it
+#: runs as. The values are made up, so no real `HOME` or `XDG_STATE_HOME`
+#: reaches either side.
+STATE_DIR_CASES = [
+    ("xdg-set",
+     {"XDG_STATE_HOME": "/made/up/state-home", "HOME": "/made/up/home"},
+     "/made/up/state-home/openRepoTools"),
+    ("xdg-set-ends-in-a-slash",
+     {"XDG_STATE_HOME": "/made/up/state-home/", "HOME": "/made/up/home"},
+     "/made/up/state-home/openRepoTools"),
+    ("xdg-unset",
+     {"HOME": "/made/up/home"},
+     "/made/up/home/.local/state/openRepoTools"),
+    ("xdg-empty-reads-as-unset",
+     {"XDG_STATE_HOME": "", "HOME": "/made/up/home"},
+     "/made/up/home/.local/state/openRepoTools"),
+    ("xdg-unset-home-ends-in-a-slash",
+     {"HOME": "/made/up/home/"},
+     "/made/up/home/.local/state/openRepoTools"),
+    ("xdg-unset-home-is-the-root",
+     {"HOME": "/"},
+     "/.local/state/openRepoTools"),
+    ("xdg-unset-home-set-and-empty",
+     {"HOME": ""},
+     "/.local/state/openRepoTools"),
+    ("xdg-unset-home-unset",
+     {},
+     None),
+]
+
+#: `lanes-index` loaded as a module, as `tests/test_lanes_index.py` loads it
+#: (the file has no `.py`), to print `state_dir()` and nothing else.
+_STATE_DIR_OF_LANES_INDEX = (
+    "import importlib.util, sys\n"
+    "from importlib.machinery import SourceFileLoader\n"
+    "loader = SourceFileLoader('lanes_index_state_dir', sys.argv[1])\n"
+    "spec = importlib.util.spec_from_loader('lanes_index_state_dir', loader)\n"
+    "module = importlib.util.module_from_spec(spec)\n"
+    "loader.exec_module(module)\n"
+    "sys.stdout.write(module.state_dir() + '\\n')\n")
+
+
+@WINDOWS_SKIP
+@pytest.mark.parametrize("case_id, env, expected", STATE_DIR_CASES,
+                         ids=[row[0] for row in STATE_DIR_CASES])
+def test_wr_state_dir_agrees_with_the_indexers_state_dir(case_id, env, expected):
+    """`wr_state_dir` and `state_dir()` name the same directory, with
+    `XDG_STATE_HOME` set and unset.
+
+    BOTH SIDES ARE RUN, each as its own file has it and each in an
+    environment that holds only the variables the case names, so the
+    developer's own `HOME` and `XDG_STATE_HOME` cannot reach either one and
+    make them agree, or disagree, by accident. The bash side is the file's
+    own function cut out and run in `bash -u`, as `lanes-edit.sh` runs it; the
+    Python side is `state_dir()` of the file's own module.
+
+    The two are held EQUAL, and each is held to the answer the case says (the
+    password entry's, for the case with no `HOME`), because two sides that
+    both print nothing agree. The cases
+    are the ones `wr_state_dir`'s comment lists: no second slash where the
+    base ends in one, the password entry's home where `HOME` is unset, and
+    the root where it is set and empty; an `XDG_STATE_HOME` set and empty is
+    unset, as `os.environ.get(...) or` reads it. A write that landed in a
+    directory `lanes-index status` does not read is one nobody would see.
+    """
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not installed")
+    text = (REPO / "lanes-edit.sh").read_text(encoding="utf-8")
+    function = re.search(r"^wr_state_dir\(\) \{[^\n]*\n.*?^\}\n", text,
+                         re.M | re.S)
+    assert function, "`wr_state_dir() {` ... `}` is no longer in lanes-edit.sh"
+    # `-B` AND NOT `-I` ALONE: `-I` ignores `PYTHONPYCACHEPREFIX` and
+    # `PYTHONDONTWRITEBYTECODE`, which this `env=` does not pass in any case, so
+    # loading `lanes-index` would write `__pycache__/lanes-indexcpython-3NN.pyc`
+    # into the checkout, which `tests/run.sh` keeps clean (#162). `stdin` is
+    # closed so that `bash -c` reads nothing a terminal could hand it.
+    in_bash = subprocess.run(
+        [bash, "-u", "-c", function.group(0) + "\nwr_state_dir\n"],
+        env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        check=False)
+    in_python = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", _STATE_DIR_OF_LANES_INDEX,
+         str(REPO / "lanes-index")],
+        env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        check=False)
+    assert in_bash.returncode == 0, in_bash.stderr
+    assert in_python.returncode == 0, in_python.stderr
+    assert in_bash.stdout == in_python.stdout, (
+        f"{case_id}: lanes-edit.sh's wr_state_dir says {in_bash.stdout!r} and "
+        f"lanes-index's state_dir() says {in_python.stdout!r}: a pending record "
+        "would be written where `lanes-index status` does not look")
+    if expected is None:
+        # The password entry's home, where `HOME` is unset: both sides read
+        # it. A home of `/` gives `/.local/state/...`, and a trailing slash is
+        # not doubled. `pwd` is POSIX only, as this test is.
+        import pwd
+        expected = (pwd.getpwuid(os.getuid()).pw_dir.rstrip("/")
+                    + "/.local/state/openRepoTools")
+    answer = in_bash.stdout.rstrip("\n")
+    assert answer == expected, (case_id, answer)
+
+
 def code_lines(path: Path) -> str:
     """The file with its whole-line comments dropped.
 
@@ -2797,6 +2907,33 @@ _EXIT_3_CAUSES = (
         re.compile(r"\bpushed\W+(?:but\W+)?not\W+confirmed\b", re.I),
         re.compile(r"\bnot\W+confirmed\s*:\W*(?:<sha>|\$\{?[A-Za-z_0-9@]+\}?)",
                    re.I)),
+    # FEATURE 007, ON PRIMARY (T417; D8; Y:2661-2665; R22, Q-L2-3 (a)): a
+    # register write in doubt that F3's lookup could not settle. Its die is
+    # `pw_lookup_3`'s; it names the write id, which the rerun reuses.
+    _Exit3Cause(
+        "a register write in doubt that F3's lookup could not settle",
+        "pw_lookup_3", None,
+        re.compile(r"\bcannot\W+confirm\W+whether\W+register\W+write\b", re.I),
+        re.compile(r"\bregister\W+write\W+(?:<id>|\$\{?[A-Za-z_0-9@]+\}?)",
+                   re.I)),
+    # FEATURE 007, ON PRIMARY (T417; Y:5216-5218; open point 42, under R26):
+    # an identical write's owner still live at D7's deadline, with a pending
+    # record or with none yet. Every die in `pw_owner_live_end` names the pid.
+    _Exit3Cause(
+        "an identical write's owner still live at the deadline",
+        "pw_owner_live_end", None,
+        re.compile(r"\bidentical\W+write\W+is\W+(?:still\W+running|being\W+started)\b",
+                   re.I),
+        re.compile(r"\bpid\W+(?:<p>|\$\{?[A-Za-z_0-9@]+\}?)", re.I)),
+    # FEATURE 007, ON PRIMARY (T417; DEC-25, #165 6750702819): the highest
+    # claim's owner cannot be tested here, and D7's deadline came before the
+    # seam's cap. Its die names the claim file.
+    _Exit3Cause(
+        "an identical write's claim whose owner cannot be tested here",
+        "pw_owner_untested_end", None,
+        re.compile(r"\bcannot\W+be\W+tested\W+here\b", re.I),
+        re.compile(r"\bclaim\W+(?:<state>/register-pending/<d>\.take\.<k>"
+                   r"|\$\{?[A-Za-z_0-9@]+\}?)", re.I)),
 )
 
 #: THE CAUSES AMENDMENT 23 S3-S4 WITHDREW, each with the words a die or a row
@@ -3083,6 +3220,10 @@ EXIT_3_SOURCE = '''\
 #   3  PUSHED, NOT CONFIRMED: <sha>. The push was sent, or it timed out, and
 #      the read-back could not confirm the commit on origin. Never success;
 #      the commit stays on HEAD, so look for it by content.
+#      On primary: cannot confirm whether register write <id> committed; the
+#      pending record is kept.
+#      Or an identical write is still running in pid <p>; or the claim
+#      <state>/register-pending/<d>.take.<k> cannot be tested here.
 #   4  the mutex could not be taken within 60s
 #   6  the commit is kept on HEAD after six attempts
 # --no-sweep is not an exit code
@@ -3103,6 +3244,15 @@ commit_publish() {
 cp_replay() {
   [ "$CP_ATTEMPT" -ge 6 ] && die "could not push origin/main after six attempts; the commit is kept on HEAD: $1" 6
 }
+pw_lookup_3() {   # <the end's code>
+  die "cannot confirm whether register write $WR_ID committed; nothing else was written" 3
+}
+pw_owner_live_end() {
+  die "an identical write is still running in pid $po_p (write $id); this run sent nothing" 3
+}
+pw_owner_untested_end() {
+  die "an identical write holds the claim $pu_f, whose owner cannot be tested here; this run sent nothing" 3
+}
 '''
 
 EXIT_3_MANUAL = '''\
@@ -3111,7 +3261,7 @@ EXIT_3_MANUAL = '''\
 | code | meaning |
 |---|---|
 | 0 | done, and for a write confirmed by a read-back |
-| 3 | **pushed, not confirmed: `<sha>`**. The push was sent, or it timed out, and the read-back could not confirm the commit on origin. Never success; the commit stays on HEAD |
+| 3 | **pushed, not confirmed: `<sha>`**. The push was sent, or it timed out, and the read-back could not confirm the commit on origin. On primary, cannot confirm whether register write `<id>` committed, and the pending record is kept; or an identical write is still running in pid `<p>`; or the claim `<state>/register-pending/<d>.take.<k>` cannot be tested here. Never success; the commit stays on HEAD |
 | 4 | the mutex could not be taken within 60s |
 
 3 to 6 are the codes this helper already used; 7 and 8 were free.
@@ -3958,12 +4108,16 @@ def test_the_python_files_compile():
     pipx install, so a syntax error in one of its modules is a command that
     fails on every workstation the release reaches. `package_modules()` is the
     set the standard-library rule above reads, so the two cover the same files.
+
+    T124 (tasks:2850; FR-064): `lanes-index` is a launcher that runs its body
+    from `lanes_index_main.py` beside it, at the root, where neither glob
+    reaches, so the module is compiled by name with the two commands.
     """
     for path in sorted((REPO / "tests").glob("*.py")):
         compile(path.read_text(encoding="utf-8"), str(path), "exec")
     for path in package_modules():
         compile(path.read_text(encoding="utf-8"), str(path), "exec")
-    for name in ("lanes-index", "lane-worktrees"):
+    for name in ("lanes-index", "lanes_index_main.py", "lane-worktrees"):
         command = REPO / name
         compile(command.read_text(encoding="utf-8"), str(command), "exec")
 
