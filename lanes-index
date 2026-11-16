@@ -10542,7 +10542,7 @@ CREATE VIEW stale_claims AS                    -- claim_is_stale (code/lanes-edi
                     AND o.file = h.file AND o.ordinal > h.ordinal AND o.verb = 'OPENED'
                     AND h.object = ANY (string_to_array(o.payload, ' ')));
 
-CREATE TABLE register_lines (                  -- every non-row LANES.md line, parsed best effort
+CREATE TABLE register_lines (                  -- every non-row LANES.md line of a kind, parsed best effort
   line_id     bigint  PRIMARY KEY REFERENCES doc_lines (line_id) ON DELETE CASCADE
                       DEFERRABLE INITIALLY DEFERRED,
   kind        text,
