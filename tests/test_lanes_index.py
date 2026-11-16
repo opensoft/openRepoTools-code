@@ -1132,6 +1132,56 @@ def test_no_configuration_refusal_echoes_a_value(estate, text, code, words):
     assert res.stdout == "", said
 
 
+# ================================================= mode and classify echo no argument
+#
+# T105's and T122's follow-up, on Codex's exact-head review of P10 at 079a34d8
+# (BLOCKING lanes-index:736 and :1263): neither command takes an argument, and its
+# usage line quoted the one it was given, so a misplaced URL or `password=` value
+# reached stderr. Nothing secret reaches stderr (register-cli.md section 2.6): the
+# line now names no argument, and the exit stays 64.
+
+#: The usage lines, whole.
+MODE_USAGE = "lanes-index: mode takes no argument - see lanes-index --help\n"
+CLASSIFY_USAGE = ("lanes-index: register classify takes no argument: it reads register lines "
+                  "on stdin - see lanes-index --help\n")
+
+#: (id, the arguments after `lanes-index`, the usage line)
+NO_ARGUMENT_USAGES = [
+    ("mode-uri", ("mode", CONFIG_URI), MODE_USAGE),
+    ("mode-key-value", ("mode", f"password={CONFIG_SECRET}"), MODE_USAGE),
+    ("classify-uri", ("register", "classify", CONFIG_URI), CLASSIFY_USAGE),
+    ("classify-key-value", ("register", "classify", f"password={CONFIG_SECRET}"),
+     CLASSIFY_USAGE),
+]
+
+
+@pytest.mark.parametrize("argv, usage", [
+    pytest.param(argv, usage, id=ident) for ident, argv, usage in NO_ARGUMENT_USAGES])
+def test_mode_and_register_classify_echo_no_argument(estate, argv, usage):
+    """USAGE, WITH NOTHING READ (contract sections 3.1 and 3.5): given a URL or
+    a `password=` value, each exits 64 with its usage line alone, and the
+    value is on neither stream. Nothing is read or connected: the
+    configuration, which would be refused with 2 since its line is not
+    `key=value`, is never reached; the register line on stdin is not
+    classified; and no `psql` runs."""
+    estate.write_config("this line is not a key and its value\n")
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    ran = estate.root / "psql-ran.txt"
+    (fake / "psql").write_text(f"#!/bin/sh\necho ran >> {shlex.quote(str(ran))}\nexit 1\n")
+    (fake / "psql").chmod(0o755)
+    line = (f"LANDING — lane repoA-1, session {UUID_A1}@Eagle, 2026-10-01T02:00:00Z, PR #7 "
+            f"into opensoft/repoA main\n")
+    res = estate.index(*argv, env={"PATH": estate.path_with(fake)}, input_text=line)
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert res.returncode == 64, f"exit {res.returncode}, not 64:\n{said}"
+    assert CONFIG_SECRET not in res.stdout + res.stderr, f"the argument was echoed:\n{said}"
+    assert res.stderr == usage, said
+    assert res.stdout == "", said
+    assert not ran.exists(), f"psql was run:\n{said}"
+
+
 FAKE_PSQL = r"""#!/usr/bin/env python3
 # A FAKE psql: it records what it was asked and answers the few queries
 # lanes-index makes as an EMPTY schema-1 store would. No database exists.
