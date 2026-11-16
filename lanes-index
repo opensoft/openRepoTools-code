@@ -375,6 +375,14 @@ PG_ENV_DROPPED = ("PGPASSWORD", "PGPASSFILE", "PGSERVICEFILE", "PGSYSCONFDIR", "
 CONNECT_TIMEOUT_MIN = 2
 CONNECT_TIMEOUT_DEFAULT = 2
 
+#: R16'S CEILING (lane 3's ruling on lane 5's question 7, #165 6932653746;
+#: contracts/config.md R16): `N_a` times `c`, `register_addresses=` times the
+#: larger of the register's two URLs' `connect_timeout=`, is at most 30 s, and
+#: `register_rtt_ms=` is at most 5000, so that every timer derived from them is
+#: bounded: `T_r` at most 34 s, `C` at most 36 s and `bound_s` at most 1380 s.
+REGISTER_CONNECT_MAX_S = 30
+REGISTER_RTT_MS_MAX = 5000
+
 
 def _pg_url_decode(text: str, what: str, part: str) -> str:
     """One URL part percent-decoded as libpq decodes it (`conninfo_uri_decode`):
@@ -582,12 +590,14 @@ def pg_url_refuse_unverified_tls(env: dict, what: str) -> None:
             f"(`localhost`, 127.0.0.0/8 or ::1) connect without them")
 
 
-def _check_register_keys(cfg: dict, path: str) -> None:
+def _check_register_keys(cfg: dict, path: str, mapped: dict) -> None:
     """007'S KEYS, EACH ON ITS OWN (FR-001; contracts/config.md section 4, R7,
     R11, R12 and R16), refused as `Refusal` (2). `register_addresses` and
-    `register_rtt_ms` are made whole numbers in `cfg`. Each refusal names the
-    key and the file, and never the value, which may be a misplaced URL or
-    password (contracts/config.md section 4: no URL and no password)."""
+    `register_rtt_ms` are made whole numbers in `cfg`. `mapped` holds
+    `pg_url_env`'s mapping of each URL the file names, for R16's ceiling. Each
+    refusal names the key and the file, and never the value, which may be a
+    misplaced URL or password (contracts/config.md section 4: no URL and no
+    password)."""
     # THE MODE (FR-001; Y:4849): `index` or `primary`, and absent is `index`.
     if cfg["mode"] not in ("index", "primary"):
         raise Refusal(f"`mode=` in {path}: the mode is `index` or `primary`")
@@ -603,6 +613,26 @@ def _check_register_keys(cfg: dict, path: str) -> None:
             raise Refusal(f"`{key}=` in {path} is not a whole number of at least "
                           f"{least}: it is {what}")
         cfg[key] = int(cfg[key])
+    # R16'S CEILING (lane 3's ruling on lane 5's question 7, #165 6932653746).
+    # `c` is taken as `.head` takes it (O15): the larger of the two URLs'
+    # `connect_timeout=`, each 2 where it names none. `reader_url=` counts only
+    # beside a `register_url=`, since without one it is #160's and no register
+    # call reads it (R15's rule), and with neither URL `c` is its default. It
+    # stays with R16's other rows, before Q6(c)'s refusal, so its exit is theirs.
+    urls = ("register_url", "reader_url") if cfg["register_url"] else ()
+    c = max([int(mapped[key].get("PGCONNECT_TIMEOUT", CONNECT_TIMEOUT_DEFAULT))
+             for key in urls if key in mapped] or [CONNECT_TIMEOUT_DEFAULT])
+    if cfg["register_addresses"] * c > REGISTER_CONNECT_MAX_S:
+        raise Refusal(
+            f"`register_addresses=` in {path}, times the larger `connect_timeout=` of "
+            f"`register_url=` and `reader_url=`, is above {REGISTER_CONNECT_MAX_S}: `N_a` "
+            f"times `c`, the longest a register call's connect may take (D9), is held to "
+            f"{REGISTER_CONNECT_MAX_S} s, so that every timer derived from it is bounded")
+    if cfg["register_rtt_ms"] > REGISTER_RTT_MS_MAX:
+        raise Refusal(
+            f"`register_rtt_ms=` in {path} is above {REGISTER_RTT_MS_MAX}: it is the p90 of "
+            f"the workstation's round trips to the register, in whole milliseconds (SVC-6), "
+            f"held to {REGISTER_RTT_MS_MAX} so that `w_s` is bounded")
     for key, what in (("register_passfile", "the libpq password file"),
                       ("render_key", "the renderer's deploy-key file")):
         if cfg[key]:
@@ -649,7 +679,9 @@ def load_config(text: str | None = None) -> dict:
     is not `index` or `primary`; `mode=primary` naming `store=sqlite`, or with
     no `register_url=`; `register_url=` with no `reader_url=`; a
     `register_schema=` that is not a plain lower-case SQL identifier; a
-    `register_addresses=` or `register_rtt_ms=` that is not a whole number; a
+    `register_addresses=` or `register_rtt_ms=` that is not a whole number; R16's
+    ceiling, a `register_addresses=` whose product with the larger URL
+    `connect_timeout=` is above 30, or a `register_rtt_ms=` above 5000; a
     `register_passfile=` or `render_key=` that is not a private regular file;
     and, where `register_url=` is set, R09's TLS refusal of it and of
     `reader_url=`. A file with no `register_url=` is #160's, and loads as it
@@ -745,7 +777,7 @@ def load_config(text: str | None = None) -> dict:
     for key in ("passfile", "reader_passfile"):
         if cfg[key]:
             _check_private_file(cfg[key], f"the libpq password file (`{key}=`)", shown=False)
-    _check_register_keys(cfg, path)
+    _check_register_keys(cfg, path, mapped)
     # Q6(c)'S REFUSAL (FR-003; Y:4849, Y:4872), once the file and every key in
     # it has passed on its own, and BEFORE the rules across keys: a `primary`
     # this build cannot serve is refused for that, whatever else the file
