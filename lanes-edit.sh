@@ -21197,7 +21197,11 @@ reg_guard_prefetch() {
       return ;;
     2)
       REG_MODE=primary
-      guard_refuse "it is too late in the hook's 5 s to verify the triple: the guard's register read would have started at or past its start line, T0 + ${GUARD_BUDGET_START_MS} ms, or was cut there (\`lanes-index register read --for guard --prefetch\` exited 2${RG_SAID:+: $RG_SAID}). A triple that cannot be verified is not a triple that agrees, so this prompt is refused, and the next one is read afresh (Amendment 12(d); feature 007, SVC-8)."
+      # UNDER A DECLARED OUTAGE the read's cap is `T0` + 3650 ms and a read with
+      # less than 0.5 s left before it does not start (`lanes-index`'s
+      # `REGISTER_GUARD_DECLARED_CUT_S` and `REGISTER_GUARD_FLOOR_S`; SVC-8), so
+      # the refusal names that case too (lane 5's Claude pre-review of P19, NIT 4).
+      guard_refuse "it is too late in the hook's 5 s to verify the triple: the guard's register read would have started at or past its start line, T0 + ${GUARD_BUDGET_START_MS} ms (under a declared outage, with less than 0.5 s left before its cap, T0 + 3650 ms), or was cut there (\`lanes-index register read --for guard --prefetch\` exited 2${RG_SAID:+: $RG_SAID}). A triple that cannot be verified is not a triple that agrees, so this prompt is refused, and the next one is read afresh (Amendment 12(d); feature 007, SVC-8)."
       return 2 ;;
     78)
       REG_MODE=refused
