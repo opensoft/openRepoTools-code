@@ -80,6 +80,7 @@ from urllib.parse import quote
 import pytest
 
 from conftest import REPO, WINDOWS_SKIP
+from pgcluster import _masked
 from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_ENDS,
                                   PSQL_SHIM_LOG, REGISTER_FAKE_PSQL, RENDER_SET_PATH, flipped_copy,
                                   guard_strip_env)
@@ -198,7 +199,9 @@ MARKER_COMMIT = "c0ffee" + "4" * 34
 
 
 def _said(proc: subprocess.CompletedProcess) -> str:
-    return f"exit {proc.returncode}\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
+    """`proc`'s exit, stdout and stderr for a failure's message, each
+    password-file line's password hidden (`pgcluster._masked`; T224j)."""
+    return f"exit {proc.returncode}\nstdout: {_masked(proc.stdout)}\nstderr: {_masked(proc.stderr)}"
 
 
 def _private(path: Path, text: str) -> Path:
@@ -246,10 +249,13 @@ def _objects(text: str) -> list:
 
 
 def _passwords(text: str) -> dict:
-    """Each password-file line, by login."""
+    """Each password-file line, by login. A login printed twice fails, its
+    text masked, and the check is a bool: pytest's report of an assertion
+    shows each operand's value, and `found` holds the lines (T224j)."""
     found: dict = {}
     for m in PASS_LINE.finditer(text):
-        assert m.group("login") not in found, f"{m.group('login')}'s line is printed twice:\n{text}"
+        twice = m.group("login") in found
+        assert not twice, f"{m.group('login')}'s line is printed twice:\n{_masked(text)}"
         found[m.group("login")] = m.group(0)
     return found
 
@@ -606,7 +612,30 @@ def _no_clear_text(log: str, lines: dict) -> None:
     verifier, never as clear text (O6)."""
     for login, line in lines.items():
         secret = line.rsplit(":", 1)[1]
-        assert secret not in log, f"the server's log holds {login}'s password in clear text"
+        leaked = secret in log      # a bool, so pytest's report never shows the secret (T224j)
+        assert not leaked, f"the server's log holds {login}'s password in clear text"
+
+
+# ============================================================ a failure's message (T224j)
+def test_a_failure_message_keeps_no_password_of_a_password_file_line():
+    """T224j (Codex's review of P09 at `f4f0ebce`, BLOCKING 3; lane 3's
+    ruling 6932114864): `_said` and `_passwords`' refusal of a line printed
+    twice keep no password, on synthetic text alone, with no database. The
+    line is built in the form of lane 1's `_register_pgpass_line`, with a
+    fresh uuid as its password. Each check is a bool, so no failure of this
+    case prints the password either."""
+    secret = uuid.uuid4().hex
+    line = ":".join(("*", "*", "t224_reg", "lanes_w_t224", secret))
+    proc = subprocess.CompletedProcess([], 1, f"login lanes_w_t224: created\n{line}\n", f"{line}\n")
+    said = _said(proc)
+    kept, hidden = secret in said, said.count("lanes_w_t224:<password>")
+    assert not kept and hidden == 2, f"_said keeps the password, or hides {hidden} of its 2 lines"
+    with pytest.raises(AssertionError) as twice:
+        _passwords(f"{line}\n{line}\n")
+    kept = secret in str(twice.value)
+    assert not kept, "_passwords' refusal of a line printed twice keeps its password"
+    read = _passwords(f"{line}\n").get("lanes_w_t224") == line
+    assert read, "_passwords no longer reads the line it is given"
 
 
 # ============================================================ the bootstrap
@@ -693,7 +722,8 @@ def test_login_add_run_again_puts_back_a_lost_membership_and_changes_nothing_els
     assert m.role("lanes_w_e1")["groups"] == [], "the membership was not revoked by hand"
     again = m.login("add", "e1", service)
     assert again.returncode == 0, f"login add e1, run again, failed:\n{_said(again)}"
-    assert _passwords(again.stdout) == {}, f"the rerun printed a password line:\n{_said(again)}"
+    printed = sorted(_passwords(again.stdout))     # the logins alone, as pytest reports it (T224j)
+    assert printed == [], f"the rerun printed a password line:\n{_said(again)}"
     after = {login: m.role(login) for login in ("lanes_w_e1", "lanes_r_e1")}
     assert after == before, f"the rerun changed more than the membership: {before} -> {after}"
 
@@ -1008,7 +1038,8 @@ def test_a_restore_from_the_providers_copy_keeps_the_roles_and_takes_new_passwor
     roles = copy.bootstrap(service, "--roles-only", pty_run=True)
     assert roles.returncode == 0, f"bootstrap --roles-only failed:\n{_said(roles)}"
     assert {state for _what, state in _objects(roles.stdout)} == {"unchanged"}, _said(roles)
-    assert _passwords(roles.stdout) == {}, f"--roles-only printed a password line:\n{_said(roles)}"
+    printed = sorted(_passwords(roles.stdout))     # the logins alone, as pytest reports it (T224j)
+    assert printed == [], f"--roles-only printed a password line:\n{_said(roles)}"
     new: dict = {}
     for who in ("e1", DUMP):
         proc = copy.login("rotate", who, service)
