@@ -1244,6 +1244,8 @@ class TLSCluster(Cluster):
                  leaf_only: bool = False) -> None:
         super().__init__(bindir, template_sql, imported)
         self.leaf_only = leaf_only
+        #: True while `start_again` runs, so `launch` keeps the port (T229h).
+        self.restarting = False
         self.root_cert: Optional[Path] = None
         self.database_name: Optional[str] = None
         self.labels: Dict[str, str] = {}
@@ -1269,16 +1271,23 @@ class TLSCluster(Cluster):
         if leaf_only is not None:
             self.leaf_only = leaf_only
             self._tls_settings()
-        super().start_again(standby=standby)
+        self.restarting = True
+        try:
+            super().start_again(standby=standby)
+        finally:
+            self.restarting = False
 
     def launch(self) -> None:
         """The start, with a new free port where another process took the
-        one chosen before the postmaster bound it."""
+        one chosen before the postmaster bound it: at the first start only.
+        A restart (`start_again`) keeps the port its clients and
+        configurations were given, so a bind failure there is raised, never
+        moved past (T229h)."""
         for attempt in range(3):
             try:
                 return super().launch()
             except ClusterError as exc:
-                if attempt == 2 or "bind" not in str(exc).lower():
+                if attempt == 2 or self.restarting or "bind" not in str(exc).lower():
                     raise
                 self.port = _free_port()
 
