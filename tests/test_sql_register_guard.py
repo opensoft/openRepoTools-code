@@ -2553,15 +2553,19 @@ ANCHOR_ALLOW_WRITE = "{ printf 'mode=allow\\n'"
 
 def _bind_copy(est: Estate, edits) -> Path:
     """POINT 23's TEST-ONLY COPY (lane 3's ruling, #165 6879754335): the
-    checkout's `lanes-edit.sh`, with `repos.tsv`, `lane-start` and
-    `lanes-index` beside it as the checkout has them (the copy rule,
-    CLI4.5:885), and each of `edits`, an (anchor, text) pair, made once, as
+    checkout's `lanes-edit.sh`, with `repos.tsv`, `lane-start`, `lanes-index`
+    and T124's module `lanes_index_main.py` beside it as the checkout has them
+    (the copy rule, CLI4.5:885; T124's launcher runs its body from the module
+    beside its own `realpath`, and a launcher copied without it exits 1; a
+    name the checkout lacks is skipped, as the module is before T124), and
+    each of `edits`, an (anchor, text) pair, made once, as
     `[answer-2]` edits its stub (`_bound_through_answer_2_on_the_stub`): an
     anchor found other than once fails the case there, so a copy never runs
     without the edit it was made for. The shipped script is never changed."""
     code = est.root / "bind-copy"
     code.mkdir()
-    for name in ("lanes-edit.sh", "repos.tsv", "lane-start", "lanes-index"):
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start", "lanes-index",
+                 "lanes_index_main.py"):
         if (REPO / name).exists():
             shutil.copy2(REPO / name, code / name)
     copy = code / "lanes-edit.sh"
