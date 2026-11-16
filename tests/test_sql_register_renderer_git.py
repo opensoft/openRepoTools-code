@@ -938,28 +938,40 @@ class RenderEstate:
     def race(self, checkouts: list, *, conf: Path | None = None) -> list:
         """Test 4's barrier (TP:886-888, TP:1083): one renderer per checkout,
         each launched blocking on a FIFO of its own, released together once
-        all are waiting. Returns each one's (returncode, stdout, stderr)."""
-        procs, fifos = [], []
-        for lc in checkouts:
-            fifo = self.root / f"barrier-{lc.name}.fifo"
-            os.mkfifo(str(fifo), 0o600)
-            fifos.append(fifo)
-            procs.append(self.popen_render(lc, conf=conf, argv=[
-                sys.executable, "-I", str(self.bin / "launch"), str(fifo), *self.render_argv(lc)]))
-        fds = []
+        all are waiting. Returns each one's (returncode, stdout, stderr).
+        The `finally` owns every child and FIFO end: where anything fails, each
+        child not yet reaped has its session ended (`_end_session`), and only
+        then is each FIFO end still open closed, so no launcher is released
+        into a render the case has given up on (lane 3's Codex review of code
+        PR 97 at `4e9821ab`, SHOULD 4)."""
+        procs, fifos, fds = [], [], []
         try:
+            for lc in checkouts:
+                fifo = self.root / f"barrier-{lc.name}.fifo"
+                os.mkfifo(str(fifo), 0o600)
+                fifos.append(fifo)
+                procs.append(self.popen_render(lc, conf=conf, argv=[
+                    sys.executable, "-I", str(self.bin / "launch"), str(fifo),
+                    *self.render_argv(lc)]))
             for fifo, proc in zip(fifos, procs):
                 fd = _open_when_held(fifo, proc)
                 assert fd is not None, f"a launcher never waited on {fifo}"
                 fds.append(fd)
+            while fds:
+                os.close(fds.pop(0))
+            ended = []
+            for proc in procs:
+                out, err = proc.communicate(timeout=300)
+                ended.append(SimpleNamespace(returncode=proc.returncode, stdout=out, stderr=err))
+            return ended
         finally:
-            for fd in fds:
-                os.close(fd)
-        ended = []
-        for proc in procs:
-            out, err = proc.communicate(timeout=300)
-            ended.append(SimpleNamespace(returncode=proc.returncode, stdout=out, stderr=err))
-        return ended
+            try:
+                for proc in procs:
+                    if proc.returncode is None:
+                        _end_session(proc)
+            finally:
+                for fd in fds:
+                    os.close(fd)
 
     # ------------------------------------------------------------ writes that fork
     def rearm(self, arms=()) -> None:
