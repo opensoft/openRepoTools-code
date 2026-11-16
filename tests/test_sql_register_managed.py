@@ -53,6 +53,14 @@ is `*:*:<database>:<login>:<password>`; `login`'s argv is `login add|rotate
 <engineer>|--dump-job --admin-service <service>`; the floors as
 `pg_roles.rolconfig` holds them; and `ready`'s line form, `check <n>: ok` or
 `check <n>: FAIL: <reason>`, as T218b reads it.
+
+NO PASSWORD IN A FAILURE (T224j, T224k; Codex's review of P09 at
+`f4f0ebce`, BLOCKING 3): `login add`'s, `login rotate`'s and `bootstrap`'s
+stdout carry password-file lines, so `_said` and `_passwords` hide each
+line's password. This module is also PYTEST_DONT_REWRITE: pytest's
+assertion rewriting would add each operand's value to a failure's message,
+a `CompletedProcess` with that stdout or a dict of password-file lines
+among them, so an assertion here reports its own message and nothing else.
 """
 
 from __future__ import annotations
@@ -634,8 +642,16 @@ def test_a_failure_message_keeps_no_password_of_a_password_file_line():
         _passwords(f"{line}\n{line}\n")
     kept = secret in str(twice.value)
     assert not kept, "_passwords' refusal of a line printed twice keeps its password"
-    read = _passwords(f"{line}\n").get("lanes_w_t224") == line
+    found = _passwords(f"{line}\n")
+    read = found.get("lanes_w_t224") == line
     assert read, "_passwords no longer reads the line it is given"
+
+    def none_printed(lines: dict) -> None:
+        assert lines == {}, "a password line was printed"
+    with pytest.raises(AssertionError) as failed:     # T224k: an operand that holds the line
+        none_printed(found)
+    kept = secret in str(failed.value)
+    assert not kept, "a failed assertion whose operand holds the line reports its password"
 
 
 # ============================================================ the bootstrap
