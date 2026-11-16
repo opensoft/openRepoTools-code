@@ -9539,15 +9539,24 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     else:
         os.close(lock)
         return EXIT_OK      # ONE INSTANCE: another service holds the lock
+    # THE LOCK'S DESCRIPTOR IS CLOSED ON EACH RETURN, as the two above close
+    # it (lane 5's Claude pre-review of P23, NIT 3): a live service's answer
+    # here, and the bind's failure below. The probe only sets `live`, and the
+    # close follows it, so an `OSError` from the close is not taken for a
+    # stale socket's.
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    live = False
     try:
         probe.settimeout(1.0)
         probe.connect(paths["sock"])
-        return EXIT_OK      # a live service answers the connect
+        live = True         # a live service answers the connect
     except OSError:
         pass                # `ENOENT`, or `ECONNREFUSED`: a stale socket
     finally:
         probe.close()
+    if live:
+        os.close(lock)
+        return EXIT_OK
     # THE BIND, UNDER `umask 077` (Y:3768-3770), at a short name of its own
     # beside the fixed path, renamed over it: so a STALE SOCKET is replaced
     # under the lock in one step (Y:3907-3909), and the new socket is never
@@ -9590,6 +9599,7 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
                                           f"taken: another is drawn")
                 continue
             note(f"serve: the socket {paths['sock']} could not be bound ({exc.strerror or exc})")
+            os.close(lock)
             return EXIT_UNAVAILABLE
         finally:
             os.umask(old)
