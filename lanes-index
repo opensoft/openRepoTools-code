@@ -288,18 +288,25 @@ def _url_has_password(url: str) -> bool:
     return bool(re.search(r"(^|\s)password\s*=", low, re.IGNORECASE))
 
 
-def _check_private_file(path: str, what: str) -> None:
+def _check_private_file(path: str, what: str, *, shown: bool = True) -> None:
+    """`path` refused unless it is a regular file with no group or other
+    permission bit. Where `shown` is False, `path` is a key's value, which may
+    be a misplaced URL or password, so no refusal prints it: `what` names the
+    key (contracts/config.md section 4: a refusal prints no URL and no
+    password)."""
+    named, target = (f"{what} {path}", path) if shown else (what, "the file it names")
     try:
         st = os.stat(path)
     except OSError as exc:
-        raise Refusal(f"{what} {path} cannot be read: {exc.strerror or exc}")
+        why = exc.strerror or (exc if shown else type(exc).__name__)
+        raise Refusal(f"{named} cannot be read: {why}")
     if not stat.S_ISREG(st.st_mode):
-        raise Refusal(f"{what} {path} is not a regular file")
+        raise Refusal(f"{named} is not a regular file")
     if st.st_mode & 0o077:
         raise Refusal(
-            f"{what} {path} is mode {oct(st.st_mode & 0o777)[2:]}, so another account "
+            f"{named} is mode {oct(st.st_mode & 0o777)[2:]}, so another account "
             f"on this workstation can read it (Amendment 14(c): mode 0600). "
-            f"Fix it: chmod 600 {path}")
+            f"Fix it: chmod 600 {target}")
 
 
 #: SVC-2'S FIXED MAPPING (Question 11; design Y:3798-3819): the six query
@@ -543,13 +550,14 @@ def pg_url_refuse_unverified_tls(env: dict, what: str) -> None:
 def _check_register_keys(cfg: dict, path: str) -> None:
     """007'S KEYS, EACH ON ITS OWN (FR-001; contracts/config.md section 4, R7,
     R11, R12 and R16), refused as `Refusal` (2). `register_addresses` and
-    `register_rtt_ms` are made whole numbers in `cfg`."""
+    `register_rtt_ms` are made whole numbers in `cfg`. Each refusal names the
+    key and the file, and never the value, which may be a misplaced URL or
+    password (contracts/config.md section 4: no URL and no password)."""
     # THE MODE (FR-001; Y:4849): `index` or `primary`, and absent is `index`.
     if cfg["mode"] not in ("index", "primary"):
-        raise Refusal(f"`mode={cfg['mode']}` in {path}: the mode is `index` or `primary`")
+        raise Refusal(f"`mode=` in {path}: the mode is `index` or `primary`")
     if not SCHEMA_NAME_RE.fullmatch(cfg["register_schema"]):
-        raise Refusal(f"`register_schema={cfg['register_schema']}` in {path} is not a plain "
-                      f"lower-case SQL identifier")
+        raise Refusal(f"`register_schema=` in {path} is not a plain lower-case SQL identifier")
     # `N_a` AND THE ROUND TRIP (D9, Y:5877; SVC-6, Y:4005): each a whole number,
     # measured when the workstation joins.
     for key, least, what in (("register_addresses", 1, "`N_a`, the number of addresses "
@@ -557,13 +565,13 @@ def _check_register_keys(cfg: dict, path: str) -> None:
                              ("register_rtt_ms", 0, "the p90 of the workstation's round "
                               "trips to the register, in whole milliseconds (SVC-6)")):
         if not re.fullmatch(r"[0-9]+", cfg[key]) or int(cfg[key]) < least:
-            raise Refusal(f"`{key}={cfg[key]}` in {path} is not a whole number of at least "
+            raise Refusal(f"`{key}=` in {path} is not a whole number of at least "
                           f"{least}: it is {what}")
         cfg[key] = int(cfg[key])
     for key, what in (("register_passfile", "the libpq password file"),
                       ("render_key", "the renderer's deploy-key file")):
         if cfg[key]:
-            _check_private_file(cfg[key], f"{what} (`{key}=`)")
+            _check_private_file(cfg[key], f"{what} (`{key}=`)", shown=False)
 
 
 def _check_register_connections(cfg: dict, path: str, named_store: str, mapped: dict) -> None:
