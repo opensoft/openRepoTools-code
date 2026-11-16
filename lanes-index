@@ -667,10 +667,12 @@ def load_config() -> dict:
             if not line or line.startswith("#"):
                 continue
             if "=" not in line:
-                raise Refusal(f"{path}:{number} is not `key=value`: {line!r}")
+                raise Refusal(f"{path}:{number} is not `key=value`")
             key, value = (part.strip() for part in line.split("=", 1))
             if key not in known:
-                raise Refusal(f"{path}:{number} names `{key}=`, which this indexer does not "
+                named = (f"`{key}=`" if re.fullmatch(r"[a-z_]{1,40}", key)
+                         else "a key that is not a plain lower-case word")
+                raise Refusal(f"{path}:{number} names {named}, which this indexer does not "
                               f"know (it reads {', '.join(k + '=' for k in known)})")
             if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
                 value = value[1:-1]
@@ -693,15 +695,15 @@ def load_config() -> dict:
     named_store = cfg["store"]
     store = cfg["store"] or ("postgres" if cfg["url"] else "sqlite")
     if store not in ("sqlite", "postgres"):
-        raise Refusal(f"`store={cfg['store']}` in {path}: the store is `sqlite` or `postgres`")
+        raise Refusal(f"`store=` in {path}: the store is `sqlite` or `postgres`")
     if store == "postgres" and not cfg["url"]:
         raise Refusal(f"`store=postgres` in {path} names no `url=`")
     cfg["store"] = store
     if not SCHEMA_NAME_RE.match(cfg["schema"]):
-        raise Refusal(f"`schema={cfg['schema']}` in {path} is not a plain lower-case SQL identifier")
+        raise Refusal(f"`schema=` in {path} is not a plain lower-case SQL identifier")
     for key in ("passfile", "reader_passfile"):
         if cfg[key]:
-            _check_private_file(cfg[key], f"the libpq password file (`{key}=`)")
+            _check_private_file(cfg[key], f"the libpq password file (`{key}=`)", shown=False)
     _check_register_keys(cfg, path)
     # Q6(c)'S REFUSAL (FR-003; Y:4849, Y:4872), once the file and every key in
     # it has passed on its own, and BEFORE the rules across keys: a `primary`
