@@ -2706,12 +2706,17 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
                                        relay.port, login) for login in set(writers)}
         bench.lane_checkout()
         release = time.monotonic()
-        procs = [_writer(bench, configs[login], f"PAUSED {DOT} T257's burst {i}")
-                 for i, login in enumerate(writers)]
-        ends = []
-        for proc in procs:
-            _, err = proc.communicate(timeout=300)
-            ends.append((proc.returncode, time.monotonic() - release, err))
+        procs, ends = [], []
+        try:
+            for i, login in enumerate(writers):
+                procs.append(_writer(bench, configs[login], f"PAUSED {DOT} T257's burst {i}"))
+            for proc in procs:
+                _, err = proc.communicate(timeout=300)
+                ends.append((proc.returncode, time.monotonic() - release, err))
+        finally:
+            # Whatever ended the collection, no writer it started outlives it (T257q).
+            for proc in procs:
+                _end_process(proc, group=False)
     codes = [code for code, _, _ in ends]
     rows = db.psql(f"SELECT seq, write_id FROM {SCHEMA}.journal WHERE seq > {head} "
                    f"ORDER BY seq;").stdout.split()
