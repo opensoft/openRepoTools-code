@@ -103,7 +103,7 @@ queue_rules:
       - 'head~=^(?!release/|verify/|mergify/|ci/batch-pilot/)[A-Za-z0-9][A-Za-z0-9._/-]*\Z'
       - '#files>=1'
       - -files=src/openrepotools/_release.py
-      - '-files~=^(?!(?:(?:claude-current|claude-restart-check|lane|lane-end|lane-handoff|lane-rename|lane-start|lane-worktrees|lanes|lanes-edit[.]sh|lanes-index|link-estates|openRepoTools|park|resume|status|repos[.]tsv|README[.]md)|(?:tests|src|commands|skills|features)/[A-Za-z0-9_.+/-]+)\Z)'
+      - '-files~=^(?!(?:(?:claude-current|claude-restart-check|lane|lane-end|lane-handoff|lane-rename|lane-start|lane-worktrees|lanes|lanes-edit[.]sh|lanes-index|lanes_index_main[.]py|link-estates|openRepoTools|park|resume|status|repos[.]tsv|README[.]md)|(?:tests|src|commands|skills|features)/[A-Za-z0-9_.+/-]+)\Z)'
       - check-success=@github-actions/guard-launch-mode
       - check-success=@github-actions/tests
       - check-success=@github-actions/tests-no-submodule

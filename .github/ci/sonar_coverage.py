@@ -113,6 +113,9 @@ def probe_python_copy_attribution(root, out, manifest, env):
     os.environ["ORT_SONAR_ROOT"] = str(root)
     os.environ["ORT_SONAR_INVENTORY"] = str(out / INVENTORY)
     source = (root / "code/lanes-index").read_bytes()
+    # T124 (tasks:2850; FR-064): `lanes-index` is a launcher that runs its
+    # body from `lanes_index_main.py` beside it, so each copy has the module.
+    module = (root / "code/lanes_index_main.py").read_bytes()
     checksum = hashlib.sha256(source).hexdigest()
     canonical = next(root / item["path"] for item in manifest["files"]
                      if item["language"] == "py" and not item["test"]
@@ -123,6 +126,7 @@ def probe_python_copy_attribution(root, out, manifest, env):
         directory.mkdir(parents=True)
         command = directory / "copied-python-command"
         command.write_bytes(source if kind == "exact" else source + b"\n# changed copy\n")
+        (directory / "lanes_index_main.py").write_bytes(module)
         config = directory / COVERAGE_CONFIG
         settings = (out / COVERAGE_CONFIG).read_text()
         config.write_text(settings.replace(str(out / COVERAGE_DATA), str(directory / COVERAGE_DATA)))
