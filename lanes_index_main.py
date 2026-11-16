@@ -12749,8 +12749,11 @@ _READY_DIGEST_LINE_RE = re.compile(r"([0-9a-f]{64}) [ *]([A-Za-z0-9_+-][A-Za-z0-
 
 #: The tools every release's digest list names (lane 3's ruling, #165
 #: 6770600106): "A list that does not name `lanes-index` and `lanes-edit.sh`
-#: fails." Check 1 names each one a list leaves out.
-_READY_DIGEST_NAMES = ("lanes-index", "lanes-edit.sh")
+#: fails." Check 1 names each one a list leaves out. Since T347 it also names
+#: this module, which holds the code `lanes-index` runs, so a release list
+#: that leaves it out is refused (lane 3's choice, on lane 1's offer, #165
+#: 6869870250; 007 tasks:2855).
+_READY_DIGEST_NAMES = ("lanes-index", "lanes-edit.sh", "lanes_index_main.py")
 
 #: `--release` and `--env`: a version and a label, which become a file name and
 #: part of the last line, so neither can carry a path, a space or a control
