@@ -887,6 +887,17 @@ def _re_fault(env: ReadyEnvironment, fault: str) -> subprocess.CompletedProcess:
     raise AssertionError(f"no RE fault {fault}")
 
 
+#: WHETHER T124'S LAUNCHER READS THE MODULE'S BYTECODE AT ALL: on Python 3.11
+#: and later (T282c's constant, in the build-flip module). Lane 1's gate (#165
+#: 6894131980; its prototype version 3, 6894948278) adds `sys.version_info >=
+#: (3, 11)` beside the launcher's cache-tag and `-O` tests, and check 1 compares
+#: bytecode on the same interpreters, so on 3.9 and 3.10 check 1 compares no
+#: bytes, names the module's source path and passes: `[cache-payload]` is no
+#: fault there (tasks:2056, :2058 and :2854; TP:3056, :3133 and :3181; lane 3's
+#: ruling 2, #165 6885378657).
+LAUNCHER_READS_BYTECODE = sys.version_info >= (3, 11)
+
+
 @pytest.mark.parametrize("fault", list(FAULTS))
 def test_the_readiness_check_fails_on_each_fault(tmp_path, request, fault):
     number, kind = FAULTS[fault]
@@ -900,6 +911,27 @@ def test_the_readiness_check_fails_on_each_fault(tmp_path, request, fault):
             f"[{fault}] the control, with the fault taken away, does not pass check "
             f"{number}{missing}:\n{_said(control)}")
         proc = _fp_fault(bench, fault)
+        if fault == "cache-payload" and not LAUNCHER_READS_BYTECODE:
+            # ON 3.9 AND 3.10 THE PAYLOAD IS NO FAULT (`LAUNCHER_READS_BYTECODE`):
+            # check 1 compares no bytes, so its line passes, naming the module's
+            # source path, and `ready` answers as it does for the control. TP:3133's
+            # exit 0 is the ready environment's, and this bench is none (its checks
+            # that read the database fail on the fake `psql`), so the case asserts
+            # the control's exit and the control's state on each check line.
+            source = str(bench.tools / CACHED_MODULE)
+            checks = _checks(proc.stdout)
+            line = checks.get(number, ("", ""))
+            assert line[0] == "ok" and source in line[1], (
+                f"[{fault}] below Python 3.11 check {number} is not ok naming the module's "
+                f"source path {source}:\n{_said(proc)}")
+            control_checks = _checks(control.stdout)
+            answer = (proc.returncode, {n: state for n, (state, _) in checks.items()})
+            control_answer = (control.returncode,
+                              {n: state for n, (state, _) in control_checks.items()})
+            assert answer == control_answer, (
+                f"[{fault}] below Python 3.11 the payload changed ready's answer from the "
+                f"control's:\n{_said(control)}\n{_said(proc)}")
+            return
     else:
         proc = _re_fault(ReadyEnvironment(request, tmp_path), fault)
     checks = _checks(proc.stdout)
