@@ -1347,6 +1347,7 @@ def test_lanes_write_id_new_on_the_replacement_replaces_the_old_record_and_write
     and lane 4's T412, T415, T416 and T417."""
     estate, record = _f18_estate(request, tmp_path)
     _cut_over_on_b(estate)
+    generation_b = estate.switch()["generation"]
     text = record["argv"][-1]
     on_b = _rows(estate.db, "SELECT raw FROM log_lines")
     assert not any(text in row["raw"] for row in on_b), (
@@ -1361,8 +1362,11 @@ def test_lanes_write_id_new_on_the_replacement_replaces_the_old_record_and_write
                             f"ORDER BY seq")
     assert len(rows) == 1 and rows[0]["id"] != record["id"], (
         f"[new] the journal did not gain exactly one write under a new id: {rows}")
-    assert {c["stdin"].count(rows[0]["id"]) > 0 for c in estate.host.commit_calls()} == {True}, (
-        "[new] a commit call carried another write id")
+    calls = estate.host.commit_calls()
+    assert len(calls) == 1 and rows[0]["id"] in calls[0]["stdin"] and \
+        generation_b in calls[0]["stdin"], (
+            f"[new] not one commit call, carrying the new id {rows[0]['id']} and B's generation "
+            f"{generation_b} (T274f): {len(calls)} call(s)")
     left = [p.read_text(encoding="utf-8") for p in estate.host.pending()]
     assert not any(record["generation"] in text_ or record["id"] in text_ for text_ in left), (
         "[new] a record of A's generation is left")
