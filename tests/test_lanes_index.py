@@ -1066,6 +1066,72 @@ def test_a_named_configuration_that_is_not_there_and_a_store_in_a_work_tree_refu
     assert loose.returncode == 2 and "password file" in loose.stderr
 
 
+# ======================================================== no refusal echoes a value
+#
+# T104's follow-up, on Codex's exact-head review of P10 at 079a34d8 (BLOCKING
+# lanes-index:549, with :551 and :560): contracts/config.md section 4 (:119) has
+# each refusal name the file, the line or the key, and what is wrong, and print no
+# URL and no password, but a value in the wrong key, such as a URL with its password
+# in `mode=`, was printed whole. One row for each refusal family a line's value
+# reaches, each value the fake secret, in a URL or alone. `lanes-index mode` reads
+# only the configuration (T105), so each is refused before anything connects.
+
+#: The fake secret, as a URL's password and alone. Neither is real.
+CONFIG_SECRET = "t104-FAKE-not-a-secret"
+CONFIG_URI = f"postgresql://u:{CONFIG_SECRET}@h.invalid/d"
+
+#: (id, the configuration, the exit, words its refusal holds)
+NO_ECHO_REFUSALS = [
+    ("R5-url", f"url={CONFIG_URI}\n", 2, "`url=`"),
+    ("R5-register_url", f"register_url={CONFIG_URI}\n", 2, "`register_url=`"),
+    ("R5-query-password",
+     f"register_url=postgresql://u@h.invalid/d?password={CONFIG_SECRET}\n", 2,
+     "carries a password"),
+    ("R7-mode", f"mode={CONFIG_URI}\n", 2, "`mode=`"),
+    ("R10-no-reader",
+     f"register_url=postgresql://u@h.invalid/d\nregister_label={CONFIG_SECRET}\n", 2,
+     "has no `reader_url=`"),
+    ("R11-register_passfile", f"register_passfile={CONFIG_URI}\n", 2,
+     "(`register_passfile=`)"),
+    ("R11-render_key", f"render_key=password={CONFIG_SECRET}\n", 2, "(`render_key=`)"),
+    ("R12-register_schema", f"register_schema={CONFIG_URI}\n", 2, "`register_schema=`"),
+    ("R13-parameter-name", f"register_url=postgresql://u@h.invalid/d?{CONFIG_SECRET}=x\n", 2,
+     "a name that is not a libpq keyword"),
+    ("R13-parameter-value",
+     f"register_url=postgresql://u@h.invalid/d?application_name={CONFIG_SECRET}\n", 2,
+     "`application_name=`"),
+    ("R14-connect_timeout",
+     f"register_url=postgresql://u@h.invalid/d?connect_timeout={CONFIG_SECRET}\n", 2,
+     "`connect_timeout=`"),
+    ("R15-host",
+     f"register_url=postgresql://u@{CONFIG_SECRET}.invalid/d\n"
+     f"reader_url=postgresql://r@h.invalid/d\n", 2, "not loopback"),
+    ("R16-register_addresses", f"register_addresses={CONFIG_URI}\n", 2,
+     "`register_addresses=`"),
+    ("R16-register_rtt_ms", f"register_rtt_ms=password={CONFIG_SECRET}\n", 2,
+     "`register_rtt_ms=`"),
+    ("R17-primary", f"mode=primary\nregister_label={CONFIG_SECRET}\n", 78,
+     "is not available in this build"),
+]
+
+
+@pytest.mark.parametrize("text, code, words", [
+    pytest.param(text, code, words, id=ident) for ident, text, code, words in NO_ECHO_REFUSALS])
+def test_no_configuration_refusal_echoes_a_value(estate, text, code, words):
+    """NO REFUSAL ECHOES A VALUE (contracts/config.md section 4, :119): the
+    fake secret, in a URL or alone, in each family's value, is refused by
+    `lanes-index mode` with the family's code and words, nothing on stdout,
+    and the secret on neither stream."""
+    estate.write_config(text)
+    res = estate.index("mode")
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert res.returncode == code, f"exit {res.returncode}, not {code}:\n{said}"
+    assert CONFIG_SECRET not in res.stdout + res.stderr, f"the value was echoed:\n{said}"
+    assert words in res.stderr, said
+    assert res.stdout == "", said
+
+
 FAKE_PSQL = r"""#!/usr/bin/env python3
 # A FAKE psql: it records what it was asked and answers the few queries
 # lanes-index makes as an EMPTY schema-1 store would. No database exists.
