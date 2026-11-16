@@ -3134,15 +3134,30 @@ class ArmedFault(StartupRelay):
             except OSError:
                 continue
             on = bool(self.armed())
-            if on and self.fault == "F1":
-                self.held.append(conn)
-                self.silenced += 1
-                continue
-            upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            upstream.connect(self.unix_path)
-            self.held += [conn, upstream]
-            threading.Thread(target=self._pump, args=(conn, upstream, on and self.fault == "F2"),
-                             daemon=True).start()
+            upstream = None
+            if not (on and self.fault == "F1"):
+                upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                try:
+                    upstream.connect(self.unix_path)
+                except OSError:
+                    conn.close()
+                    upstream.close()
+                    continue
+            with self.lock:                 # registered and started under close()'s lock (T278h)
+                if self.done:
+                    conn.close()
+                    if upstream is not None:
+                        upstream.close()
+                    return
+                if upstream is None:        # F1: held, never spoken to
+                    self.held.append(conn)
+                    self.silenced += 1
+                    continue
+                self.held += [conn, upstream]
+                pump = threading.Thread(target=self._pump,
+                                        args=(conn, upstream, on and self.fault == "F2"), daemon=True)
+                self.pumps.append(pump)
+                pump.start()
 
 
 def _did(call: dict, what: str) -> bool:
