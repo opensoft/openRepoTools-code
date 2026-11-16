@@ -18,9 +18,12 @@ workstation, a stand-in `lanes-index` that prints the case's stderr and
 exits 64, and `reg_guard_files`, whose argument, the files-mode warning's
 `exited 64 (<quote>)`, is written to a file. Each case runs under the C
 locale and under a UTF-8 one, and with and without form 2's fallback line
-ahead of what it said. The cases whose 1000th byte splits a character are
-red on the cut before the NIT round; the others are its controls, green
-before and after.
+ahead of what it said. Where the UTF-8 locale is not installed, bash falls
+back to C with a `setlocale` warning, so a UTF-8 id would pass as a second
+C run and prove nothing about that locale: it is skipped instead, and the
+skip quotes bash's warning (lane 5's Claude pre-review of P19, NIT 6). The
+cases whose 1000th byte splits a character are red on the cut before the
+NIT round; the others are its controls, green before and after.
 
 The last case, at the end of the file, holds S3's outage text to the
 register-service spec's SHALL, "The guard fails closed during a database
@@ -33,6 +36,7 @@ the status and rollback commands alone.
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import shutil
@@ -53,7 +57,8 @@ LIMIT = 1000
 #: and leaves out of the quote (T507's part F1).
 FALLBACK = b"guard: direct (service unavailable)"
 
-#: The UTF-8 locale of each case's second run.
+#: The UTF-8 locale of each case's second run. Where it is not installed the
+#: run is skipped (`_locale_missing`).
 UTF8 = "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8"
 
 #: Three characters, built from their code points: two, three and four bytes
@@ -89,6 +94,18 @@ def _function(name: str) -> str:
     match = re.search(rf"^{re.escape(name)}\(\) \{{[^\n]*\n.*?^\}}\n", text, re.M | re.S)
     assert match, f"`{name}() {{` ... `}}` is no longer in lanes-edit.sh"
     return match.group(0)
+
+
+@functools.lru_cache(maxsize=None)
+def _locale_missing(locale: str) -> str:
+    """Bash's own `setlocale` warning where it cannot take `locale` and falls
+    back to C, else "": asked of `bash -c :` once per locale, in the case's
+    own environment, `PATH` and `LC_ALL` alone."""
+    res = subprocess.run(["bash", "-c", ":"], capture_output=True,
+                         env={"PATH": os.environ["PATH"], "LC_ALL": locale},
+                         timeout=60, check=False)
+    said = res.stderr.decode("utf-8", "replace").splitlines()
+    return next((line.strip() for line in said if "setlocale" in line), "")
 
 
 def _at(prefix: int, char: str) -> bytes:
@@ -141,7 +158,12 @@ def test_the_guards_quote_of_form_2_ends_on_a_character_boundary(
         tmp_path, said, length, fallback, locale):
     """The quote is whole UTF-8, at most 1000 bytes, and the longest such
     prefix of what form 2 said, cut as the contract cuts it; ASCII is quoted
-    as before; and it reaches the warning whole."""
+    as before; and it reaches the warning whole. A UTF-8 id whose locale is
+    not installed is skipped, naming bash's warning, never run as C."""
+    missing = _locale_missing(locale) if locale != "C" else ""
+    if missing:
+        pytest.skip(f"the {locale} locale is not installed here, so bash would run this "
+                    f"case under C and prove nothing about {locale}: {missing}")
     splits = _whole_prefix(said[:LIMIT]) != said[:LIMIT]
     assert splits == (length is not None and length < LIMIT), "the case table has changed"
     err = tmp_path / "form-2-stderr"
