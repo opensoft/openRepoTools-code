@@ -126,12 +126,14 @@ hook's calls are told from the bind's.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pty
 import re
 import select
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -1186,11 +1188,8 @@ class Bench:
 
     @staticmethod
     def stop_service(serve: subprocess.Popen) -> None:
-        serve.terminate()
-        try:
-            serve.wait(10)
-        except subprocess.TimeoutExpired:
-            serve.kill()
+        """`serve` and every process of its session ended and reaped (T237zzl)."""
+        _end_process(serve, group=True)
 
     def stream(self) -> None:
         """`STREAM_PSQL` first on `PATH` in place of `TIMING_PSQL` (T237y)."""
@@ -1202,6 +1201,27 @@ class Bench:
         log = self.bin / "psql-stream.log"
         return [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] \
             if log.exists() else []
+
+
+def _end_process(proc: subprocess.Popen, *, group: bool, wait: float = 10.0) -> None:
+    """`proc` ended and reaped (T237zzl; Codex's review of P09 at `f4f0ebce`,
+    SHOULD 4): TERM, a wait of `wait` s, then KILL, and a reap, its wait
+    bounded too. With `group`, each signal goes to `proc`'s process group,
+    which `start_new_session=True` made its own, so a child it started, such
+    as the service's `psql`, ends with it. A process or a group already gone
+    is not an error, and nothing here raises."""
+    def send(sig: int) -> None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            if group:
+                os.killpg(proc.pid, sig)
+            elif proc.poll() is None:
+                proc.send_signal(sig)
+    send(signal.SIGTERM)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(wait)
+    send(signal.SIGKILL)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(wait)
 
 
 def _record(row: str, elapsed: float, bound: float, rule: str) -> None:
