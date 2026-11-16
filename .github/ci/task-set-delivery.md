@@ -3,10 +3,22 @@
 The owner-approved initial efficiency path is documented in
 [the cutover runbook](delivery-cutover.md). Check the actual committed policy and
 effective rules: an enabled flag alone never qualifies omission or admission.
-Only the fixed opted-in claude-current scope is eligible. A fast-only source
+The fixed opted-in claude-current scope retains its existing rules. Its fast-only source
 MUST use `openrepotools-claude-current`, never direct merge; its delivery success
 is not heavy integration. Live acceptance and assembly/session adoption are
-separate evidence/authority gates. All other work retains full CI.
+separate evidence/authority gates. The separately qualified v1.3 path below is
+limited to its exact registered test-only pair. All other work retains full CI.
+
+The [initial v1.3 delivery path](delivery-v13.md) has separate checked enablement
+for exact P05#92/P06#94 heads, histories and task inventories on a qualified
+immutable foundation. Verify its actual default-branch flag/registry and current
+owner consent; a spec merge or source publication alone admits nothing.
+Its fast-only sources MUST use `openrepotools-sql-register-v13`, never direct
+merge or the ordinary full-CI queue. That queue holds complete trusted heavy
+proof; observer output is never authority. P03, other v1.3 cuts, changed heads,
+unresolved dependencies or foundation drift retain full fallback. Lane1 alone
+owns PR intent/base edits and canonical source events. A successful first pair
+does not authorize all-work adoption or a running-session refresh. Preserve lanes 1–5.
 
 The earlier [additive fast/candidate preparation](delivery-preparation.md) shipped
 without queue activation or CI skips. Its

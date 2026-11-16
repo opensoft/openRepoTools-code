@@ -9,6 +9,7 @@ Successful verification still requires the entire heavy suite and a final rechec
 from __future__ import annotations
 
 import argparse
+import ast
 from datetime import datetime
 import hashlib
 import json
@@ -18,6 +19,7 @@ import re
 import subprocess
 
 import shadow_scope as policy
+import delivery_v13 as v13
 
 REPOSITORY = policy.REPOSITORY
 FAST = "openrepotools-pr-fast"
@@ -30,6 +32,8 @@ LOCAL_SKILLS = {"pre-pr-review", "pr-review", "branch-or-pr-review"}
 
 
 def delivery_intended(text):
+    if v13.intended(text):
+        return True
     if not policy.intended(text):
         return False
     lines = re.findall(r"(?m)^CI-Delivery:[^\n]*", text)
@@ -212,31 +216,70 @@ def receipt_pending(value, allow_pending):
     return pending
 
 
+def fast_run_scope(run, pr, head):
+    return (run["event"] == "pull_request" and run["path"] == FAST_WORKFLOW
+            and run["head_sha"] == head and run["head_branch"] == pr["head"]["ref"]
+            and run["head_repository"]["full_name"] == REPOSITORY
+            and type(run["run_attempt"]) is int and run["run_attempt"] >= 1)
+
+
+def same_fast_attempt(run, observed):
+    return all(type(run[key]) is int and run[key] == observed[key]
+               for key in ("id", "run_number", "workflow_id", "check_suite_id", "run_attempt"))
+
+
+def fast_runs(pr, head, request):
+    """A complete, bounded catalogue; workflow sequence is not check array order."""
+    path = ("actions/workflows/task-set-fast.yml/runs?head_sha=" + policy.sha(head)
+            + "&event=pull_request&per_page=100&page=1")
+    response = request(REPOSITORY, path)
+    rows = response["workflow_runs"]
+    require(isinstance(rows, list) and type(response["total_count"]) is int
+            and response["total_count"] == len(rows) and 0 < len(rows) <= 100,
+            "Missing or ambiguous fast check")
+    for row in rows:
+        require(fast_run_scope(row, pr, head)
+                and all(type(row[key]) is int and row[key] > 0
+                        for key in ("id", "run_number", "workflow_id", "check_suite_id")),
+                "Fast run belongs to another workflow/head or is incomplete")
+    require(len({row["id"] for row in rows}) == len(rows)
+            and len({row["run_number"] for row in rows}) == len(rows)
+            and len({row["workflow_id"] for row in rows}) == 1,
+            "Missing or ambiguous fast check")
+    # GitHub's per-workflow run_number is increasing and unchanged on rerun.
+    return {row["id"]: row for row in rows}, max(rows, key=lambda row: row["run_number"])
+
+
 def fast_receipt(pr, head, request, base_changes, *, allow_pending=False):
     endpoint = f"commits/{head}/check-runs?check_name={FAST}&filter=latest&per_page=100"
     response = request(REPOSITORY, endpoint)
     checks = response["check_runs"]
-    require(type(response["total_count"]) is int and response["total_count"] == len(checks) == 1,
+    require(isinstance(checks, list) and type(response["total_count"]) is int
+            and response["total_count"] == len(checks) and len(checks) <= 100,
             "Missing or ambiguous fast check")
-    check = checks[0]
-    require(check["name"] == FAST and check["head_sha"] == head
-            and check["app"]["slug"] == "github-actions",
-            "Fast check is not successful exact-head Actions evidence")
-    pending = receipt_pending(check, allow_pending)
-    link = re.fullmatch(
-        r"https://github[.]com/opensoft/openRepoTools-code/actions/runs/([1-9]\d*)/job/([1-9]\d*)",
-        check["details_url"], flags=re.ASCII)
-    require(link is not None, "Unrecognized fast workflow identity")
-    run_id, job_id = (int(value) for value in link.groups())
-    require(type(check["id"]) is int and check["id"] == job_id, "Fast job identity differs")
+    catalog, latest = fast_runs(pr, head, request)
+    matches, seen = [], set()
+    for check in checks:
+        require(check["name"] == FAST and check["head_sha"] == head
+                and check["app"]["slug"] == "github-actions",
+                "Fast check is not successful exact-head Actions evidence")
+        link = re.fullmatch(
+            r"https://github[.]com/opensoft/openRepoTools-code/actions/runs/([1-9]\d*)/job/([1-9]\d*)",
+            check["details_url"], flags=re.ASCII)
+        require(link is not None, "Unrecognized fast workflow identity")
+        run_id, job_id = (int(value) for value in link.groups())
+        require(type(check["id"]) is int and check["id"] == job_id, "Fast job identity differs")
+        require(run_id in catalog and run_id not in seen
+                and check["check_suite"]["id"] == catalog[run_id]["check_suite_id"],
+                "Missing or ambiguous fast check")
+        seen.add(run_id)
+        if run_id == latest["id"]:
+            matches.append((check, job_id))
+    run_id = latest["id"]
     run = request(REPOSITORY, f"actions/runs/{run_id}")
-    require(type(run["id"]) is int and run["id"] == run_id and run["event"] == "pull_request"
-            and run["path"] == FAST_WORKFLOW and run["head_sha"] == head
-            and run["head_branch"] == pr["head"]["ref"]
-            and run["head_repository"]["full_name"] == REPOSITORY
-            and run["check_suite_id"] == check["check_suite"]["id"]
-            and type(run["run_attempt"]) is int and run["run_attempt"] >= 1,
+    require(fast_run_scope(run, pr, head) and same_fast_attempt(run, latest),
             "Fast run belongs to another workflow/head or is incomplete")
+    pending = receipt_pending(latest, allow_pending)
     pending = receipt_pending(run, allow_pending) or pending
     associated = run["pull_requests"]
     require(isinstance(associated, list) and len(associated) == 1,
@@ -261,6 +304,9 @@ def fast_receipt(pr, head, request, base_changes, *, allow_pending=False):
     created = datetime.strptime(run["created_at"], "%Y-%m-%dT%H:%M:%SZ")
     require(all(datetime.strptime(row["createdAt"], "%Y-%m-%dT%H:%M:%SZ") < created
                 for row in history["nodes"]), "Fast run predates a base change")
+    require(len(matches) == 1, "Missing or ambiguous fast check")
+    check, job_id = matches[0]
+    pending = receipt_pending(check, allow_pending) or pending
     job = request(REPOSITORY, f"actions/jobs/{job_id}")
     require(type(job["id"]) is int and job["id"] == job_id
             and type(job["run_id"]) is int and job["run_id"] == run_id and job["head_sha"] == head
@@ -273,6 +319,10 @@ def fast_receipt(pr, head, request, base_changes, *, allow_pending=False):
         raise PendingEvidence("Authenticated fast workflow is pending")
     require(run == request(REPOSITORY, f"actions/runs/{run_id}")
             and response == request(REPOSITORY, endpoint),
+            "Fast run/check changed during verification")
+    final = fast_runs(pr, head, request)[1]
+    require(same_fast_attempt(run, final)
+            and final["status"] == run["status"] and final["conclusion"] == run["conclusion"],
             "Fast run/check changed during verification")
     return response, run, job, history
 
@@ -292,12 +342,16 @@ def source_pr(head, main, root, request, threads, base_changes):
             "Member is not open and ready")
     actual_head, branch = policy.side(pr, "head")
     base, base_ref = policy.side(pr, "base")
+    is_v13 = v13.intended(pr.get("body"))
     require(actual_head == head and policy.source_branch(branch) and base_ref == "main"
-            and base == main and policy.intended(pr["body"])
+            and base == main and (is_v13 or policy.intended(pr["body"]))
             and not re.search(r"(?m)^Depends-On:", pr["body"]),
             "Member scope/identity/topology is not the independent pilot")
-    policy.git(root, "merge-base", "--is-ancestor", main, head)
-    require(policy.regular_scope(root, main, head), "Member changes unsupported paths or modes")
+    if is_v13:
+        v13.source(root, main, pr, request)
+    else:
+        policy.git(root, "merge-base", "--is-ancestor", main, head)
+        require(policy.regular_scope(root, main, head), "Member changes unsupported paths or modes")
     evidence = (fast_receipt(pr, head, request, base_changes),
                 clean_review(number, head, request, threads, base=base))
     return pr, evidence
@@ -316,6 +370,12 @@ def verify_fast(env, event, root):
     pair = policy.git(root, "show", "-s", "--format=%P", tested).decode().split()
     require(pair == [base, head], "Fast test-merge parents differ from event identities")
     policy.git(root, "diff", "--check", base, tested, "--")
+    paths = policy.git(root, "diff", "--name-only", "--diff-filter=AM", "-z", base, tested, "--")
+    for path in paths.decode("utf-8").split("\0"):
+        if re.fullmatch(r"tests/test_sql_register_[a-z_]+[.]py", path):
+            # Parse immutable test-merge blobs, never import/execute a SQL test
+            # or follow a worktree path. Required-engine execution stays heavy.
+            ast.parse(policy.git(root, "show", f"{tested}:{path}"), filename=path)
     return {"tested": tested, "base": base, "head": head, "full_ci_required": True}
 
 
@@ -349,20 +409,25 @@ def verify_candidate(env, event, root, request=policy.github, threads=read_threa
         chain.append((previous, head, current))
         current = previous
     require(current == main and 1 <= len(chain) <= 2, "Candidate is not rooted at current main")
-    require(policy.regular_scope(root, main, candidate), "Combined candidate is outside scope")
-    members, snapshots, seen_heads = [], [], set()
+    members, snapshots, seen_heads, scope = [], [], set(), None
     for previous, head, prefix in reversed(chain):
         require(head not in seen_heads, "Duplicate source head")
+        pr, evidence = source_pr(head, main, root, request, threads, base_changes)
+        member_scope = v13.SCOPE if v13.intended(pr.get("body")) else "claude-current"
+        require(scope is None or scope == member_scope, "Candidate mixes delivery scopes")
+        scope = member_scope
+        anchor = v13.configuration(root, main)["prerequisite"]["head"] if scope == v13.SCOPE else main
         for other in seen_heads:
-            require(policy.git(root, "merge-base", "--all", other, head).decode().split() == [main],
+            require(policy.git(root, "merge-base", "--all", other, head).decode().split() == [anchor],
                     "Source members share non-main history")
         seen_heads.add(head)
-        pr, evidence = source_pr(head, main, root, request, threads, base_changes)
         require(pr["number"] not in [row["number"] for row in members], "Duplicate source member")
         expected = policy.sha(policy.git(
             root, "merge-tree", "--write-tree", previous, head).decode().strip())
         tree = policy.sha(policy.git(root, "rev-parse", prefix + "^{tree}").decode().strip())
-        require(expected == tree and policy.regular_scope(root, previous, prefix),
+        scoped = (v13.prefix(root, main, head, previous, prefix) if scope == v13.SCOPE
+                  else policy.regular_scope(root, previous, prefix))
+        require(expected == tree and scoped,
                 "Candidate prefix is not the expected clean scoped merge")
         members.append({"number": pr["number"], "head": head, "prefix": prefix, "tree": tree,
                         "delivery": delivery_intended(pr["body"])})
@@ -370,6 +435,8 @@ def verify_candidate(env, event, root, request=policy.github, threads=read_threa
     for pr, evidence in snapshots:
         require(policy.snapshot(pr) == policy.snapshot(
             request(REPOSITORY, f"pulls/{pr['number']}")), "Source changed during verification")
+        if scope == v13.SCOPE:
+            v13.source(root, main, pr, request)
         require(evidence == (fast_receipt(pr, pr["head"]["sha"], request, base_changes),
                              clean_review(pr["number"], pr["head"]["sha"], request, threads,
                                           base=pr["base"]["sha"])),
@@ -379,8 +446,11 @@ def verify_candidate(env, event, root, request=policy.github, threads=read_threa
     require(policy.sha(request(REPOSITORY, endpoint)["object"]["sha"]) == candidate
             and policy.sha(request(REPOSITORY, "git/ref/heads/main")["object"]["sha"]) == main,
             "Candidate/main changed during verification")
+    if scope != v13.SCOPE:
+        require(policy.regular_scope(root, main, candidate), "Combined candidate is outside scope")
     return {"verified": True, "full_ci_required": True, "base": main, "candidate": candidate,
-            "tree": members[-1]["tree"], "members": members}
+            "tree": members[-1]["tree"], "members": members,
+            **({"scope": v13.SCOPE} if scope == v13.SCOPE else {})}
 
 
 def write_record(record, env):
