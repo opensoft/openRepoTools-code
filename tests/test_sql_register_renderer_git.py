@@ -289,6 +289,51 @@ def _open_when_held(fifo: Path, proc: subprocess.Popen, seconds: float = 120):
     return None
 
 
+def _end_session(proc: subprocess.Popen, grace: float = 10, fifo: Path | None = None) -> str:
+    """A child that leads a session of its own (`popen_render`'s
+    `start_new_session`) ended with its process group, and reaped, with no
+    wait unbounded: SIGTERM to the group and a `communicate()` of at most
+    `grace` s, then SIGKILL to the group and another. The group is signalled
+    only while the child is unreaped, so its pid is still the group's id.
+    Then, in a `finally`, the hold `fifo` is let go, its write end opened and
+    closed, and the last wait for the child is bounded too. T320's
+    `_run_bounded` (line R) runs each git call in a session of its own, so a
+    wrapper parked on the FIFO is in no group signalled here, and without
+    the let-go would wait there for ever. Returns what the child said
+    (`_said`). `_open_when_held` gives None with the child still running
+    once its time runs out, where a `communicate()` with no timeout waited
+    for ever, and a renderer that reaches its push only after that parks
+    on a FIFO no one opens (lane 3's Codex review of code PR 97 at
+    `4e9821ab`, BLOCKING 2; lane 3's check v97 of it)."""
+    said = None
+    try:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            if proc.returncode is None:
+                try:
+                    os.killpg(proc.pid, sig)
+                except ProcessLookupError:
+                    pass
+            try:
+                out, err = proc.communicate(timeout=grace)
+            except subprocess.TimeoutExpired:
+                continue
+            said = _said(SimpleNamespace(returncode=proc.returncode, stdout=out, stderr=err))
+            break
+    finally:
+        if fifo is not None:
+            try:
+                os.close(os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK))
+            except OSError:
+                pass
+        if proc.returncode is None:
+            try:
+                proc.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                pass
+    return said or (f"exit {proc.returncode}: its output was still open {2 * grace:g} s after "
+                    f"SIGTERM and SIGKILL to its process group")
+
+
 def _lock_is_free(path: Path) -> bool:
     """A non-blocking `flock` on `path` succeeds (D14; [L4-4])."""
     import fcntl
@@ -1210,13 +1255,16 @@ def _held_and_rendered(est: RenderEstate, one, two, seqs: list) -> tuple:
     held = est.popen_render(two)
     fd = _open_when_held(fifo, held)
     try:
-        assert fd is not None, (f"{two.name}'s renderer never reached its push:\n"
-                                f"{held.communicate(timeout=60)}")
+        if fd is None:
+            pytest.fail(f"{two.name}'s renderer never reached its push:\n"
+                        f"{_end_session(held, fifo=fifo)}", pytrace=False)
         proc = est.render(one)
         assert proc.returncode == 0, f"{one.name}'s renderer:\n{_said(proc)}"
     finally:
         if fd is not None:
             os.close(fd)
+        elif held.returncode is None:
+            _end_session(held, fifo=fifo)
     out, err = held.communicate(timeout=300)
     first = next(c for c in est.calls("push", two))
     commits = _assert_rendered(est, old, seqs)
@@ -1314,7 +1362,9 @@ def test_a_lost_push_race_never_rebases_a_render(request, tmp_path):
     held = est.popen_render(one)
     fd = _open_when_held(fifo, held)
     try:
-        assert fd is not None, f"the renderer never reached its push:\n{held.communicate()}"
+        if fd is None:
+            pytest.fail(f"the renderer never reached its push:\n{_end_session(held, fifo=fifo)}",
+                        pytrace=False)
         handoff = est.commit_in_origin(est.origin_tip(), {
             f"handoffs/{L2}.md": b"# a handoff pushed while the render was held\n"},
             "a handoff commit, pushed during the render's push")
@@ -1322,6 +1372,8 @@ def test_a_lost_push_race_never_rebases_a_render(request, tmp_path):
     finally:
         if fd is not None:
             os.close(fd)
+        elif held.returncode is None:
+            _end_session(held, fifo=fifo)
     out, err = held.communicate(timeout=300)
     assert held.returncode == 0, _said(SimpleNamespace(returncode=held.returncode, stdout=out,
                                                        stderr=err))
@@ -1602,12 +1654,16 @@ def test_form_c_reads_the_trailer_from_each_message_shape(request, tmp_path, sha
     held = est.popen_render(two)
     fd = _open_when_held(fifo, held)
     try:
-        assert fd is not None, f"L2's renderer never reached its push:\n{held.communicate()}"
+        if fd is None:
+            pytest.fail(f"L2's renderer never reached its push:\n{_end_session(held, fifo=fifo)}",
+                        pytrace=False)
         proc = est.render(one)
         assert proc.returncode == 0, f"L1's renderer:\n{_said(proc)}"
     finally:
         if fd is not None:
             os.close(fd)
+        elif held.returncode is None:
+            _end_session(held, fifo=fifo)
     held.communicate(timeout=300)
     assert held.returncode == 0, "L2's renderer after the release"
     gained = est.commits_after(old)
