@@ -1890,11 +1890,19 @@ def _held_burst(est: RenderEstate, one) -> SimpleNamespace:
                     if c["renderer"] not in holder}
         # A detached fork may start after its write returns: wait, the hold
         # standing, until the four have run a git call and exited, or 30 s.
-        _until(lambda: len(forks()) >= 4 and all(_exited(p, s) for p, s in forks().items()),
-               CEILING)
-        forks_live = [pid for pid, start in forks().items() if not _exited(pid, start)]
+        # The hold is released only once that holds: four writes, four forks,
+        # each a renderer other than the holder (TP:1116-1120; lane 3's Codex
+        # review of code PR 97, SHOULD 5).
+        settled = _until(lambda: len(forks()) >= 4
+                         and all(_exited(p, s) for p, s in forks().items()), CEILING)
+        held_forks = forks()
+        forks_live = [pid for pid, start in held_forks.items() if not _exited(pid, start)]
         marked = rerun.exists()
         est.rearm()
+        assert settled and len(held_forks) >= 4, (
+            f"with the render held, {len(held_forks)} renderers besides the holder ran "
+            f"`render --checkout`, not at least four, one per write, all exited within "
+            f"{CEILING:g} s: {sorted(held_forks)}, still live {forks_live}")
     finally:
         os.close(fd)
     est.wait_lag_0(one, "the burst's last write")
