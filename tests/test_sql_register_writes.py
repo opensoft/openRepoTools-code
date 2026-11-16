@@ -1027,7 +1027,7 @@ def test_a_pending_hand_edit_names_the_file_and_a_recovery_that_works(pg, tmp_pa
     checkout `<c>` (`<W>-lanes/<lane>`, which `RegisterWorkstation` makes),
     a write refuses before its snapshot (the shim's log is empty), naming the
     file and one recovery command, the one backticked `git` command in its
-    stderr, its argv by `shlex.split` the restore's up to `--`; running it,
+    stderr, its argv by `shlex.split` the restore of that file alone; running it,
     with no shell, in `<c>` leaves `<c>`'s `status --porcelain` empty, and
     the next write exits 0. W's own checkout holds no edit: lane
     4's answer (#165 6808439918) puts the edit in `<c>`, and keeps this
@@ -1047,11 +1047,15 @@ def test_a_pending_hand_edit_names_the_file_and_a_recovery_that_works(pg, tmp_pa
     assert len(commands) == 1, f"the refusal names {len(commands)} recovery commands: " \
                                f"{proc.stderr!r}"
     restore = shlex.split(commands[0])
+    # Its paths as `pw_hand_edit_refuse` lists them: `git diff --name-only HEAD`'s,
+    # relative to `<c>`'s top, each through `printf '%q'`. `<c>` is a fresh clone,
+    # so the file edited above is the one path that differs.
+    edited = [target.relative_to(checkout).as_posix()]
     expected = ["git", "-C", str(checkout), "restore", "--source=HEAD", "--staged", "--worktree",
-                "--"]
-    assert restore[:len(expected)] == expected, (
-        f"the recovery command's argv up to its `--` is {restore[:len(expected)]}, not "
-        f"{expected}: {restore}")
+                "--", *edited]
+    assert restore == expected, (
+        f"the recovery command's argv is {restore}, not {expected}, the restore of the "
+        f"hand-edited file and no other")
     subprocess.run(restore, shell=False, cwd=str(checkout), env=ws.estate.env, check=True,
                    capture_output=True)
     assert git(checkout, "status", "--porcelain", env=ws.estate.env) == ""
