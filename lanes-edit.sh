@@ -6896,8 +6896,11 @@ reg_marker_check() {
 # Q1). `cs_flush`, S3's drop, is not among its callers: its callers run with
 # `REG_STORE` empty (T505 Q7). Lane 4's T414 calls it after `committed`, T423
 # before each poll's read in `request-handoff`'s wait on primary, and T507 for
-# the post-bind refill (lane 5's text 2, #165 6773212220). Cleanup's glob
-# removes the family unchanged.
+# the post-bind refill (lane 5's text 2, #165 6773212220). Beside T423's call,
+# where the wait's last poll failed, the wait also removes `.rfail` itself
+# (T423a; lane 3, #165 6930389021): a failed poll waits on and reads again,
+# and the wait ends 69 on its own `rh_last`, so it needs no carry. Cleanup's
+# glob removes the family unchanged.
 reg_flush() {
   LANES_REGISTER_CACHE=""
   if [ -n "${SE_CACHE_FILE:-}" ]; then
@@ -33834,12 +33837,24 @@ EOF
       # since would never be seen. `reg_flush` (lane 5's T505) drops the whole
       # family, `.head` with it, before each poll's read, so the read below is
       # the readers' second read at the register's head (§3.6, form 3), never
-      # git. Off primary, `log_sync`'s fetch and drops are the poll, as before.
+      # git. It keeps `.rfail`, which a failed read leaves (`reg_fail`) and
+      # which answers every later read 69 without asking (`reg_log`), so after
+      # one failed poll no poll would read again, and a release written since
+      # would be missed. So where the last poll failed, this step removes
+      # `.rfail` too (T423a; lane 3, #165 6930389021, in lane 5's form): a
+      # failed poll waits on (T423 Q6), each poll is its own read at the head,
+      # and the wait keeps its own failure in `rh_last` and ends 69 on it
+      # below. A last poll that failed keeps `.rfail` for `cleanup`'s note.
+      # `rh_last` is 0 before the first poll, and is read as 0 if unset.
+      # Off primary, `log_sync`'s fetch and drops are the poll, as before.
       # Keyed on the flag, `REG_SCRATCH`, as the arm's other primary switches
       # are, so that one key decides "on primary" across the arm (review
       # REV-W9f, N1); `reg_scratch_take` sets REG_MODE=primary in every child,
       # so the two agree.
       [ -z "$REG_SCRATCH" ] || reg_flush
+      if [ -n "$REG_SCRATCH" ] && [ "${rh_last:-0}" != 0 ] && [ -n "${SE_CACHE_FILE:-}" ]; then
+        rm -f -- "$SE_CACHE_FILE.rfail"
+      fi
       rh_out=""; rh_rc=0
       rh_out="$(lane_binding_scan "$lane")" || rh_rc=$?
       rh_last="$rh_rc"
