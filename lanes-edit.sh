@@ -22362,7 +22362,13 @@ guard_allow_active() {   # <offer file>
 # read answers 69 and none asks again. `mode index`, or a call that failed
 # with its warning, reads the files as today. With no configuration it only
 # flushes, and today's git read follows. On primary it is made once per
-# process (`GB_REFILLED`); off primary it flushes at each call, as before.
+# process (`GB_REFILLED=1`). Off primary on a configured workstation (`mode
+# index`, or a call that fell to files mode with its warning) the one read is
+# made once too (`GB_REFILLED=2`), and each later call only flushes, since the
+# bind's own writes may have moved the ref the files are read from: so
+# `guard_bound_check`'s call makes no second prefetch and prints no second
+# WARNING (lane 5's Claude pre-review of P19, NIT 5). With no configuration it
+# flushes at each call, as before. 0 is "not yet made".
 GB_REFILLED=0
 # `guard_site_moved`'S ONE ROUND (lane 5's re-check, F): set here, so that a value
 # the environment carries cannot skip the first round.
@@ -22386,6 +22392,7 @@ GA_DROP_FAILED=0
 # read this prompt made.
 GRS_THERE=0; GRS_MODE=""; GRS_OUT=""; GRS_GOT=""; GRS_SEEN=" "
 guard_bind_refill() {
+  if [ "$GB_REFILLED" = 2 ]; then reg_flush; return 0; fi
   [ "$GB_REFILLED" = 0 ] || return 0
   reg_flush
   reg_config_present || return 0
@@ -22396,7 +22403,7 @@ guard_bind_refill() {
     reg_fail "$RO_FAILED" "$RO_WHY" || :
     return 0
   fi
-  if [ "$REG_MODE" = primary ]; then GB_REFILLED=1; REG_STORE=sql; fi
+  if [ "$REG_MODE" = primary ]; then GB_REFILLED=1; REG_STORE=sql; else GB_REFILLED=2; fi
   return 0
 }
 
