@@ -12146,9 +12146,10 @@ def _register_scope_queries(schema: str) -> list[str]:
       - a membership of any of the four in any role;
       - a grant, by the object's ACL with PostgreSQL's defaults filled in, to
         a group, the indexer or PUBLIC, beyond §1.4's matrix:
-          - REGISTER-WRITER: USAGE on the schema, SELECT on its tables and
-            sequences, EXECUTE on the five writer functions and
-            `render_file`, CONNECT; nothing in `lanes_index`;
+          - REGISTER-WRITER: USAGE on the schema, SELECT on its tables but
+            not its sequences, which §1.4 grants READER alone, EXECUTE on
+            the five writer functions and `render_file`, CONNECT; nothing in
+            `lanes_index`;
           - READER: USAGE and SELECT in both schemas, EXECUTE on
             `render_file`, CONNECT;
           - the indexer: anything in `lanes_index`, CONNECT; nothing in the
@@ -12223,7 +12224,7 @@ def _register_scope_queries(schema: str) -> list[str]:
         "WHERE NOT ("
         "(g.who = 'writer' AND ("
         "(o.half = 'register' AND o.kind = 'schema' AND e.privilege_type = 'USAGE') "
-        "OR (o.half = 'register' AND o.kind IN ('table', 'sequence') "
+        "OR (o.half = 'register' AND o.kind = 'table' "
         "AND e.privilege_type = 'SELECT') "
         "OR (o.half = 'register' AND o.kind = 'function' AND e.privilege_type = 'EXECUTE' "
         "AND o.oid IN (SELECT fn.oid FROM fn WHERE fn.who = 'writer' AND fn.oid IS NOT NULL)) "

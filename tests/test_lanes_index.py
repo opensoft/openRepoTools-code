@@ -3495,3 +3495,58 @@ def test_the_bootstrap_takes_an_existing_indexer_that_can_log_in(t109_engine, fl
                  "role lanes_register_reader login false",
                  "role lanes_register_writer login false"):
         assert line in after, f"{line!r} is not in the catalog after the run: {after}\n{said}"
+
+
+# ====================================== the writer's SELECT is on tables alone
+#
+# T109's follow-up 3, on Codex's exact-head review of P10 at 079a34d8 (BLOCKING
+# lanes-index:4360): design.md section 1.4 grants SELECT on the register's
+# sequences to READER alone, for pg_dump, and REGISTER-WRITER SELECT on its tables,
+# but the scope read let the writer hold SELECT on a sequence too. operations.md
+# section 2.4 refuses with 2 a role that holds a privilege outside its scope, named
+# and never revoked.
+
+#: Every ACL a refused bootstrap must leave as it found it: the lanes schemas', their
+#: relations' and functions', the database's, and the default privileges.
+T109_ACLS = (
+    "SELECT 'schema ' || nspname || ' ' || coalesce(nspacl::text, '-') "
+    "FROM pg_catalog.pg_namespace WHERE nspname LIKE 'lanes%' "
+    "UNION ALL SELECT 'relation ' || n.nspname || '.' || c.relname || ' ' "
+    "|| coalesce(c.relacl::text, '-') FROM pg_catalog.pg_class c "
+    "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname LIKE 'lanes%' "
+    "UNION ALL SELECT 'function ' || p.oid::regprocedure::text || ' ' "
+    "|| coalesce(p.proacl::text, '-') FROM pg_catalog.pg_proc p "
+    "JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname LIKE 'lanes%' "
+    "UNION ALL SELECT 'database ' || coalesce(datacl::text, 'default') "
+    "FROM pg_catalog.pg_database WHERE datname = current_database() "
+    "UNION ALL SELECT 'default ' || defaclrole::regrole::text || ' ' "
+    "|| defaclobjtype::text || ' ' || defaclacl::text FROM pg_catalog.pg_default_acl "
+    "ORDER BY 1;\n")
+
+
+def test_the_bootstrap_refuses_a_writer_that_holds_select_on_a_sequence(t109_engine):
+    """A WRITER'S SELECT ON A SEQUENCE IS OUTSIDE ITS SCOPE: after a full
+    bootstrap, REGISTER-WRITER is given SELECT on one of the register's
+    sequences by hand. The second full bootstrap exits 2 before any write,
+    naming the grant, prints nothing on stdout, and leaves every ACL as it
+    was. Before this change it passed both audits and exited 0."""
+    cluster, bootstrap = t109_engine
+    first = bootstrap(*T109_FULL)
+    assert first.returncode == 0, f"the first bootstrap exited {first.returncode}: {first.stderr}"
+    sequence = cluster.psql(
+        "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) "
+        "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'lanes_register' AND c.relkind = 'S' ORDER BY 1 LIMIT 1;",
+        dbname="t109_db").stdout.strip()
+    assert sequence, "the register's schema holds no sequence to grant"
+    cluster.psql(f"GRANT SELECT ON SEQUENCE {sequence} TO lanes_register_writer;",
+                 dbname="t109_db")
+    before = cluster.psql(T109_ACLS, dbname="t109_db").stdout
+    res = bootstrap(*T109_FULL)
+    said = f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+    assert res.returncode == 2, f"exit {res.returncode}, not 2:\n{said}"
+    assert f"lanes_register_writer holds SELECT on sequence {sequence}" in res.stderr, said
+    assert res.stdout == "", f"the refused bootstrap printed on stdout:\n{said}"
+    after = cluster.psql(T109_ACLS, dbname="t109_db").stdout
+    assert after == before, (f"the refused bootstrap changed an ACL:\nbefore:\n{before}\n"
+                             f"after:\n{after}\n{said}")
