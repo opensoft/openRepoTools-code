@@ -1168,6 +1168,19 @@ CHECK_11 = {
     "system-root": (lambda env: env.url(sslrootcert="system"), False),
     "plaintext": (lambda env: env.url(sslmode="disable", sslrootcert=None), False),
 }
+#: The fault each failing case is built to show, in the words of `_ready_check_tls`
+#: (line R `9bdd317b`), which puts the URL's faults first in its connection's part of
+#: the line (T224l): a FAIL for another cause, a restart's stale port among them, does
+#: not pass. `[leaf-only]`'s fault is libpq's own text for a chain it cannot verify, so
+#: it has no row.
+CHECK_11_FAULT = {
+    "sslmode-prefer": "its URL carries sslmode=prefer, not sslmode=verify-full",
+    "no-sslrootcert": "its URL carries no sslrootcert= naming the issuer's root file",
+    "unix-socket": "its URL names a Unix socket",
+    "in-recovery": "pg_is_in_recovery() is not false",
+    "system-root": "its sslrootcert= is system",
+    "plaintext": "its URL carries sslmode=disable, not sslmode=verify-full",
+}
 
 
 @pytest.mark.parametrize("case", list(CHECK_11))
@@ -1182,6 +1195,9 @@ def test_ready_check_11_needs_tls_and_the_primary(tmp_path, request, case):
         assert state == "FAIL" and proc.returncode == 2, (
             f"[{case}] check 11 does not fail, or ready does not exit 2:\n{_said(proc)}")
         assert env.login in reason, f"[{case}] check 11 does not name the connection:\n{_said(proc)}"
+        fault = CHECK_11_FAULT.get(case)
+        assert fault is None or fault in reason, (
+            f"[{case}] check 11 fails, but not for {fault!r} (T224l):\n{_said(proc)}")
 
 
 # ============================================================ tls_at_load
