@@ -96,6 +96,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1444,6 +1445,19 @@ FALLBACK = "guard: direct (service unavailable)"
 WARM_S = 15.0
 
 
+def _end_group(proc: subprocess.Popen, wait: float = 10.0) -> None:
+    """`proc`, started with `start_new_session=True`, ended with every process
+    of its group and reaped (T237zzm; Codex's review of P09 at `f4f0ebce`,
+    SHOULD 4): TERM to the group, a wait of `wait` s, KILL to the group, and
+    a reap, its wait bounded too. A group already gone is not an error, and
+    nothing here raises."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, sig)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(wait)
+
+
 def _path_m5(reg, root: Path):
     """M13's `[m5]`, T237's (R1's M1): the guard's register read through the
     service. `lanes-index serve` starts on the reader's configuration at the
@@ -1513,11 +1527,7 @@ def _path_m5(reg, root: Path):
             assert FALLBACK not in proc.stderr, \
                 (proc.stderr, f"the last of {warmed} warming reads: {warm.returncode}", warm.stderr)
         finally:
-            serve.terminate()
-            try:
-                serve.wait(10)
-            except subprocess.TimeoutExpired:
-                serve.kill()
+            _end_group(serve)
     finally:
         shutil.rmtree(state, ignore_errors=True)
 
