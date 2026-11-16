@@ -49,6 +49,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -1026,8 +1027,9 @@ def test_a_pending_hand_edit_names_the_file_and_a_recovery_that_works(pg, tmp_pa
     checkout `<c>` (`<W>-lanes/<lane>`, which `RegisterWorkstation` makes),
     a write refuses before its snapshot (the shim's log is empty), naming the
     file and one recovery command, the one backticked `git` command in its
-    stderr; running that command in `<c>` leaves `<c>`'s `status --porcelain`
-    empty, and the next write exits 0. W's own checkout holds no edit: lane
+    stderr, its argv by `shlex.split` the restore's up to `--`; running it,
+    with no shell, in `<c>` leaves `<c>`'s `status --porcelain` empty, and
+    the next write exits 0. W's own checkout holds no edit: lane
     4's answer (#165 6808439918) puts the edit in `<c>`, and keeps this
     oracle. It fails until lane 4's T415 round that prints that one command,
     `git -C <c> restore --source=HEAD --staged --worktree -- <paths>`, in
@@ -1044,8 +1046,14 @@ def test_a_pending_hand_edit_names_the_file_and_a_recovery_that_works(pg, tmp_pa
     commands = re.findall(r"`(git [^`]+)`", proc.stderr)
     assert len(commands) == 1, f"the refusal names {len(commands)} recovery commands: " \
                                f"{proc.stderr!r}"
-    subprocess.run(commands[0], shell=True, cwd=str(checkout), env=ws.estate.env,
-                   check=True, capture_output=True)
+    restore = shlex.split(commands[0])
+    expected = ["git", "-C", str(checkout), "restore", "--source=HEAD", "--staged", "--worktree",
+                "--"]
+    assert restore[:len(expected)] == expected, (
+        f"the recovery command's argv up to its `--` is {restore[:len(expected)]}, not "
+        f"{expected}: {restore}")
+    subprocess.run(restore, shell=False, cwd=str(checkout), env=ws.estate.env, check=True,
+                   capture_output=True)
     assert git(checkout, "status", "--porcelain", env=ws.estate.env) == ""
     assert ws.run(argv, lane).returncode == 0
 
