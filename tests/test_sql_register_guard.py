@@ -95,11 +95,15 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: from the same Order (lane 2, #165 6882026139, Part B). T254zw's row, its
 #: :376, is from T254's Order (tasks:2419; K1). T214t's
 #: row, for T502's part 21 (lane 5, opensoft/openRepoTools#165 6885608994),
-#: is keyed by the same Order: its case fails until T502 lands. T214v's
+#: is keyed by the same Order: its case fails until T514 lands. T214v's
 #: and T214w's rows, for T502's part 22 and its rule for the hook's writes
 #: (lane 3's ruling 5, (A), opensoft/openRepoTools#165 6885771975, and its
 #: confirmation, 6886113842), are keyed by the same Order, and so is
-#: T214x's, for the back-out of the same rule (6dd8bbbd:23333-23384). T213r's
+#: T214x's, for the back-out of the same rule (6dd8bbbd:23333-23384). T214z
+#: keys nine of T214's rows to T514 as well, so they wait for it: T214n's S1,
+#: S3, S4 and S6, T214o's rewrites case, and T214t's, T214v's, T214w's and
+#: T214x's. T514 is T502's parts 8 to 63, parts 21 and 22 among them (lane 3's
+#: ruling (d'), #165 6903070719), and S6 also waits for T510. T213r's
 #: row for `test_no_session_environment_carries_a_database_url_or_password`
 #: adds T512 to T213's Order: its `PGPASSFILE` assertions read the
 #: service's own held `psql` child (TP:1952 at `f9d6069e`), which only
