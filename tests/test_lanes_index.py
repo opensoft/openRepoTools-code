@@ -1112,6 +1112,18 @@ NO_ECHO_REFUSALS = [
      "`register_rtt_ms=`"),
     ("R17-primary", f"mode=primary\nregister_label={CONFIG_SECRET}\n", 78,
      "is not available in this build"),
+    # Amendment 14 act 2's own refusals (opensoft/openRepoTools#160's, R4 and R6:
+    # lanes-index:662, :665, :688 and :693 at 079a34d8), in their own follow-up,
+    # which lane 3 ruled in (opensoft/openRepoTools#165 6932114864).
+    ("R4-not-key-value", f"{CONFIG_URI}\n", 2, "is not `key=value`"),
+    ("R4-unknown-key", f"{CONFIG_URI}?sslmode=require\n", 2,
+     "names a key that is not a plain lower-case word, which this indexer does not know"),
+    ("R4-unknown-key-value", f"colour={CONFIG_URI}\n", 2,
+     "names `colour=`, which this indexer does not know"),
+    ("R6-store", f"store={CONFIG_URI}\n", 2, "`store=`"),
+    ("R6-schema", f"schema=password={CONFIG_SECRET}\n", 2, "`schema=`"),
+    ("R6-passfile", f"passfile={CONFIG_URI}\n", 2, "(`passfile=`)"),
+    ("R6-reader_passfile", f"reader_passfile={CONFIG_URI}\n", 2, "(`reader_passfile=`)"),
 ]
 
 
