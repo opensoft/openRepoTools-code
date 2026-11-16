@@ -8775,7 +8775,18 @@ class RegisterService:
                     if self.state == "ready" and self.fetch_due():
                         job, self.state, self.fetching = "fetch", "busy", True
                         break
-                    waits = [self.last_used + self.idle_check_s - now]
+                    # THE WAIT'S TERMS (lane 5's Claude pre-review of P23,
+                    # SHOULD 1): the idle check's deadline only where the
+                    # child is ready, the one state that acts on it, since a
+                    # deadline already past, with the child down or
+                    # connecting, would wake the worker every 10 ms for as
+                    # long as the outage lasts; the retry's, where a connect
+                    # waits for it; and `idle_check_s` as the bound where
+                    # neither holds. Every other change the loop acts on
+                    # notifies under `cond`.
+                    waits = [float(self.idle_check_s)]
+                    if self.state == "ready":
+                        waits.append(self.last_used + self.idle_check_s - now)
                     if self.state == "down" and not self.lazy:
                         waits.append(self.retry_at - now)
                     self.cond.wait(max(0.01, min(waits)))
