@@ -1545,6 +1545,9 @@ def test_each_paths_connections_and_queries_are_counted(pg_engine, request, tmp_
         M13_PATHS[path](reg, tmp_path)
         c, q = _counted(log, offset)
         assert c >= 1, f"{path} made no connection the counting cluster logged"
+        # Each path's connections are `psql`'s, each sending its statements as simple Query
+        # messages, so a path that connected sent one; q = 0 is a count that failed (T255i).
+        assert q >= 1, f"{path} made {c} connection(s) and no Query message the cluster logged"
         record([f"| M13 | {platform.node()}, counting cluster, Unix socket | `{path}` | "
                 f"c={c}, q={q} | n=1 (a count does not vary with load) |"])
     finally:
