@@ -3550,3 +3550,55 @@ def test_the_bootstrap_refuses_a_writer_that_holds_select_on_a_sequence(t109_eng
     after = cluster.psql(T109_ACLS, dbname="t109_db").stdout
     assert after == before, (f"the refused bootstrap changed an ACL:\nbefore:\n{before}\n"
                              f"after:\n{after}\n{said}")
+
+
+# ======================================================= no group keeps a grant option
+#
+# T109's follow-up 4, on Codex's exact-head review of P10 at 079a34d8 (BLOCKING
+# lanes-index:4355): the scope read took each ACL item's privilege and not its
+# grant option, so a group could keep a privilege in its scope WITH GRANT OPTION and
+# hand it on, which design.md section 1.4's GRANTs never give. Now the writer's and
+# the reader's privileges, and the indexer's CONNECT, count as in scope only without
+# it, and the fault names it.
+
+#: The two groups, each given every row's privilege again WITH GRANT OPTION.
+GROUPS = ("lanes_register_writer", "lanes_register_reader")
+
+#: (id, the GRANT made by hand after a full bootstrap, to whom, the privilege, the
+#: object as the fault names it)
+GRANT_OPTIONS = [
+    ("connect", "GRANT CONNECT ON DATABASE t109_db", (*GROUPS, "lanes_indexer"), "CONNECT",
+     "database t109_db"),
+    ("usage", "GRANT USAGE ON SCHEMA lanes_register", GROUPS, "USAGE", "schema lanes_register"),
+    ("select", "GRANT SELECT ON TABLE lanes_register.schema_version", GROUPS, "SELECT",
+     "table lanes_register.schema_version"),
+    ("execute", "GRANT EXECUTE ON FUNCTION lanes_register.render_file(text)", GROUPS, "EXECUTE",
+     "function lanes_register.render_file(text)"),
+]
+
+
+@pytest.mark.parametrize("grant, grantees, privilege, what", [
+    pytest.param(grant, grantees, privilege, what, id=ident)
+    for ident, grant, grantees, privilege, what in GRANT_OPTIONS])
+def test_the_bootstrap_refuses_a_grant_option_on_a_privilege_in_scope(t109_engine, grant,
+                                                                      grantees, privilege, what):
+    """A GRANT OPTION IS OUTSIDE THE SCOPE: after a full bootstrap, the
+    writer and the reader (and, for CONNECT, the indexer) are each given a
+    privilege their scope holds again, WITH GRANT OPTION. The second full
+    bootstrap exits 2 before any write, naming each as `holds <privilege> WITH
+    GRANT OPTION on <object>`, prints nothing on stdout, and leaves every ACL
+    as it was. Before this change it passed both audits and exited 0."""
+    cluster, bootstrap = t109_engine
+    first = bootstrap(*T109_FULL)
+    assert first.returncode == 0, f"the first bootstrap exited {first.returncode}: {first.stderr}"
+    cluster.psql(f"{grant} TO {', '.join(grantees)} WITH GRANT OPTION;", dbname="t109_db")
+    before = cluster.psql(T109_ACLS, dbname="t109_db").stdout
+    res = bootstrap(*T109_FULL)
+    said = f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+    assert res.returncode == 2, f"exit {res.returncode}, not 2:\n{said}"
+    for grantee in grantees:
+        assert f"{grantee} holds {privilege} WITH GRANT OPTION on {what}" in res.stderr, said
+    assert res.stdout == "", f"the refused bootstrap printed on stdout:\n{said}"
+    after = cluster.psql(T109_ACLS, dbname="t109_db").stdout
+    assert after == before, (f"the refused bootstrap changed an ACL:\nbefore:\n{before}\n"
+                             f"after:\n{after}\n{said}")

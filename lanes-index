@@ -12155,6 +12155,10 @@ def _register_scope_queries(schema: str) -> list[str]:
           - the indexer: anything in `lanes_index`, CONNECT; nothing in the
             register's schema;
           - PUBLIC: nothing;
+        and a group's privilege in that matrix, or the indexer's CONNECT,
+        held WITH GRANT OPTION, which §1.4 never gives, is beyond it too,
+        named as `holds <privilege> WITH GRANT OPTION on <object>`; the
+        indexer's own privileges in `lanes_index`, its owner's, carry it;
       - a table of the register's schema that a group or the indexer can
         write by any route, and a table of `lanes_index` the writer can:
         operations.md §2.4's "the indexer cannot write the register's
@@ -12214,7 +12218,8 @@ def _register_scope_queries(schema: str) -> list[str]:
         "coalesce(d.datacl, pg_catalog.acldefault('d', d.datdba)) "
         "FROM pg_catalog.pg_database d WHERE d.datname = current_database()), "
         f"fn(oid, who) AS (VALUES {', '.join(fns)}) "
-        "SELECT g.name, 'holds ' || e.privilege_type || ' on ' || o.label, "
+        "SELECT g.name, 'holds ' || e.privilege_type || CASE WHEN e.is_grantable "
+        "THEN ' WITH GRANT OPTION' ELSE '' END || ' on ' || o.label, "
         "CASE WHEN g.who = 'public' AND o.kind = 'database' "
         "AND e.privilege_type IN ('CONNECT', 'TEMPORARY') THEN 'public-default-database' "
         "WHEN g.who = 'public' AND o.kind = 'function' AND o.half = 'register' "
@@ -12222,21 +12227,22 @@ def _register_scope_queries(schema: str) -> list[str]:
         "FROM obj o CROSS JOIN LATERAL pg_catalog.aclexplode(o.acl) AS e "
         "JOIN g ON g.oid = e.grantee "
         "WHERE NOT ("
-        "(g.who = 'writer' AND ("
+        "(g.who = 'writer' AND NOT e.is_grantable AND ("
         "(o.half = 'register' AND o.kind = 'schema' AND e.privilege_type = 'USAGE') "
         "OR (o.half = 'register' AND o.kind = 'table' "
         "AND e.privilege_type = 'SELECT') "
         "OR (o.half = 'register' AND o.kind = 'function' AND e.privilege_type = 'EXECUTE' "
         "AND o.oid IN (SELECT fn.oid FROM fn WHERE fn.who = 'writer' AND fn.oid IS NOT NULL)) "
         "OR (o.kind = 'database' AND e.privilege_type = 'CONNECT'))) "
-        "OR (g.who = 'reader' AND ("
+        "OR (g.who = 'reader' AND NOT e.is_grantable AND ("
         "(o.kind = 'schema' AND e.privilege_type = 'USAGE') "
         "OR (o.kind IN ('table', 'sequence') AND e.privilege_type = 'SELECT') "
         "OR (o.half = 'register' AND o.kind = 'function' AND e.privilege_type = 'EXECUTE' "
         "AND o.oid IN (SELECT fn.oid FROM fn WHERE fn.who = 'reader' AND fn.oid IS NOT NULL)) "
         "OR (o.kind = 'database' AND e.privilege_type = 'CONNECT'))) "
         "OR (g.who = 'indexer' AND (o.half = 'index' "
-        "OR (o.kind = 'database' AND e.privilege_type = 'CONNECT'))))")
+        "OR (o.kind = 'database' AND e.privilege_type = 'CONNECT' "
+        "AND NOT e.is_grantable))))")
     writes = (
         "SELECT a.rolname::text, 'can write the table ' || quote_ident(n.nspname) || '.' "
         "|| quote_ident(c.relname) || ' (INSERT, UPDATE, DELETE or TRUNCATE)', '' "
