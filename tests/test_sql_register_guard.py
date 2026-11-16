@@ -33,7 +33,8 @@ wait on pipes a child inherits.
 EVERY CASE BUT TWO IS RED TODAY by its own assertion: today's answer 2 runs
 `lane-start` inside the hook, so no "BINDING" is printed and the runner stops
 the hook at 5 s; today's guard has no bind modes, no `guard-bind` and no
-`pid_start_of`. They fail until L5-A1, lane 5's T502. Case 22's
+`pid_start_of`. They fail until L5-A1, lane 5's T502, and nine of them also
+until T514, T502's parts 8 to 63, S6 also until T510 (table below). Case 22's
 `test_guard_bind_computes_bound_s_from_c_n_a_and_the_service` and lane 5's
 `test_the_post_bind_refill_is_one_register_read_and_never_git` also fail until
 L5-A3, lane 5's T507, which copies `c`, `n_a` and `w_s_ms` from `.head` and
