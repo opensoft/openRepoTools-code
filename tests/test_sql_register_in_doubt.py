@@ -65,9 +65,10 @@ and section 4.3's rival, and T245's D8 and AT-F34 (phase W, the client's
 writers on a real register, through the shim), with T245's texts for 3, which
 read the scripts and run with no engine; and T246's AT-F3, a write in doubt at
 the deadline (phase W, with its direct calls in phase N); T247's AT-F10, a
-pending record against an unrelated identical command (phase W); and T251's
+pending record against an unrelated identical command (phase W); T251's
 AT-LR006 and AT-F33, two attempts of one write meeting at the commit (phase
-N, on these clones).
+N, on these clones); and T423a's case, lane 4's follow-up to T423: a
+`request-handoff` wait on primary whose poll failed reads again (phase W).
 
 PHASE W'S WORKSTATION IS T243's: `Estate`, its `estates` fixture, and the
 logging tools of T248 are imported from `test_sql_register_order`, as
@@ -83,6 +84,7 @@ import itertools
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -110,7 +112,10 @@ from test_sql_register_order import (ARROW, BURST, CLIENT, DOT, EM, LA, LB, LC, 
 #: record-less text. T247's rows also name T415, whose `pw_run` is the write
 #: path on primary that each of its tests takes, and T417 where an id
 #: asserts its 3, ahead of T247's Order (lane 4's GT-L4, #165 6879601079).
-#: No row is `"*"`, since the six tasks' waits share no task. Each
+#: T423a's row, lane 4's follow-up to T423 (lane 3, #165 6930389021), takes
+#: the tasks of T245's two `request-handoff` wait rows and T423, whose wait it
+#: runs; its `tasks:<n>` is T423's rule for a failed poll.
+#: No row is `"*"`, since the seven tasks' waits share no task. Each
 #: `tasks:<n>` is tasks.md's line at `204145ae`, the reader's `SPEC_COMMIT`.
 SQL_REGISTER_GATE_TABLE = {
     "test_a_call_in_doubt_that_committed_runs_its_tail_once_from_the_kept_child": ("T412", "T417", "T418"),  # T245; tasks:2363
@@ -137,6 +142,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_replay_of_request_handoff_types_into_no_pane": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_replay_that_stops_or_differs_runs_no_tail_and_warns": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_request_handoff_that_runs_none_of_its_tail_exits_2_and_writes_nothing": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
+    "test_a_request_handoff_wait_whose_poll_failed_reads_again_and_ends_on_a_release": ("T412", "T417", "T418", "T423"),  # T423a; tasks:1294; lane 3, #165 6930389021
     "test_a_rerun_after_a_3_replays_the_verbs_tail_once": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_rerun_that_finds_its_write_committed_runs_the_verbs_after_commit_tail": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_rerun_that_finds_tail_sent_runs_no_tail_and_writes_the_done_mark": ("T412", "T417", "T418"),  # T245; tasks:2363
@@ -1787,6 +1793,91 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
         assert re.search(differs, again.err) and "now stops before its write" not in again.err, (
             f"the replay did not reach the seam with another change set: {again.err[-800:]}")
     assert pending(e) == []
+
+
+# ------------------------------------------------------------ T423a: a failed poll waits on and reads again
+#: T423a's `lanes-index`, in a directory of its own beside copies of the
+#: estate's `lanes-edit.sh`, `repos.tsv` and `lane-start`, so that the copy's
+#: `lanes_index_bin` finds it first, as the readers module's door does (T217).
+#: It logs each call, fails the first form-3 read of the waited lane's log as
+#: an unreachable store does (69, `mode primary` and a cause; CLI4.5 section
+#: 3.6), and runs the estate's own `lanes-index` for every other call. A
+#: writer's reads before `committed` take the scratch tree's files, since its
+#: `REG_STORE` is empty until then, so that read is the wait's first poll.
+T423A_INDEX = r'''#!/usr/bin/env python3
+# T423a's `lanes-index`: logs each call, fails the wait's first poll read,
+# and runs the estate's own `lanes-index` for every other call.
+import fcntl, json, os, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+REAL = REAL_INDEX
+args = sys.argv[1:]
+poll = (args[:2] == ["register", "read"] and "--since" in args and "--files" in args[:-1]
+        and args[args.index("--files") + 1] == "log:" + WAITED_LANE)
+with open(os.path.join(HERE, "index.log"), "a+", encoding="utf-8") as log:
+    fcntl.flock(log, fcntl.LOCK_EX)
+    log.seek(0)
+    failed = poll and not any(json.loads(line)["poll"] for line in log if line.strip())
+    log.write(json.dumps({"argv": args, "poll": poll, "failed": failed}) + "\n")
+if failed:
+    sys.stdout.write("mode primary\n")
+    sys.stderr.write("lanes-index: register read: refuse db could not connect to server "
+                     "(T423a: the test fails the wait's first poll)\n")
+    sys.exit(69)
+os.execv(REAL, [REAL] + args)
+'''
+
+
+def t423a_copy(e: Estate) -> Path:
+    """The copy of `lanes-edit.sh` that T423a's `lanes-index` serves (see
+    `T423A_INDEX`), in `t423a/` under the estate's root, which holds the
+    calls' log, `index.log`."""
+    door = e.root / "t423a"
+    door.mkdir()
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        shutil.copy2(str(e.bindir / name), str(door / name))
+    (door / "lanes-index").write_text(T423A_INDEX.replace("REAL_INDEX", repr(str(e.bindir / "lanes-index")))
+                                      .replace("WAITED_LANE", repr(LC)), encoding="utf-8")
+    (door / "lanes-index").chmod(0o755)
+    return door / "lanes-edit.sh"
+
+
+def t423a_calls(door: Path) -> List[dict]:
+    """`index.log`'s calls, in order: each one's argv, whether it was a
+    poll's read and whether it was failed. A last line with no newline yet is
+    left out, never half read."""
+    log = door / "index.log"
+    data = log.read_bytes() if log.exists() else b""
+    data = data[:data.rfind(b"\n") + 1]
+    return [json.loads(line) for line in data.decode("utf-8").splitlines() if line]
+
+
+@CLIENT
+def test_a_request_handoff_wait_whose_poll_failed_reads_again_and_ends_on_a_release(estates):
+    """T423a (lane 3, #165 6930389021): on primary, a `request-handoff`
+    wait whose first poll could not read the register waits on, and a
+    later poll reads again (T423's rule, tasks:1294), so a release written
+    after that failure ends the wait 0, lane FREE. The failed read leaves
+    `.rfail`, which `reg_flush` keeps (T505), and while it stands no read
+    site asks; the wait's pre-poll step removes it where the last poll
+    failed. T423a's `lanes-index` fails the first poll's read; once it has,
+    lane C's own session writes its `PAUSED`, as `[lane-start-reread]`'s
+    holder does (T252i). Run with `--wait 60` and `LANES_POLL_SECONDS=1`:
+    without the step no poll reads after the failure, and the wait ends 69
+    once its 60 s are out."""
+    e = estates()
+    where = loggers(e)
+    script = t423a_copy(e)
+    w = e.launch(LA, ["request-handoff", LC, "--session", session_of(LC), "--wait", "60"], first=[where],
+                 extra={"LANES_POLL_SECONDS": "1"}, script=script)
+    until_seen("the wait's first poll, failed", lambda: any(c["failed"] for c in t423a_calls(script.parent)), w)
+    held = e.run(LC, ["log", "PAUSED", f"lane:{LC}", "T423a: handed off on request"])
+    assert held.code == 0, f"lane {LC}'s PAUSED exited {held.code}: {held.err[-400:]}"
+    w.wait(180)
+    polls = [c for c in t423a_calls(script.parent) if c["poll"]]
+    assert polls[0]["failed"] and "the register could not be read on this poll" in w.err, (polls, w.err[-800:])
+    assert w.code == 0 and f"lane {LC} is FREE" in w.err, (
+        f"exit {w.code}, with {len(polls) - 1} poll read(s) after the failed one: a failed poll waits on and "
+        f"a later poll reads again (T423a): {w.err[-800:]}")
 
 
 # ------------------------------------------------------------ D8: the takeover, the call lines, the claims
