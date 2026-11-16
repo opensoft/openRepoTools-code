@@ -695,11 +695,13 @@ class StartupRelay:
 
     def __init__(self, unix_path: str):
         self.unix_path, self.held, self.done = unix_path, [], False
+        self.lock, self.pumps = threading.Lock(), []
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.bind(("127.0.0.1", 0))
         self.sock.listen(64)
         self.port = self.sock.getsockname()[1]
-        threading.Thread(target=self._accept, daemon=True).start()
+        self.thread = threading.Thread(target=self._accept, daemon=True)
+        self.thread.start()
 
     def _accept(self):
         self.sock.settimeout(0.2)
@@ -709,9 +711,21 @@ class StartupRelay:
             except OSError:
                 continue
             upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            upstream.connect(self.unix_path)
-            self.held += [conn, upstream]
-            threading.Thread(target=self._pump, args=(conn, upstream), daemon=True).start()
+            try:
+                upstream.connect(self.unix_path)
+            except OSError:
+                conn.close()
+                upstream.close()
+                continue
+            with self.lock:                 # registered and started under close()'s lock (T215n)
+                if self.done:
+                    conn.close()
+                    upstream.close()
+                    return
+                self.held += [conn, upstream]
+                pump = threading.Thread(target=self._pump, args=(conn, upstream), daemon=True)
+                self.pumps.append(pump)
+                pump.start()
 
     def _pump(self, client, server):
         seen, silent = b"", False
@@ -735,8 +749,16 @@ class StartupRelay:
                     server.sendall(data)
 
     def close(self):
-        self.done = True
-        for conn in self.held:
+        """No new connection, every pump joined, then every held socket closed
+        (T215n): the snapshot is taken under the lock each accept registers
+        under, so nothing registered after it is left open or unjoined."""
+        with self.lock:
+            self.done = True
+            held, pumps = list(self.held), list(self.pumps)
+        self.thread.join(5)                 # each loop sees `done` within its 0.2 s
+        for pump in pumps:
+            pump.join(5)
+        for conn in held:
             conn.close()
         self.sock.close()
 
