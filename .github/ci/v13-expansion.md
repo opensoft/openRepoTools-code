@@ -19,6 +19,14 @@ must contain the common prerequisite and already be in frozen main. This does
 not permit rebasing, skipped commits or widening an inventory. Consent6928862535
 is conditional; review links remain pending until actual exact-head reviews.
 
+The preparation ceilings are P07 13 commits and P09 24 commits,
+counted from their respective declared anchors. These accommodate lane2's
+reported fix chains (issue165 comment6932539623); they are not automatic
+bindings of unpublished heads. Exact bundles, complete ordered SHAs, current
+review/consent and validation are still required. Larger or different chains
+need explicit reviewed changes; never truncate history or restack a lane to
+fit. Live policy limits and all fallback behavior remain unchanged.
+
 With acquired immutable objects in an isolated checkout, inspect a bound cohort:
 
 ```sh
@@ -38,6 +46,10 @@ Activation also needs current-main/source/review proofs, reviewed queue and
 admission support, complete coverage parity and separate live-batch authority.
 No single flag in this manifest can perform those steps.
 
-These paired code/spec PRs stay open for review. No merge, live batch, ruleset
+The original preparation left both PRs open. Subsequent owner authority permits
+checked preparation merges only after spec#80, fresh exact-head product reviews
+and CI pass. Neither preparation merge activates delivery or authorizes a queue
+command. The separately approved narrow live rollout still requires reviewed
+live support and the complete canary gates above. P08 stays held; no ruleset
 change/bypass, app grant, paid upgrade, release edit/tag, tool installation,
 assembly-pin advance, shared-checkout refresh or lane/session change follows.

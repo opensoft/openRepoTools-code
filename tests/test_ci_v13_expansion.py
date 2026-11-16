@@ -69,6 +69,7 @@ def test_ci_v13_expansion_real_manifest_is_disabled_and_separate(expansion, poli
     assert loaded["enabled"] is False
     assert loaded["held_prs"] == [106]
     assert loaded["order"] == ["P09", "P07"]
+    assert expansion.HISTORY_LIMITS == {"P07": 13, "P09": 24}
     assert all(profile["source"]["commits"][-1] == profile["source"]["head"]
                for profile in loaded["profiles"].values())
     active = expansion.projection.read_policy(REPO, "HEAD")
@@ -110,14 +111,15 @@ def test_ci_v13_expansion_preview_preserves_full_and_exposes_foundation(cohort, 
                       git(root, "show-ref"))
 
 
-@pytest.mark.parametrize("count", [4, 12])
-def test_ci_v13_expansion_exact_bounded_fixes_can_be_previewed(cohort, expansion, count):
+@pytest.mark.parametrize("name,count", [("P09", 4), ("P09", 12), ("P07", 13), ("P09", 24)])
+def test_ci_v13_expansion_exact_bounded_fixes_can_be_previewed(cohort, expansion, name, count):
     root, policy = cohort
     (root / expansion.CONFIG).unlink()
-    profile = policy["profiles"]["P09"]
+    profile = policy["profiles"][name]
     git(root, "checkout", "-q", "--detach", profile["source"]["head"])
     for index in range(count - 1):
-        write(root, "tests/test_sql_register_bounds.py", f"# exact fix {index}\n")
+        path = "tests/test_sql_register_shape.py" if name == "P07" else "tests/test_sql_register_bounds.py"
+        write(root, path, f"# exact fix {index}\n")
         head = commit(root, "declared fix")
         profile["source"]["commits"].append(head)
         profile["source"]["head"] = head
@@ -126,6 +128,25 @@ def test_ci_v13_expansion_exact_bounded_fixes_can_be_previewed(cohort, expansion
     result = expansion.inspect(root, policy["base"])
     assert result["status"] == "preview-pending-owner-reviews"
     assert_full(result, expansion)
+
+
+@pytest.mark.parametrize("name,limit", [("P07", 13), ("P09", 24)])
+@pytest.mark.parametrize("overflow", [False, True])
+def test_ci_v13_expansion_per_profile_history_ceiling(tmp_path, expansion, policy, name, limit, overflow):
+    profile = policy["profiles"][name]
+    commits = [f"{index + 1:040x}" for index in range(limit + int(overflow))]
+    profile["source"].update(head=commits[-1], commits=commits)
+    profile["owner_consent"] = profile["review"] = None
+    write(tmp_path, expansion.CONFIG, json.dumps(policy))
+    if overflow:
+        with pytest.raises(ValueError):
+            expansion.read_policy(tmp_path)
+        result = expansion.inspect(tmp_path, policy["base"])
+        assert result["status"] == "refused"
+        assert_full(result, expansion)
+    else:
+        loaded, _digest = expansion.read_policy(tmp_path)
+        assert loaded["profiles"][name]["source"]["commits"] == commits
 
 
 @pytest.mark.parametrize("fault", [None, "unlanded-anchor", "pre-prerequisite", "skipped-source"])
@@ -212,7 +233,9 @@ def test_ci_v13_expansion_bound_source_refusals(cohort, expansion, fault):
         target.symlink_to("test_sql_register_render.py")
     elif fault == "wrong-review-head": profile["review"] = {"head": "a" * 40, "comment": 123}
     elif fault == "boolean-review-comment": profile["review"] = {"head": source["head"], "comment": True}
-    elif fault == "overlong-history": source["commits"] = ["a" * 40] * 13
+    elif fault == "overlong-history":
+        source["commits"] = [f"{index + 1:040x}" for index in range(14)]
+        source["head"] = source["commits"][-1]
     elif fault in ("stale-main", "conflict"):
         git(root, "checkout", "-q", "--detach", policy["base"])
         write(root, "tests/pgcluster.py", "# conflicting foundation change\n")

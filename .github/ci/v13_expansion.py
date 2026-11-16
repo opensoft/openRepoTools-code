@@ -23,6 +23,9 @@ SOURCES = {
     "P07": (97, "007-p07-render-writes-shape-divergence-rollback-2"),
     "P09": (103, "007-p09-guard-measure-writes-disaster-drill-rollback"),
 }
+# Preparation ceilings only; every exact head and complete ordered chain is
+# still bound separately. Never infer a new source binding from these limits.
+HISTORY_LIMITS = {"P07": 13, "P09": 24}
 FILES = {
     "P07": {**{f"tests/test_sql_register_{name}.py": "A" for name in
                ("divergence", "render", "renderer_git", "rollback", "shape", "writes")},
@@ -73,7 +76,7 @@ def read_policy(root):
             require(commits == [] and profile["owner_consent"] is None and profile["review"] is None)
             continue
         common.sha(source["head"])
-        require(isinstance(commits, list) and 1 <= len(commits) <= 12
+        require(isinstance(commits, list) and 1 <= len(commits) <= HISTORY_LIMITS[name]
                 and all(isinstance(commit, str) for commit in commits)
                 and len(set(commits)) == len(commits) and commits[-1] == source["head"])
         for commit in commits:
