@@ -292,22 +292,22 @@ class RollbackRegister:
         root.mkdir(parents=True, exist_ok=True)
         name = f"t273_{uuid.uuid4().hex[:8]}"
         cluster.psql(f"CREATE DATABASE {name} TEMPLATE template0;")
-        self.db = Database(cluster, name)
-        try:
+        try:  # every step after CREATE DATABASE: on any end, drop it, then re-raise
+            self.db = Database(cluster, name)
             self._bootstrap()
             for login, group in ((LOGIN_WRITER, WRITER), (LOGIN_READER, READER)):
                 self.sql(f"DO $l$ BEGIN CREATE ROLE {login} LOGIN IN ROLE {group}; "
                          f"EXCEPTION WHEN duplicate_object THEN NULL; END $l$;")
             self.k = self._to_primary()
+            self.shim = root / "shim"
+            self.shim.mkdir()
+            (self.shim / "psql").write_text(PSQL_SHIM, encoding="utf-8")
+            (self.shim / "psql").chmod(0o755)
+            self.arm([])
+            (root / "operator").mkdir()
         except BaseException:
             cluster.drop_database(name)
             raise
-        self.shim = root / "shim"
-        self.shim.mkdir()
-        (self.shim / "psql").write_text(PSQL_SHIM, encoding="utf-8")
-        (self.shim / "psql").chmod(0o755)
-        self.arm([])
-        (root / "operator").mkdir()
 
     def drop(self) -> None:
         self.cluster.drop_database(self.db.name)
