@@ -50,7 +50,8 @@ def cohort(tmp_path, expansion, policy):
         for task in profile["tasks"]:
             write(root, expansion.projection.MARKERS + task, "")
         head = commit(root, name)
-        profile["source"].update(head=head, commits=[head])
+        profile["source"].update(anchor=anchor, head=head, commits=[head])
+        profile["owner_consent"] = profile["review"] = None
     git(root, "checkout", "-q", "--detach", anchor)
     write(root, expansion.CONFIG, json.dumps(policy))
     return root, policy
@@ -61,14 +62,15 @@ def assert_full(result, expansion):
         assert result[key] == value
 
 
-def test_ci_v13_expansion_real_manifest_is_unbound_and_separate(expansion, policy):
+def test_ci_v13_expansion_real_manifest_is_disabled_and_separate(expansion, policy):
     loaded, digest = expansion.read_policy(REPO)
     assert loaded == policy
     assert len(digest) == 64
     assert loaded["enabled"] is False
     assert loaded["held_prs"] == [106]
     assert loaded["order"] == ["P09", "P07"]
-    assert all(profile["source"]["head"] is None for profile in loaded["profiles"].values())
+    assert all(profile["source"]["commits"][-1] == profile["source"]["head"]
+               for profile in loaded["profiles"].values())
     active = expansion.projection.read_policy(REPO, "HEAD")
     assert set(active["profiles"]) == {"P05", "P06"}
     for path in ("delivery_route.py", "delivery_verify.py", "delivery_evidence.py", "delivery_v13.py"):
@@ -126,11 +128,37 @@ def test_ci_v13_expansion_exact_bounded_fixes_can_be_previewed(cohort, expansion
     assert_full(result, expansion)
 
 
+@pytest.mark.parametrize("fault", [None, "unlanded-anchor", "pre-prerequisite", "skipped-source"])
+def test_ci_v13_expansion_per_source_landed_anchor(cohort, expansion, fault):
+    root, policy = cohort
+    (root / expansion.CONFIG).unlink()
+    initial = policy["base"]
+    write(root, "landed-p03.txt", "# already landed prerequisite\n")
+    landed = commit(root, "landed P03")
+    policy["base"] = landed
+    profile = policy["profiles"]["P09"]
+    git(root, "checkout", "-q", "--detach", profile["source"]["head"])
+    tree = git(root, "merge-tree", "--write-tree", landed, "HEAD")
+    head = git(root, "commit-tree", tree, "-p", landed, "-m", "P09 on landed P03")
+    profile["source"].update(anchor=landed, head=head, commits=[head])
+    if fault == "unlanded-anchor":
+        policy["base"] = initial
+    elif fault == "pre-prerequisite":
+        policy["prerequisite"] = landed
+    elif fault == "skipped-source":
+        profile["source"]["anchor"] = initial
+    git(root, "checkout", "-q", "--detach", policy["base"])
+    write(root, expansion.CONFIG, json.dumps(policy))
+    result = expansion.inspect(root, policy["base"])
+    assert result["status"] == ("refused" if fault else "preview-pending-owner-reviews")
+    assert_full(result, expansion)
+
+
 @pytest.mark.parametrize("fault", [
     "enabled", "unknown-key", "boolean-schema", "unknown-profile", "wrong-order",
     "release-unheld", "float-held-id", "wrong-number", "wrong-branch", "extra-file", "missing-file",
     "wrong-status", "wrong-task", "unbound-lineage", "unbound-review", "wrong-scope",
-    "bad-observed-head", "boolean-comment", "duplicate-json", "oversized",
+    "bad-observed-head", "boolean-comment", "duplicate-json", "oversized", "bad-anchor", "missing-anchor",
 ])
 def test_ci_v13_expansion_manifest_refuses_unsafe_or_ambiguous_input(tmp_path, expansion, policy, fault):
     profile = policy["profiles"]["P07"]
@@ -147,11 +175,13 @@ def test_ci_v13_expansion_manifest_refuses_unsafe_or_ambiguous_input(tmp_path, e
     elif fault == "missing-file": profile["files"].pop("tests/test_sql_register_shape.py")
     elif fault == "wrong-status": profile["files"]["tests/test_sql_register_shape.py"] = "M"
     elif fault == "wrong-task": profile["tasks"].append("T999")
-    elif fault == "unbound-lineage": profile["source"]["commits"] = ["a" * 40]
+    elif fault == "unbound-lineage": profile["source"].update(head=None, commits=["a" * 40])
     elif fault == "unbound-review": profile["review"] = {"head": "a" * 40, "comment": 1}
     elif fault == "wrong-scope": policy["scope"] = "sql-register-v13"
     elif fault == "bad-observed-head": profile["observed_head"] = "bad"
     elif fault == "boolean-comment": policy["owner_coordination"] = True
+    elif fault == "bad-anchor": profile["source"]["anchor"] = "invalid"
+    elif fault == "missing-anchor": del profile["source"]["anchor"]
     raw = json.dumps(policy)
     if fault == "duplicate-json": raw = raw.replace('"enabled": false', '"enabled": false, "enabled": false')
     elif fault == "oversized": raw += " " * 65537

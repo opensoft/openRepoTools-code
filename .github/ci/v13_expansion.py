@@ -64,7 +64,8 @@ def read_policy(root):
         common.sha(profile["observed_head"])
         require(profile["tasks"] == TASKS[name] and profile["files"] == FILES[name])
         source = profile["source"]
-        require(isinstance(source, dict) and set(source) == {"number", "branch", "head", "commits"})
+        require(isinstance(source, dict) and set(source) == {"number", "branch", "anchor", "head", "commits"})
+        common.sha(source["anchor"])
         require(type(source["number"]) is int
                 and (source["number"], source["branch"]) == SOURCES[name])
         commits = source["commits"]
@@ -88,7 +89,9 @@ def read_policy(root):
 
 def source_tree(root, policy, profile):
     projected = {**profile, "files": list(profile["files"])}
-    anchor, head = policy["prerequisite"], profile["source"]["head"]
+    anchor, head = profile["source"]["anchor"], profile["source"]["head"]
+    common.git(root, "merge-base", "--is-ancestor", policy["prerequisite"], anchor)
+    common.git(root, "merge-base", "--is-ancestor", anchor, policy["base"])
     require(projection.source_lineage(root, anchor, projected))
     changes = common.git(root, "diff", "--name-status", "--no-renames", anchor, head).decode()
     rows = [line.split("\t") for line in changes.splitlines()]

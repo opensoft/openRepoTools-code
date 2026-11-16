@@ -13,11 +13,17 @@
       "source": {
         "number": 97,
         "branch": "007-p07-render-writes-shape-divergence-rollback-2",
-        "head": null,
-        "commits": []
+        "anchor": "7f1141be15ac9c0d20c25c802ba9533c2fec811c",
+        "head": "4e9821abc955c201bb3690e837d70e15cba50e83",
+        "commits": [
+          "69196d611647dd9d0383a4bec153dd8167652547",
+          "8ff07b57054e570c4698695f35419291bcbca485",
+          "81924518f081a2924e45ad8f251c153fd173b89f",
+          "4e9821abc955c201bb3690e837d70e15cba50e83"
+        ]
       },
-      "observed_head": "8ff07b57054e570c4698695f35419291bcbca485",
-      "owner_consent": null,
+      "observed_head": "4e9821abc955c201bb3690e837d70e15cba50e83",
+      "owner_consent": {"head": "4e9821abc955c201bb3690e837d70e15cba50e83", "comment": 6928862535},
       "review": null,
       "tasks": ["T210", "T240", "T241", "T270", "T271", "T273"],
       "files": {
@@ -35,11 +41,21 @@
       "source": {
         "number": 103,
         "branch": "007-p09-guard-measure-writes-disaster-drill-rollback",
-        "head": null,
-        "commits": []
+        "anchor": "6aa8b5c026c6d131b44242f3b3e618b41d6ebf19",
+        "head": "f4f0ebce68a90628dff9e79183ffbd1de1358ea3",
+        "commits": [
+          "a8e339446af50be4c90f3d49dbd81e0593150d09",
+          "366e62fdb2e930e9553a4cd41aaa22df98e43c45",
+          "492620a70d82242e7830a90cb8cdd3606dfbdd68",
+          "9f6579d3c62f9bc65055a917759b8a3a88b167eb",
+          "f047f761a847aea345079b8d89b5f66b46e86e77",
+          "0e40a16a2ea2d3be54884c65646e1fd18bcb3fda",
+          "5109125bfc4bf22498d7f06d63e1360c89652c32",
+          "f4f0ebce68a90628dff9e79183ffbd1de1358ea3"
+        ]
       },
-      "observed_head": "9f6579d3c62f9bc65055a917759b8a3a88b167eb",
-      "owner_consent": null,
+      "observed_head": "f4f0ebce68a90628dff9e79183ffbd1de1358ea3",
+      "owner_consent": {"head": "f4f0ebce68a90628dff9e79183ffbd1de1358ea3", "comment": 6928862535},
       "review": null,
       "tasks": ["T213", "T214", "T215", "T219", "T220", "T224", "T226", "T229", "T230", "T237", "T253", "T254", "T255", "T257", "T258", "T274", "T276", "T278", "T279"],
       "files": {

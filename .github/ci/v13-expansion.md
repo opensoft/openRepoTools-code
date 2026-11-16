@@ -11,6 +11,14 @@ Coordination starts at opensoft/openRepoTools#165 comment6927765450. Old public
 heads are observations only. A null source binding is pending, not a wildcard.
 P08/code#106 stays held, including `.github/workflows/release.yml`.
 
+The resolved cut includes P09's T237zzi (one trailing empty line removed;
+unchanged AST), per lane2 comment6930368576 and lane3 ruling6930389021.
+Lane1 published P07 `4e9821ab` and P09 `f4f0ebce`; their declared histories
+start at P01 `7f1141be` and landed P03 `6aa8b5c0`, respectively. Each anchor
+must contain the common prerequisite and already be in frozen main. This does
+not permit rebasing, skipped commits or widening an inventory. Consent6928862535
+is conditional; review links remain pending until actual exact-head reviews.
+
 With acquired immutable objects in an isolated checkout, inspect a bound cohort:
 
 ```sh
