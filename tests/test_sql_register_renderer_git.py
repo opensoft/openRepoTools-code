@@ -296,7 +296,9 @@ def _end_session(proc: subprocess.Popen, grace: float = 10, fifo: Path | None = 
     `grace` s, then SIGKILL to the group and another. The group is signalled
     only while the child is unreaped, so its pid is still the group's id.
     Then, in a `finally`, the hold `fifo` is let go, its write end opened and
-    closed, and the last wait for the child is bounded too. T320's
+    closed, and unlinked, so a wrapper that reaches it later finds none and
+    exits; where both waits timed out, the child's pipes are closed; and the
+    last wait for the child is bounded too. T320's
     `_run_bounded` (line R) runs each git call in a session of its own, so a
     wrapper parked on the FIFO is in no group signalled here, and without
     the let-go would wait there for ever. Returns what the child said
@@ -304,7 +306,8 @@ def _end_session(proc: subprocess.Popen, grace: float = 10, fifo: Path | None = 
     once its time runs out, where a `communicate()` with no timeout waited
     for ever, and a renderer that reaches its push only after that parks
     on a FIFO no one opens (lane 3's Codex review of code PR 97 at
-    `4e9821ab`, BLOCKING 2; lane 3's check v97 of it)."""
+    `4e9821ab`, BLOCKING 2; lane 3's check v97 of it; lane 2's RV7-30, N1
+    and N3)."""
     said = None
     try:
         for sig in (signal.SIGTERM, signal.SIGKILL):
@@ -325,6 +328,11 @@ def _end_session(proc: subprocess.Popen, grace: float = 10, fifo: Path | None = 
                 os.close(os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK))
             except OSError:
                 pass
+            fifo.unlink(missing_ok=True)
+        if said is None:
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe is not None:
+                    pipe.close()
         if proc.returncode is None:
             try:
                 proc.wait(timeout=grace)
@@ -940,10 +948,12 @@ class RenderEstate:
         each launched blocking on a FIFO of its own, released together once
         all are waiting. Returns each one's (returncode, stdout, stderr).
         The `finally` owns every child and FIFO end: where anything fails, each
-        child not yet reaped has its session ended (`_end_session`), and only
-        then is each FIFO end still open closed, so no launcher is released
-        into a render the case has given up on (lane 3's Codex review of code
-        PR 97 at `4e9821ab`, SHOULD 4)."""
+        child not yet reaped has its session ended (`_end_session`, in a `try`
+        of its own), and only then is each FIFO end still open closed, so no
+        launcher is released into a render the case has given up on. A
+        launcher that never waited is ended and drained into that failure
+        (lane 3's Codex review of code PR 97 at `4e9821ab`, SHOULD 4; lane 2's
+        RV7-30, N4)."""
         procs, fifos, fds = [], [], []
         try:
             for lc in checkouts:
@@ -955,7 +965,7 @@ class RenderEstate:
                     *self.render_argv(lc)]))
             for fifo, proc in zip(fifos, procs):
                 fd = _open_when_held(fifo, proc)
-                assert fd is not None, f"a launcher never waited on {fifo}"
+                assert fd is not None, f"a launcher never waited on {fifo}:\n{_end_session(proc)}"
                 fds.append(fd)
             while fds:
                 os.close(fds.pop(0))
@@ -968,7 +978,10 @@ class RenderEstate:
             try:
                 for proc in procs:
                     if proc.returncode is None:
-                        _end_session(proc)
+                        try:
+                            _end_session(proc)
+                        except OSError:
+                            pass  # one that cannot be signalled or read leaves the rest to end
             finally:
                 for fd in fds:
                     os.close(fd)
@@ -1267,17 +1280,19 @@ def _held_and_rendered(est: RenderEstate, one, two, seqs: list) -> tuple:
     held = est.popen_render(two)
     fd = _open_when_held(fifo, held)
     try:
-        if fd is None:
-            pytest.fail(f"{two.name}'s renderer never reached its push:\n"
-                        f"{_end_session(held, fifo=fifo)}", pytrace=False)
-        proc = est.render(one)
-        assert proc.returncode == 0, f"{one.name}'s renderer:\n{_said(proc)}"
+        try:
+            if fd is None:
+                pytest.fail(f"{two.name}'s renderer never reached its push:\n"
+                            f"{_end_session(held, fifo=fifo)}", pytrace=False)
+            proc = est.render(one)
+            assert proc.returncode == 0, f"{one.name}'s renderer:\n{_said(proc)}"
+        finally:
+            if fd is not None:
+                os.close(fd)
+        out, err = held.communicate(timeout=300)
     finally:
-        if fd is not None:
-            os.close(fd)
-        elif held.returncode is None:
+        if held.returncode is None:  # `held` owned to the end (lane 2's RV7-30, S1)
             _end_session(held, fifo=fifo)
-    out, err = held.communicate(timeout=300)
     first = next(c for c in est.calls("push", two))
     commits = _assert_rendered(est, old, seqs)
     return _push_tip(first), commits, SimpleNamespace(returncode=held.returncode, stdout=out,
@@ -1374,19 +1389,21 @@ def test_a_lost_push_race_never_rebases_a_render(request, tmp_path):
     held = est.popen_render(one)
     fd = _open_when_held(fifo, held)
     try:
-        if fd is None:
-            pytest.fail(f"the renderer never reached its push:\n{_end_session(held, fifo=fifo)}",
-                        pytrace=False)
-        handoff = est.commit_in_origin(est.origin_tip(), {
-            f"handoffs/{L2}.md": b"# a handoff pushed while the render was held\n"},
-            "a handoff commit, pushed during the render's push")
-        est.push_by_hand(handoff)
+        try:
+            if fd is None:
+                pytest.fail(f"the renderer never reached its push:\n"
+                            f"{_end_session(held, fifo=fifo)}", pytrace=False)
+            handoff = est.commit_in_origin(est.origin_tip(), {
+                f"handoffs/{L2}.md": b"# a handoff pushed while the render was held\n"},
+                "a handoff commit, pushed during the render's push")
+            est.push_by_hand(handoff)
+        finally:
+            if fd is not None:
+                os.close(fd)
+        out, err = held.communicate(timeout=300)
     finally:
-        if fd is not None:
-            os.close(fd)
-        elif held.returncode is None:
+        if held.returncode is None:  # `held` owned to the end (lane 2's RV7-30, S1)
             _end_session(held, fifo=fifo)
-    out, err = held.communicate(timeout=300)
     assert held.returncode == 0, _said(SimpleNamespace(returncode=held.returncode, stdout=out,
                                                        stderr=err))
     _assert_rendered(est, handoff, seqs)
@@ -1666,17 +1683,19 @@ def test_form_c_reads_the_trailer_from_each_message_shape(request, tmp_path, sha
     held = est.popen_render(two)
     fd = _open_when_held(fifo, held)
     try:
-        if fd is None:
-            pytest.fail(f"L2's renderer never reached its push:\n{_end_session(held, fifo=fifo)}",
-                        pytrace=False)
-        proc = est.render(one)
-        assert proc.returncode == 0, f"L1's renderer:\n{_said(proc)}"
+        try:
+            if fd is None:
+                pytest.fail(f"L2's renderer never reached its push:\n"
+                            f"{_end_session(held, fifo=fifo)}", pytrace=False)
+            proc = est.render(one)
+            assert proc.returncode == 0, f"L1's renderer:\n{_said(proc)}"
+        finally:
+            if fd is not None:
+                os.close(fd)
+        held.communicate(timeout=300)
     finally:
-        if fd is not None:
-            os.close(fd)
-        elif held.returncode is None:
+        if held.returncode is None:  # `held` owned to the end (lane 2's RV7-30, S1)
             _end_session(held, fifo=fifo)
-    held.communicate(timeout=300)
     assert held.returncode == 0, "L2's renderer after the release"
     gained = est.commits_after(old)
     assert [carried for _s, carried, _m in gained] == [[k]], gained
