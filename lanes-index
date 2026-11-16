@@ -7617,6 +7617,31 @@ def _register_serve_write(path: str, data: bytes) -> None:
         raise
 
 
+def _register_serve_open_regular(path: str, flags: int) -> int:
+    """`path` opened with `flags` and mode 0600, for the two files `serve`
+    and its starter only write, `register.lock` and `register.log`, and kept
+    only where it is a regular file (lane 5's Claude pre-review of P23, NIT 2;
+    the form of `_register_serve_read_regular`, N6). `O_NONBLOCK` is added to
+    `flags`, so a FIFO at the name fails the open at once, `ENXIO` where no
+    reader is there, and never holds it until a reader comes; then `fstat`
+    refuses a FIFO that has a reader, and any other kind of file, and the
+    descriptor is closed. A regular file's descriptor is then set blocking
+    again (lane 5's independent review, FIXREV-REPORT-1116r.md, NIT 1):
+    `O_NONBLOCK` is a flag of the open file description, which `serve`
+    inherits as its stderr, `register.log`'s, so the flag is kept only for
+    the open. Raises `OSError`: the open's, or `EINVAL`, "not a regular
+    file". Each caller takes an `OSError` as a file it cannot use."""
+    fd = os.open(path, flags | os.O_NONBLOCK, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", path)
+        os.set_blocking(fd, True)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def register_serve_stamp(paths: dict, cause: str) -> None:
     """THE FAILURE STAMP, `register.failed` (Y:3926-3931; socket API §8.6):
     the UTC and the fixed cause, and no other text, for the three causes that
@@ -7628,12 +7653,12 @@ def register_serve_stamp(paths: dict, cause: str) -> None:
     the lock, so the stamp is written only while this process holds it, and
     never where another holds it, a live service that answers its clients,
     beside which a stamp would hold every start back for nothing. Where the
-    lock cannot be opened, or this platform has no `flock`, it is written as
-    before."""
+    lock cannot be opened, or is not a regular file (NIT 2), or this platform
+    has no `flock`, it is written as before."""
     try:
         import fcntl
-        lock = os.open(paths["lock"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC
-                       | os.O_NOFOLLOW, 0o600)
+        lock = _register_serve_open_regular(
+            paths["lock"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW)
     except (ImportError, OSError):
         lock = None
     try:
@@ -7708,8 +7733,8 @@ def register_serve_log(paths: dict, phrase: str) -> None:
     """One line of `register.log`: the UTC and a FIXED PHRASE, never `psql`'s
     message text and never a URL (Y:3797-3799)."""
     try:
-        fd = os.open(paths["log"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
-                     0o600)
+        fd = _register_serve_open_regular(
+            paths["log"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW)
     except OSError:
         return
     try:
@@ -7831,8 +7856,8 @@ def register_serve_launch(paths: dict) -> str | None:
     finds another install reads directly, and starts no `serve`, is a named
     follow-up after v1.3.0, in its own PR; it is not built here."""
     try:
-        log = os.open(paths["log"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
-                      | os.O_CLOEXEC, 0o600)
+        log = _register_serve_open_regular(
+            paths["log"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as exc:
         return f"{paths['log']} could not be opened ({exc.strerror or exc})"
     try:
@@ -9482,8 +9507,8 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
         note("serve: REFUSED: this platform has no flock, so one instance cannot be held")
         return EXIT_REFUSED
     try:
-        lock = os.open(paths["lock"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC
-                       | os.O_NOFOLLOW, 0o600)
+        lock = _register_serve_open_regular(
+            paths["lock"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW)
     except OSError as exc:
         note(f"serve: {paths['lock']} could not be opened ({exc.strerror or exc})")
         return EXIT_UNAVAILABLE
