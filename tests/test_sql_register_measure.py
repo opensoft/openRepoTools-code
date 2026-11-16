@@ -1400,8 +1400,7 @@ def hook_pid():
     try:
         yield str(standin.pid)
     finally:
-        standin.kill()
-        standin.wait()
+        _end_group(standin)     # T255j: bounded, as `[m5]`'s service is (lane 5's pointer)
 
 
 def _path_m10(reg, root: Path):
