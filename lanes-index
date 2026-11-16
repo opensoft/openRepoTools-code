@@ -7419,9 +7419,15 @@ def cmd_register_read(args: list[str]) -> int:
             # any request reached `psql`, in `psql --version` or before it,
             # had no time at the database, and is the floor's 2, "too late
             # to verify", with no `.outage` (B14 design :4322-4325).
-            note(f"register read: the register did not answer by the declared outage's cap, "
-                 f"T0 + {REGISTER_GUARD_DECLARED_CUT_S:g} s ({exc.detail}), so the read failed "
-                 f"(E1)")
+            # ITS CAUSE LINE NAMES THE DATABASE, as every failed `psql`'s line
+            # under `--for guard` does, through `register_guard_store_name`,
+            # right after "the register" (AT-P3; register-cli.md :767 at spec
+            # 1262598e; lane 5's Claude pre-review of P19, NIT 3).
+            name = register_guard_store_name(cfg)
+            named = f" ({name})" if name else ""
+            note(f"register read: the register{named} did not answer by the declared outage's "
+                 f"cap, T0 + {REGISTER_GUARD_DECLARED_CUT_S:g} s ({exc.detail}), so the read "
+                 f"failed (E1)")
             register_guard_outage(opts, declared)
             return EXIT_UNAVAILABLE
         # SVC-12 (contract §3.6's `.outage`): whether the declaration counts
