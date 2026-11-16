@@ -776,13 +776,15 @@ def cmd_mode(args: list[str]) -> int:
     `load_config` refuses exits 2. `mode=primary` while `RENDER_GIT_HALF` is
     False exits `EXIT_CONFIG`, 78, with `MODE_PRIMARY_REFUSED_TEXT` on stderr
     and nothing on stdout. An argument is usage, 64, before anything is
-    read. Its caller, `lanes-edit.sh` (lane 4's T409), reads 78 as "exit 69,
+    read, and its usage line never shows the argument, which may be a
+    misplaced URL or password (contract §2.6: nothing secret reaches
+    stderr). Its caller, `lanes-edit.sh` (lane 4's T409), reads 78 as "exit 69,
     writing nothing", and every other end as files mode with a warning."""
     for arg in args:
         if arg in ("-h", "--help"):
             say(USAGE)
             return EXIT_OK
-        note(f"mode takes no argument, and was given '{arg}' - see {PROG} --help")
+        note(f"mode takes no argument - see {PROG} --help")
         return EXIT_USAGE
     try:
         cfg = load_config()
@@ -1886,7 +1888,9 @@ def cmd_register_classify(args: list[str]) -> int:
     stdin is read as bytes and cut at LF alone, so a CR stays inside its line
     and the output has exactly one line per input line; a last line with no
     LF is a line, and empty input prints nothing. An argument is usage, 64,
-    before anything is read. The configuration is loaded only so that a
+    before anything is read, and its usage line never shows the argument,
+    which may be a misplaced URL or password (contract §2.6: nothing secret
+    reaches stderr). The configuration is loaded only so that a
     refused one is refused, 2 (Q6(c)'s refusal of `mode=primary` included,
     as a `Refusal`); nothing in it is used, since the contract lets this read
     no key but `register_schema=`, and with no database call it needs none.
@@ -1895,8 +1899,8 @@ def cmd_register_classify(args: list[str]) -> int:
         if arg in ("-h", "--help"):
             say(USAGE)
             return 0
-        note(f"register classify takes no argument, and was given '{arg}': it reads "
-             f"register lines on stdin - see {PROG} --help")
+        note(f"register classify takes no argument: it reads register lines on stdin - see "
+             f"{PROG} --help")
         return 64
     try:
         load_config()
