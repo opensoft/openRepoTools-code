@@ -1818,7 +1818,18 @@ def _held_at_push(estate: RollbackEstate):
     proc = estate.popen_rollback()
     fd = _open_when_held(fifo, proc, 300)
     if fd is None:
-        out, err = proc.communicate(timeout=60)
+        try:
+            out, err = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            # Still running: killed (it shares this process's group, so no
+            # group is signalled), a push parked on the FIFO meanwhile let go,
+            # and reaped, bounded (lane 3's check v97 of code PR 97, SHOULD 4).
+            proc.kill()
+            try:
+                os.close(os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK))
+            except OSError:
+                pass
+            out, err = proc.communicate(timeout=60)
         pytest.fail(f"the rollback never reached its push: exit {proc.returncode}\n{out}\n{err}")
     return proc, fd
 
