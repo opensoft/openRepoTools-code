@@ -6733,12 +6733,49 @@ def register_guard_outage_text(declared: dict, verdict: str, tip: str,
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+def register_guard_tip(repo: str, deadline: float) -> str:
+    """FORM C'S TIP, read inside the mirror path's start line: the commit
+    `tip_of` names, by the same `git rev-parse --verify -q
+    refs/remotes/origin/<branch>^{commit}` in `repo`, but bounded, with
+    `timeout=` the time left before `deadline`, a `time.monotonic()` instant,
+    and refused before any git call where none is left (lane 5's Claude
+    pre-review of P19, SHOULD 1). `tip_of`, which every other caller shares,
+    has no timeout, so a `--repo` on a stalled mount held the guard's form C
+    past `T0` + 3.75 s, to the hook runner's own stop at 5 s. Like the walk
+    after it (`mirror_register_seq`), it runs with no stdin and without the
+    variables that move where git finds a repository
+    (`git_location_free_env`). A timeout, an `OSError`, a non-0 exit or an
+    answer that is not a full sha is `StoreUnusable` of kind `unread`, as
+    `tip_of`'s refusal is, with `tip_of`'s words for a missing ref."""
+    out_of_time = (f"reading origin/{branch()}'s tip in {repo} ran out of time before the "
+                   f"mirror path's start line, T0 + {REGISTER_GUARD_CUT_S:g} s")
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise StoreUnusable("unread", out_of_time)
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo, "rev-parse", "--verify", "-q",
+             f"refs/remotes/origin/{branch()}^{{commit}}"],
+            capture_output=True, check=False, stdin=subprocess.DEVNULL, timeout=left,
+            env=git_location_free_env())
+    except subprocess.TimeoutExpired:
+        raise StoreUnusable("unread", out_of_time)
+    except OSError as exc:
+        raise StoreUnusable("unread", f"git could not be run in {repo}: {exc}")
+    sha = proc.stdout.decode("ascii", "replace").strip()
+    if proc.returncode != 0 or not SHA_RE.match(sha):
+        raise StoreUnusable("unread", f"{repo} has no origin/{branch()}: nothing has landed "
+                            f"there for the index to follow")
+    return sha
+
+
 def register_guard_outage(opts: dict, declared: dict) -> None:
     """FORM C AND `.outage`, after form 2's 69 under a declaration that
     counts (SVC-12's condition 3, B14 design :4501-4512; contract §3.6):
-    `tip = tip_of(repo)`, then one `git log --first-parent -n 200` from it,
-    `mirror_register_seq(repo, deadline, max_pages=1, tip=tip)` (lane 1,
-    #165 6798306476), in `--repo`, bounded by the mirror path's start line,
+    the tip, `register_guard_tip(repo, deadline)`, then one `git log
+    --first-parent -n 200` from it, `mirror_register_seq(repo, deadline,
+    max_pages=1, tip=tip)` (lane 1, #165 6798306476), in `--repo`, both
+    bounded by the one `deadline`, the mirror path's start line,
     `T0` + 3.75 s. The verdict is `open` where the mirror's `Register-Seq` is
     at least the declaration's `mirror-seq=`, `behind` where it is below, and
     `no-seq` where none of the 200 carries one (`StoreUnusable` of kind
@@ -6747,10 +6784,10 @@ def register_guard_outage(opts: dict, declared: dict) -> None:
     git failure, the deadline), nothing is written, so the guard refuses
     with S3's outage text, as with no file. Its notes follow the cause."""
     repo, tip, mirror_seq = opts["repo"], None, None
+    deadline = opts["t0"] + REGISTER_GUARD_CUT_S
     try:
-        tip = tip_of(repo)
-        mirror_seq, _carrier = mirror_register_seq(repo, opts["t0"] + REGISTER_GUARD_CUT_S,
-                                                   max_pages=1, tip=tip)
+        tip = register_guard_tip(repo, deadline)
+        mirror_seq, _carrier = mirror_register_seq(repo, deadline, max_pages=1, tip=tip)
         verdict = "open" if mirror_seq >= int(declared["mirror-seq"]) else "behind"
     except StoreUnusable as exc:
         if exc.kind != "no-seq" or tip is None:
