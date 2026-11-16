@@ -2279,7 +2279,7 @@ lanes_index_bytecode_write() {   # <the placed module>
 }
 
 lanes_index_module_place() {   # <bin directory>
-	local dir="$1" source="$STAGED/$LANES_INDEX_MODULE" target="$1/$LANES_INDEX_MODULE" verb=""
+	local source="$STAGED/$LANES_INDEX_MODULE" target="$1/$LANES_INDEX_MODULE" verb=""
 	if [ -e "$target" ] && cmp -s "$source" "$target"; then
 		if mode_is 644 "$target"; then
 			verb="already at $target (unchanged)"

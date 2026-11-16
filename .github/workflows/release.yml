@@ -2048,7 +2048,7 @@ jobs:
       # (007 T347), as the installed package holds them under its own
       # `payload/`, compiled by this leg's python3, the oldest the package
       # supports. Nothing is written: `compile()` keeps no bytecode.
-      - name: on Python 3.9, the installed payload's own lanes-index and lane-worktrees compile
+      - name: on Python 3.9, the installed payload's own lanes-index, lanes_index_main.py and lane-worktrees compile
         if: matrix.python == '3.9'
         run: |
           python3 -I - <<'PY'

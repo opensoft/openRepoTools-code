@@ -2000,7 +2000,8 @@ def wheel_release(version: str) -> dict:
 def wheel_members(release_: dict) -> Tuple[Dict[str, Tuple[bytes, int]], str]:
     """THE WHEEL THE RELEASE BUILD WRITES FOR HEAD, laid out as hatchling
     1.27.0 lays it out, from git's own blobs: the package's modules, the
-    stamp with the release's five values, the 24 payload files, and the five
+    stamp with the release's five values, the payload files (every one the
+    force-include table names, `layout.payload_paths()`), and the five
     `.dist-info` names. Each has the whole mode hatchling gives it, as
     TestPyPI's 1.1.0rc1 wheel has them: a payload file is a regular file at
     0755 or 0644 as HEAD records it, a module a regular file at 0644, and a
@@ -6286,12 +6287,14 @@ def test_release_install_check_the_macos_rerun_counts_only_the_contract_s_lines(
 @NEEDS_UPSTREAM
 def test_release_install_check_the_3_9_leg_compiles_the_two_python_commands():
     """FR-032: on Python 3.9 only, the installed package's own
-    `payload/lanes-index` and `payload/lane-worktrees` are compiled: the
-    shipped bytes are what must compile on 3.9."""
+    `payload/lanes-index` and `payload/lane-worktrees`, and the module
+    `lanes-index` runs its body from, `payload/lanes_index_main.py` (007
+    T347), are compiled: the shipped bytes are what must compile on 3.9."""
     steps = [s for s in install_steps(release())
              if condition_kind(s.get("if")) == "python-3.9"]
     assert [s for s in steps if "compile(" in run_text(s)
             and "lanes-index" in run_text(s) and "lane-worktrees" in run_text(s)
+            and "lanes_index_main.py" in run_text(s)
             and "payload" in run_text(s)], [label(s) for s in steps]
 
 
@@ -6381,6 +6384,12 @@ def with_lane_worktrees_missing(home: Path) -> None:
     (payload / "lane-worktrees").unlink()
 
 
+def with_lanes_index_module_broken(home: Path) -> None:
+    layout.pipx_venv(home, "1.11.1")
+    payload = home / "venvs/openrepotools/lib/python3.9/site-packages/openrepotools/payload"
+    (payload / "lanes_index_main.py").write_bytes(b"def broken(:\n")
+
+
 #: `(the Python the step is run as, the pipx home it reads, whether it
 #: passes, what its refusal names)`.
 COMPILE_CASES = {
@@ -6388,6 +6397,8 @@ COMPILE_CASES = {
                              True, None),
     "lanes-index-does-not-compile": ("3.9.25", with_lanes_index_broken, False,
                                      "lanes-index"),
+    "lanes-index-module-does-not-compile": ("3.9.25", with_lanes_index_module_broken,
+                                            False, "lanes_index_main.py"),
     "lane-worktrees-missing": ("3.9.25", with_lane_worktrees_missing, False,
                                "lane-worktrees"),
     "no-payload-directory": ("3.9.25", lambda home: home.mkdir(parents=True),
@@ -6405,9 +6416,11 @@ def test_release_install_check_the_3_9_step_refuses_a_payload_command_that_does_
         tmp_path, which):
     """THE 3.9 LEG'S STEP, RUN (FR-032), on a pipx home laid out as pipx
     1.11.1 leaves it: it passes the payload as built, and refuses, naming
-    why, a `lanes-index` that does not compile, a `lane-worktrees` that is
-    missing, no payload directory or two, and any Python but 3.9. The step
-    is run by this Python, reading as the Python the case names."""
+    why, a `lanes-index` that does not compile, `lanes_index_main.py`, the
+    module it runs its body from (007 T347), that does not compile, a
+    `lane-worktrees` that is missing, no payload directory or two, and any
+    Python but 3.9. The step is run by this Python, reading as the Python
+    the case names."""
     version, lay_out, passes, names = COMPILE_CASES[which]
     steps = [s for s in install_steps(release())
              if condition_kind(s.get("if")) == "python-3.9"]
