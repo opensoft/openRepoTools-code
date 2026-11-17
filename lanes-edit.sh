@@ -794,7 +794,7 @@
 #      publish act outside the loop, R16). Never files mode instead.
 #      Every other failure of the question — a configuration `lanes-index`
 #      refuses, a `lanes-index` too old to know `mode`, none to run, a crash,
-#      no answer within 2 s — runs the verb in files mode with one warning,
+#      no answer within 5 s — runs the verb in files mode with one warning,
 #      and is never 69. THE WRITERS' MARKER CHECK (feature 007, T419;
 #      FR-004) is 69 too, with nothing written: where that answer is not
 #      primary (no configuration, `index`, or a question that failed), a
@@ -6323,7 +6323,7 @@ reg_config_present() {
   [ -e "$rcp_path" ] || [ -L "$rcp_path" ]
 }
 
-# THE QUESTION, under this file's own 2 s timer (contract §2.4: "2 s, the
+# THE QUESTION, under this file's own 5 s timer (contract §2.4: "5 s, the
 # caller's"), which `timeout` holds where it is installed, as it holds
 # `git_net`'s and `index_open`'s; where it is not, the question runs unbounded,
 # as theirs do. Its stdout and stderr go to files, so a stand-in that leaves a
@@ -6363,7 +6363,7 @@ reg_mode_query() {   # [mirror]
   rmq_rc=0; rmq_timer=bare
   if command -v timeout >/dev/null 2>&1; then
     rmq_timer=timed
-    ( timeout -k 1 2 "$rmq_bin" mode </dev/null >"$rmq_dir/out" 2>"$rmq_dir/err"; exit "$?" ) 2>/dev/null || rmq_rc=$?
+    ( timeout -k 1 5 "$rmq_bin" mode </dev/null >"$rmq_dir/out" 2>"$rmq_dir/err"; exit "$?" ) 2>/dev/null || rmq_rc=$?
   else
     ( "$rmq_bin" mode </dev/null >"$rmq_dir/out" 2>"$rmq_dir/err"; exit "$?" ) 2>/dev/null || rmq_rc=$?
   fi
@@ -6398,9 +6398,9 @@ reg_mode_query() {   # [mirror]
     # one warning, as F8 runs every failure but 78 (Y:5712–5713; FR-002;
     # contract §3.1; lane 3, #165 6755641373, point 1).
     124:timed)
-      reg_mode_files "did not answer within 2 s, and was stopped (exit 124)" ;;
+      reg_mode_files "did not answer within its 5 s timer, and was stopped (exit 124)" ;;
     137:timed)
-      reg_mode_files "was killed (exit 137): by its 2 s timer after it ignored the stop, or by a signal" ;;
+      reg_mode_files "was killed (exit 137): by its 5 s timer after it ignored the stop, or by a signal" ;;
     137:bare)
       reg_mode_files "was killed by a signal (exit 137)" ;;
     *)
