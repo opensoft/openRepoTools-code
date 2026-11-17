@@ -2027,7 +2027,8 @@ def test_a_waiting_migration_gives_up_at_its_own_lock_timeout(pg, tmp_path, requ
     still runs `bootstrap`, for the migration's connect."""
     bench = Bench(pg, tmp_path, request)
     reader = bench.login("lanes_register_reader")
-    number = int(pg.psql(f"SELECT version FROM {SCHEMA}.schema_version WHERE id = 1;").stdout) + 1
+    number = _whole(pg.psql(f"SELECT version FROM {SCHEMA}.schema_version WHERE id = 1;").stdout,
+                    "schema_version's version") + 1
     held = pg.session(user=reader, appname="t220-reader")
     held.stdin.write(f"BEGIN;\nSELECT seq FROM {SCHEMA}.register_head;\n")
     held.stdin.flush()
@@ -2061,7 +2062,8 @@ def test_a_waiting_migration_gives_up_at_its_own_lock_timeout(pg, tmp_path, requ
                                   f"migration {number} exited {proc.returncode}: "
                                   f"{_said_safely(proc.stderr.strip())}")
     version = pg.psql(f"SELECT version FROM {SCHEMA}.schema_version WHERE id = 1;").stdout
-    assert int(version) == number, f"the rerun left version {version.strip()}, not {number}"
+    left = _whole(version, "the rerun's schema_version")
+    assert left == number, f"the rerun left version {left}, not {number}"
 
 
 def test_import_and_reconcile_set_their_bounds_at_connect(tmp_path):
@@ -2928,7 +2930,7 @@ def _activity(pg, appname: str) -> tuple:
     if not said:
         return "", 0.0
     state, _, age = said.splitlines()[0].partition("|")
-    return state, float(age or 0)
+    return state, _whole(age or 0, "pg_stat_activity's state age", float)
 
 
 #: The idle bound on a writer's open transaction, the group's
@@ -3373,6 +3375,18 @@ def _warnings_of(err: str) -> tuple:
     return shown, withheld
 
 
+def _whole(text, what: str, kind=int):
+    """`kind(text)`, an int by default, or an AssertionError that names
+    `what` and quotes none of `text` (T257zl; lane 2's pre-review RV9-37 of
+    P09 at `d9a1f2bf`, S5): int()'s and float()'s own ValueError quotes up
+    to 200 characters of its input, which is a tool's or a writer's output
+    here. `from None` keeps that ValueError out of the traceback too."""
+    try:
+        return kind(text)
+    except (TypeError, ValueError):
+        raise AssertionError(f"{what} is not a number; its text is not shown") from None
+
+
 def _said_safely(said) -> str:
     """What a failure message may show of a process's output (T257zh; lane
     3's ruling 6946445277 on lane 2's pre-review RV9-36 of P09 at
@@ -3484,7 +3498,8 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
         assert code == 0, f"login add fx2 exited {code}"
         tls_cluster.passwords.update(PASSWORD_LINE.findall(out))
         writers = [FX_WRITER] * 5 + ["lanes_w_fx2"] * 5
-    head = int(db.psql(f"SELECT seq FROM {SCHEMA}.register_head;").stdout.strip() or 0)
+    head = _whole(db.psql(f"SELECT seq FROM {SCHEMA}.register_head;").stdout.strip() or 0,
+                  "register_head's seq")
     with delayed_loopback(tls_cluster.port, DELAY_S) as relay:
         configs = {login: _link_config(tmp_path / "conf" / login / "lanes-index.conf", tls_cluster,
                                        relay.port, login) for login in set(writers)}
