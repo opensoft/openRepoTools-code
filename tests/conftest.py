@@ -534,6 +534,13 @@ def pytest_configure(config):
         raise pytest.UsageError(refusal)
     if not config.pluginmanager.has_plugin(pgcluster.PLUGIN_NAME):
         config.pluginmanager.register(pgcluster, pgcluster.PLUGIN_NAME)
+    # SHORT TRACEBACKS UNLESS ASKED (#165, lane 3's ruling 6949488277 on lane
+    # 2's pre-review RV9-38 of P09, B1): pytest's default `auto` prints a long
+    # entry's frame arguments, a helper's raw stream or a statement's password
+    # among them, in the terminal and in --junitxml. `short` prints none. An
+    # explicit `--tb` stays as given; it and --showlocals are not secret-safe.
+    if config.getoption("tbstyle", "auto") == "auto":
+        config.option.tbstyle = "short"
 
 
 def pytest_report_header(config):
