@@ -1496,6 +1496,80 @@ def _source_key(source: str) -> str:
 LEGACY_LAST_ERROR = ("not shown: an earlier build filed this entry under a key that held a "
                      "credential, and the next sync or reconcile removes it")
 
+#: THE FORMS THIS BUILD FILES A SOURCE UNDER, AS PREFIXES (lane 3's ruling,
+#: opensoft/openRepoTools-code#89 comment 6944673181): `register:` and the repository
+#: `source_of` reads (`register:?` where `_record_error` cannot resolve it), `inventory:`
+#: and this workstation's name (`inventory:?`), and T058's `ledger:<Workstation>` in the
+#: ledger half's tables. The prefix is the whole exact list: what follows it is a
+#: repository or a workstation's name as given, and neither has a closed form.
+FILED_PREFIXES = ("register:", INVENTORY_PREFIX, "ledger:")
+
+#: WHAT `status` PRINTS IN PLACE OF A WHOLE ENTRY WHOSE KEY IS NOT A FORM THIS BUILD
+#: FILES (lane 3's ruling, comment 6944416906): its key, provenance and error unshown.
+LEGACY_SOURCE_LINE = ("source not shown: an earlier build filed an entry under a key this "
+                      "build does not file, which may hold a credential; the next sync or "
+                      "reconcile removes it")
+
+
+def _is_legacy(name: str) -> bool:
+    """A KEY AN EARLIER BUILD FILED AND THIS ONE WOULD NOT (lane 3's rulings,
+    opensoft/openRepoTools-code#89 comments 6944416906 and 6944673181), judged by its
+    STRUCTURE, never by a guess at a token in its text: a key under none of
+    `FILED_PREFIXES` (v1.1.0 and v1.2.0 `_record_error` filed the raw `--source` value:
+    a URL, a `password=` value, a bare token); a key `_source_key` changes (a register
+    URL's userinfo that can hold a credential); a key holding `password=`, in any case
+    (`inventory:password=` among them); and an `inventory:` or `ledger:` key holding a
+    URL with userinfo, which no workstation's name holds. A key of every other form is
+    one this build files, and stays as it is."""
+    if not name.startswith(FILED_PREFIXES):
+        return True
+    if _source_key(name) != name or "password=" in name.lower():
+        return True
+    return (not name.startswith("register:") and
+            re.search(r"[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*@", name) is not None)
+
+
+#: `_is_legacy` AS THE SERVER READS IT (lane 1's coordinator, on commit 14's design): the
+#: PostgreSQL removal chooses a legacy source's rows by the same structural rule, so neither
+#: a legacy key nor any value made from one, a digest included, is in the script. Term by
+#: term: no filed prefix; `password=` in any case; `_source_key`'s userinfo in an http(s)
+#: URL, or holding a `:` in any URL; an `inventory:` or `ledger:` key holding URL userinfo.
+PG_LEGACY_SQL = ("(NOT (source LIKE 'register:%' OR source LIKE 'inventory:%' OR source LIKE "
+                 "'ledger:%') OR source ~* 'password=' OR source ~* '^register:https?://[^/?#]*@' "
+                 "OR source ~ '^register:[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*:[^/?#]*@' OR (source "
+                 "!~ '^register:' AND source ~ '[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*@'))")
+
+
+#: THE FIXED WORDS OF A CLEANUP OR AN INDEX psql CALL THAT FAILED (lane 3's ruling,
+#: opensoft/openRepoTools-code#89 comment 6944416906): none of them carries a value read
+#: from a file, a key or psql's text.
+STATUS_UNREADABLE = ("the status file cannot be read, so the entries an earlier build "
+                     "filed in it cannot be removed")
+STATUS_UNREPLACEABLE = ("the status file cannot be replaced, so the entries an earlier "
+                        "build filed in it are not removed")
+STATUS_UNPARSEABLE_WARNING = ("WARNING: the status file is not one this build can parse; none "
+                              "of its bytes are shown, and a run that writes replaces it with "
+                              "an empty one")
+SCRUB_UNMARKED = ("the mark that the store's scrub is due cannot be made, so no source an "
+                  "earlier build filed was removed")
+SCRUB_UNFINISHED = ("a source an earlier build filed was removed, and the scrub of the "
+                    "store's free space, WAL and journal is not finished; the next write "
+                    "finishes it first")
+#: The scrub mark's whole text: it holds no key.
+SCRUB_MARK_TEXT = ("lanes-index: a source was removed from this store; its free space, WAL "
+                   "and journal are scrubbed before the next write\n")
+PSQL_NO_CONNECTION = ("psql could not connect to the index's database, or lost its "
+                      "connection (exit 2); psql's own words are not shown")
+PSQL_CAS_LOST = ("the provenance of this workstation's source moved under this sync; "
+                 "nothing was written")
+#: The SQLSTATEs of a table or schema that does not exist: an index `open_read` calls
+#: `wiped`, and `open_write` fills.
+PSQL_UNDEFINED = ("42P01", "3F000")
+#: psql's line for an error under `VERBOSITY=verbose`: its `psql:<input>:<line>: ` locus,
+#: the severity in the server's language, two blanks, and the SQLSTATE, which no
+#: language changes, then `: `.
+PSQL_DIAGNOSTIC_RE = re.compile(r"^(?:psql:[^\n]*?:[0-9]+: )?[^\s:]+:  ([0-9A-Z]{5}): ", re.M)
+
 
 def branch() -> str:
     return os.environ.get("LANES_BRANCH") or "main"
@@ -4406,6 +4480,60 @@ class SqliteStore:
             raise StoreUnusable("unreachable", f"{self.path}: {exc}")
         self._check_schema(writing=True)
 
+    def _scrub_mark(self) -> str:
+        return self.path + "-scrub"
+
+    def _mark_scrub(self) -> None:
+        """The scrub mark, written and synced, 0600, its text `SCRUB_MARK_TEXT`."""
+        try:
+            fd = os.open(self._scrub_mark(), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, SCRUB_MARK_TEXT.encode("utf-8"))
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError:
+            raise StoreUnusable("unreachable", SCRUB_UNMARKED) from None
+        try:
+            dfd = os.open(os.path.dirname(self.path) or ".", os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass   # a platform that cannot sync a folder: the file itself is synced
+
+    def scrub(self) -> None:
+        """THE SCRUB A REMOVAL LEFT DUE, where its mark stands (BLOCKING 4 of
+        opensoft/openRepoTools-code#89 comment 6944416906). With `secure_delete` on, a
+        VACUUM rewrites the file, so its free space holds nothing that went. A WAL store
+        is checkpointed with TRUNCATE, which copies every frame back into the file and
+        leaves the WAL empty; any other store is set to the DELETE journal, whose journal
+        goes at each commit, so no WAL or journal keeps an old page. Only then does the
+        mark go. A step that fails leaves the mark and is a `StoreUnusable` with fixed
+        words, and the next writer's cleanup (`_drop_legacy`), which ends with this
+        whether it removed anything or not, runs the scrub again."""
+        import sqlite3
+        mark = self._scrub_mark()
+        if not os.path.exists(mark):
+            return
+        try:
+            self.conn.execute("PRAGMA secure_delete = ON")
+            mode = str(self.conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+            if mode != "wal":
+                mode = str(self.conn.execute("PRAGMA journal_mode = DELETE").fetchone()[0]).lower()
+            self.conn.execute("VACUUM")
+            if mode == "wal":
+                busy = self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+                wal = self.path + "-wal"
+                if busy or (os.path.exists(wal) and os.path.getsize(wal) != 0):
+                    raise StoreUnusable("unreachable", SCRUB_UNFINISHED)
+            elif mode != "delete" or os.path.exists(self.path + "-journal"):
+                raise StoreUnusable("unreachable", SCRUB_UNFINISHED)
+            os.unlink(mark)
+        except (sqlite3.Error, OSError):
+            raise StoreUnusable("unreachable", SCRUB_UNFINISHED) from None
+
     def _check_schema(self, writing: bool):
         import sqlite3
         try:
@@ -4460,12 +4588,16 @@ class SqliteStore:
     def drop_sources(self, sources: list) -> None:
         """Every row of each of `sources`, from every table that keys on a source,
         in ONE transaction (lane 3's ruling, opensoft/openRepoTools-code#89 comment
-        6941833120). `secure_delete` zeroes what goes, and a VACUUM after the commit
-        rewrites the file, so that no copy of a removed key is left in its free
-        space, a copy an earlier build's own updates left there included."""
+        6941833120), with `secure_delete` on, so that what goes is zeroed. A SCRUB
+        MARK THAT HOLDS NO KEY is made durable BEFORE the transaction begins (lane 1's
+        choice for BLOCKING 4 of comment 6944416906), and only `scrub` takes it off, once
+        the file's free space, its WAL and its journal hold no copy of what went: a run
+        that fails after the COMMIT leaves the mark, and the next writer's cleanup
+        (`_drop_legacy`) finishes the scrub before that run writes anything of its own."""
         import sqlite3
         if not sources:
             return
+        self._mark_scrub()
         marks = ", ".join("?" for _ in sources)
         try:
             self.conn.execute("PRAGMA secure_delete = ON")
@@ -4479,10 +4611,6 @@ class SqliteStore:
                 self.conn.execute("ROLLBACK")
             except sqlite3.Error:
                 pass
-            raise StoreUnusable("unreachable", f"{self.path}: {exc}")
-        try:
-            self.conn.execute("VACUUM")
-        except sqlite3.Error as exc:
             raise StoreUnusable("unreachable", f"{self.path}: {exc}")
 
     def rows(self, table: str, source: str, columns: list[str]) -> list:
@@ -4590,6 +4718,27 @@ def _pg_quote(value) -> str:
     if isinstance(value, int):
         return str(value)
     return "'" + str(value).replace("'", "''") + "'"
+
+
+def _pg_digest(source: str) -> str:
+    """The hex SHA-256 of `source`'s UTF-8 bytes, as the server computes it."""
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def _pg_source_is(source: str, column: str = "source") -> str:
+    """NO SOURCE KEY IN ANY SQL TEXT (lane 3's ruling, opensoft/openRepoTools-code#89
+    comment 6944673181): the server chooses a source's rows by the SHA-256 of the key,
+    which it computes from the row itself, so the key is in no statement, no psql
+    echo of one and no server log of one."""
+    return f"encode(sha256(convert_to({column}, 'UTF8')), 'hex') = '{_pg_digest(source)}'"
+
+
+def _copy_text(value) -> str:
+    """One field of `COPY ... FROM STDIN` in TEXT format: the inverse of `_pg_unescape`."""
+    if value is None:
+        return "\\N"
+    return (str(value).replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+            .replace("\r", "\\r"))
 
 
 def _pg_unescape(field: str):
@@ -4893,7 +5042,7 @@ class PostgresStore:
         return env
 
     def _run(self, script: str, *, timer: float | None = None,
-             register: bool = False, options: str | None = None) -> str:
+             register: bool = False, options: str | None = None, cas: bool = False) -> str:
         """`script` on `psql`'s stdin, its connection in the environment alone.
 
         `timer` is the call's client timer (D9), `subprocess.run`'s `timeout` on
@@ -4916,8 +5065,12 @@ class PostgresStore:
         if register:
             return self._run_register(script, timer, options)
         try:
+            # `VERBOSITY=verbose` AND `SHOW_CONTEXT=never`, AS EVERY REGISTER CALL HAS THEM
+            # (`REGISTER_PSQL_ARGS`): psql's error line carries the SQLSTATE, and no
+            # CONTEXT line follows it. Every psql has `VERBOSITY=verbose`.
             proc = subprocess.run(
-                [self.psql, "--no-psqlrc", "-X", "-q", "-v", "ON_ERROR_STOP=1"],
+                [self.psql, "--no-psqlrc", "-X", "-q", "-v", "ON_ERROR_STOP=1",
+                 "-v", "VERBOSITY=verbose", "-v", "SHOW_CONTEXT=never"],
                 input=script, capture_output=True, text=True, check=False,
                 env=self._env(register=register), timeout=timer)
         except subprocess.TimeoutExpired:
@@ -4925,19 +5078,43 @@ class PostgresStore:
         except OSError as exc:
             raise StoreUnusable("unreachable", f"psql could not be run: {exc}")
         if proc.returncode != 0:
-            err = (proc.stderr.strip().splitlines() or [f"psql exited {proc.returncode}"])
-            if "lanes-index: provenance moved" in proc.stderr:
-                raise CasLost(err[-1])
-            if proc.returncode == 2:
-                raise StoreUnusable("unreachable", err[0])
-            if not err[-1].strip(" ^"):
-                # NOT THE CARET (lane 1's hosted run 44046351293): psql ends an error
-                # that has a position with the statement's line and a line holding only
-                # `^`. The error's own line is said, so `open_read` reads a missing
-                # table in it, and the schema the bootstrap leaves empty is filled.
-                err = [line for line in err if "ERROR:" in line] or err
-            raise StoreUnusable("unreachable", err[-1])
+            raise self._failure(proc.returncode, proc.stderr, cas)
         return proc.stdout
+
+    @staticmethod
+    def _failure(code: int, stderr: str, cas: bool) -> Exception:
+        """A FAILED INDEX CALL IN FIXED WORDS, NEVER A LINE OF psql'S TEXT (lane 3's
+        ruling, BLOCKING 5 of opensoft/openRepoTools-code#89 comment 6944416906): psql
+        can quote the script in a `LINE`, `QUERY` or `CONTEXT` line or a COPY row, so
+        nothing of what it says is said or filed. Its stderr is read for the SQLSTATE
+        alone, from psql's own error line (`PSQL_DIAGNOSTIC_RE`; the last such line,
+        since a NOTICE before the error has one too and ON_ERROR_STOP stops at the
+        error), so no message text and no language decides:
+          - exit 2: psql could not connect, or lost the connection;
+          - 42P01 or 3F000: a table or schema the index needs does not exist, which
+            `open_read` calls `wiped` (commit 13's caret mend, now by the code);
+          - P0001 or 23505 in a write (`cas`): the compare-and-swap's RAISE, or a row a
+            writer filed first: the provenance moved;
+          - any other SQLSTATE, by its five characters; none, by psql's exit."""
+        if code == 2:
+            return StoreUnusable("unreachable", PSQL_NO_CONNECTION)
+        found = PSQL_DIAGNOSTIC_RE.findall(stderr)
+        sqlstate = found[-1] if found else ""
+        if cas and sqlstate in ("P0001", "23505"):
+            return CasLost(PSQL_CAS_LOST)
+        if sqlstate in PSQL_UNDEFINED:
+            exc = StoreUnusable("unreachable", f"psql: a table or schema the index needs "
+                                f"does not exist (SQLSTATE {sqlstate})")
+        elif sqlstate:
+            exc = StoreUnusable("unreachable", f"psql stopped the index's script with "
+                                f"SQLSTATE {sqlstate} (exit {code}); psql's own words are "
+                                f"not shown, since they can quote the script")
+        else:
+            exc = StoreUnusable("unreachable", f"psql exited {code} with no SQLSTATE; "
+                                f"psql's own words are not shown, since they can quote the "
+                                f"script")
+        exc.sqlstate = sqlstate
+        return exc
 
     def _run_register(self, script: str, timer: float, options: str) -> str:
         """`_run` on a register path (FR-012): `REGISTER_PSQL_ARGS`, the
@@ -5127,7 +5304,7 @@ class PostgresStore:
             res = self._query_many([
                 f"SELECT version FROM \"{self.schema}\".schema_version"])
         except StoreUnusable as exc:
-            if "does not exist" in exc.detail:
+            if getattr(exc, "sqlstate", "") in PSQL_UNDEFINED:
                 raise StoreUnusable("wiped", exc.detail)
             raise
         versions = {int(r[0]) for r in res[0]} if res else set()
@@ -5176,16 +5353,21 @@ class PostgresStore:
         return self._provenance_of(res[0]), sorted(r[0] for r in res[1])
 
     def drop_sources(self, sources: list) -> None:
-        """`SqliteStore.drop_sources`: every row of each of `sources`, from every
-        table that keys on a source, in ONE transaction."""
+        """`SqliteStore.drop_sources`: every legacy source's rows, from every table that
+        keys on a source, in ONE transaction. The server chooses them by `PG_LEGACY_SQL`,
+        the rule `_is_legacy` states, so neither a legacy key nor any value made from one is
+        in the script; `sources`, `_is_legacy`'s answer, says whether one is to go."""
         if not sources:
             return
-        names = ", ".join(_pg_quote(source) for source in sources)
         lines = ["SET standard_conforming_strings = on;", "BEGIN;",
                  f"SET LOCAL search_path TO \"{self.schema}\";"]
-        lines += [f"DELETE FROM {table} WHERE source IN ({names});" for table in SOURCE_TABLES]
+        lines += [f"DELETE FROM {table} WHERE {PG_LEGACY_SQL};" for table in SOURCE_TABLES]
         lines.append("COMMIT;")
         self._run("\n".join(lines) + "\n")
+
+    def scrub(self) -> None:
+        """Nothing is due: PostgreSQL's own VACUUM reclaims what a DELETE leaves, and no
+        file of this workstation holds the store."""
 
     def rows(self, table: str, source: str, columns: list[str]) -> list:
         res = self._query_many([self._rows_query(table, source, columns)])
@@ -5194,7 +5376,7 @@ class PostgresStore:
     @staticmethod
     def _provenance_query(source: str) -> str:
         return (f"SELECT commit_sha, generation, indexed_utc, schema_version FROM provenance "
-                f"WHERE source = {_pg_quote(source)}")
+                f"WHERE {_pg_source_is(source)}")
 
     @staticmethod
     def _provenance_of(answer: list) -> dict | None:
@@ -5207,7 +5389,7 @@ class PostgresStore:
     @staticmethod
     def _rows_query(table: str, source: str, columns: list[str]) -> str:
         return (f"SELECT {', '.join(['record_id'] + columns)} FROM {table} "
-                f"WHERE source = {_pg_quote(source)}")
+                f"WHERE {_pg_source_is(source)}")
 
     @staticmethod
     def _rows_of(answer: list, columns: list[str]) -> list:
@@ -5237,27 +5419,38 @@ class PostgresStore:
               deletes: dict, generation: int | None = None) -> None:
         now = utc_now()
         want = old["commit_sha"] if old else None
+        # NO SOURCE KEY IN ANY SQL TEXT (lane 3's ruling, opensoft/openRepoTools-code#89
+        # comment 6944673181): a new source's provenance row goes in as COPY data, and
+        # every statement after it finds the row by the key's SHA-256 (`_pg_source_is`)
+        # and takes the key from it (`mine`).
+        mine = f"(SELECT p.source FROM provenance p WHERE {_pg_source_is(source, 'p.source')})"
         lines = ["SET standard_conforming_strings = on;", "BEGIN;",
-                 f"SET LOCAL search_path TO \"{self.schema}\";",
-                 # THE COMPARE-AND-SWAP, FIRST AND IN THE SAME TRANSACTION AS THE
-                 # ROWS: the UPDATE takes the provenance row's lock, so a second
-                 # writer reading the same old commit blocks here and then finds
-                 # it moved, and its whole transaction goes (Amendment 14(d)).
-                 "DO $lanes_index_cas$ DECLARE n integer; BEGIN",
-                 f"  INSERT INTO provenance (source, commit_sha, generation, indexed_utc, "
-                 f"schema_version) VALUES ({_pg_quote(source)}, NULL, NULL, {_pg_quote(now)}, "
-                 f"{SCHEMA_VERSION}) ON CONFLICT (source) DO NOTHING;",
-                 f"  UPDATE provenance SET commit_sha = {_pg_quote(new_sha)}, generation = "
-                 f"{_pg_quote(generation)}, indexed_utc = "
-                 f"{_pg_quote(now)}, schema_version = {SCHEMA_VERSION} WHERE source = "
-                 f"{_pg_quote(source)} AND commit_sha IS NOT DISTINCT FROM {_pg_quote(want)};",
-                 "  GET DIAGNOSTICS n = ROW_COUNT;",
-                 "  IF n <> 1 THEN RAISE EXCEPTION 'lanes-index: provenance moved under this "
-                 "sync; nothing was written'; END IF;",
-                 "END $lanes_index_cas$;"]
+                 f"SET LOCAL search_path TO \"{self.schema}\";"]
+        if old is None:
+            # A writer that filed this source's row since it was read makes the COPY a
+            # unique violation (23505), which is the compare-and-swap's answer: it moved.
+            lines += ["COPY provenance (source, commit_sha, generation, indexed_utc, "
+                      "schema_version) FROM STDIN;",
+                      "\t".join([_copy_text(source), _copy_text(None), _copy_text(None),
+                                 _copy_text(now), str(SCHEMA_VERSION)]),
+                      "\\."]
+        lines += [
+            # THE COMPARE-AND-SWAP, FIRST AND IN THE SAME TRANSACTION AS THE
+            # ROWS: the UPDATE takes the provenance row's lock, so a second
+            # writer reading the same old commit blocks here and then finds
+            # it moved, and its whole transaction goes (Amendment 14(d)).
+            "DO $lanes_index_cas$ DECLARE n integer; BEGIN",
+            f"  UPDATE provenance SET commit_sha = {_pg_quote(new_sha)}, generation = "
+            f"{_pg_quote(generation)}, indexed_utc = "
+            f"{_pg_quote(now)}, schema_version = {SCHEMA_VERSION} WHERE "
+            f"{_pg_source_is(source)} AND commit_sha IS NOT DISTINCT FROM {_pg_quote(want)};",
+            "  GET DIAGNOSTICS n = ROW_COUNT;",
+            "  IF n <> 1 THEN RAISE EXCEPTION 'lanes-index: provenance moved under this "
+            "sync; nothing was written'; END IF;",
+            "END $lanes_index_cas$;"]
         for table, ids in deletes.items():
             for rec_id in ids:
-                lines.append(f"DELETE FROM {table} WHERE source = {_pg_quote(source)} AND "
+                lines.append(f"DELETE FROM {table} WHERE source = {mine} AND "
                              f"record_id = {_pg_quote(rec_id)};")
         for table, recs in upserts.items():
             cols = TABLE_COLUMNS[table]
@@ -5265,13 +5458,13 @@ class PostgresStore:
                                                      "schema_version"]
             sets = ", ".join(f"{c} = EXCLUDED.{c}" for c in allc[2:])
             for rec_id, rec in recs.items():
-                values = [source, rec_id] + [rec.get(c) for c in cols] + \
+                values = [rec_id] + [rec.get(c) for c in cols] + \
                     [rec["digest"], rec.get("_provenance", new_sha), now, SCHEMA_VERSION]
                 lines.append(f"INSERT INTO {table} ({', '.join(allc)}) VALUES "
-                             f"({', '.join(_pg_quote(v) for v in values)}) ON CONFLICT "
+                             f"({mine}, {', '.join(_pg_quote(v) for v in values)}) ON CONFLICT "
                              f"(source, record_id) DO UPDATE SET {sets};")
         lines.append("COMMIT;")
-        self._run("\n".join(lines) + "\n")
+        self._run("\n".join(lines) + "\n", cas=True)
 
 
 def _no_password_file() -> str:
@@ -16946,20 +17139,60 @@ def write_status(source: str, **fields) -> None:
 
 
 def drop_legacy_status() -> int:
-    """Every status-file entry under a name `_source_key` changes - one an earlier
-    build filed under a key that held a credential - goes, its `last_error` with it
-    and never copied, in one atomic replace (lane 3's ruling,
-    opensoft/openRepoTools-code#89 comment 6941833120). An entry under the clean key
-    stays as it is. Returns how many went."""
-    data = read_status()
-    gone = [name for name in data if _source_key(name) != name]
-    if not gone:
+    """Every status-file entry under a legacy key (`_is_legacy`) goes, its
+    `last_error` with it and never copied, in one atomic replace (lane 3's rulings,
+    opensoft/openRepoTools-code#89 comments 6941833120 and 6944416906), read and
+    replaced STRICTLY: a file that cannot be read or replaced fails the run with fixed
+    words, never a run that ends 0 with the entry kept, and one that cannot be parsed is
+    replaced with an empty one. An entry under a key this build files stays as it is.
+    Returns how many went."""
+    data, parsed = _read_status_strictly()
+    gone = [name for name in data if _is_legacy(name)]
+    if parsed and not gone:
         return 0
     try:
         _replace_status({name: entry for name, entry in data.items() if name not in gone})
     except OSError:
-        return 0
+        raise StoreUnusable("unreachable", STATUS_UNREPLACEABLE) from None
     return len(gone)
+
+
+def _read_status_strictly() -> tuple:
+    """THE STATUS FILE AS THE CLEANUP READS IT (lane 3's rulings,
+    opensoft/openRepoTools-code#89 comments 6944416906 and 6944673181): `(entries,
+    parsed)`. A missing file holds no entry. A file that cannot be read is a
+    `StoreUnusable` with fixed words; one that can be read and not parsed - not UTF-8
+    JSON, or not an object of objects - is `({}, False)`, and none of its bytes go
+    anywhere."""
+    try:
+        with open(_status_path(), "rb") as handle:
+            raw = handle.read()
+    except FileNotFoundError:
+        return {}, True
+    except OSError:
+        raise StoreUnusable("unreachable", STATUS_UNREADABLE) from None
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return {}, False
+    if not isinstance(data, dict) or not all(isinstance(e, dict) for e in data.values()):
+        return {}, False
+    return data, True
+
+
+def check_status_file(dry_run: bool) -> None:
+    """THE STATUS FILE BEFORE A `sync` OR `reconcile` WRITES ANYTHING (lane 3's ruling
+    on item 3, opensoft/openRepoTools-code#89 comment 6944673181). One that cannot be
+    read fails the run. One that can be read and not parsed is replaced with an empty
+    one, atomically, as the run's first write, with one fixed WARNING line, and every
+    entry it held goes with it; the run goes on. A dry run writes nothing: it says the
+    same line and goes on as if the file held no entry. No byte of the file is said."""
+    _data, parsed = _read_status_strictly()
+    if parsed:
+        return
+    note(STATUS_UNPARSEABLE_WARNING)
+    if not dry_run:
+        drop_legacy_status()
 
 
 class SyncLock:
@@ -20779,23 +21012,42 @@ def stored_lanes_of(store, source: str) -> dict:
                                                    ["lane", "owner", "row_text"])}
 
 
+#: SET ONCE A RUN HAS REMOVED AN ENTRY AN EARLIER BUILD FILED (lane 1's addition A3 to
+#: opensoft/openRepoTools-code#89 comment 6944416906): from then on, no line of the run
+#: says that nothing was written.
+_REMOVED = {"any": False}
+
+
+def _nothing_written() -> str:
+    return ("nothing more written; the removal said above stands" if _REMOVED["any"]
+            else "nothing written")
+
+
 def _drop_legacy(store, mode: str, sources: list) -> None:
-    """THE SOURCES AN EARLIER BUILD KEYED WITH A CREDENTIAL GO (lane 3's ruling,
-    opensoft/openRepoTools-code#89 comment 6941833120). v1.1.0 and v1.2.0 keyed a
-    source as `source_of` read it, a credential included, in both stores and in the
-    status file. The first `sync` or `reconcile` that meets one - a source that
-    `_source_key` changes - removes it from every table of the store in one
-    transaction, then from the status file, its `last_error` discarded. A source under
-    the clean key stays, and this run keeps or rebuilds its rows. The line it says
-    names no source. `sources` is every source the store keys on, read with the
-    provenance (`provenance_and_sources`)."""
-    legacy = [source for source in sources if _source_key(source) != source]
+    """THE SOURCES AN EARLIER BUILD FILED UNDER A KEY THIS ONE WOULD NOT GO (lane 3's
+    rulings, opensoft/openRepoTools-code#89 comments 6941833120, 6944416906 and
+    6944673181). v1.1.0 and v1.2.0 keyed a source as `source_of` read it, a credential
+    included, and their `_record_error` filed the raw `--source` value. Every writer
+    that is not a dry run - `sync` and `reconcile`, of the register or the inventory -
+    removes every legacy source (`_is_legacy`) from every table of the store in one
+    transaction, then from the status file, read strictly, its `last_error` discarded;
+    says so in a line that names no source; and only then finishes the store's scrub -
+    this run's, or one an earlier run left due, whether this run removed anything or
+    not - so the status file's cleanup does not wait on the scrub's last step. A key this
+    build files stays, and this run keeps or rebuilds its rows. `sources` is every
+    source the store keys on, read with the provenance (`provenance_and_sources`)."""
+    legacy = [source for source in sources if _is_legacy(source)]
     store.drop_sources(legacy)
+    if legacy:
+        _REMOVED["any"] = True
     filed = drop_legacy_status()
+    if filed:
+        _REMOVED["any"] = True
     if legacy or filed:
         say(f"{PROG} {mode}: removed {len(legacy)} source(s) from the index and {filed} "
             f"entry(s) from the status file that an earlier build filed under a key that "
-            f"held a credential")
+            f"may hold a credential")
+    store.scrub()
 
 
 def run_index(mode: str, requested: str | None, dry_run: bool) -> int:
@@ -20803,6 +21055,7 @@ def run_index(mode: str, requested: str | None, dry_run: bool) -> int:
     root = workspace_root()
     source = resolve_source(requested, root)
     tip = tip_of(root)
+    check_status_file(dry_run)
     store = open_store(cfg, "writer")
     if dry_run:
         try:
@@ -21201,6 +21454,7 @@ def fill_prs(trees: dict, stored: dict, mode: str, held: dict | None = None) -> 
 def run_inventory(mode: str, requested: str | None, dry_run: bool) -> int:
     cfg = load_config()
     source = inventory_source(requested)
+    check_status_file(dry_run)
     store = open_store(cfg, "writer")
     if dry_run:
         try:
@@ -21209,9 +21463,14 @@ def run_inventory(mode: str, requested: str | None, dry_run: bool) -> int:
             if exc.kind not in ("missing", "wiped"):
                 raise
             store = None
+        old = store.provenance(source) if store is not None else None
     else:
+        # THE REGISTER'S CLEANUP, HERE TOO (BLOCKING 2 of opensoft/openRepoTools-code#89
+        # comment 6944416906): an inventory-only workstation removes what an earlier
+        # build filed as the register's sync does, before anything else is written.
         store.open_write()
-    old = store.provenance(source) if store is not None else None
+        old, sources = store.provenance_and_sources(source)
+        _drop_legacy(store, mode, sources)
     trees, unread = collect_inventory()
     label = f"{source} ({cfg['store']})"
     cols = TABLE_COLUMNS["worktrees"]
@@ -21490,11 +21749,12 @@ def _guarded(act, requested, kind: str = "register") -> int:
         note(str(exc))
         return MOVED
     except CasLost as exc:
-        note(str(exc))
-        _record_error(requested, str(exc), kind)
+        text = str(exc).replace("nothing was written", _nothing_written())
+        note(text)
+        _record_error(requested, text, kind)
         return 1
     except StoreUnusable as exc:
-        note(f"{exc.kind}: {exc.detail} - nothing written")
+        note(f"{exc.kind}: {exc.detail} - {_nothing_written()}")
         _record_error(requested, f"{exc.kind}: {exc.detail}", kind)
         return 1
 
@@ -21561,6 +21821,12 @@ def cmd_status() -> int:
     if inv_source and inv_source not in sources:
         sources.append(inv_source)
     for name in sorted(set(sources) | set(local)):
+        if _is_legacy(_source_key(name)):
+            # A KEY THIS BUILD DOES NOT FILE, EVEN LESS ITS CREDENTIAL (BLOCKING 1 of
+            # opensoft/openRepoTools-code#89 comment 6944416906): one fixed line in place
+            # of the whole entry, its key and its error unshown
+            say(LEGACY_SOURCE_LINE)
+            continue
         prov = next((p for p in provs if p["source"] == name), None)
         # a name a build before this one filed with a credential is shown without it
         say(f"source {_source_key(name)}")
@@ -21718,8 +21984,10 @@ def _export_worktrees(out_dir: str, cfg: dict, unusable) -> int:
     try:
         store = open_store(cfg, "reader")
         store.open_read()
+        # NO LEGACY INVENTORY SOURCE IS READ (lane 1's coordinator, on commit 14's design):
+        # its rows are chosen by no value made from its key, and the next sync removes it
         provs = [p for p in store.all_provenance()
-                 if str(p["source"]).startswith(INVENTORY_PREFIX)]
+                 if str(p["source"]).startswith(INVENTORY_PREFIX) and not _is_legacy(p["source"])]
         if not provs:
             return unusable("wiped", f"no {INVENTORY_PREFIX}<Workstation> source in the "
                             f"{cfg['store']} store")

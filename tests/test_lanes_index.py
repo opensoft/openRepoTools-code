@@ -33,6 +33,8 @@ so an installed indexer is never what a case runs.
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import io
 import json
 import os
 import re
@@ -1616,6 +1618,13 @@ REGISTER_KEYS = [
     ("owner-repo", "opensoft/t104-fake-repo", "register:opensoft/t104-fake-repo"),
     ("https-query-at", f"https://{REGISTER_HOST}?{REGISTER_PATH}@x/r",
      f"register:https://{REGISTER_HOST}?{REGISTER_PATH}@x/r"),
+    # lane 2's two rows (opensoft/openRepoTools-code#89 comment 6944553219): a password
+    # holding a raw `@`, where the authority's LAST `@` ends the userinfo; and a token
+    # under an upper-case scheme
+    ("https-raw-at", f"https://u:p@{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r",
+     f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"),
+    ("https-upper-token", f"HTTPS://{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r",
+     f"register:HTTPS://{REGISTER_HOST}/{REGISTER_PATH}/r"),
 ]
 
 
@@ -1795,6 +1804,10 @@ def test_an_identified_register_is_synced_and_filed_under_its_key(estate, reposi
 # `_record_error` saved. `status` never prints such an entry's error, and the first
 # `sync` or `reconcile` removes the source from every table and from the status file.
 
+#: What `status` prints in place of a whole entry whose key no form of this build files.
+LEGACY_SOURCE_LINE_WORDS = ("source not shown: an earlier build filed an entry under a key "
+                            "this build does not file, which may hold a credential; the next "
+                            "sync or reconcile removes it")
 #: What `status` prints in place of a legacy entry's last error, whole.
 LEGACY_ENTRY_WORDS = ("not shown: an earlier build filed this entry under a key that held "
                       "a credential, and the next sync or reconcile removes it")
@@ -1805,6 +1818,23 @@ LEGACY_KEY = (f"register:https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}/
 CLEAN_KEY = f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"
 #: A source with no userinfo that no sync here touches: the control, kept byte for byte.
 CONTROL_KEY = f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/control"
+#: The raw `--source` values v1.1.0 and v1.2.0 `_record_error` filed as status keys
+#: (BLOCKING 1 of opensoft/openRepoTools-code#89 comment 6944416906): a URL with a
+#: token, a `password=` value, the inventory's `password=` form, a bare token, and an
+#: inventory key holding a URL's userinfo. The URL is in the store's every table too, as
+#: a key no form of this build files.
+RAW_URL_KEY = f"https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r"
+RAW_KEYS = [RAW_URL_KEY, f"password={CONFIG_SECRET}", f"inventory:password={CONFIG_SECRET}",
+            f"tok-{CONFIG_SECRET}", f"inventory:https://{CONFIG_SECRET}@{REGISTER_HOST}/x"]
+#: A clean key of EVERY form this build files (lane 3's ruling, comment 6944673181), none of
+#: them this workstation's: each stays, in the store and the status file, byte for byte.
+CLEAN_FORMS = ["register:opensoft/t104-other-repo",
+               f"register:ssh://git@{REGISTER_HOST}/{REGISTER_PATH}/other",
+               f"register:git@{REGISTER_HOST}:{REGISTER_PATH}/other",
+               f"register:HTTPS://{REGISTER_HOST}/{REGISTER_PATH}/other",
+               f"register:https://{REGISTER_HOST}?{REGISTER_PATH}@x/other",
+               "register:/srv/t104/other", "register:?", "inventory:Heron", "inventory:?",
+               "ledger:Heron"]
 
 
 class _IndexTables:
@@ -1876,6 +1906,23 @@ class _IndexTables:
         """Every row of every table, as text."""
         return "\n".join(line for t in tables for line in self.sql(f"SELECT * FROM {t}"))
 
+    def seed_every(self, tables: list, source: str) -> None:
+        """A row of `source` in each table that has none of it, so that `source` is in
+        EVERY table that keys on a source (lane 3's SHOULD, comment 6944606779)."""
+        for t in tables:
+            if t != "provenance":
+                self.sql(f"INSERT INTO {t} (source, record_id, digest, indexed_utc, "
+                         f"schema_version) SELECT '{source}', 't104-seed', 'd', "
+                         f"'2026-11-01T00:00:00Z', 1 WHERE NOT EXISTS "
+                         f"(SELECT 1 FROM {t} WHERE source = '{source}')")
+
+    def leave_in_free_space(self, text: str) -> None:
+        """`text` in a page of SQLite's free list, which no DELETE of a row touches, as
+        an earlier build's own writes leave a page: a table filled and dropped with
+        `secure_delete` off. Only a VACUUM takes it out of the file."""
+        self.sql("CREATE TABLE t104_gone (x TEXT)", f"INSERT INTO t104_gone VALUES ('{text}')",
+                 "DROP TABLE t104_gone")
+
 
 def _an_upgrade(estate: Estate, store: _IndexTables, env: dict, first: str) -> None:
     """THE UPGRADE CASE, on either store. This build's first `sync` files the clean
@@ -1901,13 +1948,23 @@ def _an_upgrade(estate: Estate, store: _IndexTables, env: dict, first: str) -> N
     assert seeded.returncode == 0, seeded.stdout + seeded.stderr
     tables = store.tables()
     assert "provenance" in tables and "lanes" in tables, tables
-    beside = first == "sync"
+    assert len(tables) == 10, tables
+    beside = first != "reconcile"
     store.copy(tables, CLEAN_KEY, CONTROL_KEY)
+    for form in CLEAN_FORMS:
+        store.copy(tables, CLEAN_KEY, form)
     if beside:
         store.copy(tables, CLEAN_KEY, LEGACY_KEY)
     else:
         store.rename(tables, CLEAN_KEY, LEGACY_KEY)
+    store.copy(tables, CONTROL_KEY, RAW_URL_KEY)
+    for key in (LEGACY_KEY, RAW_URL_KEY):
+        store.seed_every(tables, key)
+        # IN EVERY TABLE THAT KEYS ON A SOURCE (lane 3's SHOULD, comment 6944606779)
+        assert all(rows for _t, rows in store.rows(tables, key)), store.rows(tables, key)
     store.touch(tables, LEGACY_KEY)
+    if store.cluster is None:
+        store.leave_in_free_space(LEGACY_KEY)
     filed = estate.state / "openRepoTools" / "lanes-index.status.json"
     status = json.loads(filed.read_text(encoding="utf-8"))
     clean_entry = status.pop(CLEAN_KEY)
@@ -1916,15 +1973,38 @@ def _an_upgrade(estate: Estate, store: _IndexTables, env: dict, first: str) -> N
         f"111111111111, the store now holds 000000000000); nothing was written"))
     status[CONTROL_KEY] = {"last_attempt_utc": "2026-11-01T00:00:00Z",
                            "last_error": "2026-11-01T00:00:00Z the control's own error"}
+    # v1.2.0's raw `--source` keys, each with the error `_record_error` saved naming it
+    for key in RAW_KEYS:
+        status[key] = {"last_attempt_utc": "2026-11-01T00:00:00Z",
+                       "last_error": f"2026-11-01T00:00:00Z unreachable: {key} - nothing written"}
+    for form in CLEAN_FORMS:
+        status[form] = {"last_attempt_utc": "2026-11-01T00:00:00Z",
+                        "last_error": f"2026-11-01T00:00:00Z the clean form {form}'s own error"}
     if beside:
         status[CLEAN_KEY] = dict(clean_entry, t104="the clean key's own entry")
     filed.write_text(json.dumps(status, indent=1, sort_keys=True), encoding="utf-8")
     control = store.rows(tables, CONTROL_KEY)
+    forms = [store.rows(tables, form) for form in CLEAN_FORMS]
     clean_rows = store.rows(tables, CLEAN_KEY) if beside else None
     control_entry = json.dumps(status[CONTROL_KEY], sort_keys=True)
+    form_entries = [json.dumps(status[form], sort_keys=True) for form in CLEAN_FORMS]
     assert CONFIG_SECRET in store.text(tables), "the seed holds no secret: the case is vacuous"
     before = estate.index("status", env=env)
-    run = estate.index(first, env=env)
+
+    def files() -> dict:
+        return {str(p.relative_to(estate.state)): p.read_bytes()
+                for p in sorted(estate.state.rglob("*")) if p.is_file()}
+    # SHOULD 6 (comment 6944416906): a DRY RUN on the legacy state removes nothing and
+    # prints nothing raw - every table, the status file and the state folder as they were
+    rows_then, files_then = store.text(tables), files()
+    dry = estate.index("reconcile", "--dry-run", env=env)
+    assert store.text(tables) == rows_then and files() == files_then, (
+        "the dry run changed the store, the status file or the state folder")
+    assert dry.returncode == 0 and "source(s) from the index" not in dry.stdout, (
+        dry.stdout + dry.stderr).replace(CONFIG_SECRET, "<the secret>")
+    act = {"inventory-sync": ("sync", "--source", "inventory"),
+           "inventory-reconcile": ("reconcile", "--source", "inventory")}.get(first, (first,))
+    run = estate.index(*act, env=env)
     after = estate.index("status", env=env)
     kept = json.loads(filed.read_text(encoding="utf-8"))
     said = (f"status before, exit {before.returncode}:\n{before.stdout}{before.stderr}\n"
@@ -1932,16 +2012,26 @@ def _an_upgrade(estate: Estate, store: _IndexTables, env: dict, first: str) -> N
             f"status after, exit {after.returncode}:\n{after.stdout}{after.stderr}\n"
             f"status file: {sorted(kept)}").replace(CONFIG_SECRET, "<the secret>")
     assert f"  last error:  {LEGACY_ENTRY_WORDS}\n" in before.stdout, said
+    # A KEY NO FORM OF THIS BUILD FILES: one fixed line in place of its whole entry, for
+    # each raw key (the URL's store rows and status entry are one name)
+    assert before.stdout.count(LEGACY_SOURCE_LINE_WORDS + "\n") == len(RAW_KEYS), said
     assert run.returncode == 0, said
-    assert ("removed 1 source(s) from the index and 1 entry(s) from the status file"
-            in run.stdout), said
-    assert sorted(kept) == sorted([CLEAN_KEY, CONTROL_KEY]), said
-    assert all(rows == [] for _table, rows in store.rows(tables, LEGACY_KEY)), said
+    assert (f"removed 2 source(s) from the index and {1 + len(RAW_KEYS)} entry(s) from the "
+            f"status file" in run.stdout), said
+    own = ["inventory:Eagle"] if first.startswith("inventory") else []
+    assert sorted(kept) == sorted([CLEAN_KEY, CONTROL_KEY] + CLEAN_FORMS + own), said
+    for key in (LEGACY_KEY, RAW_URL_KEY):
+        assert all(rows == [] for _table, rows in store.rows(tables, key)), said
+    # EVERY CLEAN FORM STAYS, BYTE FOR BYTE (lane 3's ruling, comment 6944673181)
+    assert [store.rows(tables, form) for form in CLEAN_FORMS] == forms, said
+    assert [json.dumps(kept[form], sort_keys=True) for form in CLEAN_FORMS] == form_entries, said
+    assert LEGACY_SOURCE_LINE_WORDS not in after.stdout, said
     if beside:
         # THE CLEAN KEY'S OWN ROWS AND ENTRY ARE KEPT: the sync finds its rows at the
         # tip, its rows are as they were, byte for byte, and its status entry keeps a
-        # field of its own
-        assert "the index is at the tip; nothing to write" in run.stdout, said
+        # field of its own; the inventory's acts leave the register's rows alone
+        if first == "sync":
+            assert "the index is at the tip; nothing to write" in run.stdout, said
         assert store.rows(tables, CLEAN_KEY) == clean_rows, (
             f"the clean key's rows moved:\n{said}")
         assert kept[CLEAN_KEY].get("t104") == "the clean key's own entry", said
@@ -1954,8 +2044,8 @@ def _an_upgrade(estate: Estate, store: _IndexTables, env: dict, first: str) -> N
     assert store.rows(tables, CONTROL_KEY) == control, f"the control moved:\n{said}"
     assert json.dumps(kept[CONTROL_KEY], sort_keys=True) == control_entry, said
     assert LEGACY_ENTRY_WORDS not in after.stdout, said
-    for shown in (before.stdout, before.stderr, run.stdout, run.stderr, after.stdout,
-                  after.stderr):
+    for shown in (before.stdout, before.stderr, dry.stdout, dry.stderr, run.stdout, run.stderr,
+                  after.stdout, after.stderr):
         assert CONFIG_SECRET not in shown, f"the secret was shown:\n{said}"
     assert CONFIG_SECRET.encode() not in filed.read_bytes(), said
     assert CONFIG_SECRET not in store.text(tables), f"a row keeps the secret:\n{said}"
@@ -1966,7 +2056,8 @@ def _an_upgrade(estate: Estate, store: _IndexTables, env: dict, first: str) -> N
                 assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path}:\n{said}"
 
 
-@pytest.mark.parametrize("first", ["reconcile", "sync"], ids=["legacy-only", "beside-clean"])
+@pytest.mark.parametrize("first", ["reconcile", "sync", "inventory-sync", "inventory-reconcile"],
+                         ids=["legacy-only", "beside-clean", "inventory-sync", "inventory-reconcile"])
 def test_an_upgrade_removes_a_legacy_credentialed_source(estate, first):
     """AN UPGRADE FROM v1.2.0 LEAVES NO CREDENTIAL, ON SQLITE (lane 3's ruling,
     opensoft/openRepoTools-code#89 comment 6941833120): `_an_upgrade`'s case, and no
@@ -1974,7 +2065,8 @@ def test_an_upgrade_removes_a_legacy_credentialed_source(estate, first):
     _an_upgrade(estate, _IndexTables(estate), {}, first)
 
 
-@pytest.mark.parametrize("first", ["reconcile", "sync"], ids=["legacy-only", "beside-clean"])
+@pytest.mark.parametrize("first", ["reconcile", "sync", "inventory-sync", "inventory-reconcile"],
+                         ids=["legacy-only", "beside-clean", "inventory-sync", "inventory-reconcile"])
 def test_an_upgrade_removes_a_legacy_credentialed_source_from_postgres(t109_engine, tmp_path,
                                                                       first):
     """THE SAME UPGRADE ON POSTGRESQL 16: `url=` and `reader_url=` name the cluster's
@@ -1990,16 +2082,36 @@ def test_an_upgrade_removes_a_legacy_credentialed_source_from_postgres(t109_engi
     _an_upgrade(estate, _IndexTables(estate, cluster), env, first)
 
 
-@pytest.mark.parametrize("held", [False, True], ids=["empty-schema", "legacy-held"])
-def test_a_postgres_sync_reads_its_sources_in_the_provenance_call(estate, held):
+def _sql_text(script: str) -> str:
+    """`script` less the rows of each `COPY ... FROM STDIN`, which are data: its SQL."""
+    out, data = [], False
+    for line in script.splitlines():
+        if data:
+            data = line != "\\."
+            continue
+        data = bool(re.fullmatch(r"COPY [a-z_]+ \([a-z_, ]+\) FROM STDIN;", line))
+        out.append(line)
+    return "\n".join(out)
+
+
+@pytest.mark.parametrize("case", ["empty-schema", "legacy-held", "cas-lost"])
+def test_a_postgres_sync_reads_its_sources_in_the_provenance_call(estate, case):
     """A LEGACY SOURCE COSTS A POSTGRESQL SYNC NO psql CALL OF ITS OWN, on FAKE_PSQL
     (lane 1's hosted run 44046351293 of commit 13's previous build): the store's sources
     are read in the provenance's one call, and a DELETE goes only for a source to
     remove. [empty-schema]: the schema is as the bootstrap leaves it, with no table,
-    and the version read fails as psql 16 says it, ending on a caret; the sync fills
-    the schema, writes, and sends no DELETE. [legacy-held]: the store answers a
-    legacy source and a control; ONE transaction takes the legacy source from every
-    table that keys on a source, the control stays, and the secret is on no stream."""
+    and the version read fails as psql 16 says it under `VERBOSITY=verbose`, with its
+    SQLSTATE, ending on a LOCATION line; the sync fills the schema, writes, and sends
+    no DELETE. [legacy-held]: the store answers a legacy source and a control; ONE
+    transaction takes the legacy source from every table that keys on a source, the
+    control stays, and the secret is on no stream; and the removal comes BEFORE the
+    label, the write and the compare-and-swap (SHOULD 7 of comment 6944416906).
+    [cas-lost]: the write after the removal fails as the compare-and-swap's RAISE does,
+    and the removal - the store's and the status file's - had already happened, which
+    the run says, with no "nothing was written". NO SOURCE KEY IS IN ANY SQL TEXT
+    (lane 3's ruling, comment 6944673181): every key reaches psql as COPY data alone,
+    and a legacy key's rows are chosen by the server's rule, with no digest of it."""
+    held = case != "empty-schema"
     fake = estate.root / "pgfake"
     fake.mkdir()
     (fake / "psql").write_text(FAKE_PSQL)
@@ -2008,32 +2120,348 @@ def test_a_postgres_sync_reads_its_sources_in_the_provenance_call(estate, held):
     vfile.write_text("1\n" if held else "")
     estate.write_config("url=postgresql://lanes_writer@db.invalid/qa\n"
                         "reader_url=postgresql://lanes_reader@db.invalid/qa\n")
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    if case == "cas-lost":
+        filed.parent.mkdir(parents=True, exist_ok=True)
+        filed.write_text(json.dumps({LEGACY_KEY: {"last_error": f"t {LEGACY_KEY} moved"}}),
+                         encoding="utf-8")
     env = {"PATH": estate.path_with(fake), "FAKE_PSQL_LOG": str(log),
            "FAKE_PSQL_VERSION_FILE": str(vfile), "FAKE_PSQL_NO_TABLE": "1",
-           "FAKE_PSQL_SOURCES": f"{CONTROL_KEY}\n{LEGACY_KEY}\n" if held else ""}
+           "FAKE_PSQL_SOURCES": f"{CONTROL_KEY}\n{LEGACY_KEY}\n" if held else "",
+           "FAKE_PSQL_CAS_LOST": "1" if case == "cas-lost" else ""}
     res = estate.index("sync", env=env)
     said = (res.stdout + res.stderr).replace(CONFIG_SECRET, "<the secret>")
-    assert res.returncode == 0, said
+    assert res.returncode == (1 if case == "cas-lost" else 0), said
     assert CONFIG_SECRET not in res.stdout + res.stderr, said
     calls = [json.loads(line)["stdin"] for line in log.read_text().splitlines()]
+    legacy_digest = hashlib.sha256(LEGACY_KEY.encode("utf-8")).hexdigest()
+    rule = load_indexer().PG_LEGACY_SQL
+    for call in calls:
+        # the removal's rule names the filed prefixes, and no key
+        sql = _sql_text(call).replace(rule, "<the rule>")
+        for mark in ("register:", "inventory:", "ledger:", CONFIG_SECRET, legacy_digest):
+            assert mark not in sql, f"a key in the SQL:\n{call}".replace(
+                CONFIG_SECRET, "<the secret>")
     assert any("CREATE TABLE IF NOT EXISTS" in c for c in calls) != held, said
-    assert any("INSERT INTO lanes" in c for c in calls), said
+    writes = [c for c in calls if "INSERT INTO lanes" in c]
+    assert len(writes) == 1 and "lanes_index_cas" in writes[0], said
     reads = [c for c in calls if "UNION SELECT source FROM" in c]
-    assert len(reads) == 1 and "FROM provenance WHERE source = " in reads[0], said
-    drops = [c for c in calls if "WHERE source IN (" in c]
+    assert len(reads) == 1 and ("FROM provenance WHERE encode(sha256(convert_to(source, "
+                                "'UTF8')), 'hex') = '") in reads[0], said
+    drops = [c for c in calls if "DELETE FROM provenance WHERE" in c]
     if not held:
         assert drops == [] and "source(s) from the index" not in res.stdout, said
         return
-    assert len(drops) == 1 and calls.index(reads[0]) < calls.index(drops[0]), said
-    assert "removed 1 source(s) from the index and 0 entry(s)" in res.stdout, said
+    # THE REMOVAL FIRST: after the one read, before the write and its compare-and-swap,
+    # and its line before the label
+    assert len(drops) == 1, said
+    assert calls.index(reads[0]) < calls.index(drops[0]) < calls.index(writes[0]), said
+    filed_entries = 1 if case == "cas-lost" else 0
+    removed = f"removed 1 source(s) from the index and {filed_entries} entry(s)"
+    assert removed in res.stdout, said
     lines = drops[0].splitlines()
     tables = ["provenance", "source_files", "lanes", "log_lines", "register_lines",
               "lane_aliases", "transcript_pointers", "swap_states", "job_summaries", "worktrees"]
     assert lines[:3] == ["SET standard_conforming_strings = on;", "BEGIN;",
                          'SET LOCAL search_path TO "lanes_index";'], said
     assert lines[-1] == "COMMIT;", said
-    assert sorted(lines[3:-1]) == sorted(f"DELETE FROM {t} WHERE source IN ('{LEGACY_KEY}');"
-                                         for t in tables), said
+    # CHOSEN BY THE SERVER'S RULE, with no value made from a legacy key in the script
+    assert sorted(lines[3:-1]) == sorted(f"DELETE FROM {t} WHERE {rule};" for t in tables), said
+    if case == "legacy-held":
+        assert res.stdout.index(removed) < res.stdout.index(" at register@"), said
+        return
+    # [cas-lost]: the compare-and-swap failed AFTER the removal, which stands
+    kept = json.loads(filed.read_text(encoding="utf-8"))
+    assert LEGACY_KEY not in kept, said
+    assert ("provenance of this workstation's source moved under this sync; nothing more "
+            "written; the removal said above stands") in res.stderr, said
+    assert "nothing was written" not in res.stderr and "nothing written" not in res.stderr, said
+    for entry in kept.values():
+        assert CONFIG_SECRET not in json.dumps(entry), said
+
+
+#: (id, psql's stderr for a failed read, as psql 16 can say it under VERBOSITY=verbose,
+#: its SQLSTATE): `ERROR:` and the secret in a quoted LINE, QUERY and CONTEXT line
+PSQL_QUOTES = [
+    ("caret-last",
+     'psql:<stdin>:2: NOTICE:  42P07: relation "provenance" already exists, skipping\n'
+     'psql:<stdin>:4: ERROR:  42601: syntax error at or near "x"\n'
+     f"LINE 1: ...ROM provenance WHERE source = 'register:https://u:ERROR:  {CONFIG_SECRET}@h/p'\n"
+     "                                         ^\n", "42601"),
+    ("context-last",
+     "psql:<stdin>:4: ERROR:  XX000: the server failed\n"
+     f"QUERY:  SELECT 'ERROR:  42P01: {CONFIG_SECRET}'\n"
+     f"CONTEXT:  PL/pgSQL function inline_code_block line 3 at SQL statement 'ERROR: "
+     f"{CONFIG_SECRET}'\n", "XX000"),
+]
+
+
+@pytest.mark.parametrize("stderr, sqlstate", [
+    pytest.param(stderr, sqlstate, id=ident) for ident, stderr, sqlstate in PSQL_QUOTES])
+def test_no_line_of_psqls_text_is_said_or_filed(estate, stderr, sqlstate):
+    """A FAILED INDEX CALL IS SAID IN FIXED WORDS (BLOCKING 5 of
+    opensoft/openRepoTools-code#89 comment 6944416906): psql's stderr puts `ERROR:` and
+    the secret in a quoted line after its error line; the sync fails with the SQLSTATE
+    of psql's own error line alone, and the secret is on neither stream, in no
+    `last_error`, no file of the state folder and no line `status` prints."""
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    (fake / "psql").write_text(FAKE_PSQL)
+    (fake / "psql").chmod(0o755)
+    quoted = estate.root / "quoted-stderr"
+    quoted.write_text(stderr, encoding="utf-8")
+    estate.write_config("url=postgresql://lanes_writer@db.invalid/qa\n"
+                        "reader_url=postgresql://lanes_reader@db.invalid/qa\n")
+    env = {"PATH": estate.path_with(fake), "FAKE_PSQL_LOG": str(estate.root / "psql.jsonl"),
+           "FAKE_PSQL_STDERR_FILE": str(quoted)}
+    res = estate.index("sync", env=env)
+    st = estate.index("status", env=env)
+    said = (f"{res.stdout}{res.stderr}\nstatus:\n{st.stdout}{st.stderr}"
+            ).replace(CONFIG_SECRET, "<the secret>")
+    assert res.returncode == 1, said
+    assert (f"psql stopped the index's script with SQLSTATE {sqlstate} (exit 3)"
+            in res.stderr), said
+    for shown in (res.stdout, res.stderr, st.stdout, st.stderr):
+        assert CONFIG_SECRET not in shown and "ERROR:" not in shown, said
+    kept = json.loads((estate.state / "openRepoTools" / "lanes-index.status.json")
+                      .read_text(encoding="utf-8"))
+    assert any(f"SQLSTATE {sqlstate}" in e.get("last_error", "") for e in kept.values()), said
+    for path in sorted(estate.state.rglob("*")):
+        if path.is_file():
+            assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path}:\n{said}"
+
+
+@pytest.mark.parametrize("case", ["unreadable", "unparseable", "unparseable-dry-run",
+                                  "unparseable-first-write"])
+def test_the_status_file_is_read_strictly(estate, case):
+    """THE STATUS FILE, STRICTLY (lane 3's ruling on item 3, opensoft/openRepoTools-code#89
+    comment 6944673181). [unreadable]: a status file that cannot be read fails the run
+    with fixed words, and no store is made. [unparseable]: one that can be read and not
+    parsed, a credential in its bytes, is replaced with an empty one as the run's first
+    write, with one fixed WARNING line, and the sync goes on. [unparseable-dry-run]: a
+    dry run says the same line, writes nothing and leaves the file as it is.
+    [unparseable-first-write]: the store cannot be opened, so the sync fails at its next
+    step; the file is already replaced, and the store's path is as it was. No byte of the
+    file is printed."""
+    mod = load_indexer()
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    filed.parent.mkdir(parents=True, exist_ok=True)
+    garbage = ('{"' + LEGACY_KEY + '": {"last_error": "' + CONFIG_SECRET + '"').encode("utf-8")
+    if case == "unreadable":
+        filed.mkdir()
+    else:
+        filed.write_bytes(garbage)
+    if case == "unparseable-first-write":
+        estate.sqlite.mkdir(parents=True)
+    act = ("reconcile", "--dry-run") if case == "unparseable-dry-run" else ("sync",)
+    res = estate.index(*act)
+    said = (res.stdout + res.stderr).replace(CONFIG_SECRET, "<the secret>")
+    assert CONFIG_SECRET not in res.stdout + res.stderr, said
+    if case == "unreadable":
+        assert res.returncode == 1, said
+        assert f"unreachable: {mod.STATUS_UNREADABLE} - nothing written" in res.stderr, said
+        assert not estate.sqlite.exists(), said
+        return
+    if case == "unparseable-first-write":
+        # THE RUN'S FIRST WRITE: replaced before the store was opened, which then failed
+        assert res.returncode == 1 and res.stderr.count(mod.STATUS_UNPARSEABLE_WARNING) == 1, said
+        assert estate.sqlite.is_dir() and list(estate.sqlite.iterdir()) == [], said
+        kept = json.loads(filed.read_text(encoding="utf-8"))
+        assert LEGACY_KEY not in kept and CONFIG_SECRET not in json.dumps(kept), said
+        return
+    assert res.returncode == 0, said
+    assert res.stderr.count(mod.STATUS_UNPARSEABLE_WARNING) == 1, said
+    if case == "unparseable-dry-run":
+        assert filed.read_bytes() == garbage, said
+        return
+    kept = json.loads(filed.read_text(encoding="utf-8"))
+    assert LEGACY_KEY not in kept and len(kept) == 1, said
+    for path in sorted(estate.state.rglob("*")):
+        if path.is_file():
+            assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path}:\n{said}"
+
+
+def _pg_rule(sql: str):
+    """`PG_LEGACY_SQL` as Python reads it, for the shapes it holds: `source LIKE 'x%'` as a
+    prefix, `~`, `~*` and `!~` as a regex search, case-blind for `~*` (PostgreSQL's ARE and
+    Python's re agree on these bracket classes and anchors), and NOT, AND and OR."""
+    ops = {"~": "bool(re.search({0!r}, s))", "~*": "bool(re.search({0!r}, s, re.I))",
+           "!~": "(not re.search({0!r}, s))"}
+    py = re.sub(r"source LIKE '([^'%]*)%'", lambda m: f"s.startswith({m.group(1)!r})", sql)
+    py = re.sub(r"source (!~|~\*|~) '([^']*)'", lambda m: ops[m.group(1)].format(m.group(2)), py)
+    py = py.replace("NOT ", "not ").replace(" OR ", " or ").replace(" AND ", " and ")
+    assert "source" not in py, py
+    return lambda s: eval(py, {"re": re, "s": s})
+
+
+def test_the_servers_legacy_rule_is_the_indexers():
+    """THE POSTGRESQL REMOVAL'S RULE IS `_is_legacy` (lane 1's coordinator, on commit 14's
+    design): for every key the cases here file or seed, legacy and clean, and a few more
+    shapes, `PG_LEGACY_SQL` read term by term answers as `_is_legacy` does."""
+    mod = load_indexer()
+    rule = _pg_rule(mod.PG_LEGACY_SQL)
+    keys = ([LEGACY_KEY, CLEAN_KEY, CONTROL_KEY] + RAW_KEYS + CLEAN_FORMS +
+            [f"register:{repository}" for _i, repository, _k in REGISTER_KEYS] +
+            [key for _i, key, _k in REGISTER_KEYS] + [key for _i, key, _n in CAS_KEYS] +
+            ["REGISTER:opensoft/x", "register:ssh://u:p@h/x", "register:git+https://t@h/x",
+             "ledger:https://u@h/x", "inventory:Eagle", "ledger:Eagle", "register:x?Password=1",
+             "register:https://h/p@x", "register:ssh://h:22/x", ""])
+    differ = [k for k in keys if rule(k) != mod._is_legacy(k)]
+    assert differ == [], [k.replace(CONFIG_SECRET, "<the secret>") for k in differ]
+    assert any(mod._is_legacy(k) for k in keys) and not all(mod._is_legacy(k) for k in keys)
+
+
+def test_a_status_file_that_cannot_be_replaced_fails_the_cleanup(estate, monkeypatch):
+    """A REPLACE THAT FAILS IS A FAILED RUN (BLOCKING 3 of
+    opensoft/openRepoTools-code#89 comment 6944416906): with the status file's replace
+    refused, the cleanup of a legacy entry raises `StoreUnusable` with fixed words, and
+    so does the replace of a file that cannot be parsed; a dry run replaces nothing."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
+    mod = load_indexer()
+    mod._replace_status({LEGACY_KEY: {"last_error": f"t {LEGACY_KEY} moved"},
+                         CLEAN_KEY: {"last_result": "current"}})
+
+    def refuse(_data):
+        raise PermissionError(13, "t104: the state folder refuses the replace")
+    monkeypatch.setattr(mod, "_replace_status", refuse)
+    with pytest.raises(mod.StoreUnusable) as caught:
+        mod.drop_legacy_status()
+    assert caught.value.detail == mod.STATUS_UNREPLACEABLE, caught.value
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    filed.write_text("{", encoding="utf-8")
+    with pytest.raises(mod.StoreUnusable) as caught:
+        mod.check_status_file(False)
+    assert caught.value.detail == mod.STATUS_UNREPLACEABLE, caught.value
+    mod.check_status_file(True)
+    assert filed.read_text(encoding="utf-8") == "{"
+
+
+class _VacuumFails:
+    """A store connection whose VACUUM fails, as a full disk or a reader's lock fails it,
+    after the removal's COMMIT."""
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def execute(self, sql, *args):
+        if sql.strip().upper() == "VACUUM":
+            raise sqlite3.OperationalError("t104: the VACUUM failed")
+        return self.conn.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self.conn, name)
+
+
+def _held_in(root: Path) -> list:
+    return [str(p) for p in sorted(root.rglob("*"))
+            if p.is_file() and CONFIG_SECRET.encode() in p.read_bytes()]
+
+
+@pytest.mark.parametrize("journal", ["delete", "wal", "persist"])
+def test_a_scrub_that_fails_after_the_commit_is_finished_by_the_next_write(estate, monkeypatch,
+                                                                           journal):
+    """BLOCKING 4 of opensoft/openRepoTools-code#89 comment 6944416906: a removal whose
+    VACUUM fails after its COMMIT leaves the scrub mark, which holds no key; the status
+    file's cleanup has already happened; the run says no "nothing written"; and the next
+    writer's cleanup, which removes nothing more, finishes the scrub, so that no file of
+    the state folder holds the key.
+    [delete]: the default journal. [wal]: the store set to WAL explicitly, and a
+    reader's idle connection open through the next sync, so that only the scrub's TRUNCATE
+    checkpoint empties the WAL. [persist]: the seed's last write made in the PERSIST
+    journal, which keeps the old pages in the journal file."""
+    assert estate.index("sync").returncode == 0
+    store = _IndexTables(estate)
+    tables = store.tables()
+    own = store.sql("SELECT source FROM provenance")
+    assert len(own) == 1, own
+    if journal == "wal":
+        assert store.sql("PRAGMA journal_mode = WAL") == ["wal"]
+    store.copy(tables, own[0], LEGACY_KEY)
+    store.seed_every(tables, LEGACY_KEY)
+    store.leave_in_free_space(LEGACY_KEY)
+    if journal == "persist":
+        conn = sqlite3.connect(str(estate.sqlite))
+        conn.execute("PRAGMA secure_delete = OFF")
+        assert conn.execute("PRAGMA journal_mode = PERSIST").fetchone()[0] == "persist"
+        for t in tables:
+            conn.execute(f"UPDATE {t} SET indexed_utc = indexed_utc || ' (v1.2.0)' "
+                         f"WHERE source = ?", (LEGACY_KEY,))
+        conn.commit()
+        conn.close()
+        journal_file = Path(str(estate.sqlite) + "-journal")
+        assert CONFIG_SECRET.encode() in journal_file.read_bytes(), "the journal holds no key"
+    else:
+        store.touch(tables, LEGACY_KEY)
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    status = json.loads(filed.read_text(encoding="utf-8"))
+    status[LEGACY_KEY] = {"last_error": f"2026-11-01T00:00:00Z the provenance of {LEGACY_KEY} moved"}
+    filed.write_text(json.dumps(status), encoding="utf-8")
+    monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
+    mod = load_indexer()
+    monkeypatch.setattr(mod, "_record_error", lambda *args, **kwargs: None)
+    live = mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"})
+    live.open_write()
+    live.conn = _VacuumFails(live.conn)
+    _old, sources = live.provenance_and_sources(own[0])
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = mod._guarded(lambda: mod._drop_legacy(live, "sync", sources), None)
+    live.conn.close()
+    said = f"{out.getvalue()}{err.getvalue()}".replace(CONFIG_SECRET, "<the secret>")
+    assert rc == 1, said
+    assert "removed 1 source(s) from the index and 1 entry(s)" in out.getvalue(), said
+    assert (f"unreachable: {mod.SCRUB_UNFINISHED} - nothing more written; the removal said "
+            f"above stands") in err.getvalue(), said
+    assert "nothing written" not in err.getvalue(), said
+    mark = Path(str(estate.sqlite) + "-scrub")
+    assert mark.read_text(encoding="utf-8") == mod.SCRUB_MARK_TEXT, said
+    assert LEGACY_KEY not in json.loads(filed.read_text(encoding="utf-8")), said
+    assert all(rows == [] for _t, rows in store.rows(tables, LEGACY_KEY)), said
+    # the free space still holds the key: the scrub is due, and the case is not vacuous
+    assert _held_in(estate.state), said
+    holder = sqlite3.connect(str(estate.sqlite)) if journal == "wal" else None
+    try:
+        again = estate.index("sync")
+        said += f"\nthe next sync, exit {again.returncode}:\n{again.stdout}{again.stderr}"
+        assert again.returncode == 0, said
+        assert not mark.exists(), said
+        assert _held_in(estate.state) == [], said
+    finally:
+        if holder is not None:
+            holder.close()
+
+
+def test_a_removal_that_fails_takes_nothing(estate):
+    """ONE TRANSACTION (lane 1's addition A2 to opensoft/openRepoTools-code#89 comment
+    6944416906): a trigger refuses the last table's DELETE of the legacy key, so the
+    whole removal goes back. Every row of the key, its provenance's among them, is
+    still there; the status file keeps its entry, since the store's removal comes first;
+    and the run says "nothing written", truthfully, with no removal line."""
+    assert estate.index("sync").returncode == 0
+    store = _IndexTables(estate)
+    tables = store.tables()
+    own = store.sql("SELECT source FROM provenance")
+    assert len(own) == 1, own
+    store.copy(tables, own[0], LEGACY_KEY)
+    store.seed_every(tables, LEGACY_KEY)
+    held = store.rows(tables, LEGACY_KEY)
+    assert all(rows for _t, rows in held), held
+    assert "worktrees" in tables, tables
+    store.sql("CREATE TRIGGER t104_refuse BEFORE DELETE ON worktrees BEGIN "
+              "SELECT RAISE(ABORT, 't104: the last table refused'); END")
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    status = json.loads(filed.read_text(encoding="utf-8"))
+    status[LEGACY_KEY] = {"last_error": f"2026-11-01T00:00:00Z the provenance of {LEGACY_KEY} moved"}
+    filed.write_text(json.dumps(status), encoding="utf-8")
+    res = estate.index("sync")
+    said = (res.stdout + res.stderr).replace(CONFIG_SECRET, "<the secret>")
+    assert res.returncode == 1, said
+    assert store.rows(tables, LEGACY_KEY) == held, said
+    assert store.sql(f"SELECT count(*) FROM provenance WHERE source = '{LEGACY_KEY}'") == ["1"]
+    assert LEGACY_KEY in json.loads(filed.read_text(encoding="utf-8")), said
+    assert "source(s) from the index" not in res.stdout, said
+    assert "- nothing written" in res.stderr, said
+    assert CONFIG_SECRET not in res.stdout + res.stderr, said
 
 
 FAKE_PSQL = r"""#!/usr/bin/env python3
@@ -2047,6 +2475,8 @@ log = os.environ["FAKE_PSQL_LOG"]
 vfile = os.environ.get("FAKE_PSQL_VERSION_FILE", "")
 version = open(vfile).read().strip() if vfile else "1"
 args = sys.argv[1:]
+# psql's error line carries its SQLSTATE only under VERBOSITY=verbose, as a real psql's does
+verbose = "VERBOSITY=verbose" in args
 # THE CONNECTION IN `PG*` VARIABLES ALONE (Question 11; L2-0c): an argument
 # that is `-d` or `--dbname`, or that carries a URL, is refused with psql's own
 # fatal-error 1 before anything is recorded, since `/proc` shows a process's
@@ -2072,9 +2502,20 @@ if vfile and "CREATE TABLE IF NOT EXISTS" in stdin:
 # error's line, the statement's line and a caret under the table's name, exit 3.
 if (os.environ.get("FAKE_PSQL_NO_TABLE") and vfile and not version
         and "COPY (SELECT version" in stdin):
-    sys.stderr.write('psql:<stdin>:2: ERROR:  relation "lanes_index.schema_version" does '
+    sys.stderr.write('psql:<stdin>:2: ERROR:  ' + ("42P01: " if verbose else "") +
+                     'relation "lanes_index.schema_version" does '
                      'not exist\nLINE 1: COPY (SELECT version FROM '
-                     '"lanes_index".schema_version) TO S...\n' + " " * 34 + "^\n")
+                     '"lanes_index".schema_version) TO S...\n' + " " * 34 + "^\n" +
+                     ("LOCATION:  parserOpenTable, parse_relation.c:1449\n" if verbose else ""))
+    sys.exit(3)
+# THE COMPARE-AND-SWAP'S RAISE (FAKE_PSQL_CAS_LOST): the write fails as psql 16 says it
+if os.environ.get("FAKE_PSQL_CAS_LOST") and "lanes_index_cas" in stdin:
+    sys.stderr.write("psql:<stdin>:5: ERROR:  " + ("P0001: " if verbose else "") +
+                     "lanes-index: provenance moved under this sync; nothing was written\n")
+    sys.exit(3)
+# FAKE_PSQL_STDERR_FILE: the provenance's read fails with that file's text on stderr
+if os.environ.get("FAKE_PSQL_STDERR_FILE") and "UNION SELECT source FROM" in stdin:
+    sys.stderr.write(open(os.environ["FAKE_PSQL_STDERR_FILE"]).read())
     sys.exit(3)
 
 
