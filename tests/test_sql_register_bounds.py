@@ -2753,6 +2753,19 @@ def _end_writers(procs: list) -> None:
         raise failed[0]
 
 
+def _communicated(writer: subprocess.Popen, timeout: float = 300) -> tuple:
+    """`writer.communicate(timeout=timeout)`'s (stdout, stderr), with
+    `_end_writers([writer])` in a `finally`, so its group and its pipes are
+    ended on a timeout too (T257w). The lookup-wait and delayed-link cases
+    both call it, and T257w's regression calls it, so a lost `finally` fails
+    that regression (T257za; Codex's review of P09 at `b8f9e35a`, SHOULD
+    10: the regression had its own copy of the two callers' `finally`)."""
+    try:
+        return writer.communicate(timeout=timeout)
+    finally:
+        _end_writers([writer])
+
+
 def test_each_writer_leads_a_session_of_its_own_and_its_end_reaches_its_descendants(
         tmp_path, monkeypatch):
     """`_writer` and `_end_writers` (T257t; Codex's review of P09 at
@@ -2807,8 +2820,9 @@ def test_a_writer_whose_communicate_times_out_is_ended_with_its_group_and_its_pi
     `_end_writers` closed no pipe), with no engine, on a stand-in
     `lanes-edit.sh` of the case's own that starts a descendant, writes its pid
     and start time (`/proc` stat field 22) to a mark, and waits. One writer's
-    `communicate()` times out, and the `finally` the two cases now have,
-    `_end_writers([writer])`, must end it with its group, the descendant
+    `communicate()` times out in `_communicated`, which the two cases now
+    call, and its `finally`, `_end_writers([writer])`, must end it with its
+    group, the descendant
     included, reap it and close both its pipes, signalling nothing once it is
     reaped. Then two writers, the first one's end made to raise: `_end_writers`
     must still end the second, close all four pipes within its drain bound,
@@ -2853,10 +2867,7 @@ def test_a_writer_whose_communicate_times_out_is_ended_with_its_group_and_its_pi
         writer = _writer(Stand, conf, "one")
         started.append(writer)
         with pytest.raises(subprocess.TimeoutExpired):
-            try:
-                writer.communicate(timeout=1.0)
-            finally:
-                _end_writers([writer])
+            _communicated(writer, timeout=1.0)
         end = time.monotonic() + 5
         while not gone("one") and time.monotonic() < end:
             time.sleep(0.05)
@@ -3094,10 +3105,7 @@ def test_the_lookups_wait_counts_from_the_snapshot_calls_end_and_gets_no_lr011(
     where = _shim(bench, [{"mode": "window", "ms": 2500, "call": 1},
                           {"mode": "before", "match": "commit_write", "call": 1}], timed=True)
     writer = _writer(bench, config, f"PAUSED {DOT} T257's lookup wait", deadline="1")
-    try:
-        out, err = writer.communicate(timeout=300)
-    finally:
-        _end_writers([writer])      # its group, its pipes, on a timeout too (T257w)
+    out, err = _communicated(writer)    # its group, its pipes, on a timeout too (T257w)
     scripts, times = _shim_calls(where), bench.calls()
     assert len(times) == len(scripts), \
         f"a call was cut by its timer: {len(scripts)} sent, {len(times)} ended: {err}"
@@ -3156,10 +3164,7 @@ def test_over_a_delayed_tls_link_no_healthy_call_meets_its_timer(tls_cluster, tm
         config = _link_config(tmp_path / "conf" / "lanes-index.conf", tls_cluster, relay.port,
                               FX_WRITER)
         writer = _writer(bench, config, f"PAUSED {DOT} T257's delayed link")
-        try:
-            _, err = writer.communicate(timeout=300)
-        finally:
-            _end_writers([writer])  # its group, its pipes, on a timeout too (T257w)
+        _, err = _communicated(writer)  # its group, its pipes, on a timeout too (T257w)
         assert writer.returncode == 0, f"the healthy write: {writer.returncode}: {err}"
         kinds = ["commit" if "commit_write" in e["stdin"] else "snapshot"
                  for e in _shim_calls(where)]
