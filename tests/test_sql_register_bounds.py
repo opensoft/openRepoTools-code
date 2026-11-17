@@ -1171,8 +1171,10 @@ class Bench:
                             f"ORDER BY line_no;").stdout
         digest = self.pg.psql(f"SELECT sha256 FROM {SCHEMA}.files WHERE path = 'lanes/STORE' "
                               f"AND final_newline;").stdout.strip()
-        assert hashlib.sha256(rows.encode("utf-8")).hexdigest() == digest, \
-            f"lanes/STORE as the register holds it: {rows!r}, sha256 {digest!r}"
+        assert hashlib.sha256(rows.encode("utf-8")).hexdigest() == digest, (
+            f"lanes/STORE as the register holds it does not hash to the sha256 it holds for it "
+            f"(psql exit 0 for both; the text's {_said_safely(rows, stream='stdout')}; the sha256 "
+            f"read has {len(digest)} characters)")
         # A clone of its own, so the bench's checkout and W keep their last fetch.
         marker = self.root / "marker"
         subprocess.run(["git", "clone", "-q", str(self.origin), str(marker)], check=True,
@@ -3546,7 +3548,8 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
                           "".join(e["stdin"] for e in _shim_calls(where))))
     written = [row.split("|")[1] for row in rows]
     assert len(set(written)) == len(written) and set(written) <= sent, \
-        f"each write id committed once, and only the burst's: {written}\n{told()}"
+        (f"each write id committed once, and only the burst's: {len(written)} new journal rows, "
+         f"{len(set(written))} write ids, {len(set(written) - sent)} not the burst's\n{told()}")
     # Each writer by its write id (T257r): a commit call names its writer's `burst <i>` in the
     # new row text its entry carries, and only a sha256 of the row it replaces.
     named: dict = {}
@@ -3765,52 +3768,196 @@ def test_a_failure_message_shows_no_line_of_a_writers_output_that_no_template_ma
     assert "register busy" not in said, f"a line no template matches is shown:\n{said}"
 
 
-#: What a failure message may not format but through `_said_safely` (T257zi):
-#: a captured stream's attribute, a name these modules give a stream, and the
-#: helpers that showed one before T257zh, T255s and T258l.
-_STREAM_ATTRS = ("stdout", "stderr", "err", "out")
+#: What a failure message may not format but through `_said_safely` (T257zi;
+#: T257zp): a captured stream's attribute, a name these modules give a stream,
+#: and the helpers that showed one before T257zh, T255s and T258l.
+_STREAM_ATTRS = ("stdout", "stderr", "err", "out", "errs", "output")
 _STREAM_NAMES = ("err", "out", "streams", "stdout", "stderr")
 _STREAM_CALLS = ("_said", "_masked")
+#: Calls whose result shows no text of a stream given to them (T257zp).
+_SAFE_CALLS = ("_said_safely", "_lanes_shown", "_whole", "len")
+#: Calls whose arguments reach a failure's output, besides an assert's message,
+#: a raise and a call whose name ends `Error` or `Exception` (T257zi, T257zp).
+_SINK_CALLS = ("pytest.fail", "pytest.skip", "pytest.xfail", "pytest.exit", "print",
+               "sys.stderr.write", "sys.stdout.write", "warnings.warn")
+#: Calls whose result keeps the text of a stream given to them; a name bound to
+#: any other call's result is not followed (T257zp).
+_TEXT_CALLS = ("str", "repr", "format", "sorted", "list", "tuple", "set", "reversed", "next",
+               "min", "max", "iter", "enumerate", "zip", "filter", "map", "dict")
 
 
 def _raw_streams_in(path: Path) -> list:
     """Each place in `path`'s source where a failure message formats a
-    captured stream other than through `_said_safely` (T257zi): in an
-    assert's message, or in the arguments of `pytest.fail`, `pytest.skip`,
-    `pytest.xfail`, `print` or a call whose name ends `Error` or
-    `Exception`, an attribute `.stdout`, `.stderr`, `.err` or `.out`, a name
-    `err`, `out`, `streams`, `stdout` or `stderr`, a call to `_said` or
-    `_masked`, or a call `.said()`, outside any `_said_safely(...)`. Each is
-    `file:line: the expression`. A module whose docstring does not say
-    PYTEST_DONT_REWRITE is a place too (T257zj): pytest's assertion
-    rewriting would add each tested operand, a raw stream among them, to a
-    failure's message. So is a message whose every `_said_safely(...)` is
-    given a bare stream, a `.stdout`, `.stderr`, `.err` or `.out` or text
-    built from one, and that shows no exit, with no `exit`, `returncode` or
-    `.code` anywhere in it (T257zn; lane 2's pre-review RV9-37 of P09 at
-    `d9a1f2bf`, S9: lane 3's ruling 6946445277 has each such message show
-    the writer's exit): it passes the process whole, whose exit the helper
-    shows, or says in fixed words that there is no exit."""
+    captured stream other than through `_said_safely` (T257zi; T257zp, lane
+    2's pre-review RV9-37 of P09 at `d9a1f2bf`, S6). A failure message is an
+    assert's message, the arguments of a raise of any class, and the
+    arguments of `pytest.fail`, `pytest.skip`, `pytest.xfail`, `pytest.exit`,
+    `print`, `sys.stderr.write`, `sys.stdout.write`, `warnings.warn` or a
+    call whose name ends `Error` or `Exception`. A stream there is an
+    attribute `.stdout`, `.stderr`, `.err`, `.out`, `.errs` or `.output`, a
+    name `err`, `out`, `streams`, `stdout` or `stderr`, a call to `_said` or
+    `_masked`, a call `.said()`, or a name its function binds to text built
+    from any of these (below), outside any `_said_safely(...)`,
+    `_lanes_shown(...)`, `_whole(...)` or `len(...)` and not as `.closed`.
+    Each is `file:line: the expression`.
+
+    A name is bound to a stream's text (T257zp) by `=`, `+=`, `:=`, a `for`
+    or a `with` anywhere in its function, from an expression that holds a
+    stream: an attribute or a slice of one, a method of one (`strip()`,
+    `split()`, `splitlines()`, `decode()`), a str's `join` of one, one of
+    `_TEXT_CALLS` given one, or a literal, an f-string or an operator that
+    holds one. A comprehension's result holds a stream where its element
+    does, its loop names taking their iterables' text. A tuple or list
+    literal is followed by position, so `said[0]` of `said = (proc.returncode,
+    proc.stdout)` is not a stream, nor is `argv[0]` where `argv` is looped
+    over rows of literals and only its third item came from a stream.
+
+    A module whose docstring does not say PYTEST_DONT_REWRITE is a place too
+    (T257zj): pytest's assertion rewriting would add each tested operand, a
+    raw stream among them, to a failure's message. So is a message whose
+    every `_said_safely(...)` is given a bare stream, a `.stdout`, `.stderr`,
+    `.err` or `.out` or text built from one, and that shows no exit, with no
+    `exit`, `returncode` or `.code` anywhere in it (T257zn; lane 2's
+    pre-review RV9-37 of P09 at `d9a1f2bf`, S9: lane 3's ruling 6946445277
+    has each such message show the writer's exit): it passes the process
+    whole, whose exit the helper shows, or says in fixed words that there is
+    no exit.
+
+    What it cannot see (T257zp): a name bound to the result of any other
+    call, such as `said = held.send(...)` or `files = m.passfiles(proc.stdout)`,
+    which it does not follow, though a call given a stream inside a message
+    is a place; text that reaches a message through another function
+    (`_burst_report`'s rows), an attribute (`self.err`) or a container's item
+    assigned later; an exception's own text (`{error!r}`, `str(failed.value)`);
+    the order of a function's statements, so a name bound to a stream
+    anywhere in its function is one everywhere in it, and a name bound in a
+    nested function is one in the outer function too; a module-level
+    statement; pytest's own report of a failed test, a fixture or a
+    teardown; and output that a test's process writes itself, a child's
+    output on an inherited stream among them."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found = []
     if "PYTEST_DONT_REWRITE" not in (ast.get_docstring(tree, clean=False) or ""):
         found.append(f"{path.name}:1: its docstring does not say PYTEST_DONT_REWRITE")
 
-    def walk(node, line):
+    def names(target) -> list:
+        if isinstance(target, ast.Starred):
+            return names(target.value)
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return [name for element in target.elts for name in names(element)]
+        return [target.id] if isinstance(target, ast.Name) else []
+
+    def raw(node, derived: dict, message: bool = True):
+        """The first stream in `node`, or None. In a message (`message`) a
+        call given a stream is one; in a bound value only `_TEXT_CALLS` and
+        methods are, and a comparison is not."""
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and \
-                node.func.id == "_said_safely":
-            return
-        hit = ((isinstance(node, ast.Attribute) and node.attr in _STREAM_ATTRS)
-               or (isinstance(node, ast.Name) and node.id in _STREAM_NAMES)
-               or (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                   and node.func.id in _STREAM_CALLS)
-               or (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                   and node.func.attr == "said" and not node.args))
-        if hit:
-            found.append(f"{path.name}:{getattr(node, 'lineno', line)}: {ast.unparse(node)[:80]}")
-            return
+                node.func.id in _SAFE_CALLS:
+            return None
+        if isinstance(node, ast.Attribute) and node.attr == "closed":
+            return None
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and \
+                isinstance(derived.get(node.value.id), frozenset) and \
+                isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, int):
+            return node if node.slice.value in derived[node.value.id] else None
+        if ((isinstance(node, ast.Attribute) and node.attr in _STREAM_ATTRS)
+                or (isinstance(node, ast.Name) and (node.id in _STREAM_NAMES or node.id in derived))
+                or (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in _STREAM_CALLS)
+                or (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "said" and not node.args)):
+            return node
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+            inner = dict(derived)
+            for loop in node.generators:
+                for name in names(loop.target):
+                    inner.pop(name, None)
+                bind(loop.target, loop.iter, inner, loop=True)
+            parts = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
+            return next((hit for part in parts for hit in [raw(part, inner, message)] if hit), None)
+        if not message and isinstance(node, ast.Call) and not (
+                (isinstance(node.func, ast.Attribute)
+                 and (isinstance(node.func.value, ast.Constant)
+                      or raw(node.func.value, derived, message) is not None))
+                or (isinstance(node.func, ast.Name) and node.func.id in _TEXT_CALLS)):
+            return None
+        if not message and isinstance(node, (ast.Compare, ast.Lambda)):
+            return None
         for child in ast.iter_child_nodes(node):
-            walk(child, line)
+            hit = raw(child, derived, message)
+            if hit is not None:
+                return hit
+        return None
+
+    def shape(value, derived: dict, loop: bool):
+        """What of `value` is a stream's text: "all", or the positions of a
+        literal's items that are (a loop's: of any of its rows)."""
+        rows = value.elts if loop and isinstance(value, (ast.Tuple, ast.List)) else \
+            [value] if not loop and isinstance(value, (ast.Tuple, ast.List)) else None
+        if rows is None:
+            return "all" if raw(value, derived, message=False) is not None else frozenset()
+        if any(not isinstance(row, (ast.Tuple, ast.List)) and raw(row, derived, message=False)
+               for row in rows):
+            return "all"
+        return frozenset(i for row in rows if isinstance(row, (ast.Tuple, ast.List))
+                         for i, item in enumerate(row.elts)
+                         if raw(item, derived, message=False) is not None)
+
+    def bind(target, value, derived: dict, loop: bool = False) -> bool:
+        """Mark the names `target` binds from `value` that hold a stream's
+        text; True where one is new."""
+        if isinstance(target, ast.Starred):
+            target = target.value
+        if isinstance(target, (ast.Tuple, ast.List)):
+            rows = value.elts if loop and isinstance(value, (ast.Tuple, ast.List)) else \
+                [value] if not loop and isinstance(value, (ast.Tuple, ast.List)) else None
+            if rows is not None and all(isinstance(row, (ast.Tuple, ast.List))
+                                        and len(row.elts) == len(target.elts) for row in rows):
+                columns = [ast.Tuple(elts=[row.elts[i] for row in rows], ctx=ast.Load())
+                           for i in range(len(target.elts))]
+                return any([bind(part, column, derived, loop=True)
+                            for part, column in zip(target.elts, columns)])
+            return any([bind(part, value, derived, loop) for part in target.elts])
+        if not isinstance(target, ast.Name):
+            return False
+        held = shape(value, derived, loop)
+        if not held or derived.get(target.id) in (held, "all"):
+            return False
+        derived[target.id] = held if target.id not in derived else "all"
+        return True
+
+    def derived_in(function) -> dict:
+        derived, changed = {}, True
+        while changed:
+            changed = False
+            for node in ast.walk(function):
+                if isinstance(node, ast.AugAssign):
+                    if isinstance(node.target, ast.Name) and \
+                            raw(node.value, derived, message=False) is not None and \
+                            derived.get(node.target.id) != "all":
+                        derived[node.target.id], changed = "all", True
+                    continue
+                if isinstance(node, ast.Assign):
+                    pairs, loop = [(target, node.value) for target in node.targets], False
+                elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+                    pairs, loop = [(node.target, node.value)], False
+                elif isinstance(node, ast.For):
+                    pairs, loop = [(node.target, node.iter)], True
+                elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+                    pairs, loop = [(node.optional_vars, node.context_expr)], False
+                else:
+                    continue
+                for target, value in pairs:
+                    changed = bind(target, value, derived, loop) or changed
+        return derived
+
+    def walk(message: list, derived: dict, line: int) -> None:
+        for part in message:
+            hit = raw(part, derived)
+            if hit is not None:
+                place = f"{path.name}:{getattr(hit, 'lineno', line)}: {ast.unparse(hit)[:80]}"
+                if place not in found:
+                    found.append(place)
 
     def exitless(message: list, line: int) -> None:
         calls = [n for arg in message for n in ast.walk(arg) if isinstance(n, ast.Call)
@@ -3822,21 +3969,28 @@ def _raw_streams_in(path: Path) -> list:
         text = " ".join(ast.unparse(arg) for arg in message)
         if calls and len(bare) == len(calls) and \
                 not any(word in text for word in ("exit", "returncode", ".code")):
-            found.append(f"{path.name}:{line}: a bare stream and no exit: {text[:80]}")
+            place = f"{path.name}:{line}: a bare stream and no exit: {text[:80]}"
+            if place not in found:
+                found.append(place)
 
+    functions = [node for node in ast.walk(tree)
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    owner = {id(node): function for function in functions for node in ast.walk(function)}
+    bound = {id(function): derived_in(function) for function in functions}
     for node in ast.walk(tree):
         if isinstance(node, ast.Assert) and node.msg is not None:
-            walk(node.msg, node.lineno)
-            exitless([node.msg], node.lineno)
-        elif isinstance(node, ast.Call):
-            name = ast.unparse(node.func)
-            if name in ("pytest.fail", "pytest.skip", "pytest.xfail", "print") or \
-                    name.endswith(("Error", "Exception")):
-                for arg in [*node.args, *(k.value for k in node.keywords)]:
-                    walk(arg, node.lineno)
-                exitless([*node.args, *(k.value for k in node.keywords)], node.lineno)
+            message = [node.msg]
+        elif isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
+            message = [*node.exc.args, *(k.value for k in node.exc.keywords)]
+        elif isinstance(node, ast.Call) and (ast.unparse(node.func) in _SINK_CALLS or
+                                             ast.unparse(node.func).endswith(("Error", "Exception"))):
+            message = [*node.args, *(k.value for k in node.keywords)]
+        else:
+            continue
+        function = owner.get(id(node))
+        walk(message, bound[id(function)] if function is not None else {}, node.lineno)
+        exitless(message, node.lineno)
     return found
-
 
 def test_no_failure_message_formats_a_captured_stream_but_through_the_one_helper():
     """The static check (T257zi; lane 3's ruling 6946445277 on lane 2's
@@ -3854,22 +4008,88 @@ def test_no_failure_message_formats_a_captured_stream_but_through_the_one_helper
     (T257zn; RV9-37, S9): it shows the writer's exit, or says it has none.
 
     It catches the forms these modules use for a stream: `.stdout`,
-    `.stderr`, `.err` and `.out`, slices and `strip()`s of them,
-    `communicate()`'s `err` and `out`, `streams`, and the old helpers
-    `_said`, `_masked` and `.said()`. It cannot catch a stream copied into
-    another name before the message (`text = proc.stderr`, then `{text}`),
-    a whole process formatted as itself (`{proc}`), a stream that reaches a
-    message through another function, or text that is not a stream, an
-    exception's message among them. For the exit (T257zn), a name given to
-    the helper counts as a whole process, so a stream copied into a name
-    first (`said = held.send(...)`, then `_said_safely(said)`) is not
-    caught, and any `exit` in the message's words counts as its exit."""
+    `.stderr`, `.err`, `.out`, `.errs` and `.output`, slices and `strip()`s
+    of them, `communicate()`'s `err` and `out`, `streams`, the old helpers
+    `_said`, `_masked` and `.said()`, and, since T257zp (RV9-37, S6), a
+    name its function binds to a stream's text, in an assert's message, a
+    raise of any class or a call that prints or warns. What it cannot see
+    is listed in `_raw_streams_in`'s docstring, so a 0 here is no proof
+    that no text of a stream reaches a failure's output. For the exit
+    (T257zn), a name given to the helper counts as a whole process, so a
+    stream copied into a name first (`said = held.send(...)`, then
+    `_said_safely(said)`) is not caught, and any `exit` in the message's
+    words counts as its exit."""
     here = Path(__file__).resolve().parent
     found = [place for name in ("test_sql_register_bounds.py", "test_sql_register_measure.py",
                                 "test_sql_register_managed.py")
              for place in _raw_streams_in(here / name)]
     assert not found, (f"{len(found)} place(s) can show a captured stream other than "
                        f"through _said_safely:\n" + "\n".join(found))
+
+
+#: A module for `test_the_static_check_names_each_kind_of_place_it_catches`
+#: (T257zp): each line marked `# planted` is a place, each marked `# clean` is
+#: not. Parsed only, never imported or run.
+_PLANTED = '''"""PYTEST_DONT_REWRITE"""
+import sys
+import warnings
+
+import pytest
+
+
+def test_planted(proc, session, failed, ends, said_by):
+    message = f"the writer said {proc.stderr}"
+    assert proc.returncode == 0, message  # planted
+    pytest.fail(message)  # planted
+    assert session, f"held: {session.errs}"  # planted
+    assert failed, f"called: {failed.output}"  # planted
+    raise SystemExit(proc.stdout)  # planted
+    raise Stopped(proc.stderr)  # planted
+    pytest.exit(proc.stderr)  # planted
+    sys.stderr.write(proc.stderr)  # planted
+    sys.stdout.write(proc.stdout)  # planted
+    warnings.warn(proc.stdout)  # planted
+    tail = proc.stderr.strip().splitlines()[-3:]
+    assert proc.returncode == 0, f"its last lines: {tail}"  # planted
+    for line in proc.stdout.splitlines():
+        assert "LR" in line, line  # planted
+    parts = "|".join(proc.stdout.split())
+    assert parts, f"{parts}"  # planted
+    assert proc.returncode == 0, f"{_said_safely(proc)} {len(proc.stderr)} {_whole(proc.stdout, 'n')}"  # clean
+    assert proc.stdout.closed, f"{proc.stdout.closed}"  # clean
+    ended = (proc.returncode, proc.stdout, len(proc.stderr))
+    assert not ended[0], f"exit {ended[0]} after {ended[2]} bytes"  # clean
+    for argv, tool in ((["import", "--at", proc.stdout], "a"), (["reconcile"], "b")):
+        assert tool, f"{argv[0]} made no call"  # clean
+    shown = [f"writer {i}" for i, (_, _, err) in enumerate(ends) if "files mode" in err]
+    assert not shown, f"{shown}"  # clean
+'''
+
+
+def test_the_static_check_names_each_kind_of_place_it_catches(tmp_path):
+    """T257zp (lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`, S6; lane 3's
+    ruling 6947252648: "the static check's blind spots, named"), with no
+    engine and nothing imported: `_raw_streams_in` reads a planted module,
+    `_PLANTED`, and names each place of each kind T257zi's check did not
+    see: a message built in a name before its assert or its `pytest.fail`,
+    `.errs` and `.output`, a raise of a class whose name ends neither
+    `Error` nor `Exception`, `pytest.exit`, `sys.stderr.write`,
+    `sys.stdout.write` and `warnings.warn`, text sliced from a stream into a
+    name, a loop over a stream's lines, and a str's `join` of one. It names
+    no line marked clean: the helper, `len()` and `_whole()`, a pipe's
+    `.closed`, a literal's item that holds no stream (`ended[0]`, `argv[0]`)
+    and a comprehension whose element holds none."""
+    planted = tmp_path / "test_planted.py"
+    planted.write_text(_PLANTED, encoding="utf-8")
+    lines = _PLANTED.splitlines()
+    want = sorted(i + 1 for i, line in enumerate(lines) if line.endswith("# planted"))
+    clean = {i + 1 for i, line in enumerate(lines) if line.endswith("# clean")}
+    found = _raw_streams_in(planted)
+    named = sorted(int(place.split(":")[1]) for place in found)
+    assert named == want, (f"the check named lines {named}, not the planted {want}:\n"
+                           + "\n".join(found))
+    assert not clean & set(named), f"the check named a clean line: {sorted(clean & set(named))}"
+    assert all(place.startswith("test_planted.py:") for place in found), "\n".join(found)
 
 
 def test_a_failed_psqls_cluster_error_shows_no_line_of_its_stderr(monkeypatch):
@@ -4733,7 +4953,8 @@ def test_a_cutover_whose_call_expires_leaves_the_switch_unknown_and_its_rerun_re
     assert rerun and "commit_write" not in rerun[0]["calls"], \
         f"the rerun's first call is not a read of the switch: {rerun}"
     entries = pg.psql(f"SELECT count(*) FROM {SCHEMA}.journal WHERE kind = 'cutover';").stdout
-    assert entries.strip() == "1", f"one cutover entry: {entries.strip()}"
+    assert entries.strip() == "1", \
+        f"one cutover entry, not {_whole(entries, 'the count of cutover entries')}"
     mode, marker, _ = op.state()[0].split("|")
     assert mode == "primary" and marker in ("adding", "present"), op.state()
 
