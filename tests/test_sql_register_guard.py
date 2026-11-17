@@ -141,6 +141,8 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_dead_bind_outer_answers_in_progress_while_its_session_lives_then_no_outcome": ("T502",),  # T214; tasks:2013
     "test_a_failed_bind_can_be_answered_again": ("T502",),  # T214; tasks:2013
     "test_a_failed_bind_renames_back_keeps_the_offer_and_allows_three_attempts": ("T502",),  # T214; tasks:2013
+    "test_a_fifo_at_register_lock_is_a_lock_that_cannot_be_opened": ("T512", "T513"),  # T237zzs; P23 (#165 6934144108)
+    "test_a_fifo_at_register_log_never_holds_a_start_or_the_service": ("T512", "T513"),  # T237zzs; P23 (#165 6934144108)
     "test_a_guard_that_starts_too_late_refuses_2_without_a_read": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_a_live_bind_past_its_bound_that_timeout_has_not_ended_answers_2_and_names_the_pid_to_kill": ("T502",),  # T214; tasks:2013
     "test_a_malformed_bind_pid_waits_for_the_deadline_then_is_stale": ("T502",),  # T214; tasks:2013
@@ -8123,3 +8125,142 @@ def test_the_services_worker_does_not_spin_while_its_child_is_down_or_connecting
         f"the service's threads were woken {rate:.0f} times a second with its child {case} at "
         f"LANES_REGISTER_SERVE_IDLE_CHECK_S=1, over the {WAKES_MAX_PER_S} its accept loop and "
         f"its worker's 1 s bound allow: the worker spins on an idle deadline already past")
+
+
+#: How long a case lets a start run before it takes it as held in an open
+#: (T237zzs): each start below ends well inside a second where no open
+#: blocks it.
+FIFO_HELD_S = 20.0
+#: A request the service answers, whatever its state (socket API section
+#: 13.7: a malformed one is `unavailable`), as SVC-2's case sends it.
+ANY_REQUEST = b"read 1\nlist\nend\n"
+
+
+def _fifo_at(est: Estate, name: str) -> Path:
+    """A FIFO at `run/<name>`, in the service's directory made as the
+    service makes it, this uid's at 0700 (socket API section 2.2)."""
+    run = _run_dir(est)
+    run.mkdir(parents=True, exist_ok=True, mode=0o700)
+    run.chmod(0o700)
+    path = run / name
+    os.mkfifo(path, 0o600)
+    return path
+
+
+def _bounded(est: Estate, *args, env=None, limit: float = FIFO_HELD_S):
+    """`lanes-index <args>` as `_index` runs it, or None where it has not
+    ended inside `limit` seconds (`subprocess.run` then kills it)."""
+    try:
+        return _index(est, *args, env=env, timeout=limit)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+@pytest.mark.parametrize("case", ["no-reader", "reader", "stamp"])
+def test_a_fifo_at_register_lock_is_a_lock_that_cannot_be_opened(estate, tmp_path, case):
+    """T512'S COMMIT 13, `register.lock`'S TWO OPENS (T237zzs; lane 3's Codex
+    review of chain 3, #165 6934144108: no test places a special file at
+    `register.lock`). `register_serve_run` and `register_serve_stamp` open
+    it through `_register_serve_open_regular` (`badba70f`): `O_NONBLOCK`
+    added, so a FIFO with no reader fails the open at once (`ENXIO`), and a
+    descriptor that `fstat` finds is not a regular file closed and refused.
+    So a FIFO there is a `register.lock` that cannot be opened, with or
+    without a reader, and holds no start in its open:
+
+    - `[no-reader]` and `[reader]`, on primary: `serve` exits 69, "as for a
+      `register.lock` that cannot be opened" (socket API section 8.3),
+      naming the file on stderr, with no socket made, inside
+      `FIFO_HELD_S`. Before commit 13 the open with no reader waited for
+      one for ever, before the lock and before any stamp; and with a
+      reader, which the case holds open, it went through, `flock` took the
+      FIFO for the lock, and `serve` bound and served on it.
+    - `[stamp]`, in files mode: a `serve` its configuration refuses,
+      `mode=index` (section 8.5), stamps `config-refused` and exits 2,
+      the stamp "written without the lock" where `register.lock` cannot be
+      opened (section 8.6). Before commit 13 the stamp's open of the lock
+      waited for a reader for ever.
+
+    The FIFO is left as it was: a file that fails the check is not
+    replaced."""
+    import stat as stat_mod
+    env = None
+    if case == "stamp":
+        est = estate()
+        conf = tmp_path / "lanes-index.conf"
+        conf.write_text(f"mode=index\nregister_url=postgresql:///register?host={tmp_path}/sock\n",
+                        encoding="utf-8")
+        env = est.env(LANES_INDEX_CONFIG=str(conf))
+    else:
+        est = estate(mode="primary")
+    fifo = _fifo_at(est, "register.lock")
+    reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK) if case == "reader" else None
+    try:
+        done = _bounded(est, "serve", env=env)
+    finally:
+        if reader is not None:
+            os.close(reader)
+    sock = _run_dir(est) / "register.sock"
+    how = ("it took the FIFO for its lock and served" if sock.exists()
+           else "it was held in an open of the FIFO")
+    assert done is not None, (f"serve did not end inside {FIFO_HELD_S:.0f} s with a FIFO at "
+                              f"register.lock ({case}): {how}")
+    if case == "stamp":
+        stamp = _failure_stamp(est, done)
+        assert stamp[1:] == ["config-refused"], (done, stamp)
+    else:
+        assert done.returncode == 69 and "register.lock" in done.stderr, done
+        assert not sock.exists(), "serve made a socket with a FIFO at register.lock"
+    assert stat_mod.S_ISFIFO(os.lstat(fifo).st_mode), "the FIFO at register.lock was replaced"
+
+
+@pytest.mark.parametrize("case", ["serve", "start", "guard"])
+def test_a_fifo_at_register_log_never_holds_a_start_or_the_service(estate, case):
+    """T512'S COMMIT 13, `register.log`'S TWO OPENS (T237zzs; #165
+    6934144108: no test places a special file at `register.log`).
+    `register_serve_log` and `register_serve_launch` open it as
+    `register.lock` is opened (`_register_serve_open_regular`, `badba70f`),
+    so a FIFO there with no reader fails the open at once and holds no
+    caller:
+
+    - `[serve]`: the service drops its log lines (`register_serve_log`
+      returns where its open fails) and answers a request on its socket.
+      Before commit 13 its first line's open, "listening", waited for a
+      reader for ever, after the socket was in place and before the accept
+      loop, so no request was answered.
+    - `[start]`: `serve --start` exits 2 "where `serve` could not be
+      launched, its `register.log` not opened" (socket API section 9),
+      naming the file, inside `FIFO_HELD_S`, and no service is started.
+    - `[guard]`: the guard's client, which finds no socket and starts a
+      service (section 8.1), never waits for a start (section 8.2): it reads
+      directly, prints the fallback line once (section 11.2), and ends
+      inside `BUDGET`, not stopped by the runner, with no service started.
+      Before commit 13 the start's open held the guard's prefetch until the
+      hook was killed at its 5 s."""
+    import stat as stat_mod
+    est = estate(mode="primary")
+    fifo = _fifo_at(est, "register.log")
+    if case == "serve":
+        svc = _Service(est)
+        try:
+            try:
+                answer = _ask_service(est, ANY_REQUEST, limit=5.0)
+            except OSError:
+                answer = b""
+        finally:
+            svc.stop()
+        assert answer, ("the service answered nothing in 5 s with a FIFO at register.log: it is "
+                        "held in an open of the FIFO, before its accept loop")
+    elif case == "start":
+        done = _bounded(est, "serve", "--start")
+        servers = _estate_servers(est)
+        assert done is not None, (f"serve --start did not end inside {FIFO_HELD_S:.0f} s with a "
+                                  f"FIFO at register.log: it was held in an open of the FIFO")
+        assert done.returncode == 2 and "register.log" in done.stderr, done
+        assert not servers, f"serve --start started a service: {servers}"
+    else:
+        hook = est.hook("hello")
+        servers = _estate_servers(est)
+        assert not hook.killed and hook.t_exit - hook.t0 < BUDGET, repr(hook)
+        assert hook.err.splitlines().count(FALLBACK) == 1, hook.err
+        assert not servers, f"the guard's client started a service: {servers}"
+    assert stat_mod.S_ISFIFO(os.lstat(fifo).st_mode), "the FIFO at register.log was replaced"
