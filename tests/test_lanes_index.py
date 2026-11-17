@@ -1482,6 +1482,102 @@ def test_a_source_or_out_value_is_never_echoed(estate, argv, code, words, where)
     assert not estate.sqlite.exists(), f"a store was made:\n{said}"
 
 
+# ============================ an unresolved source, and this workstation's own register
+#
+# Round 4's commit 11, on lane 3's ruling (opensoft/openRepoTools-code#89 comment
+# 6939379549) of lane 1's two residual points: `_record_error` filed a `--source` it
+# could not resolve under the value given, which `status` then printed on stdout; and the
+# refusal that names this workstation's own register named it as `workspace.yaml` or
+# `origin` spells it, a user, a password or a token included (Amendment 14 act 2's code,
+# and opensoft/openRepoTools#171's for the inventory).
+
+#: (id, the arguments after `lanes-index`, what the unresolved source is filed as)
+UNRESOLVED_SOURCES = [
+    ("sync-register", ("sync", "--source", f"password={CONFIG_SECRET}"), "register:?"),
+    ("sync-inventory", ("sync", "--source", f"inventory:password={CONFIG_SECRET}"),
+     "inventory:?"),
+    ("reconcile-register", ("reconcile", "--source", CONFIG_URI), "register:?"),
+    ("reconcile-inventory", ("reconcile", "--source", f"inventory:{CONFIG_URI}"),
+     "inventory:?"),
+]
+
+
+@pytest.mark.parametrize("argv, filed", [
+    pytest.param(argv, filed, id=ident) for ident, argv, filed in UNRESOLVED_SOURCES])
+def test_an_unresolved_source_is_filed_without_its_value(estate, argv, filed):
+    """FILED AS `register:?` OR `inventory:?` (lane 3's ruling): with a `lanes-edit.sh`
+    that cannot answer, a `sync` or `reconcile` whose `--source` holds a URL or a
+    `password=` value cannot resolve it and fails with 1, nothing written; the attempt is
+    filed under `register:?` or `inventory:?`, which a later `status` names. The value is
+    in neither the status file nor either stream of either run."""
+    stub = estate.root / "no-workspace" / "lanes-edit.sh"
+    stub.parent.mkdir()
+    stub.write_text("#!/bin/sh\necho 'no workspace here' >&2\nexit 3\n")
+    stub.chmod(0o755)
+    first = estate.index(*argv, env={"LANES_EDIT": str(stub)})
+    status = estate.index("status", env={"LANES_EDIT": str(stub)})
+    kept = estate.state / "openRepoTools" / "lanes-index.status.json"
+    text = kept.read_text(encoding="utf-8") if kept.exists() else ""
+    said = (f"{' '.join(argv[:1])} exit {first.returncode}:\nstdout:\n{first.stdout}\n"
+            f"stderr:\n{first.stderr}\nstatus exit {status.returncode}:\nstdout:\n"
+            f"{status.stdout}\nstderr:\n{status.stderr}\nstatus file:\n{text}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert first.returncode == 1, said
+    assert status.returncode == 1, said
+    for shown in (first.stdout, first.stderr, status.stdout, status.stderr, text):
+        assert CONFIG_SECRET not in shown, f"the value was kept or shown:\n{said}"
+        assert CONFIG_HOST not in shown, f"the URL's host was kept or shown:\n{said}"
+    assert f'"{filed}"' in text, said
+    assert f"source {filed}\n" in status.stdout, said
+
+
+#: The host of the `origin` URLs below; not a secret, and named back.
+REGISTER_HOST = "origin.invalid"
+
+#: (id, `origin`'s URL or None, `workspace.yaml`'s `repository:` or None)
+REGISTER_WITH_USERINFO = [
+    ("origin-userinfo", f"https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}/o/r.git", None),
+    ("origin-token", f"https://{CONFIG_SECRET}@{REGISTER_HOST}/o/r.git", None),
+    ("workspace-yaml-userinfo", None, f"https://u:{CONFIG_SECRET}@{REGISTER_HOST}/o/r"),
+]
+
+
+@pytest.mark.parametrize("origin, repository", [
+    pytest.param(origin, repository, id=ident)
+    for ident, origin, repository in REGISTER_WITH_USERINFO])
+def test_the_register_from_origin_is_named_without_userinfo(estate, origin, repository):
+    """NO USERINFO (lane 3's ruling): this workstation's register, read from `origin`
+    or from `workspace.yaml`'s `repository:`, a URL with a user and a password or a
+    token, is named in the refusal of another `--source` as its URL with no userinfo.
+    The refusal and its exit, 2, are kept; stdout is empty, and the password or token
+    is on neither stream."""
+    root = estate.root / "credentialed"
+    subprocess.run(["git", "init", "-q", str(root)], check=True, env=estate.env,
+                   capture_output=True)
+    if origin is not None:
+        subprocess.run(["git", "-C", str(root), "remote", "add", "origin", origin],
+                       check=True, env=estate.env, capture_output=True)
+    agents = estate.root / "agents-credentialed"
+    agents.mkdir()
+    (agents / "workspace.yaml").write_text(
+        (f"repository: {repository}\n" if repository else "") + f"path: {root}\n",
+        encoding="utf-8")
+    stub = estate.root / "credentialed-edit" / "lanes-edit.sh"
+    stub.parent.mkdir()
+    stub.write_text(f"#!/bin/sh\n[ \"$1\" = workspace-root ] && echo {shlex.quote(str(root))} "
+                    f"&& exit 0\nexit 3\n")
+    stub.chmod(0o755)
+    res = estate.index("sync", "--source", "register:someone/else",
+                       env={"LANES_EDIT": str(stub), "AGENT_PROTOCOL_ROOT": str(agents)})
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert res.returncode == 2, f"exit {res.returncode}, not 2:\n{said}"
+    assert CONFIG_SECRET not in res.stdout + res.stderr, f"the userinfo was shown:\n{said}"
+    assert (f"this workstation's register is register:https://{REGISTER_HOST}/o/r, not the "
+            f"source `--source` names") in res.stderr, said
+    assert res.stdout == "", said
+
+
 FAKE_PSQL = r"""#!/usr/bin/env python3
 # A FAKE psql: it records what it was asked and answers the few queries
 # lanes-index makes as an EMPTY schema-1 store would. No database exists.
