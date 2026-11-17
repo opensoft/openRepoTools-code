@@ -207,22 +207,32 @@ def required(environ=os.environ) -> bool:
 
 
 # ------------------------------------------------------------ the binaries
-def check_bindir(bindir: Path) -> Optional[str]:
-    """None where `bindir` holds the four tools at major 16, else why not."""
+def check_bindir(bindir: Path, shown: Optional[str] = None) -> Optional[str]:
+    """None where `bindir` holds the four tools at major 16, else why not.
+    The reason shows no text a tool printed (T229o; lane 3's ruling
+    6949488277 on lane 2's pre-review RV9-38 of P09, B2): a `--version`
+    that does not say major 16 is shown by its exit and counts, and
+    `shown` names the directory in place of its path where that path is a
+    tool's output, `pg_config --bindir`'s."""
+    where = str(bindir) if shown is None else shown
     if not bindir.is_dir():
-        return f"{bindir} is not a directory"
+        return f"{where} is not a directory"
     missing = [t for t in TOOLS if not os.access(str(bindir / t), os.X_OK) or (bindir / t).is_dir()]
     if missing:
-        return f"{bindir} has no {', '.join(missing)}"
+        return f"{where} has no {', '.join(missing)}"
     for tool in TOOLS:
+        label = str(bindir / tool) if shown is None else f"{shown}'s {tool}"
         try:
-            said = subprocess.run([str(bindir / tool), "--version"], stdin=DEVNULL, capture_output=True,
-                                  text=True, timeout=20, check=False).stdout.strip()
+            ran = subprocess.run([str(bindir / tool), "--version"], stdin=DEVNULL, capture_output=True,
+                                 text=True, timeout=20, check=False)
         except (OSError, subprocess.SubprocessError) as exc:
-            said = f"<{exc}>"
-        m = re.search(r"\(PostgreSQL\) (\d+)", said)
+            return f"{label} --version did not run: {type(exc).__name__}"
+        version = ran.stdout or ""
+        m = re.search(r"\(PostgreSQL\) (\d+)", version)
         if not m or int(m.group(1)) != MAJOR:
-            return f"{bindir / tool} is not PostgreSQL {MAJOR}: it says {said!r}"
+            return (f"{label} is not PostgreSQL {MAJOR}: its --version exited {ran.returncode} "
+                    f"and names {'another major' if m else 'no PostgreSQL major'}; "
+                    f"{len(version.splitlines())} line(s), none shown")
     return None
 
 
@@ -237,14 +247,15 @@ def find_bindir(environ=os.environ) -> Tuple[Optional[Path], str]:
     pg_config = shutil.which("pg_config", path=environ.get("PATH", os.defpath))
     if pg_config:
         try:
-            out = subprocess.run([pg_config, "--bindir"], stdin=DEVNULL, capture_output=True,
-                                 text=True, timeout=20, check=False).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            out = ""
-        why = check_bindir(Path(out)) if out else "it printed nothing"
+            ran = subprocess.run([pg_config, "--bindir"], stdin=DEVNULL, capture_output=True,
+                                 text=True, timeout=20, check=False)
+            out, how = (ran.stdout or "").strip(), f"exited {ran.returncode}"
+        except (OSError, subprocess.SubprocessError) as exc:
+            out, how = "", f"did not run ({type(exc).__name__})"
+        why = check_bindir(Path(out), shown="the directory it printed") if out else "it printed nothing"
         if why is None:
             return Path(out), f"`{pg_config} --bindir`"
-        tried.append(f"`{pg_config} --bindir` says {out or '-'}, and {why}")
+        tried.append(f"`{pg_config} --bindir` {how}, and {why}")
     else:
         tried.append("no pg_config on PATH")
     why = check_bindir(DEBIAN_BIN)
