@@ -3539,7 +3539,7 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
                   for i, (_, _, err) in enumerate(ends) if "runs in files mode" in (err or "")]
     assert not files_mode, ("a writer says it ran in files mode, so its write is in git and not "
                             "the journal:\n" + "\n".join(files_mode) + f"\n{told()}")
-    seqs = [int(row.split("|")[0]) for row in rows]
+    seqs = [_whole(row.split("|")[0], "a new journal row's seq") for row in rows]
     assert seqs == list(range(head + 1, head + 1 + codes.count(0))), \
         f"one entry for each writer that committed, no gap, no repeat: {seqs}, {codes}\n{told()}"
     sent = set(re.findall(r"commit_write\([0-9-]+, '([0-9a-f-]{36})'",
@@ -3556,7 +3556,7 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
             named.setdefault(call.group(1), set()).update(re.findall(r"burst ([0-9]+)", script))
     assert all(len(burst) == 1 for burst in named.values()), \
         f"a write id's commit calls name no writer, or more than one: {named}\n{told()}"
-    owners = sorted(int(min(named[write_id])) for write_id in written)
+    owners = sorted(_whole(min(named[write_id]), "a commit call's burst number") for write_id in written)
     assert owners == [i for i, code in enumerate(codes) if code == 0], \
         (f"the journal's rows are by writers {owners}, not one by each writer that exited 0 "
          f"and none by one that exited 75: {codes}\n{told()}")
@@ -4457,7 +4457,7 @@ def _snapshot_miss(pg, tmp_path: Path, request, fault: str) -> None:
     spec = ROWS["snapshot-miss"]
     case = f"snapshot-miss-{fault}"
     op = Operator(pg, tmp_path, request, "primary")
-    head = int(op.state()[1])
+    head = _whole(op.state()[1], "the register's head")
     planted = subprocess.run([sys.executable, "-c", MISS_CACHE, str(op.copy), str(head + 5),
                               "lanes/LANES.md", "# LANES.md\n"], capture_output=True, text=True,
                              env=op.env, cwd=str(op.reg.wip), timeout=120,
