@@ -926,7 +926,7 @@ sys.exit(ANSWER.get("exit", 0))
 #: (`lanes-edit.sh:2771` at `refs/l1/V-round5`), and counted 2 for AT-F8's
 #: `[*-sql]` ids (AN13b's cause 1; line AF13b).
 MODE_WARNING = re.compile(r"^lanes-edit: WARNING: .*\blanes-index mode\b")
-TIMEOUT_WORDS = re.compile(r"tim(e|ed)[ -]?out|timer|\b2 ?s\b|seconds?\b", re.I)
+TIMEOUT_WORDS = re.compile(r"tim(e|ed)[ -]?out|timer|seconds?\b", re.I)
 
 
 class _ModeBench:
