@@ -3258,7 +3258,8 @@ _WARNING_TEMPLATES = tuple(
         "the pending record of this command, write {id} made at {…} against register generation "
         "{n}, was last updated at {…}, more than {n} s ago, so this run does not reuse its id: "
         "it writes anew, as write {id}, and replaces that record. {…}",
-        "register write {id} is in the register at seq {n}{…}.",
+        "register write {id} is in the register at seq {n}; {…}.",
+        "register write {id} is in the register at seq {n}, {…}.",
         "the rename is in the register at seq {n}, and its handoff's move could not be handed "
         "to the parent that makes it ({…}/rl-move could not be written), so it is NOT made: the "
         "row's handoff column names {…}, which is not there yet." + _RENAME_OWED,
@@ -3580,6 +3581,55 @@ def test_the_burst_report_shows_no_credential_a_warning_line_holds(capsys, form)
     assert told.count("its WARNING line:") == 1, f"one WARNING line shown:\n{told}"
     assert "    and 1 WARNING line(s) of no known template, withheld" in told, \
         f"the unknown WARNING line, counted:\n{told}"
+
+
+def test_a_shown_part_of_a_warning_template_is_never_the_head_of_other_text():
+    """`_WARNING_TEMPLATES`' shape (T257ze; lane 2's pre-review RV9-36 of P09
+    at `2407ea06`, B1), with no engine: in each template, each part shown as
+    the line has it, `{n}`, `{id}` or `{cmd}`, is followed by fixed text that
+    does not begin with a letter, a digit, `_` or `-`, or ends the template.
+    A shown part followed straight by another part, as `seq {n}{…}.` was,
+    showed the head of the text after it: up to ten digits of whatever came
+    after `at seq `. Each template that breaks this is named."""
+    broken = []
+    for template in _WARNING_TEMPLATES:
+        parts = list(_WARNING_PART.finditer(template))
+        for i, part in enumerate(parts):
+            if part.group() == "{…}":
+                continue
+            end = parts[i + 1].start() if i + 1 < len(parts) else len(template)
+            after = template[part.end():end]
+            if (i + 1 < len(parts) and not after) or re.match(r"[\w-]", after):
+                broken.append(f"{part.group()}, then {after[:12]!r}, in {template!r}")
+    assert not broken, ("a shown part with no fixed text after it, or with text it can run "
+                        "into:\n" + "\n".join(broken))
+
+
+def test_the_burst_report_shows_no_digit_of_a_value_after_at_seq():
+    """`_burst_report` (T257ze; lane 2's pre-review RV9-36 of P09 at
+    `2407ea06`, B1), with no engine: a WARNING line in the shape of
+    `lanes-edit.sh`'s `pw_tail_said` (line R's :10604), `register write <id>
+    is in the register at seq <s><joiner><what>.`, whose `<s>` is a value in
+    `token_urlsafe`'s alphabet that starts with ten digits, shows none of it.
+    The template `... at seq {n}{…}.` showed `{n}`, the value's first ten
+    digits, with the rest `[withheld]`. Now `{n}` must end at one of the
+    product's two joiners, `; ` (its default) or `, ` (:10657, :10659), so
+    that line matches no template and is counted; the product's own lines,
+    a seq and then a joiner, are still shown. The planted value is no
+    credential of any login."""
+    planted = f"9081726354{uuid.uuid4().hex}-fake_value"
+    lead = ("lanes-edit: WARNING: register write 0f1e2d3c-4b5a-4968-8776-655443322110 is in the "
+            "register at seq ")
+    told = _burst_report("one-login", ["lanes_w_fx"], [(0, 1.0, f"{lead}{planted}.\n")], [], [])
+    assert "9081726354" not in told and planted not in told, \
+        f"the value's leading digits are in the failure message:\n{told}"
+    assert not re.search(r"at seq [0-9]", told), f"a seq is shown:\n{told}"
+    assert "    and 1 WARNING line(s) of no known template, withheld" in told, \
+        f"the line, counted:\n{told}"
+    for joiner in ("; ", ", "):
+        line = f"{lead}42{joiner}its after-COMMIT steps ran at 2026-11-17T10:00:00Z in pid 4242."
+        assert _shown_warning(line) == f"{lead}42{joiner}[withheld].", \
+            f"the product's line, joined by {joiner!r}, is not shown: {_shown_warning(line)!r}"
 
 
 # ============================== D9's rollback and cutover rows (T278), real engine
