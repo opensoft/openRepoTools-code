@@ -1560,8 +1560,8 @@ class SilentAfterStartup:
         self.port = self.listener.getsockname()[1]
         self._spawn(self._accept, "accept")
 
-    #: The bound on each upstream connect (T229i). With a timeout set, a Unix
-    #: socket's connect never waits: a full backlog fails it at once.
+    #: The bound on each upstream connect (T229i). A Unix socket's connect can
+    #: wait on a full backlog until it completes or times out: `CONNECT_WAIT` bounds it.
     CONNECT_WAIT = 10.0
 
     def _start(self, target, name: str, *args) -> None:
