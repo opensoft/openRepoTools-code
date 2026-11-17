@@ -1726,12 +1726,19 @@ REAP_S = 10.0
 
 def _lines_of(stream, lines: queue.Queue) -> None:
     """Each line of `stream` onto `lines`, then None, at its end or where a
-    read fails, so no reader ends without it (T255k; T255m)."""
+    read fails, so no reader ends without it (T255k; T255m). The reader
+    closes `stream` itself, in a `finally`, before its None (T255o; Codex's
+    review of P09 at `b8f9e35a`, item 7): no other thread need close a pipe
+    while its read may be blocked, and a reader that outlives its session's
+    end still closes its pipe when it reaches the pipe's end."""
     try:
         for line in stream:
             lines.put(line)
     finally:
-        lines.put(None)
+        try:
+            stream.close()
+        finally:
+            lines.put(None)
 
 
 def _held(env: dict, psql: str):
@@ -1772,8 +1779,10 @@ def _end_pipes(session):
     readers have ended (T255n; Codex's review of P09 at `d3a2fd5c`, SHOULD
     2). A reader still running is blocked in a read of its pipe, and a close
     of that pipe waits for that read, which a process the session started
-    can hold without end; so that pipe is left to its reader, and the reader
-    is named. Returns the first failure, for `_end_held` to raise: a reader
+    can hold without end; so that pipe is left to its reader, which closes
+    it at that pipe's end (`_lines_of`, T255o), and the reader is named. An
+    ended reader has closed its own pipe, so its close here does nothing.
+    Returns the first failure, for `_end_held` to raise: a reader
     still running, or a close that failed; None where all is ended."""
     end = time.monotonic() + REAP_S
     for reader in session.readers:
@@ -1883,7 +1892,10 @@ def test_a_held_sessions_end_is_bounded_joins_its_readers_and_raises_what_it_can
     no engine: `psql` is one of T255m's stand-ins, `ASK_S` is 0.5 s and
     `REAP_S` 1 s.
 
-    `[read-fails]`: a reader whose read fails still ends its lines with None.
+    `[read-fails]`: a reader whose read fails still ends its lines with None,
+    its stream closed by then (T255o). Every other case ends with both
+    readers ended and both their pipes closed (T255o; Codex's review of P09
+    at `b8f9e35a`, item 7).
     `[answers]`: `_ask` returns, and `_end_held` ends the session 0 with both
     readers joined. `[never-answers]`: `_ask` fails naming its marker and the
     stderr the reader read, the session killed and reaped and both readers
@@ -1894,24 +1906,32 @@ def test_a_held_sessions_end_is_bounded_joins_its_readers_and_raises_what_it_can
     kill times out, raises `TimeoutExpired`. `[pipe-held]`: the session has
     started a process that holds its pipes for 5 s; `_ask` fails within
     `REAP_S` of its kill, naming the reader still running, and the readers end
-    once that process does.
+    once that process does, each closing its own pipe at that pipe's end.
 
     Before T255m, a failed read ended the reader with no None; the reader
     was never kept or joined; `_ask`'s reap after the kill and the shapes'
     `finally`'s were suppressed; and `_ask` then read stderr to its end,
-    which waited as long as any process held the pipe."""
+    which waited as long as any process held the pipe. Before T255o a reader
+    closed no stream, so a pipe left to its reader at the deadline stayed
+    open after that reader's end."""
     monkeypatch.setitem(globals(), "ASK_S", 0.5)
     monkeypatch.setitem(globals(), "REAP_S", 1.0)
     if case == "read-fails":
         class Breaks:
+            closed = False
+
             def __iter__(self):
                 yield "one\n"
                 raise OSError("the pipe broke")
-        lines = queue.Queue()
+
+            def close(self):
+                self.closed = True
+        lines, broken = queue.Queue(), Breaks()
         with pytest.raises(OSError):
-            _lines_of(Breaks(), lines)
+            _lines_of(broken, lines)
         got = [lines.get_nowait() for _ in range(lines.qsize())]
         assert got == ["one\n", None], f"a reader whose read fails must end with None: {got}"
+        assert broken.closed, "a reader whose read fails must close its own stream"
         return
     psql = tmp_path / "psql"
     psql.write_text(T255M_ANSWERS if case == "answers" else T255M_SILENT, encoding="utf-8")
@@ -1950,6 +1970,8 @@ def test_a_held_sessions_end_is_bounded_joins_its_readers_and_raises_what_it_can
         if case != "pipe-held":
             _end_held(session, kill=True)
     assert not any(reader.is_alive() for reader in session.readers), "a reader outlived the end"
+    closed = (session.stdout.closed, session.stderr.closed)
+    assert closed == (True, True), f"(stdout, stderr) closed are {closed} once the readers ended"
 
 
 class _StandInPipe:
