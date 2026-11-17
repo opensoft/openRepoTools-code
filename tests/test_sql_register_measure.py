@@ -1154,6 +1154,59 @@ def test_a_swapped_line_with_no_tab_is_withheld_from_the_failure_message():
     assert "exit 0" in said, f"the exit, shown:\n{said}"
 
 
+@pytest.mark.parametrize("case", ["listed-as-expected", "end-held-chain"])
+def test_pytests_own_report_of_a_measure_failure_shows_no_planted_writer_text(request, case):
+    """T255zb (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09 at `3f9fcac4`, B1), with no engine and no process: a failure whose
+    frames or chain hold a planted value, rendered as pytest renders a
+    failed test under the suite's own settings (bounds' `_reported`), holds
+    no planted value. Each case first proves the value is there:
+      - `listed-as-expected`: `_listed_as_expected`'s argument `proc`,
+        `swapped`'s `CompletedProcess`, whose stdout holds it (RV9-38:
+        measure :1124, T255u's new path);
+      - `end-held-chain`: `_end_held`'s explicit chain (T255q, T255r): a
+        held session whose kill fails, whose bounded reap times out with
+        the planted value in its `TimeoutExpired`'s kept stdout and stderr,
+        and whose stdin's close fails. pytest prints each error of the
+        chain, under short too; none of their messages holds a stream.
+    Under pytest's default `--tb=auto` the first shows the value as a long
+    entry's argument; T205e's short style shows none. An explicit
+    `--tb=long` or `--fulltrace` is not secret-safe. The planted value is no
+    credential of any login."""
+    planted = f"fake-{uuid.uuid4().hex}"
+    if case == "listed-as-expected":
+        proc = subprocess.CompletedProcess(["lanes-edit.sh", "swapped", WS], 0,
+                                           f"{CANDIDATES[1]}\tw2\n{planted}\n", "")
+        with pytest.raises(AssertionError) as failed:
+            _listed_as_expected(proc, "files", [CANDIDATES[0]])
+    else:
+        class _Pipe:
+            def close(self) -> None:
+                raise BrokenPipeError(32, "Broken pipe")
+
+        class _Held:
+            args, returncode, readers = ["psql", "-X", "-q"], None, []
+            stdin = stdout = stderr = _Pipe()
+
+            def poll(self):
+                return None
+
+            def kill(self) -> None:
+                raise ProcessLookupError(3, "No such process")
+
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired(self.args, timeout, output=f"out {planted}\n".encode(),
+                                                stderr=f"psql: {planted}\n".encode())
+
+        with pytest.raises(ProcessLookupError) as failed:
+            _end_held(_Held(), kill=True)
+        reaped = failed.value.__cause__
+        assert isinstance(reaped, subprocess.TimeoutExpired) and planted.encode() in reaped.output, \
+            "the chain does not hold the planted output, so this proves nothing"
+        assert isinstance(reaped.__cause__, BrokenPipeError), "the chain does not end at the close's error"
+    assert planted not in _reported(request, failed), f"[{case}] the planted value is in pytest's report"
+
+
 def test_swapped_with_several_candidates_is_timed_beside_its_journal_last_calls(pg_engine, pg, tmp_path):
     """Lane 3's third `--last` row (#165 6755922262): `lanes-edit.sh swapped
     <ws>` with one, three and six swapped lanes, exec to exit, cold once and
