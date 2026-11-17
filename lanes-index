@@ -1469,6 +1469,24 @@ def source_of(root: str) -> str:
     return f"register:{repo}"
 
 
+def _source_key(source: str) -> str:
+    """THE INDEX'S KEY FOR `source`, WITH NO CREDENTIAL (lane 3's ruling,
+    opensoft/openRepoTools-code#89 comment 6940341452): `source_of`'s value with
+    the userinfo of its URL taken out where that userinfo can be a credential:
+    all of it in an http(s) URL, where a token can stand as the user, and in any
+    URL whose userinfo holds a password (a `:`). Every other value - GitHub's
+    `owner/repo`, a path, an scp-like or ssh login such as `git@`, `inventory:`
+    and `register:?` - is returned as it is, so a source with no credential
+    keeps today's key and no stored row of it moves. Two keys are equal only
+    where the URLs differ by their credential alone: the same repository. The
+    userinfo is what stands before an `@` in the URL's authority, which ends at
+    its first `/`, `?` or `#` (RFC 3986 3.2)."""
+    m = re.match(r"(register:([A-Za-z][A-Za-z0-9+.-]*)://)([^/?#]*)@", source)
+    if m and (m.group(2).lower() in ("http", "https") or ":" in m.group(3)):
+        return m.group(1) + source[m.end():]
+    return source
+
+
 def branch() -> str:
     return os.environ.get("LANES_BRANCH") or "main"
 
@@ -4467,7 +4485,13 @@ class SqliteStore:
             want = old["commit_sha"] if old else None
             if (cur[0] if cur else None) != want or (cur is None) != (old is None):
                 self.conn.execute("ROLLBACK")
-                raise CasLost(f"the provenance of {source} moved under this sync "
+                # NO URL IN ANY FORM ON STDERR (exit-codes.md:57; lane 3's ruling,
+                # opensoft/openRepoTools-code#89 comment 6940341452): a key that is not
+                # a plain `register:` or `inventory:` name is not named.
+                shown = (source if re.fullmatch(r"(register|inventory):[A-Za-z0-9_.-]+"
+                                                r"(/[A-Za-z0-9_.-]+)?", source)
+                         else "this workstation's register")
+                raise CasLost(f"the provenance of {shown} moved under this sync "
                               f"(it read {str(want)[:12]}, the store now holds "
                               f"{str(cur[0] if cur else None)[:12]}); nothing was written")
             if cur is None:
@@ -20588,7 +20612,10 @@ def _stray_after_doubt(form: str, store, ident: dict, not_after: int, clock: tup
 # ================================================================ the acts
 
 def resolve_source(requested: str | None, root: str) -> str:
-    source = source_of(root)
+    # THE KEY WITH NO CREDENTIAL (lane 3's ruling, opensoft/openRepoTools-code#89
+    # comment 6940341452): the store's key and the status file's, and every
+    # label, `why` and line that names this workstation's register, are this one.
+    source = _source_key(source_of(root))
     if requested and requested != source:
         # THE FLAG OR THE SOURCE'S KIND, NEVER THE VALUE (lane 3's ruling,
         # opensoft/openRepoTools#165 6938005990; exit-codes.md:57, register-cli.md
@@ -21392,6 +21419,9 @@ def cmd_status() -> int:
         say(f"index: {exc.kind} - {exc.detail}")
         rc = 1
     local = read_status()
+    # THIS WORKSTATION'S KEY AS `resolve_source` FILES IT, WITH NO CREDENTIAL
+    # (lane 3's ruling, opensoft/openRepoTools-code#89 comment 6940341452)
+    source = _source_key(source)
     sources = [p["source"] for p in provs]
     if source and source not in sources:
         sources.append(source)
@@ -21406,7 +21436,8 @@ def cmd_status() -> int:
         sources.append(inv_source)
     for name in sorted(set(sources) | set(local)):
         prov = next((p for p in provs if p["source"] == name), None)
-        say(f"source {name}")
+        # a name a build before this one filed with a credential is shown without it
+        say(f"source {_source_key(name)}")
         if name.startswith(INVENTORY_PREFIX):
             if prov is None:
                 say("  provenance:  none - this inventory is not indexed (a wiped or "
