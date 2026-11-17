@@ -6349,6 +6349,11 @@ reg_config_present() {
 # that, and an inherited `REG_CLASS=mirror` would turn a writer's 78 into a
 # files-mode write. The writers' form (`reg_mode_ask`) passes none and keeps
 # its 69.
+# ITS OWN TIMER: the mirror form asks under 2 s, so that the block ends
+# inside its hook's 5 s, and every other caller under the writers' 5 s
+# (lane 3's ruling, code#103 6952718559). Its call is on its own line,
+# placed first, which T513's `_mode_timer` reads, and the 124 and 137
+# warnings name the timer that ran, `rmq_s`.
 reg_mode_query() {   # [mirror]
   rmq_bin="$(lanes_index_bin)"
   if [ -z "$rmq_bin" ]; then
@@ -6363,7 +6368,13 @@ reg_mode_query() {   # [mirror]
   rmq_rc=0; rmq_timer=bare
   if command -v timeout >/dev/null 2>&1; then
     rmq_timer=timed
-    ( timeout -k 1 5 "$rmq_bin" mode </dev/null >"$rmq_dir/out" 2>"$rmq_dir/err"; exit "$?" ) 2>/dev/null || rmq_rc=$?
+    if [ "${1-}" = mirror ]; then
+      rmq_s=2
+      ( timeout -k 1 2 "$rmq_bin" mode </dev/null >"$rmq_dir/out" 2>"$rmq_dir/err"; exit "$?" ) 2>/dev/null || rmq_rc=$?
+    else
+      rmq_s=5
+      ( timeout -k 1 5 "$rmq_bin" mode </dev/null >"$rmq_dir/out" 2>"$rmq_dir/err"; exit "$?" ) 2>/dev/null || rmq_rc=$?
+    fi
   else
     ( "$rmq_bin" mode </dev/null >"$rmq_dir/out" 2>"$rmq_dir/err"; exit "$?" ) 2>/dev/null || rmq_rc=$?
   fi
@@ -6398,9 +6409,9 @@ reg_mode_query() {   # [mirror]
     # one warning, as F8 runs every failure but 78 (Y:5712–5713; FR-002;
     # contract §3.1; lane 3, #165 6755641373, point 1).
     124:timed)
-      reg_mode_files "did not answer within its 5 s timer, and was stopped (exit 124)" ;;
+      reg_mode_files "did not answer within its $rmq_s s timer, and was stopped (exit 124)" ;;
     137:timed)
-      reg_mode_files "was killed (exit 137): by its 5 s timer after it ignored the stop, or by a signal" ;;
+      reg_mode_files "was killed (exit 137): by its $rmq_s s timer after it ignored the stop, or by a signal" ;;
     137:bare)
       reg_mode_files "was killed by a signal (exit 137)" ;;
     *)
