@@ -5660,3 +5660,48 @@ def test_a_psql_answer_pgcluster_did_not_expect_is_counted_never_quoted(
         call()
     assert not _t257zzb_seen(request, failed, planted), \
         f"{kind}: the planted value shows in {_t257zzb_seen(request, failed, planted)}"
+
+
+@pytest.mark.parametrize("kind", ["version", "pg-config"])
+def test_the_engine_probes_problem_shows_no_text_a_tool_printed(monkeypatch, tmp_path, request, kind):
+    """T257zzd (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09, B2; T229o), with no engine and no process: the probe that finds
+    the binaries (`Probe`) meets a tool whose output holds a planted value,
+    subprocess.run a stand-in. `[version]`: `PG_BIN` names a directory of
+    the four tools, whose `--version` names another major beside the
+    planted value. `[pg-config]`: `PG_BIN` unset, the only `pg_config` on
+    `PATH` prints a directory named by the planted value. The problem,
+    failed as `pg_engine` fails it under the switch, holds `real
+    PostgreSQL 16`, `PG_BIN` and the package's name, as the fixture's tests
+    and the gate read them, and the planted value is in none of the
+    failure's `str`, `repr`, `args` or formatted traceback, nor in pytest's
+    report of it (`_t257zzb_seen`). Before T229o the problem quoted the
+    `--version` line and printed `pg_config`'s output twice. The planted
+    value is no credential of any login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    for name in pgcluster.TOOLS + ("pg_config",):
+        (tools / name).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        (tools / name).chmod(0o755)
+
+    def run(argv, **kw):
+        said = (f"/nonexistent/{planted}\n" if argv[-1] == "--bindir" else
+                f"{Path(argv[0]).name} {planted} (PostgreSQL) {pgcluster.MAJOR - 1}.4\n")
+        return subprocess.CompletedProcess(argv, 0, said, "")
+
+    monkeypatch.setattr(pgcluster.subprocess, "run", run)
+    if kind == "version":
+        monkeypatch.setenv("PG_BIN", str(tools))
+    else:
+        monkeypatch.delenv("PG_BIN", raising=False)
+        monkeypatch.setenv("PATH", str(tools))
+    found = pgcluster.Probe()
+    assert found.bindir is None and found.problem, f"{kind}: the probe found binaries"
+    for word in (pgcluster.SKIP_TAG, "PG_BIN", pgcluster.PACKAGE):
+        assert word in found.problem, f"{kind}: the problem does not say {word}"
+    with pytest.raises(pytest.fail.Exception) as failed:
+        pytest.fail(found.problem, pytrace=False)  # `pg_engine`'s, under the switch
+    assert not _t257zzb_seen(request, failed, planted), \
+        f"{kind}: the planted value shows in {_t257zzb_seen(request, failed, planted)}"
