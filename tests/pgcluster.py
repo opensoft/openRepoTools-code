@@ -762,14 +762,19 @@ class Cluster:
                      ["login", "add", "--dump-job", "--admin-service", service]):
             code, out, err = self.lanes_index_tty(argv)
             if code != 0:
-                raise ClusterError(f"`lanes-index {' '.join(argv[:3])}` through the admin service "
-                                   f"on {database} exited {code}, so the fixture has no logins "
-                                   f"(lane 1's T110, L1-A8, builds `login`): stdout: "
-                                   f"{len(out.splitlines())} line(s), "
-                                   f"{len(PASSWORD_LINE.findall(out))} of them password-file "
-                                   f"lines; stderr: {len(err.splitlines())} line(s); no line of "
-                                   f"either is shown")
+                failed = (f"`lanes-index {' '.join(argv[:3])}` through the admin service "
+                          f"on {database} exited {code}, so the fixture has no logins "
+                          f"(lane 1's T110, L1-A8, builds `login`): stdout: "
+                          f"{len(out.splitlines())} line(s), "
+                          f"{len(PASSWORD_LINE.findall(out))} of them password-file "
+                          f"lines; stderr: {len(err.splitlines())} line(s); no line of "
+                          f"either is shown")
+                del out, err
+                raise ClusterError(failed)
             self.passwords.update(PASSWORD_LINE.findall(out))
+            # T229u (RV9-41, N1): `login add`'s output, its password-file lines
+            # with their clear passwords, stays in no frame a later raise keeps.
+            del out, err
         names = ", ".join(f"'{login}'" for login in FX_LOGINS)
         can = self.psql(f"SELECT rolname FROM pg_catalog.pg_roles WHERE rolcanlogin AND "
                         f"rolname IN ({names}) ORDER BY 1;").stdout.split()
