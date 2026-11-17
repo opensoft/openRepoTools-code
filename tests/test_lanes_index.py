@@ -1392,6 +1392,96 @@ def test_the_bootstrap_names_a_refused_register_schema_by_its_key(estate, value,
     assert not ran.exists(), f"psql was run:\n{said}"
 
 
+# ================================== a `--source` or an `--out` value, never echoed
+#
+# Round 4's commit 10, on lane 3's ruling (opensoft/openRepoTools#165 6938005990) of
+# Codex's BLOCKING 2 in its exact-head review of P10 at 2d9247f7: `resolve_source`'s
+# three refusals, `inventory_source`'s and `export`'s line for an `--out` that is not a
+# directory (Amendment 14 act 2's, and opensoft/openRepoTools#171's for the inventory)
+# printed the value given, so a URL or a `password=` value reached stderr, or `export`'s
+# `why` file. Each names the flag, or the source's kind, and no value (exit-codes.md:57;
+# register-cli.md section 2.6). Every exit is kept.
+
+#: Where an `export` row's `--out` directory goes in its arguments.
+OUT_DIR = "<the out directory>"
+
+#: The words of each refusal, whole where they name no path.
+SOURCE_NOT_THIS_REGISTER = "not the source `--source` names"
+SOURCE_NOT_THIS_INVENTORY = ("this workstation's inventory is inventory:Eagle, not the "
+                             "inventory `--source` names")
+SOURCE_A_LEDGER = "`--source` names the managed ledger's half"
+SOURCE_AN_INVENTORY = "`--source` names a worktree inventory"
+OUT_NOT_A_DIRECTORY = "lanes-index: --out is not a directory\n"
+
+#: (id, the arguments after `lanes-index`, the exit, the words, and where they are:
+#: stderr, or `export`'s `why` file)
+NO_ECHO_SOURCES = [
+    ("sync-uri", ("sync", "--source", CONFIG_URI), 2, SOURCE_NOT_THIS_REGISTER, "stderr"),
+    ("sync-key-value", ("sync", "--source", f"password={CONFIG_SECRET}"), 2,
+     SOURCE_NOT_THIS_REGISTER, "stderr"),
+    ("sync-inventory-key-value", ("sync", "--source", f"inventory:password={CONFIG_SECRET}"),
+     2, SOURCE_NOT_THIS_INVENTORY, "stderr"),
+    ("sync-ledger-key-value", ("sync", "--source", f"ledger:password={CONFIG_SECRET}"), 2,
+     SOURCE_A_LEDGER, "stderr"),
+    ("reconcile-uri", ("reconcile", "--source", CONFIG_URI), 2, SOURCE_NOT_THIS_REGISTER,
+     "stderr"),
+    ("reconcile-key-value", ("reconcile", "--source", f"password={CONFIG_SECRET}"), 2,
+     SOURCE_NOT_THIS_REGISTER, "stderr"),
+    ("reconcile-inventory-uri", ("reconcile", "--source", f"inventory:{CONFIG_URI}"), 2,
+     SOURCE_NOT_THIS_INVENTORY, "stderr"),
+    ("reconcile-ledger-uri", ("reconcile", "--source", f"ledger:{CONFIG_URI}"), 2,
+     SOURCE_A_LEDGER, "stderr"),
+    ("export-out-uri", ("export", "--out", CONFIG_URI), 64, OUT_NOT_A_DIRECTORY, "stderr"),
+    ("export-out-key-value", ("export", "--out", f"password={CONFIG_SECRET}"), 64,
+     OUT_NOT_A_DIRECTORY, "stderr"),
+    ("export-source-uri", ("export", "--out", OUT_DIR, "--source", CONFIG_URI), 2,
+     SOURCE_NOT_THIS_REGISTER, "why"),
+    ("export-source-key-value",
+     ("export", "--out", OUT_DIR, "--source", f"password={CONFIG_SECRET}"), 2,
+     SOURCE_NOT_THIS_REGISTER, "why"),
+    ("export-source-inventory-key-value",
+     ("export", "--out", OUT_DIR, "--source", f"inventory:password={CONFIG_SECRET}"), 2,
+     SOURCE_AN_INVENTORY, "why"),
+]
+
+
+@pytest.mark.parametrize("argv, code, words, where", [
+    pytest.param(argv, code, words, where, id=ident)
+    for ident, argv, code, words, where in NO_ECHO_SOURCES])
+def test_a_source_or_out_value_is_never_echoed(estate, argv, code, words, where):
+    """THE FLAG OR THE SOURCE'S KIND, NEVER THE VALUE (exit-codes.md:57): a URL or a
+    `password=` value given to `sync` or `reconcile` as `--source`, plain or after
+    `inventory:` or `ledger:`, is refused with 2 before anything is read or written; as
+    `export`'s `--out`, it is usage, 64; as `export`'s `--source`, it is refused with 2
+    in the `why` file. Each names the flag, or the source's kind: the value is on
+    neither stream nor in `why`, stdout is empty, no `psql` runs and no store is made."""
+    out = estate.root / "exp"
+    out.mkdir()
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    ran = estate.root / "psql-ran.txt"
+    (fake / "psql").write_text(f"#!/bin/sh\necho ran >> {shlex.quote(str(ran))}\nexit 1\n")
+    (fake / "psql").chmod(0o755)
+    res = estate.index(*[str(out) if a == OUT_DIR else a for a in argv],
+                       env={"PATH": estate.path_with(fake)})
+    why = (out / "why").read_text(encoding="utf-8") if (out / "why").exists() else ""
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}\nwhy:\n{why}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert res.returncode == code, f"exit {res.returncode}, not {code}:\n{said}"
+    for shown in (res.stdout, res.stderr, why):
+        assert CONFIG_SECRET not in shown, f"the value was echoed:\n{said}"
+        assert CONFIG_HOST not in shown, f"the URL's host was echoed:\n{said}"
+    if where == "why":
+        assert words in why and res.stderr == "", said
+    elif words.endswith("\n"):
+        assert res.stderr == words, said
+    else:
+        assert words in res.stderr, said
+    assert res.stdout == "", said
+    assert not ran.exists(), f"psql was run:\n{said}"
+    assert not estate.sqlite.exists(), f"a store was made:\n{said}"
+
+
 FAKE_PSQL = r"""#!/usr/bin/env python3
 # A FAKE psql: it records what it was asked and answers the few queries
 # lanes-index makes as an EMPTY schema-1 store would. No database exists.
@@ -2704,10 +2794,11 @@ def test_a_source_is_refused_before_the_lock_is_asked_for(estate):
         assert not list(state.glob("lanes-index.rerun*")), "a refused source left a mark"
         own = estate.index("sync", "--source", "inventory")
     assert other.returncode == 2, (other.stdout, other.stderr)
-    assert "this workstation's inventory is inventory:Eagle, not inventory:Raven" in other.stderr
+    assert ("this workstation's inventory is inventory:Eagle, not the inventory `--source` names"
+            in other.stderr)
     assert nameless.returncode == 2 and "LANES_WORKSTATION" in nameless.stderr, nameless.stderr
     assert register.returncode == 2, (register.stdout, register.stderr)
-    assert "not register:someone/else" in register.stderr
+    assert "not the source `--source` names" in register.stderr
     # NOT VACUOUS: this workstation's own source, the lock still held, marks
     assert own.returncode == 0 and "another sync holds" in own.stdout, own.stdout
     assert [p.name for p in state.glob("lanes-index.rerun*")] == ["lanes-index.rerun-inventory"]

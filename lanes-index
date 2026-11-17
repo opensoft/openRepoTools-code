@@ -5496,15 +5496,19 @@ class SyncLock:
 def resolve_source(requested: str | None, root: str) -> str:
     source = source_of(root)
     if requested and requested != source:
+        # THE FLAG OR THE SOURCE'S KIND, NEVER THE VALUE (lane 3's ruling,
+        # opensoft/openRepoTools#165 6938005990; exit-codes.md:57, register-cli.md
+        # section 2.6): `--source` may hold a misplaced URL or `password=` value.
         if is_inventory(requested):
-            raise Refusal(f"{requested} is this workstation's worktree inventory, which "
-                          f"`sync`/`reconcile --source inventory` write and `export "
-                          f"--worktrees` reads; this is the register's path")
+            raise Refusal("`--source` names a worktree inventory, which "
+                          "`sync`/`reconcile --source inventory` write and `export "
+                          "--worktrees` reads; this is the register's path")
         if requested.startswith("ledger:"):
-            raise Refusal(f"{requested} is the managed ledger's half, which T058 of the 001 "
-                          f"feature writes (Amendment 14(g) act 4); this indexer writes the "
-                          f"register half only")
-        raise Refusal(f"this workstation's register is {source}, not {requested}")
+            raise Refusal("`--source` names the managed ledger's half, which T058 of the 001 "
+                          "feature writes (Amendment 14(g) act 4); this indexer writes the "
+                          "register half only")
+        raise Refusal(f"this workstation's register is {source}, not the source `--source` "
+                      f"names")
     return source
 
 
@@ -5697,8 +5701,10 @@ def inventory_source(requested: str | None) -> str:
                       "LANES_WORKSTATION, as the launcher does")
     source = f"{INVENTORY_PREFIX}{name}"
     if requested and requested not in ("inventory", source):
-        raise Refusal(f"this workstation's inventory is {source}, not {requested}: an "
-                      f"inventory is synced by the workstation whose disk holds it")
+        # THE SOURCE'S KIND, NEVER THE VALUE, as `resolve_source` says (lane 3's ruling)
+        raise Refusal(f"this workstation's inventory is {source}, not the inventory "
+                      f"`--source` names: an inventory is synced by the workstation whose "
+                      f"disk holds it")
     return source
 
 
@@ -6335,7 +6341,9 @@ def cmd_export(out_dir: str, requested: str | None, worktrees: bool = False) -> 
     success `meta`; on any reason the index cannot answer, `why` - one line,
     which `lanes-edit.sh` prints as `read: sources (index <why>)`."""
     if not os.path.isdir(out_dir):
-        note(f"--out {out_dir} is not a directory")
+        # THE FLAG, NEVER ITS VALUE (lane 3's ruling, opensoft/openRepoTools#165
+        # 6938005990; exit-codes.md:57): `--out` may hold a misplaced URL or password.
+        note("--out is not a directory")
         return 64
 
     def unusable(kind: str, detail: str) -> int:
