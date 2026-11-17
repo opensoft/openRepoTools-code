@@ -9484,8 +9484,9 @@ def register_serve_sweep(paths: dict) -> None:
     descriptor, not the path: a directory, of this uid, with mode exactly
     0700. It then lists the descriptor (`os.listdir(fd)`) and reads and
     removes each entry relative to it (`os.lstat(name, dir_fd=fd)`,
-    `os.unlink(name, dir_fd=fd)`), so no path is resolved again after the
-    check, and the descriptor is closed on every path.
+    `os.unlink(name, dir_fd=fd)`), so neither `run/` nor an entry is
+    resolved by its path again after the check (`register.log` still is,
+    below), and the descriptor is closed on every path.
 
     WHAT THIS ENFORCES: the entries it lists, reads and removes are those of
     the directory it checked, even where `run/`'s parent is writable by
@@ -9495,13 +9496,18 @@ def register_serve_sweep(paths: dict) -> None:
     each final component without following a link. A `run/` that cannot be
     opened, is not a directory, is not this uid's or is not mode 0700, or
     whose descriptor cannot be `fstat`ed, is not swept at all, and one line
-    says so; so does a platform where `os.stat` and `os.unlink` take no
-    `dir_fd` or `os.listdir` takes no descriptor (`os.supports_dir_fd`,
-    `os.supports_fd`), which fails closed the same way.
+    says so, and the start goes on by `run/`'s path as before; so does a
+    platform where `os.stat` or `os.unlink` takes no `dir_fd`, or
+    `os.listdir` takes no descriptor (`os.supports_dir_fd`,
+    `os.supports_fd`; `os.lstat` is `os.stat` with `follow_symlinks=False`
+    and is in neither set, so `os.stat` is the member checked), which
+    fails closed the same way.
 
-    THAT ONE LINE GOES TO STANDARD ERROR, NOT TO `register.log` (lane 5's
-    commit 17 report; socket API 2.2 and ERR-28: nothing is written in a
-    directory that fails its check): `register_serve_log` opens `register.log`
+    THAT ONE LINE GOES TO STANDARD ERROR, NEVER TO `register.log` BY ITS
+    PATH (lane 5's commit 17 report; socket API 2.2 and ERR-28: nothing is
+    opened or made in a directory that fails its check, and, as with
+    `cmd_serve`'s own refusal of the directory, the line goes only to the
+    descriptor `serve` was given): `register_serve_log` opens `register.log`
     by its path, into the directory that failed, or through a link planted
     in its place, to its target. Standard error resolves no path: where the
     launcher started `serve` (`register_serve_launch`), it is the descriptor of
@@ -9537,8 +9543,10 @@ def register_serve_sweep(paths: dict) -> None:
     bb19b1ad, #165 6886976981, NIT 6; its review of 1e1846e3, NIT 1): the
     sweep attempts each removal and does not promise one. An entry gone
     before it is reached (`ENOENT`, at the `lstat` or at the removal) is
-    passed over. Any other failure is written to `register.log`: where `run/`
-    cannot be listed no entry is tried, and where an entry cannot be
+    passed over. Any other failure after the descriptor's check is written
+    to `register.log` (the check's own refusal goes to standard error,
+    above): where `run/` cannot be listed no entry is tried, and where an
+    entry cannot be
     `lstat`ed or removed, that leftover stays at its name and the sweep goes
     on to the next entry; a temporary file's line says "temporary file" where
     a socket's says "temporary socket".
