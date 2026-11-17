@@ -471,7 +471,10 @@ def _counted(proc) -> str:
 #: `[0-9A-Z]` with a digit among them, as every SQLSTATE of PostgreSQL's and
 #: of the product's has, then `:`. So no word of psql's message, five
 #: capitals such as `SYNTH:`, nor a line after an `ERROR:` that ends its own,
-#: is shown as one.
+#: is shown as one. Its limit (T229r): at psql's default verbosity, a message
+#: whose first word is five of `[0-9A-Z]` with a digit and a colon would be
+#: shown as a SQLSTATE. PostgreSQL's primary messages begin in lower case, and
+#: psql's echo of a statement is a `LINE n:` line, which never matches.
 _PSQL_ERROR = re.compile(r"^(?:psql:\S*: )?(?:ERROR|FATAL|PANIC):", re.M)
 _SQLSTATE = re.compile(r"^(?:psql:\S*: )?(?:ERROR|FATAL|PANIC):[ \t]+(?=[A-Z]{0,4}[0-9])([0-9A-Z]{5}):",
                        re.M)
