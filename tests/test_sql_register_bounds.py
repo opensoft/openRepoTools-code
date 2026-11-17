@@ -5843,6 +5843,7 @@ def _t257zzb_seen(request, failed, planted: str) -> list:
              "report": str(report), "reprcrash": message}
     return sorted(name for name, text in shown.items() if planted in text)
 
+
 @pytest.mark.parametrize("kind", ["initdb", "bootstrap", "import", "lanes-edit", "git", "commit-id",
                                   "openssl", "login-add", "tls-connect"])
 def test_a_failed_tools_cluster_error_in_pgcluster_shows_no_line_of_its_output(
@@ -5917,8 +5918,7 @@ def test_a_failed_tools_cluster_error_in_pgcluster_shows_no_line_of_its_output(
         call = lambda: register.git("push", "-q", "origin", "main")  # noqa: E731
     elif kind == "commit-id":
         monkeypatch.setattr(pgcluster.subprocess, "run", ran(code=0, answer=planted))
-        call = lambda: (getattr(register, "commit_of", None)  # noqa: E731
-                        or (lambda ref: register.git("rev-parse", ref)))("origin/main")
+        call = lambda: register.commit_of("origin/main")  # noqa: E731
     elif kind == "openssl":
         monkeypatch.setattr(pgcluster.subprocess, "run", ran())
         call = lambda: pgcluster._openssl(["req", "-x509"], tmp_path)  # noqa: E731
