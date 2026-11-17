@@ -71,7 +71,9 @@ edit and the `files` row, the image's digest computed here, and no
 structured rows, which `commit_write` takes as empty lists.
 
 REAL ENGINE. Every case depends on `pg_engine` (T205), so without
-PostgreSQL 16 each skips with T205's banner. They fail until lane 1's T107
+PostgreSQL 16 each skips with T205's banner; the cases of this module's own
+clean-up helpers (from T237zzy on) are the exception, take no engine and
+run on any host with bash. The engine's cases fail until lane 1's T107
 (L1-A6, the schema and `commit_write`), T111 (L1-A9, `register snapshot`),
 T112 (L1-A10, `register commit`) and T114 (L1-A12, `journal --last`), lane
 5's L5-A3 and L5-A5 (T506's `swapped` on primary), and lane 2's T227 (the
@@ -1469,6 +1471,91 @@ def _end_group(proc: subprocess.Popen, wait: float = 10.0) -> None:
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(proc.pid, signal.SIGKILL)
     proc.wait(wait)
+
+
+def _signals_kept_to_unreaped(monkeypatch) -> list:
+    """For the no-engine cases of this module's clean-up (T237zzy):
+    `os.kill` and `os.killpg` replaced, for the case, by forms that send a
+    signal only while its target, a pid or the group its pid leads, is still
+    an unreaped child of this process, as `os.waitid(..., WNOWAIT)` sees it.
+    Any other signal is sent to nothing and recorded, as (call, pid,
+    signal), in the list returned."""
+    late, real = [], {"kill": os.kill, "killpg": os.killpg}
+
+    def unreaped(pid: int) -> bool:
+        try:
+            os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return False
+        return True
+
+    def kept(call: str):
+        def send(pid: int, sig: int) -> None:
+            if unreaped(pid):
+                real[call](pid, sig)
+            else:
+                late.append((call, pid, signal.Signals(sig).name))
+        return send
+    monkeypatch.setattr(os, "kill", kept("kill"))
+    monkeypatch.setattr(os, "killpg", kept("killpg"))
+    return late
+
+
+def test_m13s_group_cleanup_signals_a_group_only_while_its_leader_is_unreaped_and_raises_a_failed_reap(
+        monkeypatch):
+    """`_end_group` (T237zzo; Codex's review of P09 at `21dd3642`,
+    BLOCKING), with no engine (T237zzy): on process groups this case starts,
+    each led by a process in a session of its own as `[m5]`'s service and
+    `hook_pid`'s stand-in are, with `_signals_kept_to_unreaped` between it
+    and every signal.
+
+    (a) A leader already reaped, as `[m5]`'s `poll()` leaves a service that
+    ended before its socket: no signal at all.
+    (b) One that TERM ends: its exit is -SIGTERM, and nothing is signalled
+    once it is reaped.
+    (c) One deaf to TERM: KILL ends it once `wait` has passed.
+    (d) One whose reap times out (its `wait` replaced by one that raises):
+    `TimeoutExpired` is raised, not suppressed.
+
+    Before T237zzo, (a) sent TERM and KILL to the reaped leader's group, (b)
+    KILL after its own reap, and (d) returned as if the leader were reaped."""
+    late = _signals_kept_to_unreaped(monkeypatch)
+
+    def start(argv: list) -> subprocess.Popen:
+        return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                start_new_session=True)
+
+    proc = start(["true"])
+    proc.communicate(timeout=30)
+    _end_group(proc, wait=5)
+    assert late == [], f"(a) a reaped leader's group was signalled: {late}"
+
+    proc = start(["sleep", "30"])
+    _end_group(proc, wait=5)
+    proc.stdout.close()
+    assert (proc.returncode, late) == (-signal.SIGTERM, []), \
+        f"(b) exit {proc.returncode}, signals after the reap {late}"
+
+    proc = start(["bash", "-c", "trap '' TERM; echo deaf; exec sleep 30"])
+    assert proc.stdout.readline() == b"deaf\n", "(c) the stand-in never ignored TERM"
+    _end_group(proc, wait=0.5)
+    proc.stdout.close()
+    assert (proc.returncode, late) == (-signal.SIGKILL, []), \
+        f"(c) exit {proc.returncode}, signals after the reap {late}"
+
+    proc = start(["sleep", "30"])
+
+    def stuck(timeout=None, proc=proc):
+        raise subprocess.TimeoutExpired(proc.args, timeout)
+    proc.wait = stuck
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            _end_group(proc, wait=5)
+    finally:
+        del proc.wait
+        proc.wait(30)
+        proc.stdout.close()
+    assert late == [], f"(d) signals after the reap {late}"
 
 
 def _path_m5(reg, root: Path):
