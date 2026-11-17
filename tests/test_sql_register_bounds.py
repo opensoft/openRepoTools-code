@@ -1229,24 +1229,32 @@ class Bench:
 
 
 def _end_process(proc: subprocess.Popen, *, group: bool, wait: float = 10.0) -> None:
-    """`proc` ended and reaped (T237zzl; Codex's review of P09 at `f4f0ebce`,
-    SHOULD 4): TERM, a wait of `wait` s, then KILL, and a reap, its wait
-    bounded too. With `group`, each signal goes to `proc`'s process group,
-    which `start_new_session=True` made its own, so a child it started, such
-    as the service's `psql`, ends with it. A process or a group already gone
-    is not an error, and nothing here raises."""
+    """`proc` ended and reaped, and never signalled once its pid may be
+    another process's (T237zzn; Codex's review of P09 at `21dd3642`,
+    BLOCKING). A process already reaped, `returncode` set, as after a `poll()`
+    or a `communicate()` that saw it end, gets no signal. Otherwise each
+    signal is sent while it is still unreaped, so its pid, and with `group`
+    the id of the process group `start_new_session=True` made it lead, are
+    still its own: TERM; up to `wait` s for its exit, watched by
+    `os.waitid(..., WNOWAIT)`, which does not reap it; KILL; then one reap,
+    `proc.wait(wait)`, whose `TimeoutExpired` is raised, not suppressed. A
+    reap by anything else meanwhile raises `ChildProcessError` from
+    `os.waitid`, before the KILL. With `group`, TERM and KILL go to the
+    group, so a child it started, such as the service's `psql`, gets them."""
+    if proc.returncode is not None:
+        return
+
     def send(sig: int) -> None:
         with contextlib.suppress(ProcessLookupError, PermissionError):
-            if group:
-                os.killpg(proc.pid, sig)
-            elif proc.poll() is None:
-                proc.send_signal(sig)
+            (os.killpg if group else os.kill)(proc.pid, sig)
     send(signal.SIGTERM)
-    with contextlib.suppress(subprocess.TimeoutExpired):
-        proc.wait(wait)
+    end = time.monotonic() + wait
+    while time.monotonic() < end:
+        if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+            break
+        time.sleep(0.05)
     send(signal.SIGKILL)
-    with contextlib.suppress(subprocess.TimeoutExpired):
-        proc.wait(wait)
+    proc.wait(wait)
 
 
 def _record(row: str, elapsed: float, bound: float, rule: str) -> None:
