@@ -5475,3 +5475,124 @@ def test_a_server_log_holding_a_roles_password_reaches_no_cluster_error_or_its_r
     with pytest.raises(pgcluster.ClusterError):
         tls.launch()
     assert len(started) - before == 1, "a start that failed with no bind was tried again"
+
+
+def _t257zzb_seen(request, failed, planted: str) -> list:
+    """`_t257zza_seen`'s places (T257zzb), for any failure pytest renders,
+    a `pytest.fail(..., pytrace=False)` among them, whose report is its
+    message alone: the exception's `str`, `repr`, `args` and formatted
+    traceback, and `request.node.repr_failure(failed)`'s `str()` (the
+    terminal's and JUnit's failure body) and `reprcrash.message` (JUnit's
+    message). The `reprcrash` must name the exception's class, or the
+    rendering is not one."""
+    import traceback
+    report = request.node.repr_failure(failed)
+    crash = getattr(report, "reprcrash", None)
+    message = "" if crash is None else str(crash.message)
+    assert failed.type.__name__ in message, "pytest's report of the failure was not rendered"
+    shown = {"str": str(failed.value), "repr": repr(failed.value), "args": repr(failed.value.args),
+             "traceback": "".join(traceback.format_exception(failed.type, failed.value, failed.tb)),
+             "report": str(report), "reprcrash": message}
+    return sorted(name for name, text in shown.items() if planted in text)
+
+@pytest.mark.parametrize("kind", ["initdb", "bootstrap", "import", "lanes-edit", "git", "commit-id",
+                                  "openssl", "login-add", "tls-connect"])
+def test_a_failed_tools_cluster_error_in_pgcluster_shows_no_line_of_its_output(
+        monkeypatch, tmp_path, request, kind):
+    """T257zzb (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09, B2; T229m), with no engine and no process: each tool pgcluster
+    runs fails with a planted value on both its streams, subprocess.run or
+    the cluster's own runner being a stand-in, and the failure shows only
+    the exit and counts. The kinds: initdb in `start()`; `lanes-index
+    bootstrap`; `lanes-index import --at`, whose failure is
+    `imported_problem`, raised as `pg_imported` raises it; `lanes-edit.sh`
+    through `_run_ok`; git; `git rev-parse` printing no commit id (exit 0);
+    openssl; `lanes-index login add`, with a password-file line among its
+    output; and the TLS smoke's verify-full connect. The planted value is
+    in none of the failure's `str`, `repr`, `args` or formatted traceback,
+    nor in pytest's report of it (`_t257zzb_seen`). Before T229m each
+    showed the tool's text. The planted value is no credential of any
+    login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+    said_on = (f"{planted} on stdout\n", f"{kind}: {planted} on stderr\n")
+
+    def ran(code=1, answer=None):
+        def run(argv, **kw):
+            lines = said_on if answer is None else (answer, "")
+            if not kw.get("text"):
+                lines = tuple(part.encode() for part in lines)
+            return subprocess.CompletedProcess(argv, code, *lines)
+        return run
+
+    monkeypatch.setattr(pgcluster, "_IMPORTED", [])
+    cluster = pgcluster.Cluster(tmp_path / "bin")
+    cluster.root = tmp_path
+    register = object.__new__(pgcluster.ImportedRegister)
+    register.root, register.wip, register.env = tmp_path, tmp_path, {}
+    kinds = pgcluster.ClusterError
+    if kind == "initdb":
+        root = tmp_path / "root"
+        root.mkdir()
+        cluster.root = None
+        monkeypatch.setattr(pgcluster, "sweep_stale", lambda: [])
+        monkeypatch.setattr(pgcluster.tempfile, "mkdtemp", lambda **kw: str(root))
+        monkeypatch.setattr(pgcluster, "SOCKET_MAX", 1 << 20)
+        monkeypatch.setattr(pgcluster.subprocess, "run", ran())
+        call = cluster.start
+    elif kind == "bootstrap":
+        monkeypatch.setattr(cluster, "lanes_index", lambda argv: ran()(argv, text=True))
+        call = lambda: cluster.bootstrap(pgcluster.TEMPLATE, pgcluster.FX_LABEL)  # noqa: E731
+    elif kind == "import":
+        class Register:
+            def __init__(self, root, bindir):
+                self.c = "0" * 40
+
+            def import_at(self, cluster, database, user):
+                return ran()(["lanes-index", "import"], text=True)
+        cluster.label = pgcluster.FX_LABEL
+        monkeypatch.setattr(pgcluster, "ImportedRegister", Register)
+        monkeypatch.setattr(cluster, "psql", lambda *a, **kw: subprocess.CompletedProcess(a, 0, "", ""))
+        monkeypatch.setattr(cluster, "drop_database", lambda name: None)
+
+        def call():
+            cluster.build_imported()
+            # `pg_imported`'s own words, where the session has no tmpl_imported
+            pytest.fail(f"no {pgcluster.IMPORTED} on the session cluster, so this case cannot "
+                        f"clone it: {cluster.imported_problem}", pytrace=False)
+        kinds = pytest.fail.Exception
+    elif kind == "lanes-edit":
+        monkeypatch.setattr(pgcluster.subprocess, "run", ran())
+        call = lambda: register._run_ok(["bash", "lanes-edit.sh", "log"])  # noqa: E731
+    elif kind == "git":
+        monkeypatch.setattr(pgcluster.subprocess, "run", ran(code=128))
+        call = lambda: register.git("push", "-q", "origin", "main")  # noqa: E731
+    elif kind == "commit-id":
+        monkeypatch.setattr(pgcluster.subprocess, "run", ran(code=0, answer=planted))
+        call = lambda: (getattr(register, "commit_of", None)  # noqa: E731
+                        or (lambda ref: register.git("rev-parse", ref)))("origin/main")
+    elif kind == "openssl":
+        monkeypatch.setattr(pgcluster.subprocess, "run", ran())
+        call = lambda: pgcluster._openssl(["req", "-x509"], tmp_path)  # noqa: E731
+    elif kind == "login-add":
+        line = f"*:*:{pgcluster.TEMPLATE}:{pgcluster.FX_WRITER}:{planted}\n"
+        monkeypatch.setattr(cluster, "lanes_index_tty",
+                            lambda argv: (1, line + said_on[0], said_on[1]))
+        call = lambda: cluster.make_logins(pgcluster.TEMPLATE)  # noqa: E731
+    else:
+        class Found:
+            bindir = tmp_path / "bin"
+
+        def connect(argv, **kw):
+            failing = any("pg_stat_ssl" in part for part in argv)
+            return ran(code=2 if failing else 0, answer=None if failing else "")(argv, text=True)
+        monkeypatch.setattr(pgcluster.TLSCluster, "start", lambda self: None)
+        monkeypatch.setattr(pgcluster.TLSCluster, "client_env", lambda self, *a, **kw: {})
+        monkeypatch.setattr(pgcluster.TLSCluster, "destroy", lambda self: None)
+        monkeypatch.setattr(pgcluster.subprocess, "run", connect)
+        call = lambda: pgcluster._smoke_tls(Found())  # noqa: E731
+    with pytest.raises(kinds) as failed:
+        call()
+    assert not _t257zzb_seen(request, failed, planted), \
+        f"{kind}: the planted value shows in {_t257zzb_seen(request, failed, planted)}"
+    assert "line(s)" in str(failed.value), f"{kind}: the failure shows no count of lines"
