@@ -3943,10 +3943,10 @@ def test_pytests_own_report_of_a_failure_shows_no_planted_writer_text(request, c
         assert planted in failed.value.doc, "the planted output is not json's document, so this proves nothing"
     else:
         with pytest.raises(subprocess.TimeoutExpired) as failed:
-            subprocess.run([sys.executable, "-c", T257ZT_WRITER], capture_output=True, timeout=5,
+            subprocess.run([sys.executable, "-c", T257ZT_WRITER], capture_output=True, timeout=2,
                            env=dict(os.environ, T257ZT_PLANTED=planted))
         kept = (failed.value.stdout or b"") + (failed.value.stderr or b"")
-        assert planted.encode() in kept, "the writer's output was not captured, so this proves nothing"
+        assert planted.encode() in kept, "the writer's output did not reach its TimeoutExpired, so this proves nothing"
     assert planted not in _reported(request, failed), f"[{case}] the planted value is in pytest's report"
 
 
