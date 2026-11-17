@@ -4117,7 +4117,15 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
     the default, and an explicit `--tb=long`, `--fulltrace` or
     `--showlocals` prints them; the words of `_NO_EXIT`, taken as true; and
     output that a test's process writes itself, a child's output on an
-    inherited stream among them."""
+    inherited stream among them.
+
+    One deliberate exception, named here and not a place (lane 2's
+    pre-review RV9-41 of P09 at `4895579`, N4): pgcluster's `_DATACL` foot
+    line, which `pytest_terminal_summary` prints on every real-engine run
+    (`... statements (open point 12): <datacl>`), shows psql's raw answer
+    for the clone's `pg_database.datacl`, its access list, as open point 12
+    requires. It reaches the output through a list's item (`_DATACL`),
+    which the check does not follow."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found = []
     if not only and "PYTEST_DONT_REWRITE" not in (ast.get_docstring(tree, clean=False) or ""):
