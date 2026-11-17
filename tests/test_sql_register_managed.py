@@ -1282,8 +1282,15 @@ def hook_pid():
     try:
         yield str(standin.pid)
     finally:
+        # Kill it, then a reap bounded at 10 s, as `GuardSession.close()` does: a
+        # stand-in that a kill does not take fails the case and never hangs the
+        # run (T230c).
         standin.kill()
-        standin.wait()
+        try:
+            standin.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            standin.kill()
+            standin.wait(timeout=10)
 
 
 #: The items, and the two that read the refused file through another verb.
