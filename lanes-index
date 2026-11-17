@@ -7913,10 +7913,11 @@ def register_serve_launch(paths: dict) -> str | None:
 
     A LOG THAT IS VISIBLY UNUSABLE IS REFUSED BEFORE THE LAUNCH (lane 5's
     re-review of b3e5f0fe, its decision 2; socket API §9, `serve --start`'s
-    exit 2 "where `serve` could not be launched, its `register.log` not
-    opened"; commit 31). The launcher `lstat`s `run/register.log` by its
-    path, which opens nothing, as the starters already read the stamp by
-    its path; where it exists and is not a regular file of this uid, it
+    exit 2 for "`register.log` there and not a regular file of this uid, or
+    an `lstat` of it failing but for its absence"; commit 31, the quote as
+    §9 now reads, commit 34). The launcher `lstat`s `run/register.log` by
+    its path, which opens nothing, as the starters already read the stamp
+    by its path; where it exists and is not a regular file of this uid, it
     returns why, naming `register.log`, and launches nothing, so `serve
     --start` refuses with 2 and a client starts no service. A missing log
     is no refusal: `serve` makes it. This check races: the log can change
@@ -8012,35 +8013,45 @@ def register_serve_start_only() -> int:
     where the launcher refuses, `register.log` there and not a regular file
     of this uid among its reasons (commit 31), starting none. A live service
     is left as it is: the `serve` it starts finds `register.lock` held and
-    exits 0. It writes no stamp of its own."""
+    exits 0. It writes no stamp of its own.
+
+    ITS REFUSALS GO THROUGH `register_serve_note` (the fresh review T512RF,
+    SHOULD 1; commit 34), as `serve`'s own do since commit 27: straight to
+    descriptor 2, unbuffered, with a write error passed over, so a standard
+    error closed at exec or a pipe whose reader has gone leaves the exit 2
+    that §9 gives, and not 1 (`sys.stderr` None) or 120 (a failed flush at
+    Python's exit)."""
     if not register_serve_possible():
-        note("serve --start: REFUSED: this platform has no Unix socket, so no service runs")
+        register_serve_note("serve --start: REFUSED: this platform has no Unix socket, so no "
+                            "service runs")
         return EXIT_REFUSED
     try:
         cfg = load_config()
     except Refusal as exc:
-        note(f"serve --start: REFUSED: {exc}")
+        register_serve_note(f"serve --start: REFUSED: {exc}")
         return EXIT_REFUSED
     if cfg["mode"] != "primary":
-        note(f"serve --start: REFUSED: the register service runs only on mode=primary, and "
-             f"this workstation's configuration is mode={cfg['mode']}")
+        register_serve_note(f"serve --start: REFUSED: the register service runs only on "
+                            f"mode=primary, and this workstation's configuration is "
+                            f"mode={cfg['mode']}")
         return EXIT_REFUSED
     paths = register_serve_paths()
     why = register_serve_dir_check(paths["run"])
     if why:
-        note(f"serve --start: REFUSED: the service's directory {paths['run']} {why}, so it is "
-             f"never used (socket API §2.2)")
+        register_serve_note(f"serve --start: REFUSED: the service's directory {paths['run']} "
+                            f"{why}, so it is never used (socket API §2.2)")
         return EXIT_REFUSED
     size = register_serve_too_long(paths)
     if size:
-        note(f"serve --start: REFUSED: the service's socket path {paths['sock']} is {size} "
-             f"bytes, over {REGISTER_SERVE_SOCKET_MAX}, so no service runs here (Y:3777-3781)")
+        register_serve_note(f"serve --start: REFUSED: the service's socket path {paths['sock']} "
+                            f"is {size} bytes, over {REGISTER_SERVE_SOCKET_MAX}, so no service "
+                            f"runs here (Y:3777-3781)")
         return EXIT_REFUSED
     if register_serve_stamp_fresh(paths):
         return EXIT_OK
     why = register_serve_launch(paths)
     if why:
-        note(f"serve --start: REFUSED: the service was not started: {why}")
+        register_serve_note(f"serve --start: REFUSED: the service was not started: {why}")
         return EXIT_REFUSED
     return EXIT_OK
 
@@ -9814,10 +9825,10 @@ def register_serve_log_open(run_fd: int, paths: dict) -> tuple:
     THE LOG IS OPTIONAL TO THE SERVICE (lane 5's decision on T512R6's
     finding, BRIEF-T512C32-1117b.md; commit 32): where it cannot be opened,
     the start says so on the starter's standard error and goes on without
-    it, and nothing is made for it, as T237zzs `[serve]` asks ("the service
-    drops its log lines and answers"); `register_serve_log`'s own by-path
-    lines are dropped where their open fails, as at commit 13 (`badba70f`).
-    No exit comes from the log."""
+    it, and the start makes nothing in its place, as T237zzs `[serve]` asks
+    ("the service drops its log lines and answers"); `register_serve_log`'s
+    own by-path lines are dropped where their open fails, as at commit 13
+    (`badba70f`). No exit comes from the log."""
     at = os.open in os.supports_dir_fd
     try:
         fd = _register_serve_open_regular(
@@ -10006,7 +10017,7 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     # WHAT THE DESCRIPTOR ANCHORS, AND WHAT IT DOES NOT: `register.log` is
     # opened relative to it, first, and checked to be a regular file; a log
     # that cannot be opened is dropped, with one line on the starter's
-    # standard error, and nothing made for it, and the start goes on: the
+    # standard error, and the start makes nothing in its place and goes on: the
     # log is optional to the service (`register_serve_log_open`; commits 30
     # and 32); each later line of the start goes to the starter's standard
     # error and to the log where it is open, once each, until the handoff,
@@ -10031,13 +10042,15 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     # nothing (ruling 3's reading, #165 6935871785). The descriptor is closed
     # on every return, by the `finally` below, before the bind.
     # ONE OWNER FOR THE LOCK AND THE LISTENING SOCKET (lane 3's ruling, #165
-    # 6937934447, SHOULD 1; commit 28): this `try` and its `finally` own the
-    # lock from its open, and the socket from its creation, across the
-    # log's open, the probe, the sweep, the temporary name (`os.urandom`), the
-    # socket, the bind, the logging and the handoff to the service, through
-    # `serve()`'s return. Every return and every exception on the way closes
-    # each once, here; no other close of either remains. It owns the log's
-    # descriptor too, until the handoff puts it on descriptor 2 (commit 30).
+    # 6937934447, SHOULD 1; commit 28), in the code's order (T512RF, NIT 3;
+    # commit 34): this `try` and its `finally` own the log's descriptor from
+    # its open, the lock from its open, and the socket from its creation,
+    # across the probe, the sweep, the temporary name (`os.urandom`), the
+    # bind, the logging and the handoff to the service, through `serve()`'s
+    # return. Every return and every exception on the way closes the lock and
+    # the socket once each, here; no other close of either remains. The log's
+    # descriptor is closed here too, or just after the handoff has put it on
+    # descriptor 2 (commit 30).
     log_fd = None
     lock = None
     server = None
@@ -10048,9 +10061,10 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
                 # A LOG THAT CANNOT BE OPENED IS DROPPED, AND THE START GOES ON
                 # (lane 5's decision, BRIEF-T512C32-1117b.md; commit 32): the log
                 # is optional to the service, as T237zzs `[serve]` and commit
-                # 13 have it. One line to the starter; nothing made for it.
+                # 13 have it. One line to the starter; the start makes nothing in
+                # its place (T511R5's note; commit 34).
                 register_serve_note(f"serve: {why}; the service runs without its log, "
-                                    f"and nothing is made for it")
+                                    f"and the start makes nothing in its place")
             lock_at = os.open in os.supports_dir_fd
             try:
                 lock = _register_serve_open_regular(
