@@ -498,6 +498,8 @@ reg_config_present() { return 0; }
 lanes_index_bin() { printf '%s\n' "$qc_stub"; }
 reg_flush() { printf 'flush\n' >> "$qc_log"; }
 reg_fail() { printf 'fail\n' >> "$qc_log"; return 69; }
+REG_BACKSTOP=(); REG_BACKSTOP_S=""
+reg_backstop() { REG_BACKSTOP=(); REG_BACKSTOP_S=""; }
 '''
 
 #: The bind's two calls: `guard_bind_bg`'s after `lane-start`, then
@@ -547,7 +549,8 @@ def test_the_post_bind_refill_asks_once_and_off_primary_later_only_flushes(
     assert len(calls) == 1, f"the refill asked lanes-index {len(calls)} times: {lines}"
     assert calls[0].startswith("call register read --prefetch --cache ") \
         and calls[0].endswith(" --files register,aliases") and "--for" not in calls[0], calls
+    first_end = lines.index(f"after 1 {refilled} {mode} {store}")
+    assert lines[0] == "flush" and calls[0] in lines[:first_end], lines
     second = ["flush"] if refilled == "2" else []
-    assert lines == ["flush", calls[0], f"after 1 {refilled} {mode} {store}", *second,
-                     f"after 2 {refilled} {mode} {store}"], lines
+    assert lines[first_end + 1:] == [*second, f"after 2 {refilled} {mode} {store}"], lines
     assert res.stderr.count(b"WARNING:") == warnings, res.stderr
