@@ -20844,10 +20844,23 @@ guard_bind_whole() {   # <value> <max digits>
 # 4). The sum is `B` plus one read's `T_r` + `w_s` to spare plus `-k`'s 10 s,
 # rounded up to 10 s, in bash 3.2's integers:
 #
-#   bound_s = (437000 + 28000·n_a·c + 19·w_s_ms + 9999) / 10000 · 10
+#   bound_s = (433000 + 3·M_ms + 28000·n_a·c + 19·w_s_ms + 9999) / 10000 · 10
 #
-# 500 s at the defaults, `c` = 2, `n_a` = 1 and `w_s_ms` = 0, which hold for
-# every record that lacks the keys: every bind before T507 copies them from the
+# THE SUM AT 457 (lane 3's ruling, opensoft/openRepoTools-code#103 6955175178,
+# its condition 1). `act-begin`'s question counts, so `B` holds three `M`s: the
+# body's `lane-start --no-launch --bind` runs `act-begin`, which asks the mode
+# question again, since a new process keeps no carried answer. `M` is counted
+# at 8 s, the ruled ceiling, while T409's timer is 5 s; its kill-after is not
+# counted, since a question that times out spends no `W`. A timer above 8 s
+# needs a new sum, which is the one integer `M_ms`, `gbs_m_ms` below. It is
+# named in this helper only: T409's timer line stays literal, since T513's
+# `_mode_timer` reads its digits. One read stays spare. At `M_ms` = 8000 the
+# constant is 457000, so every bound is exactly 20 s more than 437000 gave,
+# and no edge moves (368/369 at `c` = 2, 473/474 at `c` = 3).
+#
+# 520 s at the defaults, `c` = 2, `n_a` = 1 and `w_s_ms` = 0, with the record's
+# `deadline_epoch` 525 s past the start. The defaults hold for every record
+# that lacks the keys: every bind before T507 copies them from the
 # prefetch's `.head`. A key that is not a whole number, a `c` below 2 or an
 # `n_a` below 1 counts as absent (point 10), and so does one too long for the
 # shell's integers (`c` and `n_a` over 6 digits, `w_s_ms` over 9).
@@ -20878,7 +20891,8 @@ guard_bind_bound_s() {   # <offer file>
   { [ -n "$gbs_n" ] && [ "$gbs_n" -ge 1 ]; } || gbs_n=1
   gbs_w="$(guard_bind_whole "$gbs_w" 9 || :)"
   [ -n "$gbs_w" ] || gbs_w=0
-  printf '%s\n' "$(( (437000 + 28000 * gbs_n * gbs_c + 19 * gbs_w + 9999) / 10000 * 10 ))"
+  gbs_m_ms=8000   # `M_ms`, the mode question's `M` at the ruled 8 s (above)
+  printf '%s\n' "$(( (433000 + 3 * gbs_m_ms + 28000 * gbs_n * gbs_c + 19 * gbs_w + 9999) / 10000 * 10 ))"
 }
 
 # FEATURE 007, T507 - `.head`'s `c`, `n_a` AND `w_s_ms` INTO THE BIND RECORD
@@ -20887,7 +20901,7 @@ guard_bind_bound_s() {   # <offer file>
 # `guard-bind` sums `bound_s` from the record, so they are copied before the
 # first `guard_bind_bound_s`. Each is copied as `.head` gives it, where it is a
 # whole number; a missing `.head` (files mode, `mode index`, the mirror path)
-# writes nothing, and the defaults give 500 s. Through `guard_bind_rewrite`, so
+# writes nothing, and the defaults give 520 s. Through `guard_bind_rewrite`, so
 # every later rewrite keeps them.
 #   0 copied, or nothing to copy · 1 the record could not be rewritten · 2 the
 #   record is gone, or no longer says `name-drift`, and nothing was written
