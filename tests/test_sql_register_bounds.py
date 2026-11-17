@@ -3951,9 +3951,13 @@ def test_pytests_own_report_of_a_failure_shows_no_planted_writer_text(request, c
 
         with pytest.raises(AssertionError) as failed:
             _sent_a_snapshot(_SentNothing(), "[T257zt]", proc)
+        assert planted in str(failed.getrepr(style="long", funcargs=True)), \
+            "a long report does not show the planted value, so this proves nothing"
     elif case == "refused-with-no-value":
         with pytest.raises(AssertionError) as failed:
             _t257u_refused_with_no_value(f"lanes-index: {planted} refused", "register_url", "1", 3)
+        assert planted in str(failed.getrepr(style="long", funcargs=True)), \
+            "a long report does not show the planted value, so this proves nothing"
     elif case == "json-loads":
         with pytest.raises(json.JSONDecodeError) as failed:
             json.loads(f"lanes-index: {planted}")
