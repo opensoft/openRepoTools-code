@@ -103,9 +103,9 @@ pytestmark = [WINDOWS_SKIP]
 #: names has landed, and the skip names them. The rows are T224's Order
 #: (tasks:2156), T230's (tasks:2220, with its As built at :2219) and T258's
 #: (tasks:2464), tasks.md at lane 3's commit 17 `204145ae`. No task is common
-#: to all 27 functions, so there is no "*" row. T224j's, T224n's, T224o's and
-#: T258e's cases, which run on synthetic text and stand-ins with no database,
-#: have no row: they run ungated.
+#: to all 27 functions, so there is no "*" row. T224j's, T224n's, T224o's,
+#: T258e's and T258f's cases, which run on synthetic text and stand-ins with no
+#: database, have no row: they run ungated.
 SQL_REGISTER_GATE_TABLE = {
     # T224: until L1-A7 (T109), L1-A8 (T110), L1-A17 (T119, T120) and T229.
     # Lane 1's two cases' T109 and T110, and `[in-recovery]`'s T229, are in
@@ -251,7 +251,17 @@ def _end_process(proc: subprocess.Popen, *, group: bool, wait: float = 10.0) -> 
     started gets them too."""
     if proc.returncode is not None:
         return
+    _signal_unreaped(proc, group=group, wait=wait)
+    proc.wait(wait)
 
+
+def _signal_unreaped(proc: subprocess.Popen, *, group: bool, wait: float) -> None:
+    """`_end_process`'s signals, and not its reap (T258f): TERM; up to `wait` s
+    for `proc`'s exit, watched by `os.waitid(..., WNOWAIT)`, which leaves it
+    unreaped; KILL. `proc` is unreaped throughout, so its pid, and with `group`
+    the id of the group it leads, are its own for each signal. Its caller reaps
+    it after, as `W258Writer` does once its reader is joined and its pipes are
+    closed."""
     def send(sig: int) -> None:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             (os.killpg if group else os.kill)(proc.pid, sig)
@@ -262,7 +272,34 @@ def _end_process(proc: subprocess.Popen, *, group: bool, wait: float = 10.0) -> 
             break
         time.sleep(0.05)
     send(signal.SIGKILL)
-    proc.wait(wait)
+
+
+def _gone(pid: int, started: str) -> bool:
+    """Whether the process `pid` that started at `started`, its `/proc` stat
+    field 22, has ended: no process has its pid, another process has it now,
+    or it is a zombie (T258f)."""
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    except OSError:
+        return True
+    return fields[19] != started or fields[0] in ("Z", "X")
+
+
+def _end_if_left(pid: int, started: str) -> None:
+    """A case's last clean-up of a process it did not start itself, known by
+    its pid and its start time (T258f): pinned by a pidfd, then killed through
+    that pidfd only where the pinned process is still the one that started at
+    `started`, so no other process is ever signalled."""
+    try:
+        pinned = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return
+    try:
+        if not _gone(pid, started):
+            with contextlib.suppress(ProcessLookupError):
+                signal.pidfd_send_signal(pinned, signal.SIGKILL)
+    finally:
+        os.close(pinned)
 
 
 #: One deadline, in seconds, for all of a `_run`: its terminal or stdout pipe and
@@ -1877,7 +1914,9 @@ class W258Writer:
     """One `lanes-edit.sh` run, its shim's directory and its outcome. `launch`
     starts it in a session of its own (`start_new_session=True`). Its thread
     only reads its two pipes; the reap is the main thread's, in `wait`, or in
-    `stop` at the case's teardown (T258e)."""
+    `stop` at the case's teardown (T258e), and it comes last: until the reader
+    is joined and the pipes are closed, the run is left unreaped, so the group
+    it leads is still its own to end (T258f)."""
 
     def __init__(self, who: str, proc: subprocess.Popen, psql_dir: Path, state: Path):
         self.who, self.proc, self.psql_dir, self.state = who, proc, psql_dir, state
@@ -1911,30 +1950,66 @@ class W258Writer:
             pipe.close()
         self.ended = time.monotonic()
 
+    def _exited(self, end: float) -> bool:
+        """Whether the run has exited by the monotonic `end`, as
+        `os.waitid(..., WNOWAIT)` sees it, which leaves it unreaped (T258f)."""
+        while os.waitid(os.P_PID, self.proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.05)
+        return True
+
+    def _end_unreaped(self) -> None:
+        """The run's end, its reap last (T258f; the coordinator's review of P09
+        at `d3a2fd5c`, item 1, #165 6938473998). While it is unreaped, the id
+        of the group it leads is still its own: `_signal_unreaped` ends that
+        group, TERM then KILL; its reader is joined within `END_S`; and where
+        the reader has ended, both pipes are closed. Only then is it reaped,
+        `proc.wait(END_S)`, whose `TimeoutExpired` is raised. No signal follows
+        the reap. A reader still alive here is the caller's to raise: a process
+        outside the group holds a pipe, and the reader still owns the pipes."""
+        _signal_unreaped(self.proc, group=True, wait=END_S)
+        self._thread.join(END_S)
+        if not self._thread.is_alive():
+            for pipe in (self.proc.stdout, self.proc.stderr):
+                pipe.close()
+        self.proc.wait(END_S)
+
     def wait(self, timeout: float = 150) -> int:
-        """The run's exit, reaped here, and its reader's end, both within one
-        `timeout`: a run that does not end in time fails the case, and `stop`
-        ends it at the teardown (T258e)."""
+        """The run's exit and its reader's end, both within one `timeout`, and
+        then its reap (T258e, T258f). The exit is watched by `_exited`, which
+        leaves the run unreaped, so the group it leads is still its own while
+        the reader is joined. A run that does not exit in time fails the case,
+        and `stop` ends it at the teardown. A run that exited while a process of
+        its group still holds a pipe fails the case too, after
+        `_end_unreaped` has ended that group, joined the reader, closed the
+        pipes and only then reaped it."""
         end = time.monotonic() + timeout
-        try:
-            self.proc.wait(timeout)
-        except subprocess.TimeoutExpired:
-            raise AssertionError(f"{self.who}'s run did not end in {timeout} s") from None
+        if self.proc.returncode is None and not self._exited(end):
+            raise AssertionError(f"{self.who}'s run did not end in {timeout} s")
         self._thread.join(max(0.0, end - time.monotonic()))
+        if self.proc.returncode is None and self._thread.is_alive():
+            self._end_unreaped()
+            raise AssertionError(f"{self.who}'s run ended, but its pipes did not end in "
+                                 f"{timeout} s: its group was ended before its reap")
         assert not self._thread.is_alive(), (
             f"{self.who}'s run ended, but its pipes did not end in {timeout} s")
+        self.proc.wait(END_S)
         return self.proc.returncode
 
     def stop(self) -> None:
         """This run's end at the case's teardown (T258e; Codex's review of P09
-        at `21dd3642`, SHOULD 6 in lane 3's numbering): a run already reaped,
-        `returncode` set, gets no signal. Otherwise `_end_process` ends its
-        group, its own since `launch` started it in a session of its own,
-        signalling it only while its leader is unreaped, and reaps it, raising
-        a reap that times out. Then its reader is joined, bounded too: pipes
+        at `21dd3642`, SHOULD 6 in lane 3's numbering; T258f): a run already
+        reaped, `returncode` set, gets no signal, since `wait` reaps it only
+        once its pipes have ended or its group has been ended. Otherwise
+        `_end_unreaped` ends its group, its own since `launch` started it in a
+        session of its own, while it is unreaped, joins its reader, closes its
+        pipes, and only then reaps it, raising a reap that times out. Pipes
         that a process outside its group still holds are raised, not left."""
-        _end_process(self.proc, group=True, wait=END_S)
-        self._thread.join(END_S)
+        if self.proc.returncode is None:
+            self._end_unreaped()
+        else:
+            self._thread.join(END_S)
         if self._thread.is_alive():
             raise RuntimeError(f"{self.who}'s run is reaped, but its pipes did not end in {END_S} s: "
                                f"a process outside its group holds them")
@@ -2273,6 +2348,100 @@ def test_phase_w_teardown_ends_and_reaps_a_hung_writer_and_reports_a_pipe_held_o
         PhaseW._stop(Phase)
         for writer in started:
             writer._thread.join(15)
+
+
+#: T258f's stand-in writer, `bash -c` with the mark file, this Python and an
+#: fd as `$1`, `$2` and `$3`: a descendant in its group closes the fd, its
+#: stdout (1) or its stderr (2), writes its pid and start time (`/proc` stat
+#: field 22) to the mark and sleeps 30 s, holding the other pipe; the writer
+#: exits 0 once the mark is written.
+T258F_STAND_IN = (
+    '"$2" -c \'import os, sys, time; os.close(int(sys.argv[2])); '
+    'f = open("/proc/self/stat").read().rsplit(")", 1)[1].split(); '
+    'open(sys.argv[1], "w").write(f"{os.getpid()} {f[19]}"); time.sleep(30)\' "$1" "$3" & '
+    'while [ ! -s "$1" ]; do sleep 0.05; done; exit 0')
+
+
+def _t258f_recorded(monkeypatch, writer: W258Writer, events: list) -> None:
+    """Each signal by pid or group, and each reap of `writer` with whether its
+    reader is alive and its two pipes are closed at it, appended to `events`
+    in order; each is still done (T258f)."""
+    real_kill, real_killpg, real_wait = os.kill, os.killpg, writer.proc.wait
+
+    def kill(pid: int, sig: int) -> None:
+        events.append(("kill", pid, sig))
+        real_kill(pid, sig)
+
+    def killpg(pgid: int, sig: int) -> None:
+        events.append(("killpg", pgid, sig))
+        real_killpg(pgid, sig)
+
+    def reap(*args, **kwargs):
+        events.append(("reap", writer._thread.is_alive(), writer.proc.stdout.closed,
+                       writer.proc.stderr.closed))
+        return real_wait(*args, **kwargs)
+    monkeypatch.setattr(os, "kill", kill)
+    monkeypatch.setattr(os, "killpg", killpg)
+    monkeypatch.setattr(writer.proc, "wait", reap)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="T258f's case reads Linux's /proc and pins by a pidfd")
+@pytest.mark.parametrize("held", ["stdout", "stderr"])
+def test_a_phase_w_writer_that_exits_while_its_group_holds_a_pipe_is_reaped_after_the_group_ends(
+        tmp_path, monkeypatch, held):
+    """T258f (the coordinator's review of P09 at `d3a2fd5c`, item 1, #165
+    6938473998), no database: a stand-in writer, started as `launch` starts
+    one, exits 0 and leaves a descendant in its group that holds its `held`
+    pipe. `wait` sees the exit and leaves the writer unreaped while it joins
+    the reader within its bound; the pipe is still held, so it ends the
+    group while the writer is unreaped, joins the reader, closes both pipes
+    and only then reaps, and fails the case, naming it. Every signal to the
+    group comes before the one reap, the descendant is gone within 2 s of
+    `wait`'s end, though it sleeps 30 s, the reader is joined, both pipes
+    are closed, the exit is the writer's own 0, and the teardown sends no
+    signal after. Before T258f `wait` reaped the writer first, so nothing
+    ended its group: the reader, the pipes and the descendant were left."""
+    monkeypatch.setitem(globals(), "END_S", 2.0)
+
+    class Phase:
+        writers: list = []
+    mark = tmp_path / "descendant"
+    writer = _w_stand_in(f"w-{held}", T258F_STAND_IN, str(mark), sys.executable,
+                         "2" if held == "stdout" else "1")
+    Phase.writers = [writer]
+    events: list = []
+    pid = started = None
+    try:
+        end = time.monotonic() + 10
+        while os.waitid(os.P_PID, writer.proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+            assert time.monotonic() < end, f"[{held}] the stand-in writer did not exit in 10 s"
+            time.sleep(0.05)
+        pid, started = mark.read_text().split()
+        _t258f_recorded(monkeypatch, writer, events)
+        with pytest.raises(AssertionError, match=f"w-{held}'s run ended, but its pipes did not"):
+            writer.wait(1.0)
+        end = time.monotonic() + 2
+        while not _gone(int(pid), started) and time.monotonic() < end:
+            time.sleep(0.05)
+        gone = _gone(int(pid), started)
+        kinds = [event[0] for event in events]
+        ordered = kinds.count("reap") == 1 and kinds[-1] == "reap" and "killpg" in kinds
+        assert ordered and events[-1][1:] == (False, True, True), (
+            f"[{held}] the writer was not reaped once, after every signal to its group, with "
+            f"its reader joined and both pipes closed: {events}")
+        assert gone, f"[{held}] the descendant holding the writer's {held} was not ended"
+        code = writer.proc.returncode
+        assert code == 0, f"[{held}] the writer's exit is {code}, not its own 0"
+        events.clear()
+        PhaseW._stop(Phase)
+        assert events == [], f"[{held}] the teardown signalled a writer already reaped: {events}"
+    finally:
+        if pid is not None:
+            _end_if_left(int(pid), started)
+        Phase.writers = [writer] if writer.proc.returncode is None else []
+        PhaseW._stop(Phase)
+        writer._thread.join(15)
 
 
 def test_two_writer_logins_write_alike_and_the_log_names_each(tmp_path, request):
