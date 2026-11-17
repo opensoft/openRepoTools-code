@@ -473,9 +473,9 @@ def _counted(proc) -> str:
 #: taken only from that form on one line (T229p; lane 2's pre-review RV9-38 of
 #: P09, N1): `ERROR:`, spaces or tabs, never a newline, then five of
 #: `[0-9A-Z]` with a digit among them, as every SQLSTATE of PostgreSQL's and
-#: of the product's has, then `:`. So no word of psql's message, five
-#: capitals such as `SYNTH:`, nor a line after an `ERROR:` that ends its own,
-#: is shown as one. Its limit (T229r): at psql's default verbosity, a message
+#: of the product's has, then `:`. So no five-capital word, such as `SYNTH:`,
+#: nor the head of a line after an `ERROR:` that ends its own, is shown as one
+#: (T229w). Its limit (T229r): at psql's default verbosity, a message
 #: whose first word is five of `[0-9A-Z]` with a digit and a colon would be
 #: shown as a SQLSTATE. PostgreSQL's primary messages begin in lower case, and
 #: psql's echo of a statement is a `LINE n:` line, which never matches.
