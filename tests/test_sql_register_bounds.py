@@ -3044,6 +3044,37 @@ def test_over_a_delayed_tls_link_no_healthy_call_meets_its_timer(tls_cluster, tm
         _record(f"link-{kind}", took, LINK_TIMERS[kind], "AT-D9c (d), recorded")
 
 
+#: WHAT A FAILURE MESSAGE NEVER SHOWS (T257v; Brett's 6931509747: "sanitize
+#: failure diagnostics and avoid publishing credential-bearing stdout/stderr or
+#: password-file lines"). A password-file line, `host:port:database:user:
+#: password`, is a line whose first four colon-separated fields hold no blank,
+#: and is hidden whole, whatever its password holds; a `password=` value,
+#: `PGPASSWORD=` and libpq's `sslpassword=` among them, any case, with `:` for
+#: `=` and blanks around either, quoted or bare; and the secret in a URL's
+#: `<user>:<secret>@`, up to its `@`.
+_PASSFILE_LINE = re.compile(r"^(?:[^\s:]*:){4,}.*$")
+_PASSWORD_VALUE = re.compile(r"(?i)(\w*password\s*[=:]\s*)"
+                             r"""('(?:[^'\\]|\\.)*'?|"(?:[^"\\]|\\.)*"?|\S*)""")
+_URL_SECRET = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]*):[^\s@]*@")
+
+
+def _sanitised(text: str) -> str:
+    """`text` as a failure message may show it (T257v): each line kept with its
+    line end, but a password-file line replaced whole, and each `password=`
+    value and each URL's secret replaced by `<hidden>`. A text with none of
+    them comes back unchanged."""
+    out = []
+    for line in (text or "").splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        end = line[len(body):]
+        if _PASSFILE_LINE.match(body.strip()):
+            body = "<a password-file line, hidden>"
+        else:
+            body = _URL_SECRET.sub(r"\1:<hidden>@", _PASSWORD_VALUE.sub(r"\1<hidden>", body))
+        out.append(body + end)
+    return "".join(out)
+
+
 def _burst_report(logins: str, writers: list, ends: list, rows: list, calls: list) -> str:
     """What the burst test's assertions print when one fails (T257o; lane 4's
     6899167909): each writer's index, login, exit, time and stderr tail, from
@@ -3051,13 +3082,29 @@ def _burst_report(logins: str, writers: list, ends: list, rows: list, calls: lis
     `commit_write` call in the shim's log, `calls`, in the log's order, with its
     write id, whether and where the journal has it, its `PGUSER`, and the
     `burst N` its state text names (`?` where the log holds none). It reads
-    nothing and decides nothing."""
+    nothing and decides nothing.
+
+    Each writer's stderr WARNING lines are printed whole, wherever they fall,
+    and the whole stderr of a writer that ended outside 0 and 75, all of it
+    `_sanitised` (T257v). A writer whose `lanes-index mode` question failed
+    says why on its first line (`reg_mode_files`, `lanes-edit.sh`:6415), and
+    under the marker its refusal's two lines leave only that line's last 18
+    characters in the 300-character tail (run 44016287671, writer 3). A
+    writer's time is when the collection, which reads the writers in order,
+    reached its end, so a writer that ended early shows a later writer's
+    time."""
     seq_of = {write_id: seq for seq, _, write_id in (row.partition("|") for row in rows)}
     lines = [f"burst [{logins}]: {len(ends)} writers' ends, {len(rows)} new journal rows, "
              f"and the shim's commit_write calls:"]
     for i, (code, took, err) in enumerate(ends):
+        said = _sanitised(err)
         lines.append(f"  writer {i} ({writers[i]}): exit {code} after {took:.2f} s, "
-                     f"stderr tail {(err or '')[-300:]!r}")
+                     f"stderr tail {said[-300:]!r}")
+        lines.extend(f"    its WARNING line: {line}" for line in said.splitlines()
+                     if "WARNING" in line)
+        if code not in (0, 75):
+            lines.append(f"    its whole stderr, {len(said.splitlines())} lines:")
+            lines.extend(f"      | {line}" for line in said.splitlines())
     for row in rows:
         seq, _, write_id = row.partition("|")
         lines.append(f"  journal seq {seq}: write id {write_id}")
@@ -3135,7 +3182,7 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
     assert set(codes) <= {0, 75}, f"a writer ended another way:\n{told()}"
     # A writer whose `lanes-index mode` question fails warns on stderr, writes to git in files
     # mode and ends 0 with no journal row (lane 4's 6899400726; `reg_mode_files`' own words).
-    files_mode = [f"  writer {i} ({writers[i]}): stderr tail {(err or '')[-300:]!r}"
+    files_mode = [f"  writer {i} ({writers[i]}): stderr tail {_sanitised(err)[-300:]!r}"
                   for i, (_, _, err) in enumerate(ends) if "runs in files mode" in (err or "")]
     assert not files_mode, ("a writer says it ran in files mode, so its write is in git and not "
                             "the journal:\n" + "\n".join(files_mode) + f"\n{told()}")
@@ -3165,6 +3212,55 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
         print(f"D9c burst [{logins}] writer {i} ({writers[i]}): exit {code} after {took:.2f} s")
     print(f"D9c burst [{logins}]: {codes.count(0)} committed, {codes.count(75)} out with 75, "
           f"{snapshots} snapshot calls")
+
+
+def test_the_burst_report_prints_each_warning_whole_and_no_credential():
+    """`_burst_report` (T257v), with no engine, on run 44016287671's writer 3:
+    `lanes-edit.sh` warned that its `lanes-index mode` question failed
+    (`reg_mode_files`, :6415), ran in files mode, met the marker and exited 69
+    (`cs_marker_refuse`, :3971-3972); its 300-character tail kept only the
+    warning's last 18 characters, `feature 007, D3).`, so why the question
+    failed was lost. The report must carry the warning line whole, and the
+    whole stderr of the writer outside 0 and 75, while a writer that ended 0
+    keeps its tail as before. Nothing it prints may hold a password-file line,
+    a `password=` value or a URL's secret, here planted in that stderr: the
+    planted value is no credential of any login."""
+    planted = "planted-not-a-password"
+    warning = ("lanes-edit: WARNING: `lanes-index mode` did not answer within 2 s, and was "
+               "stopped (exit 124), so `set-row-state` runs in files mode, as on a "
+               "workstation with no lanes-index configuration (feature 007, D3).")
+    refusal = ("lanes-edit: lanes/STORE is on origin/main at 17ceb1c26f81, the tip this "
+               "write's own fetch returned. This workstation writes in files mode, so "
+               "`set-row-state` refuses, and nothing was written (feature 007, FR-004).\n"
+               "lanes-edit: this estate's register is SQL; configure `mode=primary`\n")
+    leaked = (f"*:*:*:lanes_w_fx:{planted}\n"
+              f"lanes-edit: a libpq text with password={planted} and PGPASSWORD={planted}\n"
+              f"lanes-edit: postgresql://lanes_w_fx:{planted}@127.0.0.1:5432/register\n")
+    committed = "lanes-edit: state cell REPLACED: 46 chars → 46 chars\n"
+    ends = [(0, 23.5, committed), (69, 23.5, leaked + warning + "\n" + refusal),
+            (75, 32.85, "lanes-edit: register busy; nothing was written\n")]
+    told = _burst_report("two-logins", ["lanes_w_fx", "lanes_w_fx", "lanes_w_fx2"], ends,
+                         [], [])
+    assert (warning + "\n" + refusal)[-300:].startswith("feature 007, D3).\n"), \
+        "the case's tail is not run 44016287671's"
+    assert f"    its WARNING line: {warning}\n" in told, f"the warning, whole:\n{told}"
+    assert "    its whole stderr, 6 lines:\n" in told and \
+        "      | lanes-edit: this estate's register is SQL; configure `mode=primary`" in told, \
+        f"writer 1's whole stderr:\n{told}"
+    assert f"stderr tail {committed!r}" in told, f"writer 0's tail, unchanged:\n{told}"
+    assert told.count("its whole stderr") == 1, f"only the writer outside 0 and 75:\n{told}"
+    assert planted not in told, f"a planted secret is printed:\n{told}"
+    assert "<a password-file line, hidden>" in told and "password=<hidden>" in told and \
+        "PGPASSWORD=<hidden>" in told and "postgresql://lanes_w_fx:<hidden>@127.0.0.1" in told, \
+        f"each planted secret, hidden in its place:\n{told}"
+    assert _sanitised(committed + warning) == committed + warning, \
+        "a text with nothing to hide changed"
+    for text in (f"127.0.0.1:5432:register:lanes_w_fx:{planted} with a blank\n",
+                 f"lanes-edit: conninfo host=h password='{planted} with a blank' user=u\n",
+                 f"lanes-edit: PGPASSWORD = {planted}\n",
+                 f"lanes-edit: postgresql://lanes_w_fx:{planted}/x@127.0.0.1:5432/register\n"):
+        hidden = planted not in _sanitised(text)
+        assert hidden, "a planted secret survives the sanitiser in one of its other forms"
 
 
 # ============================== D9's rollback and cutover rows (T278), real engine
