@@ -9477,6 +9477,28 @@ def register_serve_sweep(paths: dict) -> None:
     socket (or, for a temporary file, regular file), is left as it is, and no
     line is written for it.
 
+    THE RACE BETWEEN THE `lstat` AND THE `unlink` IS A STATED LIMIT (lane 3's
+    ruling, #165 6934144108, on Codex's BLOCKING 3 of chain 4's offer sweep,
+    whose pattern this has: "T512's commit 15 has the same pattern, so the
+    same ruling covers it"). The sweep reads a name's type, owner and age by
+    one `lstat` and then `unlink`s the name, so a process that swaps the entry
+    between the two makes the `unlink` take the swapped entry. The sweep
+    promises only what a check then unlink can give: it removes a file by its
+    name, and only one it found, a moment before, to be a socket, or a
+    regular file that is stale, and of this uid; `unlink` removes the name and
+    follows no link. It does not promise that the entry it removes is the one
+    it checked. That is harmless because `run/` is private: `serve` checks it
+    before it runs (`cmd_serve`, `register_serve_dir_check`), a directory and
+    not a link, this uid's, with mode 0700, and makes it so where it is
+    absent, so only a process of this uid, or root, can create, rename or
+    remove an entry in it, and such a process could unlink any of these files
+    itself. So the swap is outside the guard's threat model. The pid and the
+    eight random hex digits in a temporary's name keep one writer's temporary
+    from another's. The check is of `run/` itself, made when `serve` starts
+    (socket API 2.2). Were `run/` not private, a lock that every writer and
+    this sweep take, and a second check made under it, would be needed
+    instead (Codex's lock-and-revalidate fix).
+
     WHAT FAILS IS SAID, AND WHAT IT LEAVES (lane 3's Codex delta review of
     bb19b1ad, #165 6886976981, NIT 6; its review of 1e1846e3, NIT 1): the
     sweep attempts each removal and does not promise one. An entry gone
@@ -9510,6 +9532,9 @@ def register_serve_sweep(paths: dict) -> None:
         else:
             continue
         path = os.path.join(run, name)
+        # CHECK, THEN UNLINK, BY NAME: the race between the two is a stated
+        # limit (the docstring's "THE RACE ... IS A STATED LIMIT"); `run/` is
+        # 0700 and this uid's, so only a same-uid process could swap the entry.
         try:
             st = os.lstat(path)
             if what == "socket":
