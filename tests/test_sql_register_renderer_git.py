@@ -3641,6 +3641,10 @@ def test_a_clean_up_pins_again_a_pid_whose_pinned_process_is_gone():
         proc = subprocess.Popen([sys.executable, "-I", "-c", SLEEP], stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 start_new_session=True, env=_with_identity(nonce))
+        until = time.monotonic() + 5  # its environment is set only once its exec is done
+        while _carried(proc.pid) != nonce:
+            assert time.monotonic() < until, "the child's environment never carried the nonce"
+            time.sleep(0.005)
         now = _stat(proc.pid)
         ended = SimpleNamespace(pid=proc.pid, start=now["start"], fd=-1,
                                 gone=lambda seconds=0: True, close=lambda: None)
