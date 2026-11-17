@@ -9899,136 +9899,147 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     # check, and the sweep sweeps
     # nothing (ruling 3's reading, #165 6935871785). The descriptor is closed
     # on every return, by the `finally` below, before the bind.
+    # ONE OWNER FOR THE LOCK AND THE LISTENING SOCKET (lane 3's ruling, #165
+    # 6937934447, SHOULD 1; commit 28): this `try` and its `finally` own the
+    # lock from its open, and the socket from its creation, across the
+    # attach, the probe, the sweep, the temporary name (`os.urandom`), the
+    # socket, the bind, the logging and the handoff to the service, through
+    # `serve()`'s return. Every return and every exception on the way closes
+    # each once, here; no other close of either remains.
     lock = None
-    keep = False            # True once the sweep is done: from there the bind's paths close it
+    server = None
     try:
-        why = register_serve_log_attach(run_fd, paths)
-        if why:
-            register_serve_note(f"serve: {why}; this start's lines stay on the starter's "
-                                f"standard error")
-        lock_at = os.open in os.supports_dir_fd
         try:
-            lock = _register_serve_open_regular(
-                REGISTER_SERVE_FILES["lock"] if lock_at else paths["lock"],
-                os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW,
-                dir_fd=run_fd if lock_at else None)
-        except OSError as exc:
-            note(f"serve: {paths['lock']} could not be opened ({exc.strerror or exc})")
-            return EXIT_UNAVAILABLE
-        # THE LOCK, TRIED A FEW TIMES OVER ABOUT 100 MS (lane 5's review of
-        # round 3, NIT 4; lane 1's NIT-B): a failing `serve` takes
-        # `register.lock` for a moment to write its stamp (`register_serve_stamp`),
-        # so one attempt that lands in that moment would take it for a live
-        # service's, and this starter would exit 0 and start nothing. Only a
-        # lock still held after the last attempt is a service's; the exit codes
-        # are as before.
-        # ONLY A HELD LOCK IS A SERVICE'S (lane 3's Codex delta review of
-        # bb19b1ad, #165 6886976981, NIT 8): `register_serve_try_lock` retries
-        # an interrupted attempt at once, and counts only `EAGAIN` and `EACCES`
-        # as the lock held. Any other `flock` error is a lock that cannot be
-        # taken: it is written to stderr and `register.log`, and the start
-        # exits 69, as one whose `register.lock` cannot be opened does, above.
-        for wait in REGISTER_SERVE_LOCK_WAITS:
-            time.sleep(wait)
+            why = register_serve_log_attach(run_fd, paths)
+            if why:
+                register_serve_note(f"serve: {why}; this start's lines stay on the starter's "
+                                    f"standard error")
+            lock_at = os.open in os.supports_dir_fd
             try:
-                if register_serve_try_lock(lock):
-                    break
+                lock = _register_serve_open_regular(
+                    REGISTER_SERVE_FILES["lock"] if lock_at else paths["lock"],
+                    os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=run_fd if lock_at else None)
             except OSError as exc:
-                note(f"serve: {paths['lock']} could not be locked ({exc.strerror or exc})")
-                register_serve_log(paths, f"register.lock could not be locked "
-                                          f"({errno.errorcode.get(exc.errno, exc.errno)})")
+                note(f"serve: {paths['lock']} could not be opened ({exc.strerror or exc})")
                 return EXIT_UNAVAILABLE
-        else:
-            return EXIT_OK      # ONE INSTANCE: another service holds the lock
-        # THE LOCK'S DESCRIPTOR IS CLOSED ON EACH RETURN, AND ON AN EXCEPTION,
-        # BEFORE THE BIND (lane 5's Claude pre-review of P23, NIT 3; lane 5's
-        # pre-review of 7049fb0f, NIT 5, commit 25): by the `finally` below,
-        # once, for a lock that cannot be taken, a lock another holds, a live
-        # service's answer, and an exception from the probe's `socket()` or
-        # the sweep, which then goes on up; the bind's failure below closes it
-        # itself. The probe only sets `live`, and the close follows it, so an
-        # `OSError` from the close is not taken for a stale socket's.
-        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        live = False
-        try:
-            probe.settimeout(1.0)
-            probe.connect(paths["sock"])
-            live = True         # a live service answers the connect
-        except OSError:
-            pass                # `ENOENT`, or `ECONNREFUSED`: a stale socket
+            # THE LOCK, TRIED A FEW TIMES OVER ABOUT 100 MS (lane 5's review of
+            # round 3, NIT 4; lane 1's NIT-B): a failing `serve` takes
+            # `register.lock` for a moment to write its stamp (`register_serve_stamp`),
+            # so one attempt that lands in that moment would take it for a live
+            # service's, and this starter would exit 0 and start nothing. Only a
+            # lock still held after the last attempt is a service's; the exit codes
+            # are as before.
+            # ONLY A HELD LOCK IS A SERVICE'S (lane 3's Codex delta review of
+            # bb19b1ad, #165 6886976981, NIT 8): `register_serve_try_lock` retries
+            # an interrupted attempt at once, and counts only `EAGAIN` and `EACCES`
+            # as the lock held. Any other `flock` error is a lock that cannot be
+            # taken: it is written to stderr and `register.log`, and the start
+            # exits 69, as one whose `register.lock` cannot be opened does, above.
+            for wait in REGISTER_SERVE_LOCK_WAITS:
+                time.sleep(wait)
+                try:
+                    if register_serve_try_lock(lock):
+                        break
+                except OSError as exc:
+                    note(f"serve: {paths['lock']} could not be locked ({exc.strerror or exc})")
+                    register_serve_log(paths, f"register.lock could not be locked "
+                                              f"({errno.errorcode.get(exc.errno, exc.errno)})")
+                    return EXIT_UNAVAILABLE
+            else:
+                return EXIT_OK      # ONE INSTANCE: another service holds the lock
+            # THE LOCK'S DESCRIPTOR IS CLOSED ONCE, BY THE OUTER `finally` (lane
+            # 5's Claude pre-review of P23, NIT 3; lane 5's pre-review of
+            # 7049fb0f, NIT 5; commit 28), for a lock that cannot be taken, a lock
+            # another holds, a live service's answer, and an exception from the
+            # probe's `socket()` or the sweep, which then goes on up. The probe
+            # only sets `live`, and the close follows it, so an `OSError` from the
+            # close is not taken for a stale socket's.
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            live = False
+            try:
+                probe.settimeout(1.0)
+                probe.connect(paths["sock"])
+                live = True         # a live service answers the connect
+            except OSError:
+                pass                # `ENOENT`, or `ECONNREFUSED`: a stale socket
+            finally:
+                probe.close()
+            if live:
+                return EXIT_OK
+            # THE SWEEP, UNDER THE LOCK, THROUGH THE CHECKED DESCRIPTOR (socket API
+            # §8.3; commit 22): `register_serve_sweep` lists, stats and unlinks
+            # relative to `run_fd`, and does not close it.
+            register_serve_sweep(paths, run_fd)
         finally:
-            probe.close()
-        if live:
-            return EXIT_OK
-        # THE SWEEP, UNDER THE LOCK, THROUGH THE CHECKED DESCRIPTOR (socket API
-        # §8.3; commit 22): `register_serve_sweep` lists, stats and unlinks
-        # relative to `run_fd`, and does not close it.
-        register_serve_sweep(paths, run_fd)
-        keep = True
+            try:
+                os.close(run_fd)
+            except OSError:
+                pass
+        # THE BIND, UNDER `umask 077` (Y:3768-3770), at a short name of its own
+        # beside the fixed path, renamed over it: so a STALE SOCKET is replaced
+        # under the lock in one step (Y:3907-3909), and the new socket is never
+        # the old one's inode, which a file system may hand out again at once
+        # after an unlink.
+        # The owner file is written, and the socket listens, before the rename,
+        # so a client never connects to it unanswered or finds no owner file.
+        # ONLY WHAT THIS START MADE IS REMOVED (lane 3's Codex delta review of
+        # bb19b1ad, #165 6886976981, SHOULD 3): the temporary name is unlinked
+        # on a failure only where this attempt's own `bind` made it, and not
+        # once it is renamed. A name an entry this start did not make already
+        # holds, `EADDRINUSE` at the bind, whatever it is, a file, a symbolic
+        # link, a directory, or a socket the sweep left or could not remove,
+        # is left as it is, and another name is drawn, up to
+        # `REGISTER_SERVE_BIND_TRIES` names in all.
+        for attempt in range(REGISTER_SERVE_BIND_TRIES):
+            temp = os.path.join(paths["run"], f"s.{os.urandom(2).hex()}")
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            made = renamed = False
+            old = os.umask(0o077)
+            try:
+                server.bind(temp)
+                made = True
+                server.listen(64)
+                _register_serve_write(paths["owner"], register_serve_owner_text(utc_now()))
+                os.rename(temp, paths["sock"])
+                renamed = True
+                bound = os.lstat(paths["sock"]).st_ino
+            except OSError as exc:
+                server.close()
+                server = None
+                if made and not renamed:
+                    try:
+                        os.unlink(temp)
+                    except OSError:
+                        pass
+                if (not made and exc.errno == errno.EADDRINUSE
+                        and attempt + 1 < REGISTER_SERVE_BIND_TRIES):
+                    register_serve_log(paths, f"the temporary name {os.path.basename(temp)} is "
+                                              f"taken: another is drawn")
+                    continue
+                note(f"serve: the socket {paths['sock']} could not be bound "
+                     f"({exc.strerror or exc})")
+                return EXIT_UNAVAILABLE
+            finally:
+                os.umask(old)
+            break
+        register_serve_unstamp(paths)
+        register_serve_log(paths, f"listening, pid {os.getpid()}")
+        # THE HANDOFF, THE ONE TRANSFER: from here the service's run uses the
+        # lock and the listening socket, still owned by the outer `finally`,
+        # which closes each once when `serve()` returns or raises.
+        return RegisterService(cfg, store, paths, server, bound, stamps).serve()
     finally:
-        if lock is not None and not keep:
+        if server is not None:
+            try:
+                server.close()
+            except OSError:
+                pass
+        if lock is not None:
             try:
                 os.close(lock)
             except OSError:
                 pass
-        try:
-            os.close(run_fd)
-        except OSError:
-            pass
-    # THE BIND, UNDER `umask 077` (Y:3768-3770), at a short name of its own
-    # beside the fixed path, renamed over it: so a STALE SOCKET is replaced
-    # under the lock in one step (Y:3907-3909), and the new socket is never
-    # the old one's inode, which a file system may hand out again at once
-    # after an unlink.
-    # The owner file is written, and the socket listens, before the rename,
-    # so a client never connects to it unanswered or finds no owner file.
-    # ONLY WHAT THIS START MADE IS REMOVED (lane 3's Codex delta review of
-    # bb19b1ad, #165 6886976981, SHOULD 3): the temporary name is unlinked
-    # on a failure only where this attempt's own `bind` made it, and not
-    # once it is renamed. A name an entry this start did not make already
-    # holds, `EADDRINUSE` at the bind, whatever it is, a file, a symbolic
-    # link, a directory, or a socket the sweep left or could not remove,
-    # is left as it is, and another name is drawn, up to
-    # `REGISTER_SERVE_BIND_TRIES` names in all.
-    for attempt in range(REGISTER_SERVE_BIND_TRIES):
-        temp = os.path.join(paths["run"], f"s.{os.urandom(2).hex()}")
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        made = renamed = False
-        old = os.umask(0o077)
-        try:
-            server.bind(temp)
-            made = True
-            server.listen(64)
-            _register_serve_write(paths["owner"], register_serve_owner_text(utc_now()))
-            os.rename(temp, paths["sock"])
-            renamed = True
-            bound = os.lstat(paths["sock"]).st_ino
-        except OSError as exc:
-            server.close()
-            if made and not renamed:
-                try:
-                    os.unlink(temp)
-                except OSError:
-                    pass
-            if (not made and exc.errno == errno.EADDRINUSE
-                    and attempt + 1 < REGISTER_SERVE_BIND_TRIES):
-                register_serve_log(paths, f"the temporary name {os.path.basename(temp)} is "
-                                          f"taken: another is drawn")
-                continue
-            note(f"serve: the socket {paths['sock']} could not be bound ({exc.strerror or exc})")
-            os.close(lock)
-            return EXIT_UNAVAILABLE
-        finally:
-            os.umask(old)
-        break
-    register_serve_unstamp(paths)
-    register_serve_log(paths, f"listening, pid {os.getpid()}")
-    try:
-        return RegisterService(cfg, store, paths, server, bound, stamps).serve()
-    finally:
-        server.close()
-        os.close(lock)
-
 
 def status_service(cfg: dict) -> None:
     """`status`'s SERVICE LINES (T512, in T117's `cmd_status`, under lane 1's
