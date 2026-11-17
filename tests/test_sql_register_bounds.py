@@ -294,6 +294,56 @@ def _private(path: Path, text: str = "") -> Path:
     return path
 
 
+def _error_safely(error) -> str:
+    """What a failure message may show of an exception that the code under
+    test raised (T257zs; lane 3's ruling 6949488277 on lane 2's pre-review
+    RV9-38 of P09 at `3f9fcac4`, B2): its class's name, its `kind` where it
+    has one that is a word of lowercase letters and hyphens (the product's
+    `StoreUnusable` has, else `[withheld]`), its exit where it has an int
+    `returncode`, and its text's count of lines. No text of it is shown:
+    `StoreUnusable`'s text can hold a raw line of psql's stderr
+    (lanes-index's `StoreUnusable("unreachable", err[0] or err[-1])`)."""
+    if error is None:
+        return "nothing"
+    parts = [type(error).__name__]
+    kind = getattr(error, "kind", None)
+    if isinstance(kind, str):
+        parts.append(f"kind {kind if re.fullmatch(r'[a-z][a-z-]*', kind) else '[withheld]'}")
+    code = getattr(error, "returncode", None)
+    if isinstance(code, int) and not isinstance(code, bool):
+        parts.append(f"exit {code}")
+    parts.append(f"its text {len(str(error).splitlines())} line(s), not shown")
+    return ", ".join(parts)
+
+
+def _raised_nothing(error, what: str) -> None:
+    """Fail where `what`, the code under test, raised `error`, showing it
+    only as `_error_safely` does (T257zs; RV9-38, B2)."""
+    assert error is None, f"{what} raised {_error_safely(error)}"
+
+
+def test_a_store_error_shows_its_kind_and_counts_and_no_text_in_pytests_report(request):
+    """T257zs (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09 at `3f9fcac4`, B2), with no engine and no process: the product's
+    `StoreUnusable`, carrying a planted line of psql's stderr as lanes-index
+    raises it where psql fails, reaches `_raised_nothing`, the check of the
+    bounds sites that ask a store to answer. Its failure shows the class,
+    the kind and the counts, and the planted value is in neither its message
+    nor pytest's own report of it (`_reported`). Before T257zs those sites
+    formatted `{error!r}`, the line whole. The planted value is no
+    credential of any login."""
+    mod = load_indexer()
+    planted = f"fake-{uuid.uuid4().hex}"
+    error = mod.StoreUnusable("unreachable", f'psql: error: FATAL:  role "{planted}" does not exist')
+    assert planted in str(error), "the planted line is not in the store's error, so this proves nothing"
+    with pytest.raises(AssertionError) as failed:
+        _raised_nothing(error, "PostgresStore(cfg, 'register_reader').request(...)")
+    said = str(failed.value)
+    assert said == ("PostgresStore(cfg, 'register_reader').request(...) raised StoreUnusable, "
+                    "kind unreachable, its text 1 line(s), not shown"), f"the failure says: {said}"
+    assert planted not in _reported(request, failed), "the planted value is in pytest's report"
+
+
 @pytest.mark.parametrize("role", list(ROLES))
 def test_postgres_store_register_roles_connect_by_their_own_url_with_one_joined_request(
         tmp_path, monkeypatch, role):
@@ -351,8 +401,7 @@ def test_postgres_store_register_roles_connect_by_their_own_url_with_one_joined_
         store.request(list(STATEMENTS), row)
     except Exception as exc:  # the code under test, not this test, failed
         error = exc
-    assert error is None, (f"PostgresStore(cfg, {store_role!r}).request(<2 statements>, "
-                           f"{row!r}) raised {error!r}")
+    _raised_nothing(error, f"PostgresStore(cfg, {store_role!r}).request(<2 statements>, {row!r})")
 
     records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     calls = [r for r in records if r.get("kind") != "version"]
@@ -384,8 +433,8 @@ def test_postgres_store_register_roles_connect_by_their_own_url_with_one_joined_
         store._query_many(list(STATEMENTS), snapshot=True, row=row)
     except Exception as exc:  # the code under test, not this test, failed
         error = exc
-    assert error is None, (f"PostgresStore(cfg, {store_role!r})._query_many(<2 queries>, "
-                           f"snapshot=True, row={row!r}) raised {error!r}")
+    _raised_nothing(error, f"PostgresStore(cfg, {store_role!r})._query_many(<2 queries>, "
+                           f"snapshot=True, row={row!r})")
     assert requests == [row], f"one request carries the snapshot: {requests}"
     records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     calls = [r for r in records if r.get("kind") != "version"]
@@ -2219,7 +2268,7 @@ def test_a_register_path_drops_each_inherited_pg_variable_before_psql(tmp_path, 
         store.request(["SELECT 1"], "read")
     except Exception as exc:  # the code under test, not this test, failed
         error = exc
-    assert error is None, f"PostgresStore(cfg, 'register_reader').request(...) raised {error!r}"
+    _raised_nothing(error, "PostgresStore(cfg, 'register_reader').request(...)")
     records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     requests = [r for r in records if r.get("kind") != "version"]
     assert len(requests) == 1, f"one psql call carries the request: {len(requests)}"
@@ -2292,7 +2341,7 @@ def test_a_connect_timeout_under_2_is_refused_at_load_config(tmp_path, monkeypat
             except Exception as exc:  # the refusal under test, or another failure
                 error = exc
             assert isinstance(error, mod.Refusal), \
-                f"{key}=...?connect_timeout={value} loaded: {error!r}"
+                f"{key}=...?connect_timeout={value} loaded: {_error_safely(error)}"
             _t257u_refused_with_no_value(str(error).replace(str(tmp_path), "<tmp>"), key, value,
                                          "load_config's Refusal, raised in this process, so no exit")
             res = _cli(["mode"], tmp_path)
@@ -2420,7 +2469,7 @@ def test_each_register_call_is_one_request(tmp_path, monkeypatch, call):
                           "commit")
         except Exception as exc:  # the code under test, not this test, failed
             error = exc
-        assert error is None, f"lane 1's commit request could not be sent: {error!r}"
+        _raised_nothing(error, "sending lane 1's commit request")
         calls, _ = _fake_log(log)
         assert len(calls) == 1, f"one psql call carries the commit: {len(calls)}"
         assert calls[0]["argv"] == REGISTER_ARGV
@@ -2527,7 +2576,7 @@ def test_connect_timeout_and_register_addresses_set_each_calls_timer(tmp_path, m
         store = mod.PostgresStore(mod.load_config(), "register_writer")
     except Exception as exc:  # the code under test, not this test, failed
         error = exc
-    assert error is None, f"PostgresStore(cfg, 'register_writer') at [{case}]: {error!r}"
+    _raised_nothing(error, f"PostgresStore(cfg, 'register_writer') at [{case}]")
     for row, timer in timers.items():
         failure = None
         start = time.monotonic()
