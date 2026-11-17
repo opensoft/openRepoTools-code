@@ -2222,14 +2222,37 @@ def test_a_register_path_drops_each_inherited_pg_variable_before_psql(tmp_path, 
                 assert key not in pg, f"the inherited {key} reached {record['argv']}: {pg[key]!r}"
 
 
+def _t257u_refused_with_no_value(said: str, key: str, value: str) -> None:
+    """An under-2 refusal's text, the case's `tmp_path` blanked out, as T257s's
+    refused ids read theirs (T257u): it names the URL's key, `connect_timeout=`
+    and the minimum, and shows no value of the case, neither its
+    `connect_timeout=` with the value nor the URL's own parts. The bare 1 and 0
+    are not looked for, since the refusal's own words give libpq's reading of
+    each."""
+    case = f"[{key}, connect_timeout={value}]"
+    assert f"`{key}=`" in said, f"{case} the key is not named: {said}"
+    assert "`connect_timeout=`" in said and "under 2" in said, (
+        f"{case} `connect_timeout=` and its minimum are not named: {said}")
+    shown = [v for v in (f"connect_timeout={value}", "t257_", "register_db", "127.0.0.1", "55432")
+             if v in said]
+    assert not shown, f"{case} the refusal shows {shown}: {said}"
+
+
 def test_a_connect_timeout_under_2_is_refused_at_load_config(tmp_path, monkeypatch):
     """AT-D9c (b)'s refusal (SVC-2; the phase plan's "`c` and `N_a`, the
     connect bound"): `connect_timeout=1` and `connect_timeout=0`, in
     `register_url=` or in `reader_url=`, are refused at `load_config`, as
-    `Refusal` (2), naming the key and its value, before any `psql` call:
-    libpq reads 1 as 2 and 0 as no limit. `connect_timeout=2`, `c`'s floor,
+    `Refusal` (2), naming the key, `connect_timeout=` and the minimum, 2,
+    and never the value, before any `psql` call: libpq reads 1 as 2 and 0 as
+    no limit. `lanes-index mode` then exits 2 with an empty stdout and no
+    value of the case on either stream. `connect_timeout=2`, `c`'s floor,
     loads. No engine. It fails until lane 1's line C (T103's `pg_url_env`,
-    which `load_config` runs on each URL by T106)."""
+    which `load_config` runs on each URL by T106), and until T103's
+    follow-up in P10, which names no value (T257u: contracts/config.md:119
+    and exit-codes.md:57, as lane 3 rules for P10, #165 6938005990, and for
+    this case, 6938959205; the form of T257s's refused ids). Its gate row
+    waits for T103, so it never runs against P09's own refusal text, which
+    prints the value: an ungated run of it before P10 lands is no reading."""
     log = _register_fake(tmp_path, monkeypatch)
     config = Path(os.environ["LANES_INDEX_CONFIG"])
     text = config.read_text(encoding="utf-8")
@@ -2246,7 +2269,13 @@ def test_a_connect_timeout_under_2_is_refused_at_load_config(tmp_path, monkeypat
                 error = exc
             assert isinstance(error, mod.Refusal), \
                 f"{key}=...?connect_timeout={value} loaded: {error!r}"
-            assert f"connect_timeout={value}" in str(error) and key in str(error), str(error)
+            _t257u_refused_with_no_value(str(error).replace(str(tmp_path), "<tmp>"), key, value)
+            res = _cli(["mode"], tmp_path)
+            streams = (res.stdout + res.stderr).replace(str(tmp_path), "<tmp>")
+            assert res.returncode == 2 and res.stdout == "", (
+                f"[{key}, connect_timeout={value}] mode exits {res.returncode}, not 2 with an "
+                f"empty stdout: {streams}")
+            _t257u_refused_with_no_value(streams, key, value)
     config.write_text("".join(
         line + ("?connect_timeout=2" if line.startswith(("register_url=", "reader_url=")) else "")
         + "\n" for line in text.splitlines()), encoding="utf-8")
