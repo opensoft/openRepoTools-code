@@ -878,6 +878,10 @@ def _t224p_end_child(mark: Path) -> None:
         _end_if_left(int(pid), started)
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="T224O_STAND_IN's hung run forks a child with os.fork(), the child "
+                           "names itself by /proc/<pid>/stat field 22, and the case finds it "
+                           "gone through /proc: Linux only (T224q)")
 def test_run_reads_its_terminal_and_stderr_together_and_ends_a_run_at_its_one_deadline(
         tmp_path, monkeypatch):
     """T224o (Codex's review of P09 at `21dd3642`, SHOULD 1 in lane 3's
@@ -889,7 +893,10 @@ def test_run_reads_its_terminal_and_stderr_together_and_ends_a_run_at_its_one_de
     reaped, and its child is gone by `RUN_S + END_S`, 5 s, after the run
     started, at least 3 s before the child's own 8 s watchdog, so the
     watchdog cannot pass the case (T224p; its negative control is the next
-    case). The child is ended in a finally whatever happened."""
+    case). The child is ended in a finally whatever happened. It runs on Linux
+    alone: the stand-in's child comes of `os.fork()` and names itself by
+    `/proc/<pid>/stat`, which the oracle reads too (T224q; Codex's review of
+    P09 at `d3a2fd5c`, SHOULD 5)."""
     monkeypatch.setitem(globals(), "RUN_S", 3.0)
     monkeypatch.setitem(globals(), "END_S", 2.0)
     script = _private(tmp_path / "stand_in.py", T224O_STAND_IN)
