@@ -9401,6 +9401,21 @@ class RegisterService:
 
 _REGISTER_SERVE_TEMP_RE = re.compile(r"s\.[0-9a-f]{4}")
 
+# THE STAMP TEMPORARIES A KILLED WRITE LEAVES (lane 3's ruling on lane 5's
+# question 6, #165 6932653746; socket API 2.4): `_register_serve_write` makes
+# `<path>.tmp-<pid>-<8 hex>` for the owner file and the failure stamp, so a
+# name is `register.owner.tmp-` or `register.failed.tmp-`, a decimal pid, `-`
+# and eight lower-case hex digits, as the sweep matches it, whole.
+_REGISTER_SERVE_FILE_TEMP_RE = re.compile(r"register\.(?:owner|failed)\.tmp-[0-9]+-[0-9a-f]{8}")
+
+# THE AGE FLOOR, in seconds, of such a file (10 minutes, as lane 3 ruled;
+# `IMAGE_CACHE_FLOOR_SECONDS` is the file's other 600 s): the sweep removes
+# one only where its mtime is over this old. The age, not the lock, makes it
+# a leftover, since a stamp is written without the lock where `register.lock`
+# cannot be opened (socket API 8.6, `register_serve_stamp`), so a live
+# writer's temporary can stand under the starter's lock, and is fresh.
+REGISTER_SERVE_TEMP_FLOOR_S = 600
+
 # The waits, in seconds, before each attempt at `register.lock` in
 # `register_serve_run`: five attempts over 100 ms (NIT-B).
 REGISTER_SERVE_LOCK_WAITS = (0.0, 0.025, 0.025, 0.025, 0.025)
@@ -9439,9 +9454,28 @@ def register_serve_sweep(paths: dict) -> None:
     remove each socket of that form in `run/`, by `lstat`, and this uid's,
     just before its own bind. Under the lock no other starter is between its
     bind and its rename, since only the lock's holder binds, so each such
-    socket is a leftover. A name of another form, or a file of that form
-    that is not a socket or not this uid's, is left as it is, and no line is
-    written for it.
+    socket is a leftover.
+
+    AND THE STAMP TEMPORARIES A KILLED WRITE LEAVES (lane 3's ruling on lane
+    5's question 6, #165 6932653746; socket API 2.4's words in q5's form): a
+    `SIGKILL` between the creation of a temporary file and its `rename`
+    (`_register_serve_write`) leaves `register.owner.tmp-<pid>-<8 hex>` or
+    `register.failed.tmp-<pid>-<8 hex>`. The same sweep also removes each
+    regular file in `run/` of this uid whose name is `register.owner.tmp-` or
+    `register.failed.tmp-`, then a decimal pid, `-` and eight lower-case hex
+    digits (`_REGISTER_SERVE_FILE_TEMP_RE`), and whose mtime is more than
+    `REGISTER_SERVE_TEMP_FLOOR_S` (600 s, 10 minutes) old, each checked by
+    `lstat`. THE AGE, NOT THE LOCK, MAKES IT A LEFTOVER: a stamp is written
+    without the lock where `register.lock` cannot be opened (socket API 8.6;
+    `register_serve_stamp`), and `run/` can be shared across containers, so a
+    live writer's temporary can stand under this lock, and it is fresh. A
+    fresh one is kept, and so is one that cannot be dated (an `lstat` that
+    fails; see below), a FIFO, a link, a directory, another uid's file and a
+    name of any other form.
+
+    A name of another form, or a file of such a name that is not this uid's
+    socket (or, for a temporary file, regular file), is left as it is, and no
+    line is written for it.
 
     WHAT FAILS IS SAID, AND WHAT IT LEAVES (lane 3's Codex delta review of
     bb19b1ad, #165 6886976981, NIT 6; its review of 1e1846e3, NIT 1): the
@@ -9450,7 +9484,8 @@ def register_serve_sweep(paths: dict) -> None:
     passed over. Any other failure is written to `register.log`: where `run/`
     cannot be listed no entry is tried, and where an entry cannot be
     `lstat`ed or removed, that leftover stays at its name and the sweep goes
-    on to the next entry.
+    on to the next entry; a temporary file's line says "temporary file" where
+    a socket's says "temporary socket".
 
     A leftover that stays is not itself the end of the start. A bind that
     finds its name taken (`EADDRINUSE`) draws another name
@@ -9466,18 +9501,28 @@ def register_serve_sweep(paths: dict) -> None:
         register_serve_log(paths, f"the temporary sockets could not be listed "
                                   f"({errno.errorcode.get(exc.errno, exc.errno)})")
         return
+    now = time.time()       # mtime is wall-clock time; one reading for the whole sweep
     for name in names:
-        if not _REGISTER_SERVE_TEMP_RE.fullmatch(name):
+        if _REGISTER_SERVE_TEMP_RE.fullmatch(name):
+            what = "socket"
+        elif _REGISTER_SERVE_FILE_TEMP_RE.fullmatch(name):
+            what = "file"
+        else:
             continue
         path = os.path.join(run, name)
         try:
             st = os.lstat(path)
-            if stat.S_ISSOCK(st.st_mode) and st.st_uid == os.getuid():
+            if what == "socket":
+                leftover = stat.S_ISSOCK(st.st_mode)
+            else:
+                leftover = (stat.S_ISREG(st.st_mode)
+                            and now - st.st_mtime > REGISTER_SERVE_TEMP_FLOOR_S)
+            if leftover and st.st_uid == os.getuid():
                 os.unlink(path)
         except FileNotFoundError:
             pass
         except OSError as exc:
-            register_serve_log(paths, f"the leftover temporary socket {name} could not be removed "
+            register_serve_log(paths, f"the leftover temporary {what} {name} could not be removed "
                                       f"({errno.errorcode.get(exc.errno, exc.errno)})")
 
 
@@ -9489,11 +9534,12 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     socket tried: one that answers the
     connect is a live service, and this starter exits 0; `ECONNREFUSED` is a
     stale socket, which it replaces, renaming its own new socket over it,
-    and never unlinks (socket API 2.5 and 8.3); then the temporary sockets
-    an earlier start left, each removal attempted (`register_serve_sweep`;
-    N5), where one that cannot be removed is logged and stays, the bind,
-    under `umask 077`, the owner file, the listen, and the stamp removed
-    (Y:3936-3938). The bind draws a temporary name of `s.` and four hex
+    and never unlinks (socket API 2.5 and 8.3); then the temporary sockets,
+    and the stamp temporaries over 10 minutes old, an earlier start left,
+    each removal attempted (`register_serve_sweep`; N5, and lane 3's ruling
+    on question 6), where one that cannot be removed is logged and stays,
+    the bind, under `umask 077`, the owner file, the listen, and the stamp
+    removed (Y:3936-3938). The bind draws a temporary name of `s.` and four hex
     digits, up to `REGISTER_SERVE_BIND_TRIES` (8) times, drawing another
     where a name is taken (`EADDRINUSE`). It ends the start at 69 after the
     eighth taken name, and at once at any other `OSError` from the bind, the
