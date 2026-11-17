@@ -466,6 +466,15 @@ class Session:
                 self.err += chunk
         return self.err[start:].decode("utf-8", "replace")
 
+    def exit_now(self) -> str:
+        """Its `psql`'s exit where it has ended, else that it still runs, by
+        `poll()` alone, at the moment it is asked (T258s; lane 2's targeted
+        check RV9-39 of P09 at `3c5b68bc`, S3: `send` returns where `psql`
+        ended too, so a message that said "its session still open" could say
+        the opposite of the truth)."""
+        code = self.proc.poll()
+        return f"its psql exit {code}" if code is not None else "no exit, its psql still running"
+
     def close(self) -> subprocess.CompletedProcess:
         """`psql`'s stdin closed; then its stdout and stderr read together to
         their ends (`_drain`) and its exit reaped, all under one monotonic
@@ -1201,8 +1210,8 @@ def test_login_rotate_keeps_an_open_session_and_refuses_the_old_password(tmp_pat
     new = m.passfiles(proc.stdout, "passfiles-new")
     assert sorted(new) == ["lanes_r_e1", "lanes_w_e1"], _said_safely(proc)
     answered = held.send("SELECT 'after';", "t224-after")
-    assert "ERROR" not in answered, (f"the session open across the rotation got an error, and has no "
-                                     f"exit, its session still open:\n{_said_safely(answered, stream='stderr')}")
+    assert "ERROR" not in answered, (f"the session open across the rotation got an error ({held.exit_now()}):"
+                                     f"\n{_said_safely(answered, stream='stderr')}")
     ended = held.close()
     assert ended.returncode == 0 and ended.stdout.split() == ["before", "after"], (
         f"the session open across the rotation did not go on:\n{_said_safely(ended)}")
@@ -1290,8 +1299,8 @@ def test_an_open_session_gets_42501_between_the_revokes_steps_then_57p01(tmp_pat
     files = m.logins(service, "e1", "e2", dump=False)
     held = m.session("lanes_w_e2", "t224_reg", files["lanes_w_e2"])
     opened = held.send("SELECT 1;", "t224-open")
-    assert "ERROR" not in opened, (f"e2's session did not open, and has no exit, its session still "
-                                   f"open:\n{_said_safely(opened, stream='stderr')}")
+    assert "ERROR" not in opened, (f"e2's session did not open ({held.exit_now()}):"
+                                   f"\n{_said_safely(opened, stream='stderr')}")
     # [steps-by-hand]: the revoke block's steps 1 and 2, by the admin.
     m.psql(f"ALTER ROLE lanes_w_e2 NOLOGIN;\nREVOKE {WRITER} FROM lanes_w_e2;\n", "t224_reg",
            user=ADMIN)
@@ -1300,8 +1309,8 @@ def test_an_open_session_gets_42501_between_the_revokes_steps_then_57p01(tmp_pat
     read = held.send(f"SELECT seq FROM {REGISTER}.register_head;", "t224-read")
     for what, said in (("write", write), ("read", read)):
         assert "42501" in said and f"permission denied for schema {REGISTER}" in said, (
-            f"the open session's {what} between steps 2 and 3 is not 42501, and has no exit, its "
-            f"session still open: {_said_safely(said, stream='stderr')}")
+            f"the open session's {what} between steps 2 and 3 is not 42501 ({held.exit_now()}): "
+            f"{_said_safely(said, stream='stderr')}")
     # Step 3 by hand: its sessions ended.
     m.psql("GRANT lanes_w_e2 TO CURRENT_USER WITH INHERIT TRUE, SET FALSE;\n"
            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'lanes_w_e2';\n"
