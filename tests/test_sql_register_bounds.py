@@ -3994,14 +3994,32 @@ _STREAM_CALLS = ("_said", "_masked")
 #: place (T257zy): `_said_safely`'s `stream`, `_whole`'s `what`.
 _SAFE_CALLS = ("_said_safely", "_lanes_shown", "_whole", "len", "_error_safely")
 #: Calls whose arguments reach a failure's output, but a `file=` destination,
-#: besides an assert's message, a raise and a call whose name ends `Error` or
-#: `Exception` (T257zi, T257zp, T257zy). A name imported from pytest, os, sys or
-#: warnings counts by its dotted name. `_raised_nothing` takes its message.
+#: besides an assert's message, a raise, a call whose name ends `Error` or
+#: `Exception`, a logging call and a terminal reporter's write (T257zi, T257zp,
+#: T257zy, T257zzzd). A call counts by its dotted name with its first part
+#: resolved (T257zzzd; lane 2's pre-review RV9-42 of P09 at `857a41d2`, S1): a
+#: name from-imported from a module of `_IMPORTED_FROM` is that module's
+#: (`stderr.write` after `from sys import stderr` is `sys.stderr.write`), and
+#: a module imported under another name is that module (`pt.fail` after
+#: `import pytest as pt` is `pytest.fail`). `_raised_nothing` takes its message.
 _SINK_CALLS = ("pytest.fail", "pytest.skip", "pytest.xfail", "pytest.exit", "print",
                "sys.stderr.write", "sys.stdout.write", "sys.__stderr__.write",
                "sys.__stdout__.write", "sys.stderr.writelines", "sys.stdout.writelines",
                "sys.__stderr__.writelines", "sys.__stdout__.writelines", "os.write",
                "warnings.warn", "_raised_nothing")
+_IMPORTED_FROM = ("pytest", "os", "sys", "warnings", "logging", "subprocess", "textwrap")
+#: A terminal reporter's write (T257zzzd; RV9-42, S1): `.write_line`,
+#: `.write_sep`, `.line` or `.write_raw` of any object, and `.write` of a name
+#: of `_REPORTERS`. pgcluster's `pytest_terminal_summary` writes the run's foot
+#: so, to CI's terminal.
+_REPORTER_WRITES = ("write_line", "write_sep", "line", "write_raw")
+_REPORTERS = ("terminalreporter", "tr", "reporter")
+#: The one place the check is told not to name, as (file, function, name)
+#: (T257zzzd; RV9-42, S1; lane 2's pre-review RV9-41 of P09 at `4895579`,
+#: N4): in pgcluster's `pytest_terminal_summary`, the module list `_DATACL`,
+#: which holds psql's raw answer for a clone's `pg_database.datacl`, its
+#: access list, and which the run's foot prints, as open point 12 requires.
+_EXEMPT = (("pgcluster.py", "pytest_terminal_summary", "_DATACL"),)
 #: A logging call (T257zy): `logging.<method>`, or `<name>.<method>` where the
 #: name is `log` or `logger`, in any case.
 _LOG_METHODS = ("debug", "info", "warning", "warn", "error", "exception", "critical", "log")
@@ -4044,7 +4062,10 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
     any class, or of a name its function bound to a call and then raised,
     the value a function of `_MESSAGE_MAKERS` returns, and the arguments of
     a call of `_SINK_CALLS` but its `file=` destination, of a logging call
-    (`_LOG_METHODS`), or of a call whose name ends `Error` or `Exception`. A
+    (`_LOG_METHODS`), of a terminal reporter's write (`_REPORTER_WRITES`,
+    `_REPORTERS`; T257zzzd), or of a call whose name ends `Error` or
+    `Exception`, each by its dotted name with its first part resolved
+    (`_SINK_CALLS`' note). A
     stream there is an attribute of `_STREAM_ATTRS`, `getattr(x, "<one of
     them>")`, a name of `_STREAM_NAMES`, a call of `_STREAM_CALLS` or of a
     method of `_STREAM_RESULTS`, a call `.said()`, a name its function or an
@@ -4073,7 +4094,9 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
     list literal is followed by position, so `said[0]` of `said =
     (proc.returncode, proc.stdout)` is not a stream, nor is `argv[0]` where
     `argv` is looped over rows of literals and only its third item came from
-    a stream.
+    a stream. A name the module binds at its top level, which a function
+    gives a stream's text by `.append`, `.extend` or `.insert`
+    (`_DATACL.append(...)`), is a stream in every function (T257zzzd).
 
     A module whose docstring does not say PYTEST_DONT_REWRITE is a place too
     (T257zj): pytest's assertion rewriting would add each tested operand, a
@@ -4103,7 +4126,8 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
     as t`), though a call given a stream inside a message is a place; text
     that reaches a message through another function (`_burst_report`'s
     rows), an attribute (`self.err = proc.stderr`) or a container's item
-    assigned later; a module-level statement; an exception's own text
+    assigned later, but a top-level name's `.append`, `.extend` or
+    `.insert`; a module-level statement; an exception's own text
     formatted in a message (`str(failed.value)`, `{exc}`), which the check
     cannot tell from a helper's message, and an exception that code the test
     calls raises with text of its own, which pytest prints under every
@@ -4119,24 +4143,31 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
     output that a test's process writes itself, a child's output on an
     inherited stream among them.
 
-    One deliberate exception, named here and not a place (lane 2's
-    pre-review RV9-41 of P09 at `4895579`, N4): pgcluster's `_DATACL` foot
-    line, which `pytest_terminal_summary` prints on every real-engine run
-    (`... statements (open point 12): <datacl>`), shows psql's raw answer
-    for the clone's `pg_database.datacl`, its access list, as open point 12
-    requires. It reaches the output through a list's item (`_DATACL`),
-    which the check does not follow."""
+    One deliberate exception, named here and in `_EXEMPT`, so not a place
+    (lane 2's pre-review RV9-41 of P09 at `4895579`, N4; T257zzzd, RV9-42,
+    S1): pgcluster's `_DATACL` foot line, which `pytest_terminal_summary`
+    writes with `write_line` on every real-engine run (`... statements (open
+    point 12): <datacl>`), shows psql's raw answer for the clone's
+    `pg_database.datacl`, its access list, as open point 12 requires. The
+    check follows that answer from `new_database`'s `_DATACL.append(...)` to
+    the foot line, and `_EXEMPT` makes `_DATACL` no stream in that one
+    function. Before T257zzzd no terminal reporter's write was a sink, so a
+    raw stream written there directly passed too."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found = []
     if not only and "PYTEST_DONT_REWRITE" not in (ast.get_docstring(tree, clean=False) or ""):
         found.append(f"{path.name}:1: its docstring does not say PYTEST_DONT_REWRITE")
-    aliases = {alias.asname or alias.name: f"{node.module}.{alias.name}" for node in ast.walk(tree)
-               if isinstance(node, ast.ImportFrom) and node.module in ("pytest", "os", "sys", "warnings")
-               for alias in node.names}
+    aliases = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in _IMPORTED_FROM:
+            aliases.update({alias.asname or alias.name: f"{node.module}.{alias.name}" for alias in node.names})
+        elif isinstance(node, ast.Import):
+            aliases.update({alias.asname: alias.name for alias in node.names if alias.asname})
 
     def dotted(func) -> str:
         name = ast.unparse(func)
-        return aliases.get(name, name)
+        head, dot, rest = name.partition(".")
+        return aliases[head] + dot + rest if head in aliases else name
 
     def names(target) -> list:
         if isinstance(target, ast.Starred):
@@ -4328,6 +4359,17 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 prefix = qualified.get(id(node))
                 qualified[id(child)] = f"{prefix}.{child.name}" if prefix else child.name
+    top = {name for node in tree.body if isinstance(node, (ast.Assign, ast.AnnAssign))
+           for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+           for name in names(target)}
+    kept = {}
+    for function in functions:
+        local = derived_in(function, {})
+        kept.update({node.func.value.id: "all" for node in ast.walk(function)
+                     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                     and node.func.attr in ("append", "extend", "insert")
+                     and isinstance(node.func.value, ast.Name) and node.func.value.id in top
+                     and any(raw(arg, local, message=False) is not None for arg in node.args)})
     bound, origins, wholes, texts, ints, made = {}, {}, {}, {}, {}, {}
 
     def facts(function) -> None:
@@ -4339,7 +4381,9 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
         texts[id(function)] = annotated(function, r"\b(str|bytes|bytearray|AnyStr)\b") | \
             (texts[id(outer)] if outer is not None else set())
         ints[id(function)] = annotated(function, r"\bint\b") - texts[id(function)]
-        bound[id(function)] = derived_in(function, bound[id(outer)] if outer is not None else {})
+        bound[id(function)] = derived_in(function, bound[id(outer)] if outer is not None else {
+            name: held for name, held in kept.items()
+            if (path.name, qualified.get(id(function)), name) not in _EXEMPT})
         origins[id(function)] = origins_in(function, origins[id(outer)] if outer is not None else {},
                                            bound[id(function)])
         made[id(function)] = {**(made[id(outer)] if outer is not None else {}), **made_in(function)}
@@ -4448,6 +4492,9 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
             message = [node.value]
         elif isinstance(node, ast.Call) and (
                 dotted(node.func) in _SINK_CALLS or dotted(node.func).endswith(("Error", "Exception"))
+                or (isinstance(node.func, ast.Attribute) and node.func.attr in _REPORTER_WRITES)
+                or (isinstance(node.func, ast.Attribute) and node.func.attr == "write"
+                    and isinstance(node.func.value, ast.Name) and node.func.value.id in _REPORTERS)
                 or (isinstance(node.func, ast.Attribute) and node.func.attr in _LOG_METHODS
                     and (dotted(node.func.value) == "logging"
                          or (isinstance(node.func.value, ast.Name)
@@ -4515,7 +4562,11 @@ import textwrap
 import warnings
 
 import pytest
+import pytest as pt
 from pytest import fail
+from sys import stderr
+
+_HELD: list = []
 
 
 def test_planted(proc, session, failed, ends, said_by, other, held, log):
@@ -4588,6 +4639,21 @@ def test_planted(proc, session, failed, ends, said_by, other, held, log):
     answered = held.send("SELECT 1;", "m")
     assert "ERROR" not in answered, f"{_said_safely(answered, stream='stderr')}"  # planted
     assert "ERROR" not in answered, f"({held.exit_now()}) {_said_safely(answered, stream='stderr')}"  # clean
+    terminalreporter.write_line(proc.stdout)  # planted
+    terminalreporter.write_line(f"real-engine: {proc.stdout}")  # planted
+    reporter.write(proc.stderr)  # planted
+    tr.line(proc.stderr)  # planted
+    tr.write_sep("=", proc.stderr)  # planted
+    terminalreporter.write_raw(proc.stdout)  # planted
+    terminalreporter.write_line(f"{count} fixed words")  # clean
+    notes.write(proc.stderr)  # clean
+    stderr.write(proc.stderr)  # planted
+    pt.fail(proc.stderr)  # planted
+    _HELD.append(proc.stderr.strip())
+
+
+def _planted_foot(terminalreporter):
+    terminalreporter.write_line(f"held: {_HELD[0]}")  # planted
 
 
 def _planted_text(text: str, data: bytes):
@@ -4611,6 +4677,28 @@ def _planted_annotations(a: Optional[bytes], b: "str", *c: str, d: typing.Option
     assert not e, f"{_said_safely(e)}"  # planted
     assert not f, f"{_said_safely(f)}"  # planted
     assert not g, f"{_said_safely(g)}"  # planted
+'''
+#: A module named pgcluster.py for the same test (T257zzzd; RV9-42, S1):
+#: `_EXEMPT`'s `_DATACL` line is no place, and the same line of another list,
+#: or of `_DATACL` in another function, is one.
+_PLANTED_FOOT = '''"""PYTEST_DONT_REWRITE"""
+_DATACL: list = []
+_OTHER: list = []
+
+
+def new_database(cluster):
+    acl = cluster.psql("SELECT 1").stdout.strip()
+    _DATACL.append(acl)
+    _OTHER.append(acl)
+
+
+def pytest_terminal_summary(terminalreporter):
+    terminalreporter.write_line(f"open point 12: {_DATACL[0]}")  # clean
+    terminalreporter.write_line(f"open point 12: {_OTHER[0]}")  # planted
+
+
+def elsewhere(terminalreporter):
+    terminalreporter.write_line(f"open point 12: {_DATACL[0]}")  # planted
 '''
 
 
@@ -4651,18 +4739,30 @@ def test_the_static_check_names_each_kind_of_place_it_catches(tmp_path):
     message whose stream's own exit is shown (by its `returncode`, the
     helper given its process whole, `exit=` of its own `returncode` or of an
     `int` parameter, or `exit_now()` of its session), a message that says
-    it has no exit, and fixed words printed to stderr."""
-    planted = tmp_path / "test_planted.py"
-    planted.write_text(_PLANTED, encoding="utf-8")
-    lines = _PLANTED.splitlines()
-    want = sorted(i + 1 for i, line in enumerate(lines) if line.endswith("# planted"))
-    clean = {i + 1 for i, line in enumerate(lines) if line.endswith("# clean")}
-    found = _raw_streams_in(planted)
-    named = sorted({int(place.split(":")[1]) for place in found})
-    assert named == want, (f"the check named lines {named}, not the planted {want}:\n"
-                           + "\n".join(found))
-    assert not clean & set(named), f"the check named a clean line: {sorted(clean & set(named))}"
-    assert all(place.startswith("test_planted.py:") for place in found), "\n".join(found)
+    it has no exit, and fixed words printed to stderr.
+
+    Since T257zzzd (lane 2's pre-review RV9-42 of P09 at `857a41d2`, S1):
+    a terminal reporter's `write_line`, `write`, `line`, `write_sep` and
+    `write_raw`, `stderr.write` after `from sys import stderr`, `pt.fail`
+    after `import pytest as pt`, and a module list a function appends a
+    stream's text to, written in another function; and, in a module named
+    pgcluster.py (`_PLANTED_FOOT`), the same line of `_DATACL` in
+    `pytest_terminal_summary` (`_EXEMPT`) is clean while that of another
+    list, or of `_DATACL` elsewhere, is a place. A file's `write` and fixed
+    words written to the terminal are clean."""
+    (tmp_path / "foot").mkdir()
+    for planted, text in ((tmp_path / "test_planted.py", _PLANTED),
+                          (tmp_path / "foot" / "pgcluster.py", _PLANTED_FOOT)):
+        planted.write_text(text, encoding="utf-8")
+        lines = text.splitlines()
+        want = sorted(i + 1 for i, line in enumerate(lines) if line.endswith("# planted"))
+        clean = {i + 1 for i, line in enumerate(lines) if line.endswith("# clean")}
+        found = _raw_streams_in(planted)
+        named = sorted({int(place.split(":")[1]) for place in found})
+        assert named == want, (f"in {planted.name}, the check named lines {named}, not the planted "
+                               f"{want}:\n" + "\n".join(found))
+        assert not clean & set(named), f"the check named a clean line: {sorted(clean & set(named))}"
+        assert all(place.startswith(f"{planted.name}:") for place in found), "\n".join(found)
 
 
 def test_a_failed_psqls_cluster_error_shows_no_line_of_its_stderr(monkeypatch):
