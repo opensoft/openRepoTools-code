@@ -9560,8 +9560,12 @@ def register_serve_sweep(paths: dict, fd: int) -> None:
     of `register.log` that the launcher opened before the start,
     `stderr=log`, and so the line reaches the log file, and a `serve` run by
     hand writes it to its terminal. The line is written by `note`, without a
-    time, and a standard error that cannot be written to changes nothing:
-    the sweep is skipped all the same.
+    time, synchronously (`sys.stderr.write`). Its ordinary write errors,
+    `OSError`, `ValueError` and `AttributeError` (a standard error of None),
+    are passed over, so they change nothing: the sweep is skipped all the
+    same. No promise of non-blocking progress is made: a full pipe that no
+    one reads can hold the write, and a stream that raises another exception
+    is not caught.
 
     The lines after the start's check has passed, a listing that fails and an
     entry that cannot be read or removed, go through `register_serve_log` as
@@ -9612,7 +9616,7 @@ def register_serve_sweep(paths: dict, fd: int) -> None:
         try:
             note(f"serve: the temporary leftovers were not swept: {why}")
         except (OSError, ValueError, AttributeError):
-            pass            # a standard error that cannot be written: skipped all the same
+            pass            # an ordinary write error: skipped all the same; the write may block
 
     # NO DESCRIPTOR-RELATIVE CALLS, NO SWEEP (lane 3's rulings, #165
     # 6934655836 and 6935871785): without them the sweep would resolve
@@ -9702,7 +9706,12 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     # error, never through `register_serve_log`, which opens `register.log`
     # by its path; and it opens and makes nothing in `run/`: no lock, no
     # socket, no owner file and no stamp. Nothing is unlinked or repaired by
-    # the failed path.
+    # the failed path. The line is written by `note`, synchronously
+    # (`sys.stderr.write`): its ordinary write errors, `OSError`, `ValueError`
+    # and `AttributeError` (a standard error of None), are passed over, so the
+    # exit is 2 whether or not it is written; no promise of non-blocking
+    # progress is made, since a full pipe that no one reads can hold the write,
+    # and a stream that raises another exception is not caught.
     run_fd, why = register_serve_dir_open(paths["run"])
     if why:
         try:
@@ -9712,7 +9721,7 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
                  f"opens and makes nothing in it: no lock, no socket, no owner file and no "
                  f"stamp (socket API §2.2)")
         except (OSError, ValueError, AttributeError):
-            pass            # the exit is 2 whether or not the line can be written
+            pass            # an ordinary write error: the exit is 2 all the same
         return EXIT_REFUSED
     # WHAT THE DESCRIPTOR ANCHORS, AND WHAT IT DOES NOT: `register.lock` is
     # opened relative to it, then checked by `fstat` to be a regular file
