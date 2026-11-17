@@ -2589,7 +2589,7 @@ def test_connect_timeout_and_register_addresses_set_each_calls_timer(tmp_path, m
         took = time.monotonic() - start
         assert failure is not None, f"{row}: a call that never answers was answered"
         assert getattr(failure, "timer_expired", False) is True, \
-            f"{row}: ended by {failure!r}, not by its client timer"
+            f"{row}: ended by {_error_safely(failure)}, not by its client timer"
         assert timer <= took < 2 * timer, f"{row} at [{case}]: {took:.2f} s against its {timer} s"
         _record(f"{row}-{case}", took, timer, "timing rules 2 and 3")
     calls, probes = _fake_log(log)
