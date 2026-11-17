@@ -3823,6 +3823,40 @@ def test_no_failure_message_formats_a_captured_stream_but_through_the_one_helper
                        f"through _said_safely:\n" + "\n".join(found))
 
 
+def test_a_failed_psqls_cluster_error_shows_no_line_of_its_stderr(monkeypatch):
+    """T257zk (lane 3's ruling 6947252648 on lane 2's pre-review RV9-37 of
+    P09 at `d9a1f2bf`, S4; T229k), with no engine and no process: psql,
+    run by `Cluster.psql`, exits 3 with stderr that echoes a role statement
+    holding a planted value, once at psql's default verbosity and once at
+    verbose, with a SQLSTATE. The `ClusterError` raised shows the exit, the
+    SQLSTATE where there is one and the counts, and the planted value is in
+    neither its `str` nor its `repr` nor its formatted traceback. Before
+    T229k the error held psql's whole stderr. The planted value is no
+    credential of any login."""
+    import traceback
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+    cluster = object.__new__(pgcluster.Cluster)
+    cluster.root, cluster.bindir, cluster.port = Path("/nonexistent"), Path("/nonexistent/bin"), 5432
+    for err, state in ((f"psql:<stdin>:1: ERROR:  syntax error at or near \"x\"\n"
+                        f"LINE 1: CREATE ROLE r LOGIN PASSWORD '{planted}' x;\n        ^\n",
+                        "no SQLSTATE in its text"),
+                       (f"ERROR:  42601: syntax error at or near \"x\"\n"
+                        f"LINE 1: ALTER ROLE r PASSWORD '{planted}' x;\n"
+                        f"LOCATION:  scanner_yyerror, scan.l:1188\n", "SQLSTATE 42601")):
+        monkeypatch.setattr(pgcluster.subprocess, "run",
+                            lambda argv, err=err, **k: subprocess.CompletedProcess(argv, 3, "", err))
+        with pytest.raises(pgcluster.ClusterError) as failed:
+            cluster.psql("SELECT 1", dbname="register", user="lanes_admin")
+        said = "".join(traceback.format_exception(failed.type, failed.value, failed.tb))
+        assert planted not in str(failed.value), "the planted value is in the error's text"
+        assert planted not in repr(failed.value), "the planted value is in the error's repr"
+        assert planted not in said, "the planted value is in the formatted traceback"
+        assert str(failed.value) == (f"psql as lanes_admin on register exited 3: {state}; stderr: "
+                                     f"3 line(s), 1 of them ERROR, FATAL or PANIC lines; no line "
+                                     f"of it is shown"), f"the error says: {failed.value}"
+
+
 # ============================== D9's rollback and cutover rows (T278), real engine
 
 #: The `git` wrapper that fails each push (TP:3633-3634, "a cutover whose push
