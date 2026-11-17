@@ -65,6 +65,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -6358,6 +6359,11 @@ class _Listener:
         write_record(run / "register.owner", _owner_lines(est.index))
         self.server.listen(8)
         self.got, self.held, self.stop_ = [], [], threading.Event()
+        # Every socket `accept` gave before `stop_`, registered under `lock`,
+        # and taken out, under `lock`, only as `_take` closes it (T237zzw).
+        # One `accept` gives once `stop_` is set is closed by the thread, at
+        # once, and never registered (T237zzza).
+        self.lock, self.conns = threading.Lock(), []
 
         def serve():
             self.server.settimeout(0.2)
@@ -6366,38 +6372,255 @@ class _Listener:
                     conn, _ = self.server.accept()
                 except OSError:
                     continue
-                conn.settimeout(1.0)
-                data = b""
-                try:
-                    data = conn.recv(65536)
-                    while whole and data and b"\nend\n" not in data:
-                        chunk = conn.recv(65536)
-                        if not chunk:
-                            break
-                        data += chunk
-                except OSError:
-                    pass
-                self.got.append(data)
-                if answer is not None and data:
-                    try:
-                        conn.sendall(answer)
-                    except OSError:
-                        pass
-                if hang:
-                    self.held.append(conn)
-                else:
-                    conn.close()
+                self._accepted(conn)
+                with self.lock:
+                    if self.stop_.is_set():
+                        # `close()` has begun, and its passes over `conns` may
+                        # be over: no one else would close it (T237zzza).
+                        conn.close()
+                        break
+                    self.conns.append(conn)
+                self._take(conn, hang, whole, answer)
 
         self.thread = threading.Thread(target=serve, daemon=True)
         self.thread.start()
 
+    def _accepted(self, conn) -> None:
+        """THE SEAM BETWEEN `accept` AND THE REGISTRY (T237zzza; Codex's
+        review of P09 at `d3a2fd5c`, SHOULD 1): `serve` calls it with each
+        socket `accept` gives, before it takes `lock`. Here it does nothing;
+        a case's subclass holds the thread in it, so the window in which a
+        socket is accepted and not yet registered stays open while `close()`
+        runs."""
+
+    def _take(self, conn, hang: bool, whole: bool, answer: bytes) -> None:
+        """One registered connection, taken as `serve` took it before
+        T237zzza, which moved it here unchanged: its request read (with
+        `whole`, to its `end`), recorded in `got`, answered with `answer`
+        where it sent bytes, then held (`hang`), or taken out of `conns` and
+        closed under `lock`."""
+        conn.settimeout(1.0)
+        data = b""
+        try:
+            data = conn.recv(65536)
+            while whole and data and b"\nend\n" not in data:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+        except OSError:
+            pass
+        self.got.append(data)
+        if answer is not None and data:
+            try:
+                conn.sendall(answer)
+            except OSError:
+                pass
+        if hang:
+            self.held.append(conn)
+        else:
+            with self.lock:
+                self.conns.remove(conn)
+                conn.close()
+
+    #: How long `close()` waits for the thread once it has shut down every
+    #: socket the thread holds (T237zzw).
+    JOIN_S = 5.0
+
     def close(self) -> None:
+        """The thread ended, and every socket it accepted closed, then the
+        listening one (T237zzw; Codex's review of P09 at `21dd3642`, SHOULD
+        8). `stop_` is set; then, under `lock`, the listening socket is shut
+        down, so a connect is refused from here on (one already queued may
+        still be accepted, and is closed as below), and each registered
+        socket too, so a `recv` or `sendall` on it returns at once. Then the
+        thread has `JOIN_S` s to end, and only then is each registered socket
+        closed, so none is added after the closing pass.
+
+        A socket `accept` gave and the thread has not yet registered, as
+        where the thread is held between the two (`_accepted`), is never
+        registered once `stop_` is set: the thread closes it itself, under
+        `lock`, and ends (T237zzza; Codex's review at `d3a2fd5c`, SHOULD 1).
+        Before that, a thread let go after the closing pass registered it,
+        saw `stop_` and ended, and `close()` returned with it open. So where
+        the thread has ended, every socket it accepted is closed, by `close()`
+        or by the thread; a thread still running fails the case, once every
+        registered socket is closed."""
+        import socket
         self.stop_.set()
-        self.thread.join(1)
-        for conn in self.held:
-            conn.close()
+        with self.lock:
+            for sock in [self.server, *self.conns]:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+        self.thread.join(self.JOIN_S)
+        with self.lock:
+            for conn in self.conns:
+                conn.close()
         self.server.close()
         self.path.unlink(missing_ok=True)
+        if self.thread.is_alive():
+            raise AssertionError(f"the listener's thread still runs {self.JOIN_S:g} s after "
+                                 f"close() shut its sockets down")
+
+
+def test_the_listeners_close_ends_its_thread_and_closes_each_socket_it_accepted():
+    """`_Listener.close()` (T237zzw; Codex's review of P09 at `21dd3642`,
+    SHOULD 8), with no engine, service or hook: a socket of the case's own in
+    a state home of its own (`_state_home`), and a client that is this case.
+
+    (a) A held connection still being read when `close()` comes: the client
+    sends a byte every 0.2 s and never `end`, so `whole`'s read never meets
+    its 1 s pause. `close()` must return with the thread ended and each socket
+    the thread accepted closed. Before T237zzw it joined for 1 s, closed what
+    `held` held then, and returned with the thread still reading, so the
+    connection it went on to hold was never closed.
+
+    (b) A thread that does not end: `close()` must fail the case, not return
+    as if it had ended. The listener's own thread is set aside for a stand-in
+    that waits on an event, and `JOIN_S` is 0.3 s."""
+    import socket
+
+    class Bare:
+        """What `_Listener` reads of an `Estate`: its state home, and a file
+        for `register.owner`'s `install=`."""
+        def __init__(self):
+            self.base = {"XDG_STATE_HOME": str(_state_home())}
+            self.index = Path(__file__)
+
+    listener = _Listener(Bare(), hang=True, whole=True)
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.connect(str(listener.path))
+    stop = threading.Event()
+
+    def trickle():
+        while not stop.is_set():
+            try:
+                client.sendall(b"x")
+            except OSError:
+                return
+            stop.wait(0.2)
+
+    feeder = threading.Thread(target=trickle, daemon=True)
+    feeder.start()
+    try:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            with listener.lock:
+                if listener.conns:
+                    break
+            time.sleep(0.05)
+        time.sleep(0.5)
+        listener.close()
+        ended = not listener.thread.is_alive()
+    finally:
+        stop.set()
+        feeder.join(5)
+        client.close()
+    assert ended, "close() returned while the listener's thread was still reading a held connection"
+    assert len(listener.conns) == 1 and all(conn.fileno() == -1 for conn in listener.conns), \
+        f"close() left a socket the thread accepted open: {listener.conns!r}"
+    assert all(set(data) <= {ord("x")} for data in listener.got), listener.got
+
+    stuck = _Listener(Bare(), hang=False)
+    own, gate = stuck.thread, threading.Event()
+    stuck.thread = threading.Thread(target=gate.wait, daemon=True)
+    stuck.thread.start()
+    stuck.JOIN_S = 0.3
+    try:
+        with pytest.raises(AssertionError, match="still runs"):
+            stuck.close()
+    finally:
+        gate.set()
+        stuck.thread.join(5)
+        own.join(5)
+    assert not own.is_alive(), "the listener's own thread outlived close()"
+
+
+class _LateThread:
+    """A stand-in for `_Listener`'s thread while the real one is held in its
+    seam, `_accepted` (T237zzza): `close()`'s `join` returns at once, as a
+    join whose `JOIN_S` ran out, once it has tried one connect, which a
+    listener shut down before the join refuses (`refused`); `is_alive` first
+    lets the real thread go and waits for it, so the thread goes on after
+    `close()`'s closing pass and before `close()` reads whether it ended."""
+
+    def __init__(self, thread: threading.Thread, let_go: threading.Event, path: Path):
+        self.thread, self.let_go, self.path, self.refused = thread, let_go, path, None
+
+    def join(self, timeout=None) -> None:
+        import socket
+        knock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            knock.connect(str(self.path))
+            self.refused = False
+        except ConnectionRefusedError:
+            self.refused = True
+        finally:
+            knock.close()
+
+    def is_alive(self) -> bool:
+        self.let_go.set()
+        self.thread.join(30)
+        return self.thread.is_alive()
+
+
+@pytest.mark.parametrize("released", ["inside-close", "after-close"])
+def test_a_socket_accepted_as_the_listener_closes_is_closed_and_close_tells_the_truth(released):
+    """`_Listener`'s window between `accept` and its registry (T237zzza;
+    Codex's review of P09 at `d3a2fd5c`, SHOULD 1), with no engine, service
+    or hook: a socket of the case's own in a state home of its own
+    (`_state_home`), a client that is this case, and the listener's seam,
+    `_accepted`, in which the thread is held with the client's socket
+    accepted and not registered while `close()` runs.
+
+    `[inside-close]`: the window is let go inside `close()`, after its
+    closing pass and before its last look at the thread, as Codex's
+    descheduled thread would be (`_LateThread`). Before T237zzza the thread
+    then registered the socket, saw `stop_` and ended, and `close()`
+    returned with the socket open. Now `close()` returns, the thread has
+    ended and the socket is closed; and a connect tried while `close()`
+    waited for the thread is refused, the listener being shut down first.
+
+    `[after-close]`: the window is held through all of `close()`, with
+    `JOIN_S` 0.3 s, so `close()` must fail the case, its thread alive. Let
+    go, the thread must end and close the socket itself: before T237zzza it
+    registered it after the closing pass, and no one closed it."""
+    import socket
+    arrived, let_go, taken = threading.Event(), threading.Event(), []
+
+    class Held(_Listener):
+        def _accepted(self, conn) -> None:
+            taken.append(conn)
+            arrived.set()
+            let_go.wait(30)
+
+    listener = Held(types.SimpleNamespace(base={"XDG_STATE_HOME": str(_state_home())},
+                                          index=Path(__file__)), hang=True)
+    own, late = listener.thread, _LateThread(listener.thread, let_go, listener.path)
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        client.connect(str(listener.path))
+        assert arrived.wait(10), "the listener's thread never held an accepted socket in its seam"
+        if released == "inside-close":
+            listener.thread = late
+            listener.close()
+        else:
+            listener.JOIN_S = 0.3
+            with pytest.raises(AssertionError, match="still runs"):
+                listener.close()
+    finally:
+        let_go.set()
+        listener.stop_.set()
+        own.join(30)
+        client.close()
+    assert not own.is_alive(), "the listener's thread outlived the window it was held in"
+    assert len(taken) == 1 and taken[0].fileno() == -1, \
+        f"a socket accepted as close() came was left open: {taken!r}"
+    assert not listener.conns, f"a socket accepted once stop_ was set was registered: {listener.conns!r}"
+    assert released == "after-close" or late.refused, \
+        "a connect tried while close() waited for the thread was not refused: the listener was not shut down first"
 
 
 class _Service:

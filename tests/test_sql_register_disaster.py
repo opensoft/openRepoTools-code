@@ -156,8 +156,8 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO, WINDOWS_SKIP
-from pgcluster import (FX_DUMP, FX_LANE, FX_REPOSITORY, PASSWORD_LINE, ClusterError, Database,
-                       ImportedRegister, TLSCluster)
+from pgcluster import (FX_DUMP, FX_LANE, FX_REPOSITORY, PASSWORD_LINE, SUPERUSER, ClusterError,
+                       Database, ImportedRegister, TLSCluster)
 from sql_register_helpers import (PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_LOG, flipped_copy,
                                   guard_strip_env)
 
@@ -1133,6 +1133,10 @@ def test_a_backup_newer_than_the_mirror_is_restored_and_rendered(request, tmp_pa
     assert states == {"unchanged"}, (
         f"[restore] the second bootstrap did not print unchanged for every object (T109):\n"
         f"{_said(again)}")
+    named = sorted(what for what, _state in OBJECT_LINE.findall(again.stdout))
+    assert named == sorted(_restored_inventory(estate.b_db.name)), (
+        f"[restore] the second bootstrap does not name each object of a restored register "
+        f"once (T274g):\n{_said(again)}")
     before = estate.origin_tip()
     assert max(estate.origin_seqs()) == m, f"[restore] origin is not at m = {m}"
     marker = estate.marker_rewritten(estate.cutover_after_loss(None), b + 1, "[cutover]")
@@ -1260,6 +1264,28 @@ def test_an_after_loss_cutover_from_a_host_still_on_the_live_database_is_refused
 
 
 # =================================================================== AT-F18
+def _restored_inventory(database: str) -> list:
+    """Every object a full `bootstrap` names on B restored at `primary`, each
+    once (T274g; Codex's review of P09 at `f4f0ebce`, SHOULD 8): what line R
+    `9bdd317b`'s `_bootstrap` prints where the switch reads `primary` and no
+    migration is pending. These are section 1.4's four roles, the admin's
+    GRANT, the schema, the switch, the head, the three database-level lines
+    and the privileges line. The admin is the cluster's superuser, through
+    `admin_service`, and the schema is the default, since the admin's home
+    holds no configuration."""
+    roles = ("lanes_register_owner", "lanes_register_writer", "lanes_register_reader",
+             "lanes_indexer")
+    return [*(f"role {role}" for role in roles),
+            f"the admin {SUPERUSER}'s membership of lanes_register_owner and lanes_indexer, "
+            f"WITH INHERIT TRUE, SET TRUE",
+            f"schema {SCHEMA}", "switch", "head",
+            f"database {database}, REVOKE ALL FROM PUBLIC",
+            f"database {database}, GRANT CONNECT to lanes_register_writer, "
+            f"lanes_register_reader and lanes_indexer",
+            "default privileges of lanes_register_owner, REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC",
+            f"privileges in the schemas {SCHEMA} and lanes_index"]
+
+
 def _f18_estate(request, tmp_path: Path) -> tuple:
     """AT-F18's fixture: D22's re-import, with A written through `m` and the
     write in doubt at `m` (see the readings). Returns the estate and the
@@ -1347,6 +1373,7 @@ def test_lanes_write_id_new_on_the_replacement_replaces_the_old_record_and_write
     and lane 4's T412, T415, T416 and T417."""
     estate, record = _f18_estate(request, tmp_path)
     _cut_over_on_b(estate)
+    generation_b = estate.switch()["generation"]
     text = record["argv"][-1]
     on_b = _rows(estate.db, "SELECT raw FROM log_lines")
     assert not any(text in row["raw"] for row in on_b), (
@@ -1361,8 +1388,11 @@ def test_lanes_write_id_new_on_the_replacement_replaces_the_old_record_and_write
                             f"ORDER BY seq")
     assert len(rows) == 1 and rows[0]["id"] != record["id"], (
         f"[new] the journal did not gain exactly one write under a new id: {rows}")
-    assert {c["stdin"].count(rows[0]["id"]) > 0 for c in estate.host.commit_calls()} == {True}, (
-        "[new] a commit call carried another write id")
+    calls = estate.host.commit_calls()
+    assert len(calls) == 1 and rows[0]["id"] in calls[0]["stdin"] and \
+        generation_b in calls[0]["stdin"], (
+            f"[new] not one commit call, carrying the new id {rows[0]['id']} and B's generation "
+            f"{generation_b} (T274f): {len(calls)} call(s)")
     left = [p.read_text(encoding="utf-8") for p in estate.host.pending()]
     assert not any(record["generation"] in text_ or record["id"] in text_ for text_ in left), (
         "[new] a record of A's generation is left")

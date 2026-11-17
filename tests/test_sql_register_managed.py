@@ -53,6 +53,14 @@ is `*:*:<database>:<login>:<password>`; `login`'s argv is `login add|rotate
 <engineer>|--dump-job --admin-service <service>`; the floors as
 `pg_roles.rolconfig` holds them; and `ready`'s line form, `check <n>: ok` or
 `check <n>: FAIL: <reason>`, as T218b reads it.
+
+NO PASSWORD IN A FAILURE (T224j, T224k; Codex's review of P09 at
+`f4f0ebce`, BLOCKING 3): `login add`'s, `login rotate`'s and `bootstrap`'s
+stdout carry password-file lines, so `_said` and `_passwords` hide each
+line's password. This module is also PYTEST_DONT_REWRITE: pytest's
+assertion rewriting would add each operand's value to a failure's message,
+a `CompletedProcess` with that stdout or a dict of password-file lines
+among them, so an assertion here reports its own message and nothing else.
 """
 
 from __future__ import annotations
@@ -67,6 +75,7 @@ import os
 import re
 import select
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -83,6 +92,9 @@ from conftest import REPO, WINDOWS_SKIP
 from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_ENDS,
                                   PSQL_SHIM_LOG, REGISTER_FAKE_PSQL, RENDER_SET_PATH, flipped_copy,
                                   guard_strip_env)
+from test_sql_register_bounds import _said_safely  # the one helper for a failure's output (T258l)
+from test_sql_register_bounds import _whole  # a number from output, quoting none of it (T258n)
+from test_sql_register_bounds import _reported  # pytest's own report of a failure (T258r)
 
 pytestmark = [WINDOWS_SKIP]
 
@@ -93,7 +105,9 @@ pytestmark = [WINDOWS_SKIP]
 #: names has landed, and the skip names them. The rows are T224's Order
 #: (tasks:2156), T230's (tasks:2220, with its As built at :2219) and T258's
 #: (tasks:2464), tasks.md at lane 3's commit 17 `204145ae`. No task is common
-#: to all 21 functions, so there is no "*" row.
+#: to all of its functions, so there is no "*" row. T224j's, T224n's, T224o's,
+#: T224p's, T258e's, T258f's, T258g's and T258h's cases, which run on synthetic text
+#: and stand-ins with no database, have no row: they run ungated.
 SQL_REGISTER_GATE_TABLE = {
     # T224: until L1-A7 (T109), L1-A8 (T110), L1-A17 (T119, T120) and T229.
     # Lane 1's two cases' T109 and T110, and `[in-recovery]`'s T229, are in
@@ -198,7 +212,22 @@ MARKER_COMMIT = "c0ffee" + "4" * 34
 
 
 def _said(proc: subprocess.CompletedProcess) -> str:
-    return f"exit {proc.returncode}\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
+    """`proc` for a failure's message: its exit, each stream's counts and the
+    WARNING lines that match a template, through bounds' one helper,
+    `_said_safely` (T258l; lane 3's ruling 6946445277 on lane 2's pre-review
+    RV9-36 of P09 at `2407ea06`, S2). Before T258l it showed both streams,
+    each password-file line's password hidden (`pgcluster._masked`; T224j),
+    and every other line whole. The failure messages call `_said_safely`
+    themselves; this name stays for T224j's case."""
+    return _said_safely(proc)
+
+
+def _unverified(roles: dict) -> dict:
+    """`Managed.role`'s dicts by login, for a failure's message, each without
+    its `verifier`: a SCRAM verifier is derived from the login's password, so
+    no message shows one (T224m)."""
+    return {login: {key: value for key, value in role.items() if key != "verifier"}
+            for login, role in roles.items()}
 
 
 def _private(path: Path, text: str) -> Path:
@@ -208,36 +237,173 @@ def _private(path: Path, text: str) -> Path:
     return path
 
 
+#: Each bounded step of ending a process this module started: `_end_process`'s
+#: wait for its exit after TERM and its reap after KILL, and the join of a phase-W
+#: writer's reader after them (T258e).
+END_S = 10.0
+
+#: How long a phase-W writer's reader waits on its pipes at a time, so a cut
+#: reaches it (T258h).
+READ_POLL_S = 0.1
+
+
+def _end_process(proc: subprocess.Popen, *, group: bool, wait: float = 10.0) -> None:
+    """`proc` ended and reaped, and never signalled once its pid may be another
+    process's (T258e; Codex's review of P09 at `21dd3642`, SHOULD 6 in lane 3's
+    numbering, by its BLOCKING's identity-safe form, as the bounds and measure
+    modules' own copies have it). A process already reaped, `returncode` set,
+    gets no signal. Otherwise each signal is sent while it is still unreaped, so
+    its pid, and with `group` the id of the process group `start_new_session=True`
+    made it lead, are still its own: TERM; up to `wait` s for its exit, watched by
+    `os.waitid(..., WNOWAIT)`, which does not reap it; KILL; then one reap,
+    `proc.wait(wait)`, whose `TimeoutExpired` is raised, not suppressed. A reap
+    by anything else meanwhile raises `ChildProcessError` from `os.waitid`,
+    before the KILL. With `group`, TERM and KILL go to the group, so a child it
+    started gets them too."""
+    if proc.returncode is not None:
+        return
+    _signal_unreaped(proc, group=group, wait=wait)
+    proc.wait(wait)
+
+
+def _signal_unreaped(proc: subprocess.Popen, *, group: bool, wait: float) -> None:
+    """`_end_process`'s signals, and not its reap (T258f): TERM; up to `wait` s
+    for `proc`'s exit, watched by `os.waitid(..., WNOWAIT)`, which leaves it
+    unreaped; KILL. `proc` is unreaped throughout, so its pid, and with `group`
+    the id of the group it leads, are its own for each signal. Its caller reaps
+    it after, as `W258Writer` does once its reader is joined and its pipes are
+    closed."""
+    def send(sig: int) -> None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            (os.killpg if group else os.kill)(proc.pid, sig)
+    send(signal.SIGTERM)
+    end = time.monotonic() + wait
+    while time.monotonic() < end:
+        if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+            break
+        time.sleep(0.05)
+    send(signal.SIGKILL)
+
+
+def _gone(pid: int, started: str) -> bool:
+    """Whether the process `pid` that started at `started`, its `/proc` stat
+    field 22, has ended: no process has its pid, another process has it now,
+    or it is a zombie (T258f)."""
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    except OSError:
+        return True
+    return fields[19] != started or fields[0] in ("Z", "X")
+
+
+def _gone_by(pid: int, started: str, deadline: float) -> bool:
+    """Whether the process `pid` that started at `started` is seen `_gone`
+    before the monotonic `deadline`: the clock is read after each look, and
+    absence counts only where that reading is still before the deadline, so
+    a pause of the case past it never turns a later end into a pass (T224r;
+    Codex's review of P09 at `b8f9e35a`, SHOULD 3)."""
+    while True:
+        gone = _gone(pid, started)
+        if time.monotonic() >= deadline:
+            return False
+        if gone:
+            return True
+        time.sleep(0.05)
+
+
+def _end_if_left(pid: int, started: str) -> None:
+    """A case's last clean-up of a process it did not start itself, known by
+    its pid and its start time (T258f): pinned by a pidfd, then killed through
+    that pidfd only where the pinned process is still the one that started at
+    `started`, so no other process is ever signalled."""
+    try:
+        pinned = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return
+    try:
+        if not _gone(pid, started):
+            with contextlib.suppress(ProcessLookupError):
+                signal.pidfd_send_signal(pinned, signal.SIGKILL)
+    finally:
+        os.close(pinned)
+
+
+#: One deadline, in seconds, for all of a `_run`: its terminal or stdout pipe and
+#: its stderr, read together, and then its exit; and one for a held session's
+#: close (T224o).
+RUN_S, CLOSE_S = 300.0, 60.0
+
+
+def _drain(fds: list, deadline: float) -> tuple:
+    """Each of `fds` read to its end, all of them together, until the
+    monotonic `deadline` (T224o; Codex's review of P09 at `21dd3642`, SHOULD 1
+    in lane 3's numbering): no read waits on one while another fills. Returns
+    each fd's bytes, in order, and whether every one reached its end. A
+    terminal's EIO, once no process holds its other side, is its end."""
+    got = {fd: bytearray() for fd in fds}
+    live = list(fds)
+    while live:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        ready, _, _ = select.select(live, [], [], left)
+        for fd in ready:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                chunk = b""
+            if chunk:
+                got[fd] += chunk
+            else:
+                live.remove(fd)
+    return [bytes(got[fd]) for fd in fds], not live
+
+
 def _run(argv: list, env: dict, cwd: Path, *, pty_run: bool) -> subprocess.CompletedProcess:
     """`argv`, its stdout a pipe, or a terminal (`pty.openpty()`) where
-    `pty_run`; its stdin is /dev/null and its stderr a pipe."""
+    `pty_run`; its stdin is /dev/null and its stderr a pipe. All of it runs
+    under one monotonic deadline, `RUN_S` (T224o; Codex's review of P09 at
+    `21dd3642`, SHOULD 1 in lane 3's numbering). Through a pipe that is
+    `subprocess.run`'s `timeout`. Under the terminal, the run has a session
+    of its own, the terminal and stderr are read together (`_drain`), and its
+    exit is reaped before the same deadline. A run that does not end by then
+    raises `TimeoutExpired`, which carries no output, since a login's stdout
+    holds password-file lines. On that and on any other way out unreaped, the
+    run is ended with its group by `_end_process`, signalled only while it is
+    unreaped, and reaped, both bounded."""
     if not pty_run:
         return subprocess.run(argv, capture_output=True, text=True, env=env, cwd=str(cwd),
-                              timeout=300, stdin=subprocess.DEVNULL)
+                              timeout=RUN_S, stdin=subprocess.DEVNULL)
     import pty
+    deadline = time.monotonic() + RUN_S
     primary, secondary = pty.openpty()
     try:
         proc = subprocess.Popen(argv, stdout=secondary, stderr=subprocess.PIPE,
-                                stdin=subprocess.DEVNULL, env=env, cwd=str(cwd))
+                                stdin=subprocess.DEVNULL, env=env, cwd=str(cwd),
+                                start_new_session=True)
         os.close(secondary)
         secondary = -1
-        out = b""
-        while True:
+        try:
+            (out, err), ended = _drain([primary, proc.stderr.fileno()], deadline)
+            if ended:
+                try:
+                    proc.wait(max(0.0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    ended = False
+            if not ended:
+                raise subprocess.TimeoutExpired(argv, RUN_S)
+        finally:
             try:
-                chunk = os.read(primary, 65536)
-            except OSError:
-                break
-            if not chunk:
-                break
-            out += chunk
-        err = proc.stderr.read().decode("utf-8", "replace")
-        proc.wait(timeout=300)
+                _end_process(proc, group=True, wait=END_S)
+            finally:
+                proc.stderr.close()
     finally:
         os.close(primary)
         if secondary >= 0:
             os.close(secondary)
     return subprocess.CompletedProcess(argv, proc.returncode,
-                                       out.decode("utf-8", "replace").replace("\r\n", "\n"), err)
+                                       out.decode("utf-8", "replace").replace("\r\n", "\n"),
+                                       err.decode("utf-8", "replace"))
 
 
 def _objects(text: str) -> list:
@@ -246,10 +412,18 @@ def _objects(text: str) -> list:
 
 
 def _passwords(text: str) -> dict:
-    """Each password-file line, by login."""
+    """Each password-file line, by login. A login printed twice fails, its
+    text masked, and the check is a bool: pytest's report of an assertion
+    shows each operand's value, and `found` holds the lines (T224j). The
+    message names no login: a login is a field of a line a writer printed,
+    so it shows how many logins were read before it instead (T258t; lane
+    2's targeted check RV9-39 of P09 at `3c5b68bc`, S6)."""
     found: dict = {}
     for m in PASS_LINE.finditer(text):
-        assert m.group("login") not in found, f"{m.group('login')}'s line is printed twice:\n{text}"
+        twice = m.group("login") in found
+        assert not twice, (f"a password-file line's login is printed twice, with {len(found)} login(s) "
+                           f"read before it (_passwords is given the text alone, so no exit):\n"
+                           f"{_said_safely(text, stream='stdout')}")
         found[m.group("login")] = m.group(0)
     return found
 
@@ -286,7 +460,8 @@ class Session:
         end = time.monotonic() + deadline
         while marker.encode() not in self.err[start:]:
             assert time.monotonic() < end, (
-                f"psql gave no {marker!r} within {deadline:.0f} s: {self.err[start:]!r}")
+                f"psql gave no {marker!r} within {deadline:.0f} s, and has no exit, its session still open: "
+                f"{_said_safely(self.err[start:], stream='stderr')!r}")
             ready, _, _ = select.select([fd], [], [], 0.2)
             if ready:
                 chunk = os.read(fd, 65536)
@@ -295,15 +470,53 @@ class Session:
                 self.err += chunk
         return self.err[start:].decode("utf-8", "replace")
 
+    def exit_now(self) -> str:
+        """Its `psql`'s exit where it has ended, else that it still runs, at
+        the moment it is asked (T258s; lane 2's targeted check RV9-39 of P09
+        at `3c5b68bc`, S3: `send` returns where `psql` ended too, so a message
+        that said "its session still open" could say the opposite of the
+        truth). It waits for the exit at most 1 s (T258u; lane 2's pre-review
+        RV9-40 of P09 at `161c3087`, S2): a `psql` closes its pipes as it
+        ends, before its exit can be reaped, so `poll()` alone, right after
+        `send` returned at stderr's end, said "still running" for a `psql`
+        that had ended in 8 of 300 runs. Only a failure's message asks."""
+        try:
+            code = self.proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            return "no exit in 1 s, its psql still running"
+        return f"its psql exit {code}"
+
     def close(self) -> subprocess.CompletedProcess:
+        """`psql`'s stdin closed; then its stdout and stderr read together to
+        their ends (`_drain`) and its exit reaped, all under one monotonic
+        deadline, `CLOSE_S` (T224o; Codex's review of P09 at `21dd3642`,
+        SHOULD 1 in lane 3's numbering). A `psql` that does not end by then
+        raises `TimeoutExpired`, with no output. On that and on any other way
+        out unreaped, it is ended by `_end_process`, signalled only while it is
+        unreaped, and reaped, both bounded."""
+        deadline = time.monotonic() + CLOSE_S
         try:
             self.proc.stdin.close()
         except BrokenPipeError:
             pass
-        out = self.proc.stdout.read().decode("utf-8", "replace")
-        self.err += self.proc.stderr.read()
-        self.proc.wait(timeout=60)
-        return subprocess.CompletedProcess([], self.proc.returncode, out,
+        try:
+            (out, err), ended = _drain([self.proc.stdout.fileno(), self.proc.stderr.fileno()],
+                                       deadline)
+            self.err += err
+            if ended:
+                try:
+                    self.proc.wait(max(0.0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    ended = False
+            if not ended:
+                raise subprocess.TimeoutExpired(self.proc.args, CLOSE_S)
+        finally:
+            try:
+                _end_process(self.proc, group=False, wait=END_S)
+            finally:
+                self.proc.stdout.close()
+                self.proc.stderr.close()
+        return subprocess.CompletedProcess([], self.proc.returncode, out.decode("utf-8", "replace"),
                                            self.err.decode("utf-8", "replace"))
 
 
@@ -415,7 +628,7 @@ class Managed:
 
     def bootstrapped(self, service: str) -> None:
         proc = self.bootstrap(service, "--no-passwords")
-        assert proc.returncode == 0, f"the bootstrap failed:\n{_said(proc)}"
+        assert proc.returncode == 0, f"the bootstrap failed:\n{_said_safely(proc)}"
 
     def login(self, action: str, who: str, service: str, *, pty_run: bool = True) -> subprocess.CompletedProcess:
         target = ["--dump-job"] if who == DUMP else [who]
@@ -424,13 +637,28 @@ class Managed:
     def logins(self, service: str, *engineers: str, dump: bool = True,
                folder: str = "passfiles") -> dict:
         """`login add` for each engineer, and for the dump job, under the pty:
-        each printed line in its login's 0600 file. Returns the files."""
+        each printed line in its login's 0600 file. Returns the files. Each
+        run is `_added`'s, so this frame, whose `*engineers` makes pytest
+        8.3.4 print its locals as arguments in a long entry, holds no printed
+        password line (T258w; lane 2's pre-review RV9-41 of P09 at
+        `4895579`, B1). That is this frame only (T258x; lane 2's pre-review
+        RV9-42 of P09 at `857a41d2`, N6): where `_passwords` raises, its
+        frame, `_passwords(text)`, and `passfiles(self, text, ...)`'s hold
+        the printed lines as their genuine argument `text`, which an explicit
+        `--tb=long`, `--fulltrace` or `--showlocals` prints on every pytest
+        version; the suite's default, `--tb=short` (T205e), prints no
+        frame's arguments."""
         files: dict = {}
         for who in [*engineers, *([DUMP] if dump else [])]:
-            proc = self.login("add", who, service)
-            assert proc.returncode == 0, f"login add {who} failed:\n{_said(proc)}"
-            files.update(self.passfiles(proc.stdout, folder))
+            files.update(self.passfiles(self._added(who, service), folder))
         return files
+
+    def _added(self, who: str, service: str) -> str:
+        """`login add <who>`'s stdout, its printed password lines, or an
+        AssertionError that shows its exit and counts (T258w)."""
+        proc = self.login("add", who, service)
+        assert proc.returncode == 0, f"login add {who} failed:\n{_said_safely(proc)}"
+        return proc.stdout
 
     def passfiles(self, text: str, folder: str = "passfiles") -> dict:
         return {login: _private(self.home / folder / login, line + "\n")
@@ -464,7 +692,7 @@ class Managed:
         """`SHOW` of the four floors in a session of `login`."""
         names = sorted(NO_FLOORS)
         proc = self.as_login(login, db, "".join(f"SHOW {name};\n" for name in names), passfile)
-        assert proc.returncode == 0, f"{login} could not log in to SHOW its floors:\n{_said(proc)}"
+        assert proc.returncode == 0, f"{login} could not log in to SHOW its floors:\n{_said_safely(proc)}"
         return dict(zip(names, proc.stdout.split()))
 
     def role(self, login: str) -> dict:
@@ -512,13 +740,13 @@ class Managed:
         for kind, path, text in (("import", "lanes/LANES.md", "# Lanes"),
                                  ("cutover", "lanes/STORE", "primary")):
             proc = self.commit(db, login, passfile, self.entry(db, kind, path, text))
-            assert proc.returncode == 0, f"the {kind} entry did not commit:\n{_said(proc)}"
+            assert proc.returncode == 0, f"the {kind} entry did not commit:\n{_said_safely(proc)}"
         seq = self.value(f"SELECT seq FROM {REGISTER}.register_head;", db)
         client = self.value(f"SELECT version FROM {REGISTER}.schema_version;", db)
         proc = self.as_login(login, db, f"SELECT {REGISTER}.record_marker(:client, :seq, "
                              ":'commit', :'ws');\n", passfile, client=client, seq=seq,
                              commit=MARKER_COMMIT, ws=WS)
-        assert proc.returncode == 0 and proc.stdout.strip() == "present", _said(proc)
+        assert proc.returncode == 0 and proc.stdout.strip() == "present", _said_safely(proc)
 
     def config(self, name: str, register_url: str, register_passfile: Path,
                reader_url: str, reader_passfile: Path) -> Path:
@@ -603,10 +831,253 @@ SELECT json_agg(x ORDER BY x) FROM (
 
 def _no_clear_text(log: str, lines: dict) -> None:
     """The server's log holds each printed password only as a SCRAM
-    verifier, never as clear text (O6)."""
-    for login, line in lines.items():
+    verifier, never as clear text (O6). The message names no login, a
+    field of a line a writer printed, only its place among `lines` (T258v;
+    lane 2's pre-review RV9-40 of P09 at `161c3087`, S3, as T258t for
+    `_passwords`)."""
+    for n, line in enumerate(lines.values(), 1):
         secret = line.rsplit(":", 1)[1]
-        assert secret not in log, f"the server's log holds {login}'s password in clear text"
+        leaked = secret in log      # a bool, so pytest's report never shows the secret (T224j)
+        assert not leaked, (f"the server's log holds a printed password in clear text (login {n} "
+                            f"of {len(lines)})")
+
+
+# ============================================================ a failure's message (T224j)
+def test_a_failure_message_keeps_no_password_of_a_password_file_line():
+    """T224j (Codex's review of P09 at `f4f0ebce`, BLOCKING 3; lane 3's
+    ruling 6932114864): `_said` and `_passwords`' refusal of a line printed
+    twice keep no password, on synthetic text alone, with no database. The
+    line is built in the form of lane 1's `_register_pgpass_line`, with a
+    fresh uuid as its password. Each check is a bool, so no failure of this
+    case prints the password either."""
+    secret = uuid.uuid4().hex
+    line = ":".join(("*", "*", "t224_reg", "lanes_w_t224", secret))
+    proc = subprocess.CompletedProcess([], 1, f"login lanes_w_t224: created\n{line}\n", f"{line}\n")
+    said = _said(proc)
+    kept = secret in said
+    counted = "stdout: 2 line(s)" in said and "stderr: 1 line(s)" in said
+    assert not kept and counted, "_said keeps the password, or does not count its streams' lines"
+    with pytest.raises(AssertionError) as twice:
+        _passwords(f"{line}\n{line}\n")
+    kept = secret in str(twice.value)
+    assert not kept, "_passwords' refusal of a line printed twice keeps its password"
+    found = _passwords(f"{line}\n")
+    read = found.get("lanes_w_t224") == line
+    assert read, "_passwords no longer reads the line it is given"
+
+    def none_printed(lines: dict) -> None:
+        assert lines == {}, "a password line was printed"
+    with pytest.raises(AssertionError) as failed:     # T224k: an operand that holds the line
+        none_printed(found)
+    kept = secret in str(failed.value)
+    assert not kept, "a failed assertion whose operand holds the line reports its password"
+
+
+@pytest.mark.parametrize("case", ["passwords", "no-clear-text"])
+def test_pytests_own_report_of_a_password_check_shows_no_password(request, case):
+    """T258r (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09 at `3f9fcac4`, B1), with no engine and no process: T224j's checks
+    fail with a password-file line's password as their frames' arguments,
+    and pytest's own report of the failure, rendered as pytest renders a
+    failed test under the suite's own settings (bounds' `_reported`), holds
+    no password. T224j checked `str()` alone, and its "a bool, so pytest's
+    report never shows the secret" held for the assert's operand, not for
+    the frame's arguments, which pytest's default `--tb=auto` prints:
+      - `passwords`: `_passwords(text)`, a line printed twice, where `text`
+        is a login's stdout holding the line (RV9-38: managed :413);
+      - `no-clear-text`: `_no_clear_text(log, lines)`, a server log that
+        holds the password in clear text, where `log` and `lines` both hold
+        it (RV9-38: managed :795).
+    T205e's short style prints no frame's arguments. An explicit
+    `--tb=long` or `--fulltrace` is not secret-safe. The password is a
+    fresh uuid, no credential of any login."""
+    secret = uuid.uuid4().hex
+    line = ":".join(("*", "*", "t224_reg", "lanes_w_t224", secret))
+    with pytest.raises(AssertionError) as failed:
+        if case == "passwords":
+            _passwords(f"{line}\n{line}\n")
+        else:
+            _no_clear_text(f"LOG:  statement: ALTER ROLE lanes_w_t224 PASSWORD '{secret}'\n",
+                           {"lanes_w_t224": line})
+    shown = secret in _reported(request, failed)
+    assert not shown, f"[{case}] the password is in pytest's report"
+
+
+# ============================================================ one deadline (T224o)
+#: T224o's stand-in, run by this Python with `-I`, its mode and a mark file
+#: as its arguments. Each mode reads its stdin to the end first. `full-stderr`
+#: fills its stderr pipe, 256 KiB, four times a pipe's 64 KiB, before it writes
+#: one line to stdout and exits 0. `hung` writes one line and waits, and a child
+#: in its group holds its stdout and stderr too; it writes its pid to the mark,
+#: and the child writes its pid and start time (`/proc` stat field 22) to the
+#: mark's `.child`. `hung-alone` writes one line and waits, alone. Every process
+#: of it ends itself by SIGALRM within 8 s, whatever is done to it.
+T224O_STAND_IN = """
+import os, signal, sys, time
+signal.alarm(8)
+mode, mark = sys.argv[1], sys.argv[2]
+sys.stdin.read()
+if mode == "full-stderr":
+    sys.stderr.buffer.write(b"e" * 262144)
+    sys.stderr.buffer.flush()
+    print("done", flush=True)
+    sys.exit(0)
+if mode == "hung" and os.fork() == 0:
+    signal.alarm(8)
+    started = open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19]
+    open(mark + ".child", "w").write(f"{os.getpid()} {started}")
+    time.sleep(8)
+    os._exit(0)
+open(mark, "w").write(str(os.getpid()))
+print("started", flush=True)
+time.sleep(8)
+"""
+
+
+#: T224O_STAND_IN's watchdog: each of its processes ends itself by SIGALRM this
+#: many seconds after it starts (T224p).
+T224O_WATCHDOG_S = 8
+
+
+def _t224p_hung_run(script: Path, mark: Path, env: dict) -> tuple:
+    """T224O_STAND_IN's `hung` run, its mark `mark`, under `_run`'s terminal,
+    which must raise `TimeoutExpired`: the monotonic times it started and
+    ended (T224p)."""
+    start = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run([sys.executable, "-I", str(script), "hung", str(mark)], env, mark.parent, pty_run=True)
+    return start, time.monotonic()
+
+
+def _t224p_child_gone_by(mark: Path, start: float) -> bool:
+    """Whether the hung run's child, its pid and start time in `mark`'s
+    `.child`, is gone by `RUN_S + END_S` after the run's `start` (T224p; the
+    coordinator's review of P09 at `d3a2fd5c`, item 2, #165 6938473998).
+    With the case's `RUN_S` of 3 s and `END_S` of 2 s that is 5 s after the
+    start, at least 3 s before the child's own watchdog, `T224O_WATCHDOG_S`,
+    which the child arms after its fork, after `start`: only the run's end
+    can satisfy it, never the watchdog. The clock is read after each look,
+    so a pause of the case past the deadline fails it (`_gone_by`; T224r)."""
+    pid, started = Path(f"{mark}.child").read_text().split()
+    return _gone_by(_whole(pid, "the stand-in's pid"), started, start + RUN_S + END_S)
+
+
+def _t224p_end_child(mark: Path) -> None:
+    """The hung run's child, if it wrote its `.child` mark, ended by pidfd
+    where it is still that process (`_end_if_left`): each case's last
+    clean-up, whatever its oracle found (T224p)."""
+    child = Path(f"{mark}.child")
+    if child.exists():
+        pid, started = child.read_text().split()
+        _end_if_left(_whole(pid, "the stand-in's pid"), started)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="T224O_STAND_IN's hung run forks a child with os.fork(), the child "
+                           "names itself by /proc/<pid>/stat field 22, and the case finds it "
+                           "gone through /proc: Linux only (T224q)")
+def test_run_reads_its_terminal_and_stderr_together_and_ends_a_run_at_its_one_deadline(
+        tmp_path, monkeypatch):
+    """T224o (Codex's review of P09 at `21dd3642`, SHOULD 1 in lane 3's
+    numbering), no database, on T224O_STAND_IN under `_run`'s terminal. A
+    run that fills its stderr pipe before it writes to its terminal ends 0
+    with all of both, since neither is read only after the other ends. A run
+    that does not end, with a child in its group holding both, is ended at
+    `RUN_S`: `_run` raises `TimeoutExpired` within `RUN_S + END_S`, 5 s, the
+    run is reaped, and its child is seen gone by that same 5 s after the run
+    started, at least 3 s before the child's own 8 s watchdog, so the
+    watchdog cannot pass the case (T224p; its negative control is the next
+    case), nor can a pause of the case past those 5 s (T224r; Codex's review
+    of P09 at `b8f9e35a`, SHOULD 3). The child is ended in a finally whatever happened. It runs on Linux
+    alone: the stand-in's child comes of `os.fork()` and names itself by
+    `/proc/<pid>/stat`, which the oracle reads too (T224q; Codex's review of
+    P09 at `d3a2fd5c`, SHOULD 5)."""
+    monkeypatch.setitem(globals(), "RUN_S", 3.0)
+    monkeypatch.setitem(globals(), "END_S", 2.0)
+    script = _private(tmp_path / "stand_in.py", T224O_STAND_IN)
+    env = {"PATH": os.environ.get("PATH", os.defpath)}
+    full = _run([sys.executable, "-I", str(script), "full-stderr", str(tmp_path / "full")], env,
+                tmp_path, pty_run=True)
+    said = (full.returncode, full.stdout, len(full.stderr))
+    assert said == (0, "done\n", 262144), (
+        f"a run that filled its stderr pipe ended {said[0]}, with {said[2]} bytes of stderr, "
+        f"not 0 with 262144")
+    mark = tmp_path / "hung"
+    try:
+        start, ended = _t224p_hung_run(script, mark, env)
+        took = ended - start
+        assert took < RUN_S + END_S, (      # T224r: `_run` itself ends within 5 s
+            f"_run ended a hung run after {took:.1f} s, past its {RUN_S + END_S:.0f} s bound")
+        try:
+            os.waitid(os.P_PID, _whole(mark.read_text(), "the hung run's pid"), os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            reaped = False
+        except ChildProcessError:
+            reaped = True
+        assert reaped, "_run did not reap the hung run it ended"
+        gone = _t224p_child_gone_by(mark, start)
+        assert gone, (f"the hung run's child, in its group, was not gone {RUN_S + END_S:.0f} s "
+                      f"after the run started, {T224O_WATCHDOG_S - RUN_S - END_S:.0f} s before "
+                      f"its own watchdog")
+    finally:
+        _t224p_end_child(mark)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="T224p's oracle reads Linux's /proc and its clean-up pins by a pidfd")
+def test_a_leader_only_end_of_a_hung_run_leaves_its_child_and_the_absence_oracle_fails(
+        tmp_path, monkeypatch):
+    """T224p (the coordinator's review of P09 at `d3a2fd5c`, item 2, #165
+    6938473998), no database: the negative control of the case above. Here
+    `_run`'s clean-up ends the hung run's leader alone, `_end_process` with
+    `group=False`, so its child, in its group, is not ended; the oracle,
+    `_t224p_child_gone_by`, must then find it still there at its deadline,
+    which comes at least 3 s before the child's own watchdog. Were the
+    watchdog able to satisfy the oracle, as the 5 s wait after `_run`'s end
+    before T224p let it, this case would fail. The child is ended in a
+    finally, by pidfd."""
+    monkeypatch.setitem(globals(), "RUN_S", 3.0)
+    monkeypatch.setitem(globals(), "END_S", 2.0)
+    group_end = _end_process
+    monkeypatch.setitem(globals(), "_end_process",
+                        lambda proc, *, group, wait=10.0: group_end(proc, group=False, wait=wait))
+    script = _private(tmp_path / "stand_in.py", T224O_STAND_IN)
+    env = {"PATH": os.environ.get("PATH", os.defpath)}
+    mark = tmp_path / "hung"
+    try:
+        start, _ = _t224p_hung_run(script, mark, env)
+        gone = _t224p_child_gone_by(mark, start)
+        assert not gone, ("with the leader alone ended, the hung run's child was gone by the "
+                          "oracle's deadline: the oracle does not tell a group's end from a "
+                          "leader's")
+    finally:
+        _t224p_end_child(mark)
+
+
+def test_a_held_sessions_close_reads_both_pipes_together_and_ends_it_at_its_one_deadline(
+        tmp_path, monkeypatch):
+    """T224o (Codex's review of P09 at `21dd3642`, SHOULD 1 in lane 3's
+    numbering), no database, on T224O_STAND_IN as a held session's `psql`.
+    One that fills its stderr pipe before it writes its stdout closes with 0
+    and all of both. One that does not end once its stdin is closed is ended
+    at `CLOSE_S`: `close` raises `TimeoutExpired` within its bounds, and the
+    process is reaped."""
+    monkeypatch.setitem(globals(), "CLOSE_S", 3.0)
+    monkeypatch.setitem(globals(), "END_S", 2.0)
+    script = _private(tmp_path / "stand_in.py", T224O_STAND_IN)
+    env = {"PATH": os.environ.get("PATH", os.defpath)}
+    full = Session([sys.executable, "-I", str(script), "full-stderr", str(tmp_path / "full")],
+                   env).close()
+    said = (full.returncode, full.stdout, len(full.stderr))
+    assert said == (0, "done\n", 262144), (
+        f"a session that filled its stderr pipe closed with {said[0]}, with {said[2]} bytes of "
+        f"stderr, not 0 with 262144")
+    held = Session([sys.executable, "-I", str(script), "hung-alone", str(tmp_path / "hung")], env)
+    start = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        held.close()
+    took = time.monotonic() - start
+    assert took < 3.0 + 2 * 2.0 + 1.5, f"close ended a hung session after {took:.1f} s, past its bounds"
+    assert held.proc.returncode is not None, "close did not reap the hung session it ended"
 
 
 # ============================================================ the bootstrap
@@ -614,21 +1085,22 @@ def test_bootstrap_without_a_superuser_runs_twice_with_one_catalog(tmp_path, req
     m = Managed(request, tmp_path)
     service = m.database("t224_reg")
     first = m.bootstrap(service, "--no-passwords")
-    assert first.returncode == 0, f"the first bootstrap, as {ADMIN}, failed:\n{_said(first)}"
+    assert first.returncode == 0, f"the first bootstrap, as {ADMIN}, failed:\n{_said_safely(first)}"
     assert m.role(ADMIN)["super"] is False, f"{ADMIN} is a superuser: the case proves nothing"
     catalog = m.catalog("t224_reg")
     second = m.bootstrap(service, "--no-passwords")
-    assert second.returncode == 0, f"the second bootstrap failed:\n{_said(second)}"
+    assert second.returncode == 0, f"the second bootstrap failed:\n{_said_safely(second)}"
     states = {state for _what, state in _objects(second.stdout)}
-    assert states == {"unchanged"}, f"the second run changed something:\n{_said(second)}"
+    assert states == {"unchanged"}, f"the second run changed something:\n{_said_safely(second)}"
     assert m.catalog("t224_reg") == catalog, "the second run changed the catalog"
     # A SECURITY DEFINER function owned by a role that cannot log in works:
     # `commit_write`, as a writer login, commits an import entry.
     files = m.logins(service, "e1", dump=False)
     proc = m.commit("t224_reg", "lanes_w_e1", files["lanes_w_e1"],
                     m.entry("t224_reg", "import", "lanes/LANES.md", "# Lanes"))
-    assert proc.returncode == 0, f"commit_write as lanes_w_e1 did not commit:\n{_said(proc)}"
-    assert m.value(f"SELECT seq FROM {REGISTER}.register_head;", "t224_reg") == "0"
+    assert proc.returncode == 0, f"commit_write as lanes_w_e1 did not commit:\n{_said_safely(proc)}"
+    head = m.value(f"SELECT seq FROM {REGISTER}.register_head;", "t224_reg")
+    assert head == "0", f"the import as lanes_w_e1 left the register's head at {head!r}, not 0"
 
 
 def test_bootstrap_refuses_a_database_its_admin_does_not_own(tmp_path, request):
@@ -638,16 +1110,17 @@ def test_bootstrap_refuses_a_database_its_admin_does_not_own(tmp_path, request):
     acl = m.value("SELECT coalesce(datacl, acldefault('d', datdba))::text FROM pg_database "
                   "WHERE datname = 't224_theirs';", "postgres")
     proc = m.bootstrap(service, "--no-passwords")
-    assert proc.returncode == 2, f"bootstrap on a database its admin does not own is not 2:\n{_said(proc)}"
+    assert proc.returncode == 2, f"bootstrap on a database its admin does not own is not 2:\n{_said_safely(proc)}"
     assert m.value(f"SELECT count(*) FROM pg_namespace WHERE nspname = '{REGISTER}';",
                    "t224_theirs") == "0", "the refused bootstrap made the register's schema"
     # THE CONTROL: there, as that admin, the database-level REVOKE and GRANT
     # only warn, 01006 and 01007, and `datacl` is unchanged.
     warned = m.psql("\\set VERBOSITY verbose\nREVOKE ALL ON DATABASE t224_theirs FROM PUBLIC;\n"
                     f"GRANT CONNECT ON DATABASE t224_theirs TO {ADMIN};\n", user=ADMIN)
-    assert "01006" in warned.stderr and "01007" in warned.stderr, _said(warned)
-    assert m.value("SELECT coalesce(datacl, acldefault('d', datdba))::text FROM pg_database "
-                   "WHERE datname = 't224_theirs';", "postgres") == acl
+    assert "01006" in warned.stderr and "01007" in warned.stderr, _said_safely(warned)
+    kept = m.value("SELECT coalesce(datacl, acldefault('d', datdba))::text FROM pg_database "
+                   "WHERE datname = 't224_theirs';", "postgres")
+    assert kept == acl, f"the warned REVOKE and GRANT changed t224_theirs's datacl: {acl} -> {kept}"
 
 
 # ============================================================ the login step
@@ -657,28 +1130,29 @@ def test_login_add_makes_an_engineers_two_logins_with_their_floors_and_prints_th
     service = m.database("t224_reg")
     m.bootstrapped(service)
     proc = m.login("add", "e1", service)
-    assert proc.returncode == 0, f"login add e1 failed:\n{_said(proc)}"
+    assert proc.returncode == 0, f"login add e1 failed:\n{_said_safely(proc)}"
     lines = _passwords(proc.stdout)
-    assert sorted(lines) == ["lanes_r_e1", "lanes_w_e1"], _said(proc)
+    assert sorted(lines) == ["lanes_r_e1", "lanes_w_e1"], _said_safely(proc)
     for key, login in (("register_url=", "lanes_w_e1"), ("reader_url=", "lanes_r_e1")):
         urls = [line for line in proc.stdout.splitlines() if line.startswith(key)]
         assert len(urls) == 1 and f"//{login}@" in urls[0], f"no one {key} line for {login}"
     files = m.passfiles(proc.stdout)
     for login, half, group in (("lanes_w_e1", "w", WRITER), ("lanes_r_e1", "r", READER)):
         role = m.role(login)
-        assert role["canlogin"] and role["groups"] == [group], (login, role)
+        assert role["canlogin"] and role["groups"] == [group], _unverified({login: role})
         assert sorted(role["config"]) == sorted(ROLCONFIG[half]), (login, role["config"])
         assert role["verifier"].startswith("SCRAM-SHA-256$"), f"{login}'s password is not SCRAM"
-        assert {k: v for k, v in m.shown(login, "t224_reg", files[login]).items()
-                if k in SHOWN[half]} == SHOWN[half]
+        floors = {k: v for k, v in m.shown(login, "t224_reg", files[login]).items() if k in SHOWN[half]}
+        assert floors == SHOWN[half], f"{login} shows the floors {floors}, not {SHOWN[half]}"
     _no_clear_text(m.log(), lines)
     # THE DUMP JOB: `lanes_register_dump`, a member of READER alone, with the
     # reader's floors, and its one line.
     dump = m.login("add", DUMP, service)
-    assert dump.returncode == 0, f"login add --dump-job failed:\n{_said(dump)}"
-    assert sorted(_passwords(dump.stdout)) == [DUMP], _said(dump)
+    assert dump.returncode == 0, f"login add --dump-job failed:\n{_said_safely(dump)}"
+    assert sorted(_passwords(dump.stdout)) == [DUMP], _said_safely(dump)
     role = m.role(DUMP)
-    assert role["groups"] == [READER] and sorted(role["config"]) == sorted(ROLCONFIG["r"]), role
+    assert role["groups"] == [READER] and sorted(role["config"]) == sorted(ROLCONFIG["r"]), (
+        _unverified({DUMP: role}))
     _no_clear_text(m.log(), _passwords(dump.stdout))
 
 
@@ -692,10 +1166,13 @@ def test_login_add_run_again_puts_back_a_lost_membership_and_changes_nothing_els
     m.psql(f"REVOKE {WRITER} FROM lanes_w_e1 GRANTED BY {ADMIN};")
     assert m.role("lanes_w_e1")["groups"] == [], "the membership was not revoked by hand"
     again = m.login("add", "e1", service)
-    assert again.returncode == 0, f"login add e1, run again, failed:\n{_said(again)}"
-    assert _passwords(again.stdout) == {}, f"the rerun printed a password line:\n{_said(again)}"
+    assert again.returncode == 0, f"login add e1, run again, failed:\n{_said_safely(again)}"
+    printed = sorted(_passwords(again.stdout))     # the logins alone, as pytest reports it (T224j)
+    assert printed == [], f"the rerun printed a password line:\n{_said_safely(again)}"
     after = {login: m.role(login) for login in ("lanes_w_e1", "lanes_r_e1")}
-    assert after == before, f"the rerun changed more than the membership: {before} -> {after}"
+    assert after == before, (
+        f"the rerun changed more than the membership: {_unverified(before)} -> {_unverified(after)}; "
+        f"verifier changed for {sorted(k for k in before if after[k].get('verifier') != before[k].get('verifier'))}")
 
 
 def test_a_member_made_without_the_login_step_carries_no_floor_and_fails_ready_check_12(
@@ -714,10 +1191,10 @@ def test_a_member_made_without_the_login_step_carries_no_floor_and_fails_ready_c
                       m.socket_url("lanes_r_e1", "t224_reg"), files["lanes_r_e1"])
     proc = m.ready(config)
     state, reason = _checks(proc.stdout).get(12, ("", ""))
-    assert proc.returncode == 2 and state == "FAIL", f"check 12 does not fail:\n{_said(proc)}"
-    assert "lanes_w_bare" in reason, f"check 12 does not name the login:\n{_said(proc)}"
+    assert proc.returncode == 2 and state == "FAIL", f"check 12 does not fail:\n{_said_safely(proc)}"
+    assert "lanes_w_bare" in reason, f"check 12 does not name the login:\n{_said_safely(proc)}"
     for floor in ROLCONFIG["w"]:
-        assert floor.split("=", 1)[0] in reason, f"check 12 does not name {floor}:\n{_said(proc)}"
+        assert floor.split("=", 1)[0] in reason, f"check 12 does not name {floor}:\n{_said_safely(proc)}"
 
 
 def test_ready_check_12_passes_the_logins_the_step_made(tmp_path, request):
@@ -730,25 +1207,25 @@ def test_ready_check_12_passes_the_logins_the_step_made(tmp_path, request):
     proc = m.ready(config)
     checks = _checks(proc.stdout)
     state, _reason = checks.get(12, ("", ""))
-    assert state == "ok", f"check 12 fails the logins the step made:\n{_said(proc)}"
+    assert state == "ok", f"check 12 fails the logins the step made:\n{_said_safely(proc)}"
     # "check 12 passes, `check 12: ok`" (lane 3's batch 7, ruling 1: lane 1's
     # bare line stands, Y-ops:457; tasks:572): the line is bare, with no floor.
     assert re.search(r"^check 12: ok$", proc.stdout, re.M), (
-        f"check 12's line is not the bare `check 12: ok`:\n{_said(proc)}")
+        f"check 12's line is not the bare `check 12: ok`:\n{_said_safely(proc)}")
     # Exit 0 where every check passes. On this socket fixture not every check
     # can (check 11 always fails on a Unix socket, AT-LRMPG's own
     # `[unix-socket]`), so the run's exit follows the other checks: 2, with
     # check 12 not among the failures `ready` names.
     failed = sorted(number for number, (said, _why) in checks.items() if said == "FAIL")
     assert proc.returncode == (2 if failed else 0), (
-        f"ready's exit does not follow its checks ({failed} failed):\n{_said(proc)}")
-    assert 12 not in failed
+        f"ready's exit does not follow its checks ({failed} failed):\n{_said_safely(proc)}")
+    assert 12 not in failed, f"check 12 is among the checks ready fails: {failed}"
     # Check 11 fails on this case's Unix socket by TP:5382-5384's own oracle
     # (`[unix-socket]`), so the exit's 2 arm is always the one exercised
     # (lane 3's batch 11 (3), its optional assertion).
     assert 11 in failed, (
         f"check 11 does not fail on this case's Unix socket, so the exit's 2 arm is not "
-        f"exercised:\n{_said(proc)}")
+        f"exercised:\n{_said_safely(proc)}")
 
 
 def test_login_rotate_keeps_an_open_session_and_refuses_the_old_password(tmp_path, request):
@@ -759,17 +1236,19 @@ def test_login_rotate_keeps_an_open_session_and_refuses_the_old_password(tmp_pat
     held = m.session("lanes_w_e1", "t224_reg", old["lanes_w_e1"])
     assert "ERROR" not in held.send("SELECT 'before';", "t224-before"), "the session did not open"
     proc = m.login("rotate", "e1", service)
-    assert proc.returncode == 0, f"login rotate e1 failed:\n{_said(proc)}"
+    assert proc.returncode == 0, f"login rotate e1 failed:\n{_said_safely(proc)}"
     new = m.passfiles(proc.stdout, "passfiles-new")
-    assert sorted(new) == ["lanes_r_e1", "lanes_w_e1"], _said(proc)
-    assert "ERROR" not in held.send("SELECT 'after';", "t224-after")
+    assert sorted(new) == ["lanes_r_e1", "lanes_w_e1"], _said_safely(proc)
+    answered = held.send("SELECT 'after';", "t224-after")
+    assert "ERROR" not in answered, (f"the session open across the rotation got an error ({held.exit_now()}):"
+                                     f"\n{_said_safely(answered, stream='stderr')}")
     ended = held.close()
     assert ended.returncode == 0 and ended.stdout.split() == ["before", "after"], (
-        f"the session open across the rotation did not go on:\n{_said(ended)}")
+        f"the session open across the rotation did not go on:\n{_said_safely(ended)}")
     for login in ("lanes_w_e1", "lanes_r_e1"):
         refused = m.as_login(login, "t224_reg", "SELECT 1;\n", old[login])
         assert refused.returncode == 2 and "password authentication failed" in refused.stderr, (
-            f"{login}'s old password file is not refused at login:\n{_said(refused)}")
+            f"{login}'s old password file is not refused at login:\n{_said_safely(refused)}")
         assert m.connects(login, "t224_reg", new[login]), f"{login}'s new line does not connect"
     _no_clear_text(m.log(), _passwords(proc.stdout))
 
@@ -830,7 +1309,7 @@ def test_login_refuses_a_bad_name_a_connection_string_and_a_pipe(tmp_path, case)
     bench = LoginBench(tmp_path)
     for argv in LOGIN_REFUSALS[case]:
         proc = bench.run(argv, pty_run=(case != "pipe"))
-        assert proc.returncode == 2, f"[{case}] {argv[1:3]} is not refused with 2:\n{_said(proc)}"
+        assert proc.returncode == 2, f"[{case}] {argv[1:3]} is not refused with 2:\n{_said_safely(proc)}"
         assert _making(bench.requests()) == [], f"[{case}] the refused login sent a making statement"
         for value in argv:
             if "=" in value or "://" in value:
@@ -839,7 +1318,7 @@ def test_login_refuses_a_bad_name_a_connection_string_and_a_pipe(tmp_path, case)
     # reaches the admin service (the fake), so each refusal was the case's.
     control = bench.run(["login", "add", "e1", "--admin-service", "t224_admin"], pty_run=True)
     assert bench.requests(), (
-        f"[{case}] the control, a good name under a terminal, sent nothing:\n{_said(control)}")
+        f"[{case}] the control, a good name under a terminal, sent nothing:\n{_said_safely(control)}")
 
 
 # ============================================================ the revoke
@@ -849,7 +1328,9 @@ def test_an_open_session_gets_42501_between_the_revokes_steps_then_57p01(tmp_pat
     m.bootstrapped(service)
     files = m.logins(service, "e1", "e2", dump=False)
     held = m.session("lanes_w_e2", "t224_reg", files["lanes_w_e2"])
-    assert "ERROR" not in held.send("SELECT 1;", "t224-open")
+    opened = held.send("SELECT 1;", "t224-open")
+    assert "ERROR" not in opened, (f"e2's session did not open ({held.exit_now()}):"
+                                   f"\n{_said_safely(opened, stream='stderr')}")
     # [steps-by-hand]: the revoke block's steps 1 and 2, by the admin.
     m.psql(f"ALTER ROLE lanes_w_e2 NOLOGIN;\nREVOKE {WRITER} FROM lanes_w_e2;\n", "t224_reg",
            user=ADMIN)
@@ -858,7 +1339,8 @@ def test_an_open_session_gets_42501_between_the_revokes_steps_then_57p01(tmp_pat
     read = held.send(f"SELECT seq FROM {REGISTER}.register_head;", "t224-read")
     for what, said in (("write", write), ("read", read)):
         assert "42501" in said and f"permission denied for schema {REGISTER}" in said, (
-            f"the open session's {what} between steps 2 and 3 is not 42501: {said}")
+            f"the open session's {what} between steps 2 and 3 is not 42501 ({held.exit_now()}): "
+            f"{_said_safely(said, stream='stderr')}")
     # Step 3 by hand: its sessions ended.
     m.psql("GRANT lanes_w_e2 TO CURRENT_USER WITH INHERIT TRUE, SET FALSE;\n"
            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'lanes_w_e2';\n"
@@ -867,8 +1349,12 @@ def test_an_open_session_gets_42501_between_the_revokes_steps_then_57p01(tmp_pat
     ended = held.close()
     said = after + ended.stderr
     assert "57P01" in said or "terminating connection due to administrator command" in said or \
-        "server closed the connection" in said, f"the next statement after step 3 was answered: {said}"
-    assert "permission denied" not in after, f"after step 3 a statement got 42501, not 57P01: {after}"
+        "server closed the connection" in said, (
+            f"the next statement after step 3 was answered: its stderr then and at its end, "
+            f"{_said_safely(said, stream='stderr')}; its end, {_said_safely(ended)}")
+    assert "permission denied" not in after, (f"after step 3 a statement got 42501, not 57P01: "
+                                              f"{_said_safely(after, stream='stderr')}; its end, "
+                                              f"{_said_safely(ended)}")
     assert m.connects("lanes_w_e1", "t224_reg", files["lanes_w_e1"]), "e1 can no longer log in"
 
 
@@ -880,13 +1366,13 @@ def test_the_reader_login_dumps_both_schemas_and_still_cannot_write(tmp_path, re
     files = m.logins(service, "e1")
     proc = m.commit("t224_reg", "lanes_w_e1", files["lanes_w_e1"],
                     m.entry("t224_reg", "import", "lanes/LANES.md", "# Lanes"))
-    assert proc.returncode == 0, _said(proc)
+    assert proc.returncode == 0, _said_safely(proc)
     # The indexer's store, made as the indexer (`lanes-index`'s own #160
     # scripts are not run here: see the report), with a row.
     m.psql(f"SET ROLE {INDEXER};\nCREATE TABLE {INDEX}.t224_rows (id int PRIMARY KEY);\n"
            f"INSERT INTO {INDEX}.t224_rows VALUES (1);\n", "t224_reg")
     dumped, target = m.dump("t224_reg", files[DUMP], "first.dump")
-    assert dumped.returncode == 0, f"the dump job's dump failed:\n{_said(dumped)}"
+    assert dumped.returncode == 0, f"the dump job's dump failed:\n{_said_safely(dumped)}"
     assert stat.S_IMODE(target.stat().st_mode) == 0o600, "the dump file is not 0600"
     listing = subprocess.run([m.cluster.tool("pg_restore"), "--list", str(target)],
                              capture_output=True, text=True, timeout=120, check=False).stdout
@@ -894,28 +1380,30 @@ def test_the_reader_login_dumps_both_schemas_and_still_cannot_write(tmp_path, re
                         f"WHERE schemaname IN ('{REGISTER}', '{INDEX}');", "t224_reg").split(","):
         schema, table = name.split()
         assert re.search(rf"TABLE {schema} {table}\b", listing), f"the dump lacks {name}"
-    head = subprocess.run([m.cluster.tool("pg_restore"), "--data-only", f"--schema={REGISTER}",
-                           "--table=register_head", "--file=-", str(target)],
-                          capture_output=True, text=True, timeout=120, check=False).stdout
+    restored = subprocess.run([m.cluster.tool("pg_restore"), "--data-only", f"--schema={REGISTER}",
+                               "--table=register_head", "--file=-", str(target)],
+                              capture_output=True, text=True, timeout=120, check=False)
+    head = restored.stdout
     b = m.value(f"SELECT seq FROM {REGISTER}.register_head;", "t224_reg")
     assert re.search(rf"^1\t{b}\b", head, re.M) or re.search(rf"\t{b}\b", head), (
-        f"the dump's register_head does not give the head {b}:\n{head}")
+        f"the dump's register_head does not give the head {b}: pg_restore's "
+        f"{_said_safely(restored)}")
     # M6: a sequence the indexer makes later is dumped, by the default privilege.
     m.psql(f"SET ROLE {INDEXER};\nCREATE SEQUENCE {INDEX}.t224_seq_ok;\n", "t224_reg")
     again, _ = m.dump("t224_reg", files[DUMP], "second.dump")
-    assert again.returncode == 0, f"a later sequence stopped the dump:\n{_said(again)}"
+    assert again.returncode == 0, f"a later sequence stopped the dump:\n{_said_safely(again)}"
     # THE CONTROLS: the default privilege revoked before a sequence is made,
     # and the reader's SELECT on doc_lines' sequence revoked.
     m.psql(f"ALTER DEFAULT PRIVILEGES FOR ROLE {INDEXER} IN SCHEMA {INDEX} "
            f"REVOKE SELECT ON SEQUENCES FROM {READER};\n", "t224_reg", user=ADMIN)
     m.psql(f"SET ROLE {INDEXER};\nCREATE SEQUENCE {INDEX}.t224_seq_hidden;\n", "t224_reg")
     hidden, _ = m.dump("t224_reg", files[DUMP], "third.dump")
-    assert hidden.returncode != 0 and "t224_seq_hidden" in hidden.stderr, _said(hidden)
+    assert hidden.returncode != 0 and "t224_seq_hidden" in hidden.stderr, _said_safely(hidden)
     m.psql(f"SET ROLE {INDEXER};\nDROP SEQUENCE {INDEX}.t224_seq_hidden;\n", "t224_reg")
     m.psql(f"SET ROLE {OWNER};\nREVOKE SELECT ON {REGISTER}.doc_lines_line_id_seq FROM {READER};\n",
            "t224_reg")
     seq, _ = m.dump("t224_reg", files[DUMP], "fourth.dump")
-    assert seq.returncode != 0 and "doc_lines_line_id_seq" in seq.stderr, _said(seq)
+    assert seq.returncode != 0 and "doc_lines_line_id_seq" in seq.stderr, _said_safely(seq)
     # STILL CANNOT WRITE: each refused inside BEGIN READ WRITE, then ROLLBACK.
     tries = [f"SELECT nextval('{REGISTER}.doc_lines_line_id_seq')",
              f"UPDATE {REGISTER}.register_head SET seq = seq",
@@ -926,7 +1414,7 @@ def test_the_reader_login_dumps_both_schemas_and_still_cannot_write(tmp_path, re
         tried = m.as_login(DUMP, "t224_reg", f"BEGIN READ WRITE;\n{statement};\nROLLBACK;\n",
                            files[DUMP])
         assert tried.returncode != 0 and "42501" in tried.stderr, (
-            f"the dump login's {statement!r} was not refused with 42501:\n{_said(tried)}")
+            f"the dump login's {statement!r} was not refused with 42501:\n{_said_safely(tried)}")
 
 
 # ============================================================ the restores
@@ -943,9 +1431,9 @@ def _source(request, root: Path, *, primary: bool):
     else:
         proc = m.commit("t224_reg", "lanes_w_e1", files["lanes_w_e1"],
                         m.entry("t224_reg", "import", "lanes/LANES.md", "# Lanes"))
-        assert proc.returncode == 0, _said(proc)
+        assert proc.returncode == 0, _said_safely(proc)
     dumped, target = m.dump("t224_reg", files[DUMP], "source.dump")
-    assert dumped.returncode == 0, f"the source's dump failed:\n{_said(dumped)}"
+    assert dumped.returncode == 0, f"the source's dump failed:\n{_said_safely(dumped)}"
     return m, files, target
 
 
@@ -957,17 +1445,17 @@ def _restored(request, root: Path, source_dump: Path):
     target = Managed(request, root, cluster=_another_cluster(request))
     service = target.database("t224_reg")
     roles = target.bootstrap(service, "--roles-only", pty_run=True)
-    assert roles.returncode == 0, f"bootstrap --roles-only failed:\n{_said(roles)}"
+    assert roles.returncode == 0, f"bootstrap --roles-only failed:\n{_said_safely(roles)}"
     files = target.logins(service, "e1", folder="passfiles-new")
     env = {k: v for k, v in target.env.items() if not k.startswith("PG")}
     env["PGSERVICE"] = service
     restore = subprocess.run([target.cluster.tool("pg_restore"), "--exit-on-error", "--no-password",
                               "--dbname=t224_reg", str(source_dump)],
                              capture_output=True, text=True, timeout=300, env=env, check=False)
-    assert restore.returncode == 0, f"pg_restore through the admin service failed:\n{_said(restore)}"
+    assert restore.returncode == 0, f"pg_restore through the admin service failed:\n{_said_safely(restore)}"
     mark = len(target.log())
     after = target.bootstrap(service, pty_run=True)
-    assert after.returncode == 0, f"bootstrap after the restore failed:\n{_said(after)}"
+    assert after.returncode == 0, f"bootstrap after the restore failed:\n{_said_safely(after)}"
     return target, roles, after, files, mark
 
 
@@ -976,12 +1464,12 @@ def test_a_restore_from_the_dump_equals_its_source_with_new_passwords(tmp_path, 
     target, roles, after, new, _mark = _restored(request, tmp_path / "target", dump)
     # `--roles-only` prints the indexer's line, and `created` for each of the
     # three database-level statements (option (a)).
-    assert sorted(_passwords(roles.stdout)) == [INDEXER], _said(roles)
+    assert sorted(_passwords(roles.stdout)) == [INDEXER], _said_safely(roles)
     objects = dict(_objects(roles.stdout))
     for words in DB_LEVEL:
         assert [state for what, state in objects.items() if words in what] == ["created"], (
-            f"--roles-only does not print `created` for {words}:\n{_said(roles)}")
-    assert {state for _what, state in _objects(after.stdout)} == {"unchanged"}, _said(after)
+            f"--roles-only does not print `created` for {words}:\n{_said_safely(roles)}")
+    assert {state for _what, state in _objects(after.stdout)} == {"unchanged"}, _said_safely(after)
     assert target.catalog("t224_reg") == source.catalog("t224_reg"), "the catalogs differ"
     assert target.rows("t224_reg") == source.rows("t224_reg"), "the rows differ"
     for login in ("lanes_w_e1", "lanes_r_e1", DUMP):
@@ -1006,16 +1494,17 @@ def test_a_restore_from_the_providers_copy_keeps_the_roles_and_takes_new_passwor
         assert copy.connects(login, "t224_reg", old[login]), f"{login}'s old file does not connect"
     service = copy.service("t224_reg")
     roles = copy.bootstrap(service, "--roles-only", pty_run=True)
-    assert roles.returncode == 0, f"bootstrap --roles-only failed:\n{_said(roles)}"
-    assert {state for _what, state in _objects(roles.stdout)} == {"unchanged"}, _said(roles)
-    assert _passwords(roles.stdout) == {}, f"--roles-only printed a password line:\n{_said(roles)}"
+    assert roles.returncode == 0, f"bootstrap --roles-only failed:\n{_said_safely(roles)}"
+    assert {state for _what, state in _objects(roles.stdout)} == {"unchanged"}, _said_safely(roles)
+    printed = sorted(_passwords(roles.stdout))     # the logins alone, as pytest reports it (T224j)
+    assert printed == [], f"--roles-only printed a password line:\n{_said_safely(roles)}"
     new: dict = {}
     for who in ("e1", DUMP):
         proc = copy.login("rotate", who, service)
-        assert proc.returncode == 0, f"login rotate {who} failed:\n{_said(proc)}"
+        assert proc.returncode == 0, f"login rotate {who} failed:\n{_said_safely(proc)}"
         new.update(copy.passfiles(proc.stdout, "passfiles-new"))
         _no_clear_text(copy.log(), _passwords(proc.stdout))
-    assert sorted(new) == sorted(logins)
+    assert sorted(new) == sorted(logins), f"the rotations printed lines for {sorted(new)}, not {sorted(logins)}"
     for login in logins:
         assert not copy.connects(login, "t224_reg", old[login]), f"{login}'s old file still connects"
         assert copy.connects(login, "t224_reg", new[login]), f"{login}'s new line does not connect"
@@ -1123,6 +1612,36 @@ CHECK_11 = {
 }
 
 
+def _says(*words: str):
+    """A failing check-11 case's predicate on check 11's reason: it holds
+    each of `words` (T224n). `words` stays on it for a failure's message."""
+    def holds(reason: str) -> bool:
+        return all(word in reason for word in words)
+    holds.words = words
+    return holds
+
+
+#: The fault each failing case is built to show, as a predicate on check 11's reason,
+#: one for EVERY failing case (T224l, T224n): a FAIL for another cause, a restart's
+#: stale port among them, does not pass. The URL's faults are in the words of
+#: `_ready_check_tls` (line R `9bdd317b`), which puts them first in its connection's
+#: part of the line. `[leaf-only]`'s is libpq's own, for a chain it cannot verify: the
+#: server sends the leaf without its intermediate, so the root alone cannot verify it,
+#: and psql 16 says, under the `LC_ALL=C` that `TlsEnvironment` sets, `connection to
+#: server at "127.0.0.1", port <port> failed: SSL error: certificate verify failed`,
+#: which `_ready_psql_why` puts in the line (Codex's review of P09 at `21dd3642`,
+#: SHOULD 5 in lane 3's numbering).
+CHECK_11_FAULT = {
+    "sslmode-prefer": _says("its URL carries sslmode=prefer, not sslmode=verify-full"),
+    "no-sslrootcert": _says("its URL carries no sslrootcert= naming the issuer's root file"),
+    "unix-socket": _says("its URL names a Unix socket"),
+    "in-recovery": _says("pg_is_in_recovery() is not false"),
+    "leaf-only": _says("SSL error: certificate verify failed"),
+    "system-root": _says("its sslrootcert= is system"),
+    "plaintext": _says("its URL carries sslmode=disable, not sslmode=verify-full"),
+}
+
+
 @pytest.mark.parametrize("case", list(CHECK_11))
 def test_ready_check_11_needs_tls_and_the_primary(tmp_path, request, case):
     env = TlsEnvironment(request, tmp_path)
@@ -1130,11 +1649,79 @@ def test_ready_check_11_needs_tls_and_the_primary(tmp_path, request, case):
     proc = env.ready(make(env))
     state, reason = _checks(proc.stdout).get(11, ("", ""))
     if passes:
-        assert state == "ok", f"[{case}] check 11 does not pass:\n{_said(proc)}"
+        assert state == "ok", f"[{case}] check 11 does not pass:\n{_said_safely(proc)}"
     else:
         assert state == "FAIL" and proc.returncode == 2, (
-            f"[{case}] check 11 does not fail, or ready does not exit 2:\n{_said(proc)}")
-        assert env.login in reason, f"[{case}] check 11 does not name the connection:\n{_said(proc)}"
+            f"[{case}] check 11 does not fail, or ready does not exit 2:\n{_said_safely(proc)}")
+        assert env.login in reason, f"[{case}] check 11 does not name the connection:\n{_said_safely(proc)}"
+        fault = CHECK_11_FAULT[case]
+        wanted = " and ".join(repr(word) for word in fault.words)
+        assert fault(reason), (
+            f"[{case}] check 11 fails, but not for {wanted} (T224l, T224n):\n{_said_safely(proc)}")
+
+
+#: Check 11's reason for each failing case as `ready` would print it, the URL's faults
+#: in `_ready_check_tls`'s words (line R `9bdd317b`) and a connection's in libpq 16's
+#: (psql under `LC_ALL=C`), for T224n's regression; and a FAIL for another cause, the
+#: port a restart did not keep.
+CHECK_11_SAID = {
+    "sslmode-prefer": "its URL carries sslmode=prefer, not sslmode=verify-full",
+    "no-sslrootcert": "its URL carries no sslrootcert= naming the issuer's root file",
+    "unix-socket": ("its URL names a Unix socket, where libpq ignores sslmode and nothing is "
+                    "encrypted; its own pg_stat_ssl row shows ssl false: the connection is not "
+                    "encrypted"),
+    "in-recovery": "pg_is_in_recovery() is not false: it reached a server in recovery, not the primary",
+    "leaf-only": ('its connection and read failed (c 10 s, N_a 1): psql: error: connection to server '
+                  'at "127.0.0.1", port 54321 failed: SSL error: certificate verify failed'),
+    "system-root": ("its sslrootcert= is system, whose store holds no private root (C7, design "
+                    "Y:2324); its connection and read failed (c 10 s, N_a 1): psql: error: "
+                    'connection to server at "127.0.0.1", port 54321 failed: SSL error: '
+                    "certificate verify failed"),
+    "plaintext": ("its URL carries sslmode=disable, not sslmode=verify-full; its URL carries no "
+                  "sslrootcert= naming the issuer's root file"),
+}
+CHECK_11_STALE_PORT = ('its connection and read failed (c 10 s, N_a 1): psql: error: connection to '
+                       'server at "127.0.0.1", port 54321 failed: Connection refused')
+
+
+def test_each_failing_check_11_case_passes_its_own_fault_and_no_other_cause(tmp_path, monkeypatch):
+    """T224n (Codex's review of P09 at `21dd3642`, SHOULD 5 in lane 3's
+    numbering): check 11's case itself, run with a stand-in for its TLS
+    environment whose `ready` prints one check-11 FAIL line, with no
+    database. Each failing case passes its own fault and fails the same FAIL
+    for a restart's stale port, `[leaf-only]` among them; and every failing
+    case has a predicate. No password is in any line."""
+    login = "lanes_w_fx"
+
+    class StandIn:
+        said = ""
+
+        def __init__(self, _request, _root):
+            self.login = login
+
+        def url(self, **_query) -> str:
+            return f"postgresql://{login}@127.0.0.1:54321/t229"
+
+        def socket_url(self) -> str:
+            return self.url()
+
+        def restart(self, **_option) -> None:
+            pass
+
+        def ready(self, _register_url: str) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(
+                [], 2, f"check 11: FAIL: writer {login} (`register_url=`): {StandIn.said}\n", "")
+
+    monkeypatch.setitem(globals(), "TlsEnvironment", StandIn)
+    failing = [case for case, (_make, passes) in CHECK_11.items() if not passes]
+    for case in failing:
+        StandIn.said = CHECK_11_SAID[case]
+        test_ready_check_11_needs_tls_and_the_primary(tmp_path, None, case)
+        StandIn.said = CHECK_11_STALE_PORT
+        with pytest.raises(AssertionError, match=r"check 11 fails, but not for"):
+            test_ready_check_11_needs_tls_and_the_primary(tmp_path, None, case)
+    missing = sorted(set(failing) - set(CHECK_11_FAULT))
+    assert not missing, f"no fault predicate for the failing check-11 cases {missing} (T224n)"
 
 
 # ============================================================ tls_at_load
@@ -1204,8 +1791,15 @@ def hook_pid():
     try:
         yield str(standin.pid)
     finally:
+        # Kill it, then a reap bounded at 10 s, as `GuardSession.close()` does: a
+        # stand-in that a kill does not take fails the case and never hangs the
+        # run (T230c).
         standin.kill()
-        standin.wait()
+        try:
+            standin.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            standin.kill()
+            standin.wait(timeout=10)
 
 
 #: The items, and the two that read the refused file through another verb.
@@ -1225,7 +1819,7 @@ def test_tls_at_load_refuses_a_url_off_loopback_without_verify_full_and_a_root_f
         proc = bench.run(["journal", "--write-id", str(uuid.uuid4()), "--not-after", "2000000000",
                           "--generation", str(uuid.uuid4()), "--lane", "t230", "--verb", "append-line",
                           "--args-sha256", "0" * 64], pty_run=False)
-        assert proc.returncode == 3, f"[{item}] journal --write-id on a refused file is not 3:\n{_said(proc)}"
+        assert proc.returncode == 3, f"[{item}] journal --write-id on a refused file is not 3:\n{_said_safely(proc)}"
     elif item == "for-guard":
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -1234,16 +1828,16 @@ def test_tls_at_load_refuses_a_url_off_loopback_without_verify_full_and_a_root_f
                               str(tmp_path / "cache"), "--pid", pid, "--repo", str(repo)],
                              pty_run=False)
         assert proc.returncode == 1, (
-            f"[{item}] register read --for guard --prefetch on a refused file is not 1:\n{_said(proc)}")
+            f"[{item}] register read --for guard --prefetch on a refused file is not 1:\n{_said_safely(proc)}")
     else:
         proc = bench.run(["mode"], pty_run=False)
         if expect == "index":
-            assert (proc.returncode, proc.stdout) == (0, "index\n"), f"[{item}] does not load:\n{_said(proc)}"
+            assert (proc.returncode, proc.stdout) == (0, "index\n"), f"[{item}] does not load:\n{_said_safely(proc)}"
         else:
             key, missing = expect
-            assert proc.returncode == 2 and proc.stdout == "", f"[{item}] is not refused with 2:\n{_said(proc)}"
+            assert proc.returncode == 2 and proc.stdout == "", f"[{item}] is not refused with 2:\n{_said_safely(proc)}"
             assert key in proc.stderr and missing in proc.stderr, (
-                f"[{item}] the refusal does not name {key} and {missing}:\n{_said(proc)}")
+                f"[{item}] the refusal does not name {key} and {missing}:\n{_said_safely(proc)}")
     for url in urls:
         if expect != "index" or item in ("journal-write-id", "for-guard"):
             assert url not in proc.stdout + proc.stderr, f"[{item}] the refusal printed a URL"
@@ -1264,7 +1858,7 @@ def test_dump_restore_privileges_hold_after_roles_only_the_restore_and_bootstrap
     target.psql("CREATE ROLE t224_outsider LOGIN PASSWORD 'outside-t224';")
     outsider = _private(target.home / "passfiles" / "t224_outsider", f"*:*:{db}:t224_outsider:outside-t224\n")
     refused = target.as_login("t224_outsider", db, "SELECT 1;\n", outsider)
-    assert refused.returncode == 2 and "permission denied for database" in refused.stderr, _said(refused)
+    assert refused.returncode == 2 and "permission denied for database" in refused.stderr, _said_safely(refused)
     for role in (WRITER, READER, INDEXER):
         assert target.value(f"SELECT has_database_privilege('{role}', '{db}', 'CONNECT');",
                             "postgres") == "t", f"{role} holds no CONNECT on {db}"
@@ -1273,12 +1867,16 @@ def test_dump_restore_privileges_hold_after_roles_only_the_restore_and_bootstrap
     assert target.value(f"SELECT has_function_privilege('t224_outsider', '{REGISTER}.t224_later()', "
                         "'EXECUTE');", db) == "f", "an outsider may execute a later function of the owner's"
     # `bootstrap` after the restore re-ran no statement and wrote no label.
-    assert {state for _what, state in _objects(after.stdout)} == {"unchanged"}, _said(after)
+    assert {state for _what, state in _objects(after.stdout)} == {"unchanged"}, _said_safely(after)
     since = target.log()[mark:end]
-    ran = [line for line in since.splitlines()
-           if re.search(r"statement: (CREATE|GRANT|REVOKE|ALTER|INSERT|UPDATE)\b", line)]
-    assert ran == [], f"bootstrap after the restore re-ran statements: {ran}"
-    assert target.value(f"SELECT database_label FROM {REGISTER}.register_switch;", db) == label
+    ran = [found.group(1) for found in
+           (re.search(r"statement: (CREATE|GRANT|REVOKE|ALTER|INSERT|UPDATE)\b", line)
+            for line in since.splitlines()) if found]
+    # Only the count and the verbs: a role's statement can hold its password (T258m).
+    assert ran == [], (f"bootstrap after the restore re-ran {len(ran)} statement(s): "
+                       f"{', '.join(sorted(set(ran)))}; no statement's text is shown")
+    restored = target.value(f"SELECT database_label FROM {REGISTER}.register_switch;", db)
+    assert restored == label, f"the restored register's label is {restored!r}, not the source's {label!r}"
 
 
 def test_rotate_dump_job_changes_only_the_dump_logins_password(tmp_path, request):
@@ -1289,24 +1887,24 @@ def test_rotate_dump_job_changes_only_the_dump_logins_password(tmp_path, request
     verifiers = {login: m.role(login)["verifier"] for login in ("lanes_w_e1", "lanes_r_e1", DUMP)}
     # Off a terminal it refuses with 2 and changes nothing.
     piped = m.login("rotate", DUMP, service, pty_run=False)
-    assert piped.returncode == 2, f"rotate --dump-job through a pipe is not 2:\n{_said(piped)}"
+    assert piped.returncode == 2, f"rotate --dump-job through a pipe is not 2:\n{_said_safely(piped)}"
     assert m.role(DUMP)["verifier"] == verifiers[DUMP], "the refused rotation changed the verifier"
     # Neither an engineer nor --dump-job, or both: 64.
     for argv in (["login", "rotate", "--admin-service", service],
                  ["login", "rotate", "e1", "--dump-job", "--admin-service", service]):
         usage = m.lanes(*argv, pty_run=True)
-        assert usage.returncode == 64, f"{argv[1:]} is not usage, 64:\n{_said(usage)}"
+        assert usage.returncode == 64, f"{argv[1:]} is not usage, 64:\n{_said_safely(usage)}"
     proc = m.login("rotate", DUMP, service)
-    assert proc.returncode == 0, f"login rotate --dump-job failed:\n{_said(proc)}"
+    assert proc.returncode == 0, f"login rotate --dump-job failed:\n{_said_safely(proc)}"
     lines = _passwords(proc.stdout)
-    assert sorted(lines) == [DUMP], f"not one line, the dump login's:\n{_said(proc)}"
+    assert sorted(lines) == [DUMP], f"not one line, the dump login's:\n{_said_safely(proc)}"
     new = m.passfiles(proc.stdout, "passfiles-new")
     assert m.role(DUMP)["verifier"] != verifiers[DUMP], "the dump login's verifier did not change"
     for login in ("lanes_w_e1", "lanes_r_e1"):
         assert m.role(login)["verifier"] == verifiers[login], f"{login}'s verifier changed"
     assert not m.connects(DUMP, "t224_reg", old[DUMP]), "the old dump password still logs in"
     dumped, _target = m.dump("t224_reg", new[DUMP], "rotated.dump")
-    assert dumped.returncode == 0, f"the new dump password does not dump:\n{_said(dumped)}"
+    assert dumped.returncode == 0, f"the new dump password does not dump:\n{_said_safely(dumped)}"
     _no_clear_text(m.log(), lines)
 
 
@@ -1421,9 +2019,16 @@ def _w_creates(files: dict) -> tuple:
 
 
 def _w_git(cwd: Path, env: dict, *args: str) -> str:
+    """git's stdout, or an AssertionError that shows its exit and counts. Its
+    run is dropped before the raise (T258w; lane 2's pre-review RV9-41 of
+    P09 at `4895579`, B1): pytest 8.3.4 prints a long entry's locals as its
+    arguments where the function takes `*args`."""
     proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, env=env,
                           timeout=120, check=False)
-    assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {proc.stderr}{proc.stdout}"
+    if proc.returncode != 0:
+        said = f"git {' '.join(args)} in {cwd}: {_said_safely(proc)}"
+        del proc
+        raise AssertionError(said)
     return proc.stdout
 
 
@@ -1497,30 +2102,144 @@ def _commit_logins(log: str) -> list:
 
 
 class W258Writer:
-    """One `lanes-edit.sh` run, its shim's directory and its outcome."""
+    """One `lanes-edit.sh` run, its shim's directory and its outcome. `launch`
+    starts it in a session of its own (`start_new_session=True`). Its thread
+    only reads its two pipes; the reap is the main thread's, in `wait`, or in
+    `stop` at the case's teardown (T258e), and it comes last: until the reader
+    is joined and the pipes are closed, the run is left unreaped, so the group
+    it leads is still its own to end (T258f)."""
 
     def __init__(self, who: str, proc: subprocess.Popen, psql_dir: Path, state: Path):
         self.who, self.proc, self.psql_dir, self.state = who, proc, psql_dir, state
         self.ended = None
         self.out = self.err = ""
-        self._thread = threading.Thread(target=self._wait, daemon=True)
+        self.cut = False
+        self._cancel = threading.Event()
+        self._thread = threading.Thread(target=self._read, daemon=True)
         self._thread.start()
 
-    def _wait(self) -> None:
-        self.out, self.err = self.proc.communicate()
-        self.ended = time.monotonic()
+    def _read(self) -> None:
+        """Both pipes read to their ends together, as `communicate()` reads
+        them, and decoded as its text mode decodes them; then closed, and
+        `ended` set. No wait and no reap: those are the main thread's (T258e;
+        Codex's review of P09 at `21dd3642`, SHOULD 6 in lane 3's numbering).
+        It waits `READ_POLL_S` at a time, so it always ends once `_cancel` is
+        set, `cut` then naming pipes left before their ends; and it closes
+        both pipes itself, in a `finally`, whichever way it ends (T258h;
+        Codex's review of P09 at `b8f9e35a`, SHOULD 4)."""
+        pipes = (self.proc.stdout, self.proc.stderr)
+        got = {pipe.fileno(): bytearray() for pipe in pipes}
+        live = list(got)
+        try:
+            while live and not self._cancel.is_set():
+                ready, _, _ = select.select(live, [], [], READ_POLL_S)
+                for fd in ready:
+                    try:
+                        chunk = os.read(fd, 65536)
+                    except OSError:
+                        chunk = b""
+                    if chunk:
+                        got[fd] += chunk
+                    else:
+                        live.remove(fd)
+        finally:
+            self.cut = bool(live)
+            self.out, self.err = (bytes(data).decode("utf-8", "replace").replace("\r\n", "\n")
+                                  .replace("\r", "\n") for data in got.values())
+            for pipe in pipes:
+                pipe.close()
+            if not live:
+                self.ended = time.monotonic()
+
+    def _cut_reader(self) -> None:
+        """The reader joined within `END_S`; one still reading then, a process
+        outside the group holding a pipe, is cut, `_cancel` set, and joined
+        again: it ends within one `READ_POLL_S`, its pipes closed by itself.
+        One still alive after that is raised here, so no reap follows it
+        (T258h)."""
+        self._thread.join(END_S)
+        self._cancel.set()
+        self._thread.join(END_S)
+        if self._thread.is_alive():
+            raise RuntimeError(f"{self.who}'s reader did not end {END_S} s after its cut")
+
+    def _exited(self, end: float) -> bool:
+        """Whether the run has exited by the monotonic `end`, as
+        `os.waitid(..., WNOWAIT)` sees it, which leaves it unreaped (T258f)."""
+        while os.waitid(os.P_PID, self.proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.05)
+        return True
+
+    def _end_unreaped(self) -> None:
+        """The run's end, its reap last (T258f; the coordinator's review of P09
+        at `d3a2fd5c`, item 1, #165 6938473998). While it is unreaped, the id
+        of the group it leads is still its own: `_signal_unreaped` ends that
+        group, TERM then KILL; then `_cut_reader` ends the reader, which closes
+        both pipes itself: it is joined within `END_S`, and one still reading
+        then, a process outside the group holding a pipe, is cut and joined
+        again, and raised where it outlives its cut (T258h; Codex's review of
+        P09 at `b8f9e35a`, SHOULD 4). This method closes no pipe. Only then is
+        the run reaped, `proc.wait(END_S)`, whose `TimeoutExpired` is raised;
+        no signal follows the reap, and no reap follows a reader that
+        `_cut_reader` raised. `_cut_reader` runs in a `finally`, so a signal
+        step that raises (`os.waitid`'s `ChildProcessError`, where something
+        else reaped the run) still has the reader ended and its pipes closed
+        before its error goes on, with no reap after it (T258g; Codex's review
+        of P09 at `d3a2fd5c`, SHOULD 3's last point; this text T258k)."""
+        try:
+            _signal_unreaped(self.proc, group=True, wait=END_S)
+        finally:
+            self._cut_reader()
+        self.proc.wait(END_S)
 
     def wait(self, timeout: float = 150) -> int:
-        self._thread.join(timeout)
-        assert not self._thread.is_alive(), f"{self.who}'s run did not end in {timeout} s"
+        """The run's exit and its reader's end, both within one `timeout`, and
+        then its reap (T258e, T258f). The exit is watched by `_exited`, which
+        leaves the run unreaped, so the group it leads is still its own while
+        the reader is joined. A run that does not exit in time fails the case,
+        and `stop` ends it at the teardown. A run that exited while a process of
+        its group still holds a pipe fails the case too, after
+        `_end_unreaped` has ended that group, joined the reader, closed the
+        pipes and only then reaped it."""
+        end = time.monotonic() + timeout
+        if self.proc.returncode is None and not self._exited(end):
+            raise AssertionError(f"{self.who}'s run did not end in {timeout} s")
+        self._thread.join(max(0.0, end - time.monotonic()))
+        if self.proc.returncode is None and self._thread.is_alive():
+            self._end_unreaped()
+            raise AssertionError(f"{self.who}'s run ended, but its pipes did not end in "
+                                 f"{timeout} s: its group was ended before its reap")
+        assert not self._thread.is_alive(), (
+            f"{self.who}'s run ended, but its pipes did not end in {timeout} s")
+        self.proc.wait(END_S)
         return self.proc.returncode
+
+    def stop(self) -> None:
+        """This run's end at the case's teardown (T258e; Codex's review of P09
+        at `21dd3642`, SHOULD 6 in lane 3's numbering; T258f): a run already
+        reaped, `returncode` set, gets no signal, since `wait` reaps it only
+        once its pipes have ended or its group has been ended. Otherwise
+        `_end_unreaped` ends its group, its own since `launch` started it in a
+        session of its own, while it is unreaped, joins its reader, closes its
+        pipes, and only then reaps it, raising a reap that times out. Pipes
+        that a process outside its group still holds are raised, not left."""
+        if self.proc.returncode is None:
+            self._end_unreaped()
+        else:
+            self._cut_reader()
+        if self.cut:
+            raise RuntimeError(f"{self.who}'s run is reaped, but its pipes did not end in {END_S} s: "
+                               f"a process outside its group holds them")
 
     @property
     def code(self) -> int:
         return self.proc.returncode
 
     def said(self) -> str:
-        return f"exit {self.code}\nstdout: {self.out[-800:]}\nstderr: {self.err[-1500:]}"
+        """The writer for a failure's message, through bounds' one helper (T258l)."""
+        return _said_safely(subprocess.CompletedProcess([], self.code, self.out, self.err))
 
     def _jsonl(self, name: str) -> list:
         path = self.psql_dir / name
@@ -1618,9 +2337,17 @@ class PhaseW:
         entry = {"journal": {"kind": kind, "verb": kind, "lane": OPERATOR, "workstation": WS,
                              "author": AUTHOR, "message": f"{kind} by {OPERATOR} (T258)", **journal},
                  "not_after": clock, "edits": edits, "files": rows}
+        return self._committed(kind, entry)
+
+    def _committed(self, kind: str, entry: dict) -> int:
+        """`entry` committed by `commit_write` as e1's writer login; its seq.
+        Kept out of `_commit`, whose `**journal` makes pytest 8.3.4 print its
+        locals as arguments in a long entry, so that no frame with `**` holds
+        the writer's run when it fails (T258w; lane 2's pre-review RV9-41 of
+        P09 at `4895579`, B1)."""
         proc = self.m.commit(W_DB, "lanes_w_e1", self.files["lanes_w_e1"], entry)
-        assert proc.returncode == 0, f"the {kind} entry did not commit:\n{_said(proc)}"
-        return int(proc.stdout.split()[-1])
+        assert proc.returncode == 0, f"the {kind} entry did not commit:\n{_said_safely(proc)}"
+        return _whole(proc.stdout.split()[-1], f"the {kind} entry's seq")
 
     def _to_primary(self) -> int:
         """AT-LR006's route over C, as e1's writer login: the render set's
@@ -1635,7 +2362,7 @@ class PhaseW:
         proc = self.m.as_login("lanes_w_e1", W_DB, f"SELECT {REGISTER}.record_marker(:client, :seq, "
                                ":'commit', :'ws');\n", self.files["lanes_w_e1"], client=client,
                                seq=cut, commit=MARKER_COMMIT, ws=W_WS)
-        assert proc.returncode == 0 and proc.stdout.strip() == "present", _said(proc)
+        assert proc.returncode == 0 and proc.stdout.strip() == "present", _said_safely(proc)
         switch = self.m.value(f"SELECT mode || ' ' || marker_state FROM {REGISTER}.register_switch;",
                               W_DB)
         assert switch == "primary present", f"the register is not at primary with its marker: {switch}"
@@ -1686,7 +2413,7 @@ class PhaseW:
                               env=dict(env, PATH=os.pathsep.join([str(psql_dir), str(self.fakebin),
                                                                   _masked_path()])))
         assert made.returncode == 0 and Path(made.stdout.strip()).is_dir(), (
-            f"lane-checkout {lane} --create did not make {who}'s lane checkout:\n{_said(made)}")
+            f"lane-checkout {lane} --create did not make {who}'s lane checkout:\n{_said_safely(made)}")
         return {"lane": lane, "checkout": checkout, "env": env, "state": where / "state"}
 
     # -------------------------------------------------- running the client
@@ -1720,9 +2447,15 @@ class PhaseW:
         return ["log", "NOTED", f"lane:{W_LANES[who]}", text]
 
     def _stop(self) -> None:
+        """Each writer's `stop` (T258e), every one tried; what any of them
+        could not end is raised after."""
+        failed = []
         for writer in self.writers:
-            if writer.ended is None and writer.proc.poll() is None:
-                os.killpg(writer.proc.pid, 9)
+            try:
+                writer.stop()
+            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                failed.append(f"{writer.who}: {type(exc).__name__}: {exc}")
+        assert not failed, "phase W's teardown did not end every writer:\n" + "\n".join(failed)
 
     # -------------------------------------------------- the register, read by the provider
     def journal_after(self) -> list:
@@ -1747,9 +2480,322 @@ def _hold_point(fifo: Path, writer: W258Writer, timeout: float = 90):
             if error.errno != errno.ENXIO:
                 raise
         assert writer.ended is None, (
-            f"{writer.who}'s run ended before its commit call was held:\n{writer.said()}")
+            f"{writer.who}'s run ended before its commit call was held:\n{_said_safely(writer)}")
         assert time.monotonic() < deadline, f"{writer.who}'s commit call was not held in {timeout} s"
         time.sleep(0.05)
+
+
+def _w_stand_in(who: str, script: str, *args: str) -> W258Writer:
+    """A stand-in for a `lanes-edit.sh` run, `bash -c <script>` with `args`,
+    started as `PhaseW.launch` starts one, in a session of its own, with no
+    database (T258e's regressions)."""
+    proc = subprocess.Popen(["bash", "-c", script, "bash", *args], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8",
+                            errors="replace", start_new_session=True)
+    return W258Writer(who, proc, Path(os.devnull), Path(os.devnull))
+
+
+def test_a_phase_w_writers_thread_only_reads_its_pipes_and_the_main_thread_reaps_it():
+    """T258e (Codex's review of P09 at `21dd3642`, SHOULD 6 in lane 3's
+    numbering), no database: a stand-in writer closes both its pipes, then
+    ends 0.3 s later. Its reader ends at the pipes' end and leaves it
+    unreaped, as `os.waitid(..., WNOWAIT)` sees once it has ended, until the
+    main thread's `wait` reaps it."""
+
+    class Phase:
+        writers = [_w_stand_in("w-closes", "exec >&- 2>&-; sleep 0.3")]
+    writer = Phase.writers[0]
+    try:
+        writer._thread.join(10)
+        assert not writer._thread.is_alive(), "the reader did not end at its pipes' end"
+        end, seen = time.monotonic() + 10, None
+        while seen is None and time.monotonic() < end:
+            try:
+                seen = os.waitid(os.P_PID, writer.proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            except ChildProcessError:
+                seen = "reaped"
+            if seen is None:
+                time.sleep(0.05)
+        assert seen != "reaped", "the reader thread reaped the writer: the reap is the main thread's"
+        assert seen is not None, "the stand-in writer did not end in 10 s"
+        code = writer.wait(10)
+        assert (code, writer.out, writer.err) == (0, "", ""), f"the stand-in ended {code}, not 0"
+    finally:
+        PhaseW._stop(Phase)
+
+
+def test_phase_w_teardown_ends_and_reaps_a_hung_writer_and_reports_a_pipe_held_outside_it(
+        tmp_path, monkeypatch):
+    """T258e (Codex's review of P09 at `21dd3642`, SHOULD 6 in lane 3's
+    numbering), no database, with stand-in writers started as `launch`
+    starts them. A writer whose pipes a process in a session of its own
+    still holds: the teardown ends its group and reaps it, then raises,
+    naming it, within its bounds. A hung writer whose group holds its pipes:
+    `wait` fails at its bound, and the teardown ends the group, reaps the
+    writer and joins its reader. A writer already reaped: the teardown sends
+    no signal."""
+    monkeypatch.setitem(globals(), "END_S", 2.0)
+
+    class Phase:
+        writers: list = []
+    started: list = []
+    try:
+        mark = tmp_path / "held"
+        held = _w_stand_in("w-held", '"$2" -c \'import os, sys, time; os.setsid(); '
+                           'open(sys.argv[1], "w").write("held"); time.sleep(6)\' "$1" & sleep 20',
+                           str(mark), sys.executable)
+        started.append(held)
+        end = time.monotonic() + 10
+        while not (mark.exists() and mark.read_text() == "held"):
+            assert time.monotonic() < end, "the stand-in's holder did not start in 10 s"
+            time.sleep(0.05)
+        Phase.writers = [held]
+        with pytest.raises(AssertionError, match="w-held's run is reaped, but its pipes"):
+            PhaseW._stop(Phase)
+        assert held.proc.returncode is not None, "the teardown did not reap the writer"
+        hung = _w_stand_in("w-hung", "sleep 20 & sleep 20")
+        started.append(hung)
+        with pytest.raises(AssertionError, match="did not end in 0.5 s"):
+            hung.wait(0.5)
+        Phase.writers = [hung]
+        PhaseW._stop(Phase)
+        assert hung.proc.returncode is not None and not hung._thread.is_alive(), (
+            "the teardown did not reap the hung writer and join its reader")
+        done = _w_stand_in("w-done", "exit 0")
+        started.append(done)
+        assert done.wait(10) == 0, "the stand-in that exits 0 did not"
+        sent: list = []
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "killpg", lambda *call: sent.append(("killpg", *call)))
+            patch.setattr(os, "kill", lambda *call: sent.append(("kill", *call)))
+            Phase.writers = [done]
+            PhaseW._stop(Phase)
+        assert sent == [], f"the teardown signalled a writer already reaped: {sent}"
+    finally:
+        Phase.writers = [writer for writer in started if writer.proc.returncode is None]
+        PhaseW._stop(Phase)
+        for writer in started:
+            writer._thread.join(15)
+
+
+#: T258f's stand-in writer, `bash -c` with the mark file, this Python and an
+#: fd as `$1`, `$2` and `$3`: a descendant in its group closes the fd, its
+#: stdout (1) or its stderr (2), writes its pid and start time (`/proc` stat
+#: field 22) to the mark and sleeps 30 s, holding the other pipe; the writer
+#: exits 0 once the mark is written.
+T258F_STAND_IN = (
+    '"$2" -c \'import os, sys, time; os.close(int(sys.argv[2])); '
+    'f = open("/proc/self/stat").read().rsplit(")", 1)[1].split(); '
+    'open(sys.argv[1], "w").write(f"{os.getpid()} {f[19]}"); time.sleep(30)\' "$1" "$3" & '
+    'while [ ! -s "$1" ]; do sleep 0.05; done; exit 0')
+
+
+def _t258f_recorded(monkeypatch, writer: W258Writer, events: list) -> None:
+    """Each signal by pid or group, and each reap of `writer` with whether its
+    reader is alive and its two pipes are closed at it, appended to `events`
+    in order; each is still done (T258f)."""
+    real_kill, real_killpg, real_wait = os.kill, os.killpg, writer.proc.wait
+
+    def kill(pid: int, sig: int) -> None:
+        events.append(("kill", pid, sig))
+        real_kill(pid, sig)
+
+    def killpg(pgid: int, sig: int) -> None:
+        events.append(("killpg", pgid, sig))
+        real_killpg(pgid, sig)
+
+    def reap(*args, **kwargs):
+        events.append(("reap", writer._thread.is_alive(), writer.proc.stdout.closed,
+                       writer.proc.stderr.closed))
+        return real_wait(*args, **kwargs)
+    monkeypatch.setattr(os, "kill", kill)
+    monkeypatch.setattr(os, "killpg", killpg)
+    monkeypatch.setattr(writer.proc, "wait", reap)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="T258f's case reads Linux's /proc and pins by a pidfd")
+@pytest.mark.parametrize("held", ["stdout", "stderr"])
+def test_a_phase_w_writer_that_exits_while_its_group_holds_a_pipe_is_reaped_after_the_group_ends(
+        tmp_path, monkeypatch, held):
+    """T258f (the coordinator's review of P09 at `d3a2fd5c`, item 1, #165
+    6938473998), no database: a stand-in writer, started as `launch` starts
+    one, exits 0 and leaves a descendant in its group that holds its `held`
+    pipe. `wait` sees the exit and leaves the writer unreaped while it joins
+    the reader within its bound; the pipe is still held, so it ends the
+    group while the writer is unreaped, joins the reader, closes both pipes
+    and only then reaps, and fails the case, naming it. Every signal to the
+    group comes before the one reap, the descendant is gone within 2 s of
+    `wait`'s end, though it sleeps 30 s, the reader is joined, both pipes
+    are closed, the exit is the writer's own 0, and the teardown sends no
+    signal after. Before T258f `wait` reaped the writer first, so nothing
+    ended its group: the reader, the pipes and the descendant were left.
+    The descendant's absence counts only where it is seen before those 2 s,
+    by `_gone_by`, so a pause of the case past them never turns its own
+    30 s end into a pass (T258i; Codex's review of P09 at `b8f9e35a`,
+    SHOULD 5: absence was accepted before the deadline was checked)."""
+    monkeypatch.setitem(globals(), "END_S", 2.0)
+
+    class Phase:
+        writers: list = []
+    mark = tmp_path / "descendant"
+    writer = _w_stand_in(f"w-{held}", T258F_STAND_IN, str(mark), sys.executable,
+                         "2" if held == "stdout" else "1")
+    Phase.writers = [writer]
+    events: list = []
+    pid = started = None
+    try:
+        end = time.monotonic() + 10
+        while os.waitid(os.P_PID, writer.proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+            assert time.monotonic() < end, f"[{held}] the stand-in writer did not exit in 10 s"
+            time.sleep(0.05)
+        pid, started = mark.read_text().split()
+        _t258f_recorded(monkeypatch, writer, events)
+        with pytest.raises(AssertionError, match=f"w-{held}'s run ended, but its pipes did not"):
+            writer.wait(1.0)
+        gone = _gone_by(_whole(pid, "the stand-in's pid"), started, time.monotonic() + 2)     # seen before it (T258i)
+        kinds = [event[0] for event in events]
+        ordered = kinds.count("reap") == 1 and kinds[-1] == "reap" and "killpg" in kinds
+        assert ordered and events[-1][1:] == (False, True, True), (
+            f"[{held}] the writer was not reaped once, after every signal to its group, with "
+            f"its reader joined and both pipes closed: {events}")
+        assert gone, f"[{held}] the descendant holding the writer's {held} was not ended"
+        code = writer.proc.returncode
+        assert code == 0, f"[{held}] the writer's exit is {code}, not its own 0"
+        events.clear()
+        PhaseW._stop(Phase)
+        assert events == [], f"[{held}] the teardown signalled a writer already reaped: {events}"
+    finally:
+        if pid is not None:
+            _end_if_left(_whole(pid, "the stand-in's pid"), started)
+        Phase.writers = [writer] if writer.proc.returncode is None else []
+        PhaseW._stop(Phase)
+        writer._thread.join(15)
+
+
+def test_a_phase_w_writers_stop_joins_its_reader_and_closes_its_pipes_when_its_signal_step_raises(
+        tmp_path, monkeypatch):
+    """T258g (Codex's review of P09 at `d3a2fd5c`, SHOULD 3's last point:
+    `stop()` skipped its join when `_end_process()` raised), no database: a
+    stand-in writer, started as `launch` starts one, holds both pipes until
+    a FIFO barrier is released, then 0.3 s more, closes them and lives 0.5 s
+    more. Its `stop()` runs with the signal step, `_end_process` or
+    `_signal_unreaped`, made to raise `ChildProcessError` as `os.waitid`
+    does where something else reaped the run. That step, the signal seam,
+    is reached once: it records the reader alive and both pipes open, then
+    raises. The barrier is released at the reader's first join, by a wrapper
+    set as `writer._thread.join`, and only the clean-up after the seam joins
+    the reader. The error must reach the caller, and by then the reader must
+    be joined and both pipes closed. Before T258g the error left `stop()`
+    before the join, with the reader still reading and both pipes open; with
+    that bug no join runs, so the barrier is never released and the case
+    fails whatever the timing. The barrier replaces a 0.5 s sleep from the
+    stand-in's start, which a delayed case could outlive, so the old code
+    passed (T258j; Codex's review of P09 at `b8f9e35a`, SHOULD 6). T258j
+    released it at the seam, so a stall of 0.3 s or more after the seam
+    could still let the old code pass; it is released at the join instead
+    (T258k; lane 2's pre-review RV9-35, NIT 1)."""
+    monkeypatch.setitem(globals(), "END_S", 2.0)
+    barrier, seen = tmp_path / "barrier", []
+    os.mkfifo(barrier)
+
+    def release() -> None:
+        """The barrier released: a line written to it, opened without
+        blocking once the stand-in has it open to read, within 10 s."""
+        end = time.monotonic() + 10
+        while True:
+            try:
+                fd = os.open(barrier, os.O_WRONLY | os.O_NONBLOCK)
+                break
+            except OSError as exc:
+                assert exc.errno == errno.ENXIO and time.monotonic() < end, (
+                    f"the stand-in did not open its barrier in 10 s: {exc}")
+                time.sleep(0.05)
+        try:
+            os.write(fd, b"go\n")
+        finally:
+            os.close(fd)
+
+    def fails(*args, **kwargs):
+        seen.append((writer._thread.is_alive(), writer.proc.stdout.closed,
+                     writer.proc.stderr.closed))
+        raise ChildProcessError("T258g's stand-in: the run was reaped elsewhere")
+
+    def joins(timeout=None):
+        """The reader's join, the barrier released at its first call (T258k)."""
+        if not released:
+            released.append(True)
+            release()
+        return join(timeout)
+    writer = _w_stand_in("w-raises", 'read -r _ < "$1"; sleep 0.3; exec >&- 2>&-; sleep 0.5',
+                         str(barrier))
+    join, released = writer._thread.join, []
+
+    class Phase:
+        writers = [writer]
+    try:
+        with monkeypatch.context() as patch:
+            patch.setitem(globals(), "_end_process", fails)
+            patch.setitem(globals(), "_signal_unreaped", fails)
+            patch.setattr(writer._thread, "join", joins)
+            with pytest.raises(ChildProcessError, match="reaped elsewhere"):
+                writer.stop()
+            state = (writer._thread.is_alive(), writer.proc.stdout.closed,
+                     writer.proc.stderr.closed)
+        assert seen == [(True, False, False)], (
+            f"at the signal seam the reader alive, stdout closed and stderr closed are {seen}, "
+            f"not once (True, False, False)")
+        assert state == (False, True, True), (
+            f"stop()'s signal step raised, and the reader alive, stdout closed and stderr "
+            f"closed are {state}, not (False, True, True)")
+    finally:
+        Phase.writers = [writer] if writer.proc.returncode is None else []
+        PhaseW._stop(Phase)
+        writer._thread.join(15)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="T258h's case reads Linux's /proc and pins by a pidfd")
+def test_a_phase_w_writers_reader_cut_by_a_pipe_held_outside_its_group_ends_and_closes_before_the_reap(
+        tmp_path, monkeypatch):
+    """T258h (Codex's review of P09 at `b8f9e35a`, SHOULD 4), no database: a
+    stand-in writer, started as `launch` starts one, exits 0 and leaves a
+    descendant in a session of its own, outside the writer's group, holding
+    its stdout; T258f's stand-in run under `setsid`. Its `stop()` ends the
+    group, which does not reach the holder, and the reader cannot reach the
+    pipe's end: it must be cut, end and close both pipes itself before the
+    one reap, and `stop()` must raise the held pipe. Before T258h the reader
+    blocked with no timeout: the writer was reaped with its reader alive and
+    both pipes open, and they stayed so."""
+    monkeypatch.setitem(globals(), "END_S", 2.0)
+    mark = tmp_path / "descendant"
+    writer = _w_stand_in("w-outside", f"setsid {T258F_STAND_IN}", str(mark), sys.executable, "2")
+
+    class Phase:
+        writers = [writer]
+    events: list = []
+    pid = started = None
+    try:
+        end = time.monotonic() + 10
+        while os.waitid(os.P_PID, writer.proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+            assert time.monotonic() < end, "the stand-in writer did not exit in 10 s"
+            time.sleep(0.05)
+        pid, started = mark.read_text().split()
+        assert os.getsid(_whole(pid, "the stand-in's pid")) != writer.proc.pid, "the holder is in the writer's session"
+        _t258f_recorded(monkeypatch, writer, events)
+        with pytest.raises(RuntimeError, match="a process outside its group holds them"):
+            writer.stop()
+        reaps = [event for event in events if event[0] == "reap"]
+        state = (reaps, writer._thread.is_alive())
+        assert state == ([("reap", False, True, True)], False), (
+            f"with its stdout held outside its group, the writer's reaps (reader alive, stdout "
+            f"closed, stderr closed at each) and its reader alive are {state}")
+    finally:
+        if pid is not None:
+            _end_if_left(_whole(pid, "the stand-in's pid"), started)
+        Phase.writers = [writer] if writer.proc.returncode is None else []
+        PhaseW._stop(Phase)
+        writer._thread.join(15)
 
 
 def test_two_writer_logins_write_alike_and_the_log_names_each(tmp_path, request):
@@ -1764,7 +2810,7 @@ def test_two_writer_logins_write_alike_and_the_log_names_each(tmp_path, request)
     writers = []
     for who in ("e1", "e2"):
         writer = w.run(who, w.note(who, f"{who}'s write (T258)"))
-        assert writer.code == 0, f"{who}'s write on primary did not exit 0:\n{writer.said()}"
+        assert writer.code == 0, f"{who}'s write on primary did not exit 0:\n{_said_safely(writer)}"
         writers.append(writer)
         marks.append(len(w.m.log()))
     rows = w.journal_after()
@@ -1813,23 +2859,24 @@ def test_a_revoked_login_is_refused_69_and_writes_nothing(tmp_path, request, cas
     assert "ERROR" not in held.send("SELECT 'open';", "t258-open"), "e2's session did not open"
     if case == "revoke":
         proc = m.login("revoke", "e2", w.service)
-        assert proc.returncode == 0, f"login revoke e2 failed:\n{_said(proc)}"
+        assert proc.returncode == 0, f"login revoke e2 failed:\n{_said_safely(proc)}"
         for login in ("lanes_w_e2", "lanes_r_e2"):
             for step in (1, 2, 3):
                 assert re.search(rf"^login {login}, step {step}, ", proc.stdout, re.M), (
-                    f"login revoke printed no result for {login}'s step {step}:\n{_said(proc)}")
+                    f"login revoke printed no result for {login}'s step {step}:\n{_said_safely(proc)}")
     else:
         m.psql(f"REVOKE {WRITER} FROM lanes_w_e2;\n", W_DB, user=ADMIN)
         role = m.role("lanes_w_e2")
         assert role["canlogin"] and role["groups"] == [], (
-            f"step 2 alone did not keep LOGIN and take the membership: {role}")
+            f"step 2 alone did not keep LOGIN and take the membership: canlogin {role.get('canlogin')}, "
+            f"groups {role.get('groups')}")
     for login, words in REVOKED[case].items():
         refused = m.as_login(login, W_DB, "SELECT 1;\n", w.files[login])
         assert refused.returncode == 2 and words in refused.stderr, (
-            f"[{case}] a new connection by {login} is not refused with {words!r}:\n{_said(refused)}")
+            f"[{case}] a new connection by {login} is not refused with {words!r}:\n{_said_safely(refused)}")
     before = w.state()
     write = w.run("e2", w.note("e2", f"e2's write after [{case}] (T258)"))
-    assert write.code == 69, f"[{case}] e2's write on primary did not exit 69:\n{write.said()}"
+    assert write.code == 69, f"[{case}] e2's write on primary did not exit 69:\n{_said_safely(write)}"
     assert write.commit_calls() == [], (
         f"[{case}] e2's refused write sent a commit call: the snapshot must send nothing that writes")
     assert w.state() == before, f"[{case}] e2's refused write changed the register"
@@ -1837,23 +2884,25 @@ def test_a_revoked_login_is_refused_69_and_writes_nothing(tmp_path, request, cas
         held.close()
         return
     read = w.run("e2", ["binding", W_LANES["e2"]])
-    assert read.code == 69 and read.out == "", f"e2's read on primary did not exit 69:\n{read.said()}"
+    assert read.code == 69 and read.out == "", f"e2's read on primary did not exit 69:\n{_said_safely(read)}"
     said = held.send(f"SELECT {REGISTER}.commit_write(NULL, NULL, NULL, NULL, NULL);", "t258-next")
     ended = held.close()
     said += ended.stderr
     assert ("57P01" in said or "terminating connection due to administrator command" in said
             or "server closed the connection" in said), (
-        f"the open session's next statement after the revoke was not ended: {said}")
+        f"the open session's next statement after the revoke was not ended: its stderr then and at its "
+        f"end, {_said_safely(said, stream='stderr')}; its end, {_said_safely(ended)}")
     assert "42501" not in said and "permission denied" not in said, (
-        f"the open session's next statement got 42501, so revoke returned between its steps: {said}")
-    assert ended.stdout.split() == ["open"], f"the open session got an answer after the revoke: {ended.stdout!r}"
+        f"the open session's next statement got 42501, so revoke returned between its steps: its stderr "
+        f"then and at its end, {_said_safely(said, stream='stderr')}; its end, {_said_safely(ended)}")
+    assert ended.stdout.split() == ["open"], f"the open session got an answer after the revoke: {_said_safely(ended)!r}"
     assert m.value("SELECT count(*) FROM pg_roles WHERE rolname IN ('lanes_w_e2', 'lanes_r_e2');",
                    "postgres") == "2", "a revoked login's role was dropped"
     assert m.role(ADMIN)["super"] is False and m.value(
         f"SELECT pg_has_role('{ADMIN}', 'pg_signal_backend', 'MEMBER');", "postgres") == "f", (
         f"{ADMIN} is a superuser or holds pg_signal_backend: the case proves nothing of the revoke")
     mine = w.run("e1", w.note("e1", "e1 still writes after e2's revoke (T258)"))
-    assert mine.code == 0, f"e1's write after e2's revoke did not exit 0:\n{mine.said()}"
+    assert mine.code == 0, f"e1's write after e2's revoke did not exit 0:\n{_said_safely(mine)}"
     assert [r["lane"] for r in w.journal_after()] == [W_LANES["e1"]], (
         f"e1's write is not the journal's one new row: {w.journal_after()}")
 
@@ -1878,13 +2927,13 @@ def test_a_write_cut_by_a_revoke_mid_commit_is_in_doubt_and_ends_3_with_nothing_
         revoke = w.m.login("revoke", "e2", w.service)
     finally:
         held.close()
-    assert revoke.returncode == 0, f"login revoke e2 failed:\n{_said(revoke)}"
+    assert revoke.returncode == 0, f"login revoke e2 failed:\n{_said_safely(revoke)}"
     writer.wait(timeout=150)
-    assert writer.code == 3, f"e2's write cut mid-commit did not exit 3:\n{writer.said()}"
+    assert writer.code == 3, f"e2's write cut mid-commit did not exit 3:\n{_said_safely(writer)}"
     ids = writer.write_ids()
     assert ids and len(set(ids)) == 1, f"e2's commit calls carried {ids}, not one write id"
     write_id = ids[0]
-    assert write_id in writer.err, f"exit 3 does not name the write id {write_id}:\n{writer.said()}"
+    assert write_id in writer.err, f"exit 3 does not name the write id {write_id}:\n{_said_safely(writer)}"
     ends = writer.ends()
     first = writer.commit_calls()[0]["call"]
     assert ends.get(first, {}).get("exit") == 2, (
@@ -1937,11 +2986,11 @@ def test_reader_url_takes_target_session_attrs_primary_not_read_write(tmp_path, 
     if gets_in:
         assert proc.returncode == 0 and proc.stdout.strip() == head, (
             f"[{case}] {login} with target_session_attrs={attrs} did not read the head {head}:\n"
-            f"{_said(proc)}")
+            f"{_said_safely(proc)}")
     else:
         assert proc.returncode == 2 and "session is read-only" in proc.stderr, (
             f"[{case}] {login} with target_session_attrs={attrs} was not refused with "
-            f"`session is read-only`:\n{_said(proc)}")
+            f"`session is read-only`:\n{_said_safely(proc)}")
 
 
 def test_after_login_rotate_the_old_password_files_write_exits_69_and_the_new_lines_commit_once(
@@ -1954,18 +3003,18 @@ def test_after_login_rotate_the_old_password_files_write_exits_69_and_the_new_li
     once."""
     w = PhaseW(request, tmp_path, engineers=("e1",))
     proc = w.m.login("rotate", "e1", w.service)
-    assert proc.returncode == 0, f"login rotate e1 failed:\n{_said(proc)}"
+    assert proc.returncode == 0, f"login rotate e1 failed:\n{_said_safely(proc)}"
     new = _passwords(proc.stdout)
-    assert sorted(new) == ["lanes_r_e1", "lanes_w_e1"], _said(proc)
+    assert sorted(new) == ["lanes_r_e1", "lanes_w_e1"], _said_safely(proc)
     before = w.state()
     old = w.run("e1", w.note("e1", "e1's write with the old password file (T258)"))
-    assert old.code == 69, f"e1's write with the old password file did not exit 69:\n{old.said()}"
+    assert old.code == 69, f"e1's write with the old password file did not exit 69:\n{_said_safely(old)}"
     assert old.commit_calls() == [], "e1's refused write sent a commit call: the 69 is the snapshot's"
     assert w.state() == before, "e1's refused write changed the register"
     for login, line in new.items():
         _private(w.files[login], line + "\n")
     wrote = w.run("e1", w.note("e1", "e1's write with the new lines (T258)"))
-    assert wrote.code == 0, f"e1's write with the new lines did not exit 0:\n{wrote.said()}"
+    assert wrote.code == 0, f"e1's write with the new lines did not exit 0:\n{_said_safely(wrote)}"
     rows = w.journal_after()
     assert [r["lane"] for r in rows] == [W_LANES["e1"]], f"the journal did not gain one row, e1's: {rows}"
     assert set(wrote.write_ids()) == {rows[0]["write_id"]}, (

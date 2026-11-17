@@ -114,43 +114,46 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: THE LANDING GATE'S TABLE (T280; its reader, `tests/sql_register_gate.py`,
 #: says how a table is read), TEMPORARY: T281 removes it in the last set.
 #: Where the gate is active, each id is skipped until every task its row
-#: names, with the `"*"` row's, has landed, and the skip names them; an id's
-#: own row, `name[param]`, replaces its function's. Each row holds the
-#: fails-until clauses of the task that owns the test (T215, T219 or T279),
-#: each L-label read as the task that covers it, as lane 2's gate tables plan
-#: (GP-24, version 2) gives them. `"*"` is T121, which every row shares. Each
-#: `tasks:<n>` is tasks.md's line at `204145ae`, the reader's `SPEC_COMMIT`.
+#: names has landed, and the skip names them; an id's own row,
+#: `name[param]`, replaces its function's. Each row holds the fails-until
+#: clauses of the task that owns the test (T215, T219 or T279), each L-label
+#: read as the task that covers it, as lane 2's gate tables plan (GP-24,
+#: version 2) gives them. Each `tasks:<n>` is tasks.md's line at `204145ae`,
+#: the reader's `SPEC_COMMIT`. There is no `"*"` row: T121, which every row
+#: shares, is in each row itself (T219m, T215r), since the reader adds a
+#: `"*"` row to every id, one with no row of its own too. T215p's relay case
+#: and T219k's password-absence case, which run on stand-ins with no engine,
+#: have no row: they run ungated.
 SQL_REGISTER_GATE_TABLE = {
-    "*": ("T121",),  # every id: the tasks all its rows share
-    "test_a_declared_outage_lets_the_guard_answer_from_the_mirror": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
-    "test_a_declared_outage_lets_the_guard_read_the_mirror_with_service_and_database_down": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
-    "test_a_rollback_rerun_declares_before_it_goes_on": ("T304", "T326", "T424", "T425"),  # T279; tasks:2564
-    "test_a_rollbacks_declaration_counts_only_where_the_guards_read_finds_the_switch_at_files": ("T117", "T304", "T326", "T327", "T409", "T507"),  # T219; tasks:2082
-    "test_a_rollbacks_start_declares_the_outage": ("T304", "T326", "T424", "T425"),  # T279; tasks:2564
-    "test_an_expired_or_foreign_declaration_changes_nothing": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
-    "test_claude_no_lane_lets_a_session_through_before_any_input": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
-    "test_outage_declare_is_refused_where_the_probe_reads_primary": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
-    "test_outage_declare_on_a_persons_word_during_a_rollback_is_refused_and_prints_the_rollback_form": ("T304", "T327"),  # T219; tasks:2082, and T327 (T219j)
-    "test_outage_declare_refuses_while_the_database_answers_or_without_until": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
-    "test_outage_declare_rollback_is_refused_for_a_wrong_k_a_missing_mirror_seq_or_a_switch_it_cannot_read": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
-    "test_outage_declare_takes_mirror_seq_from_a_fetch_or_the_flag_and_refuses_with_neither": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
-    "test_outage_declare_writes_its_fields_and_clear_removes_it": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
-    "test_status_and_rollback_run_with_no_lane_session_and_no_guard": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
-    "test_status_reports_a_declaration_left_in_place": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
-    "test_the_declaration_is_read_once_at_the_prefetch": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
-    "test_the_guard_refuses_2_when_no_commit_within_the_bound_carries_register_seq": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
-    "test_the_guard_refuses_a_mirror_older_than_the_declared_seq": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
-    "test_the_guard_refuses_a_ref_behind_a_rollbacks_head": ("T304", "T326", "T327", "T504", "T505", "T506", "T507"),  # T215; tasks:2022
-    "test_the_guards_outage_refusal_names_the_store_the_cause_and_both_ways_out": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
-    "test_the_register_seq_lookup_finds_the_trailer_at_depths_0_and_199": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
-    "test_the_register_seq_lookup_is_timed_bounded_beside_the_unbounded_and_grep_forms": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
-    "test_under_a_declaration_a_direct_read_left_under_0_5_s_does_not_start": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
-    "test_under_a_declaration_a_silent_database_is_capped_and_the_mirror_answers_inside_the_budget": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
-    "test_with_no_declaration_the_guard_exits_2_with_service_and_database_down": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
-    "test_without_a_declaration_the_same_age_still_starts_the_direct_read": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
-    "test_writes_and_deciding_reads_still_refuse_during_a_declared_outage": ("T117", "T304", "T409", "T415", "T507"),  # T219; tasks:2082
-    "test_outage_declare_rollback_is_refused_for_a_wrong_k_a_missing_mirror_seq_or_a_switch_it_cannot_read[not-a-rollback-entry]": ("T304",),  # T219; tasks:2082
-    "test_outage_declare_rollback_is_refused_for_a_wrong_k_a_missing_mirror_seq_or_a_switch_it_cannot_read[wrong-k]": ("T304", "T327"),  # T219; tasks:2082, and T327 (T219j)
+    "test_a_declared_outage_lets_the_guard_answer_from_the_mirror": ("T117", "T121", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_a_declared_outage_lets_the_guard_read_the_mirror_with_service_and_database_down": ("T121", "T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_a_rollback_rerun_declares_before_it_goes_on": ("T121", "T304", "T326", "T424", "T425"),  # T279; tasks:2564
+    "test_a_rollbacks_declaration_counts_only_where_the_guards_read_finds_the_switch_at_files": ("T117", "T121", "T304", "T326", "T327", "T409", "T507"),  # T219; tasks:2082
+    "test_a_rollbacks_start_declares_the_outage": ("T121", "T304", "T326", "T424", "T425"),  # T279; tasks:2564
+    "test_an_expired_or_foreign_declaration_changes_nothing": ("T117", "T121", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_claude_no_lane_lets_a_session_through_before_any_input": ("T117", "T121", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_outage_declare_is_refused_where_the_probe_reads_primary": ("T117", "T121", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_outage_declare_on_a_persons_word_during_a_rollback_is_refused_and_prints_the_rollback_form": ("T121", "T304", "T327"),  # T219; tasks:2082, and T327 (T219j)
+    "test_outage_declare_refuses_while_the_database_answers_or_without_until": ("T117", "T121", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_outage_declare_rollback_is_refused_for_a_wrong_k_a_missing_mirror_seq_or_a_switch_it_cannot_read": ("T117", "T121", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_outage_declare_takes_mirror_seq_from_a_fetch_or_the_flag_and_refuses_with_neither": ("T121", "T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_outage_declare_writes_its_fields_and_clear_removes_it": ("T117", "T121", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_status_and_rollback_run_with_no_lane_session_and_no_guard": ("T117", "T121", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_status_reports_a_declaration_left_in_place": ("T117", "T121", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_the_declaration_is_read_once_at_the_prefetch": ("T121", "T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_the_guard_refuses_2_when_no_commit_within_the_bound_carries_register_seq": ("T121", "T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_the_guard_refuses_a_mirror_older_than_the_declared_seq": ("T121", "T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_the_guard_refuses_a_ref_behind_a_rollbacks_head": ("T121", "T304", "T326", "T327", "T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_the_guards_outage_refusal_names_the_store_the_cause_and_both_ways_out": ("T117", "T121", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_the_register_seq_lookup_finds_the_trailer_at_depths_0_and_199": ("T121", "T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_the_register_seq_lookup_is_timed_bounded_beside_the_unbounded_and_grep_forms": ("T121", "T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_under_a_declaration_a_direct_read_left_under_0_5_s_does_not_start": ("T121", "T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_under_a_declaration_a_silent_database_is_capped_and_the_mirror_answers_inside_the_budget": ("T121", "T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_with_no_declaration_the_guard_exits_2_with_service_and_database_down": ("T121", "T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_without_a_declaration_the_same_age_still_starts_the_direct_read": ("T121", "T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_writes_and_deciding_reads_still_refuse_during_a_declared_outage": ("T117", "T121", "T304", "T409", "T415", "T507"),  # T219; tasks:2082
+    "test_outage_declare_rollback_is_refused_for_a_wrong_k_a_missing_mirror_seq_or_a_switch_it_cannot_read[not-a-rollback-entry]": ("T121", "T304"),  # T219; tasks:2082
+    "test_outage_declare_rollback_is_refused_for_a_wrong_k_a_missing_mirror_seq_or_a_switch_it_cannot_read[wrong-k]": ("T121", "T304", "T327"),  # T219; tasks:2082, and T327 (T219j)
 }
 
 INDEXER = REPO / "lanes-index"
@@ -692,14 +695,21 @@ class StartupRelay:
     goes silent, holding both ends open."""
 
     READY = re.compile(rb"Z\x00\x00\x00\x05[ITE]")
+    #: The bound on each upstream connect (T215p). A Unix socket's connect can
+    #: wait on a full backlog until it completes or times out: `CONNECT_WAIT` bounds it.
+    CONNECT_WAIT = 5.0
+    #: `close()`'s one deadline for every join (T215p).
+    CLOSE_WAIT = 10.0
 
     def __init__(self, unix_path: str):
         self.unix_path, self.held, self.done = unix_path, [], False
+        self.lock, self.pumps = threading.Lock(), []
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.bind(("127.0.0.1", 0))
         self.sock.listen(64)
         self.port = self.sock.getsockname()[1]
-        threading.Thread(target=self._accept, daemon=True).start()
+        self.thread = threading.Thread(target=self._accept, daemon=True)
+        self.thread.start()
 
     def _accept(self):
         self.sock.settimeout(0.2)
@@ -708,15 +718,48 @@ class StartupRelay:
                 conn, _ = self.sock.accept()
             except OSError:
                 continue
-            upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            upstream.connect(self.unix_path)
+            self._relay(conn)
+
+    def _relay(self, conn):
+        """`conn` relayed to the cluster's socket (T215p): its upstream is
+        tracked with it under `close()`'s lock before a bounded connect, so
+        `close()` shuts both down whatever the connect is doing; a connect
+        that fails untracks and closes both, unless `close()` has begun,
+        which then owns them; and the pump is listed and started under that
+        lock, or not at all once `done` is set (T215n)."""
+        upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        with self.lock:
+            if self.done:
+                conn.close()
+                upstream.close()
+                return
             self.held += [conn, upstream]
-            threading.Thread(target=self._pump, args=(conn, upstream), daemon=True).start()
+        try:
+            upstream.settimeout(self.CONNECT_WAIT)
+            upstream.connect(self.unix_path)
+            upstream.settimeout(None)
+        except OSError:
+            with self.lock:
+                if self.done:
+                    return
+                self.held.remove(conn)
+                self.held.remove(upstream)
+            conn.close()
+            upstream.close()
+            return
+        with self.lock:
+            if not self.done:
+                pump = threading.Thread(target=self._pump, args=(conn, upstream), daemon=True)
+                self.pumps.append(pump)
+                pump.start()
 
     def _pump(self, client, server):
         seen, silent = b"", False
         while not self.done:
-            ready, _, _ = select.select([client, server], [], [], 0.2)
+            try:
+                ready, _, _ = select.select([client, server], [], [], 0.2)
+            except (OSError, ValueError):   # a socket `close()` has closed (T215p)
+                return
             for end in ready:
                 try:
                     data = end.recv(65536)
@@ -726,19 +769,185 @@ class StartupRelay:
                     return
                 if silent:
                     continue
-                if end is server:
-                    seen = (seen + data)[-64:]
-                    client.sendall(data)
-                    if self.READY.search(seen):
-                        silent = True
-                else:
-                    server.sendall(data)
+                try:                        # `close()`'s shutdown ends a blocked sendall() (T215p)
+                    if end is server:
+                        seen = (seen + data)[-64:]
+                        client.sendall(data)
+                        if self.READY.search(seen):
+                            silent = True
+                    else:
+                        server.sendall(data)
+                except OSError:
+                    return
 
     def close(self):
-        self.done = True
-        for conn in self.held:
+        """No new connection; every held socket shut down, a pair whose
+        upstream connect is under way among them, so that a pump blocked in
+        `sendall()` ends at once; the accept thread and every pump joined by
+        one deadline, CLOSE_WAIT from now; every socket and the listener
+        closed; and then a thread still alive raised as a RuntimeError that
+        names it (T215p; Codex's SHOULD 3 on P09 at `21dd3642`). The snapshot
+        is taken under the lock each accept registers under, so nothing
+        registered after it is left open or unjoined (T215n)."""
+        with self.lock:
+            self.done = True
+            held, threads = list(self.held), [self.thread] + self.pumps
+        for conn in held:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        end_by = time.monotonic() + self.CLOSE_WAIT
+        for thread in threads:              # each loop sees `done` within its 0.2 s
+            thread.join(max(0.0, end_by - time.monotonic()))
+        left = [thread.name for thread in threads if thread.is_alive()]
+        for conn in held:
             conn.close()
         self.sock.close()
+        if left:
+            raise RuntimeError(f"AT-F7's relay on port {self.port} has {left} alive at its "
+                               f"close()'s {self.CLOSE_WAIT:g} s deadline")
+
+
+#: T215p's cases (Codex's SHOULD 3 on P09 at `21dd3642`), and the bound on each
+#: of their waits, which only a failure waits out.
+RELAY_CASES, RELAY_WAIT = ["full-backlog", "blocked-pump", "thread-left"], 10.0
+
+
+class _Accepting:
+    """A relay's listener, as its accept thread reads it (T215p): `waiting`
+    is set once an accept waits through it, so a client that connects after
+    that is accepted through it; `accepted`, once an accept returns, so the
+    relay has its client and goes on to its upstream connect, which `done`
+    does not stop."""
+
+    def __init__(self, sock):
+        self.sock, self.waiting, self.accepted = sock, threading.Event(), threading.Event()
+
+    def accept(self):
+        self.waiting.set()
+        pair = self.sock.accept()
+        self.accepted.set()
+        return pair
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
+
+
+def _cluster_stand_in(backlog: int) -> tuple:
+    """A Unix listener of the standard library in place of the cluster's
+    socket, in Linux's abstract namespace, so that no path's length or file
+    is in play: (the listener, the name a relay connects to). With a backlog
+    of 0, one connection queued fills it."""
+    name = f"\0t215p-{uuid.uuid4().hex}"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(name)
+    listener.listen(backlog)
+    return listener, name
+
+
+def _relay_threads_left(relay) -> list:
+    """The names of the relay's threads still alive: its accept thread and each pump."""
+    return [t.name for t in [relay.thread] + list(relay.pumps) if t.is_alive()]
+
+
+def _peer_closed(sock, wait: float) -> bool:
+    """Whether `sock`'s peer closed it within `wait` seconds, by EOF or by a
+    reset, after whatever it had sent."""
+    sock.settimeout(wait)
+    try:
+        while sock.recv(65536):
+            pass
+        return True
+    except socket.timeout:
+        return False
+    except OSError:
+        return True
+
+
+def _stalls(sock) -> bool:
+    """Send `sock` zeros, which hold no ReadyForQuery, until a send waits a
+    second: the relay reading from it has stopped, its pump blocked in
+    `sendall()` to a client that never reads. False if 512 MiB went first."""
+    sock.settimeout(1.0)
+    chunk, sent = bytes(65536), 0
+    while sent < (512 << 20):
+        try:
+            sent += sock.send(chunk)
+        except socket.timeout:
+            return True
+    return False
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="T215p's stand-in for the cluster is in Linux's abstract Unix namespace")
+@pytest.mark.parametrize("case", RELAY_CASES)
+def test_the_relays_close_ends_a_connect_and_a_blocked_pump_and_fails_on_a_thread_left(case):
+    """T215p (Codex's SHOULD 3 on P09 at `21dd3642`), with no engine: a Unix
+    listener of the standard library stands in for the cluster's socket, in
+    front of AT-F7's `StartupRelay`. `[full-backlog]`: the stand-in's
+    backlog is full, so a connect to it would wait; the relay's has a bound,
+    its client's end is closed, and `close()` leaves no thread.
+    `[blocked-pump]`: the stand-in sends to a client that never reads until
+    the pump blocks in `sendall()`; `close()` shuts the sockets down before
+    it joins, so the pump ends and no thread is left. `[thread-left]`: a
+    pump that never ends; `close()` fails at its deadline, naming it and
+    only it. Before T215p the connect came before the sockets were tracked
+    and had no bound, the pumps were joined before the sockets were shut
+    down, and a join that timed out passed unchecked."""
+    stand_in, name = _cluster_stand_in(0 if case == "full-backlog" else 16)
+    relay = StartupRelay(name)
+    opened, release, raised, label = [stand_in], threading.Event(), None, "t215p-stuck-pump"
+    listener = relay.sock = _Accepting(relay.sock)
+    try:
+        waiting = listener.waiting.wait(RELAY_WAIT)
+        assert waiting, f"[{case}] the relay's accept thread never waited through its listener"
+        if case == "full-backlog":                  # the backlog's one place taken
+            opened.append(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM))
+            opened[-1].connect(name)
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        opened.append(client)
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        client.settimeout(RELAY_WAIT)
+        client.connect(("127.0.0.1", relay.port))
+        accepted = listener.accepted.wait(RELAY_WAIT)
+        assert accepted, f"[{case}] the relay never accepted its client"
+        if case == "blocked-pump":
+            stand_in.settimeout(RELAY_WAIT)
+            server, _ = stand_in.accept()
+            opened.append(server)
+            stalled = _stalls(server)
+            pumping = bool(relay.pumps) and relay.pumps[0].is_alive()
+            assert stalled and pumping, f"[{case}] no pump blocked in sendall(): {stalled}, {pumping}"
+        if case == "thread-left":
+            stuck = threading.Thread(target=release.wait, args=(RELAY_WAIT,), daemon=True,
+                                     name=label)
+            stuck.start()
+            with relay.lock:
+                relay.pumps.append(stuck)
+            relay.CLOSE_WAIT = 0.5
+        try:
+            relay.close()
+        except RuntimeError as error:
+            raised = error
+        left, closed = _relay_threads_left(relay), _peer_closed(client, 5.0)
+    finally:
+        release.set()
+        for sock in opened:
+            sock.close()
+        try:
+            relay.close()
+        except RuntimeError:
+            pass
+    if case == "thread-left":
+        named = raised is not None and label in str(raised)
+        assert named and left == [label], (
+            f"[{case}] close() did not fail on the one pump left alive, and only on it: "
+            f"{raised!r}, {left}")
+    else:
+        assert raised is None and left == [] and closed, (
+            f"[{case}] close() left {left} alive (raised {raised!r}), or the client's end open "
+            f"({closed})")
 
 
 def test_under_a_declaration_a_silent_database_is_capped_and_the_mirror_answers_inside_the_budget(
@@ -897,8 +1106,15 @@ def test_under_a_declaration_a_direct_read_left_under_0_5_s_does_not_start(tmp_p
     try:
         proc, end = estate.client(config, standin.pid)
     finally:
+        # Kill it, then a reap bounded at 10 s, as `GuardSession.close()` does: a
+        # stand-in that a kill does not take fails the case and never hangs the
+        # run (T215o).
         standin.kill()
-        standin.wait()
+        try:
+            standin.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            standin.kill()
+            standin.wait(timeout=10)
     starts = estate.psql_starts()
     if case in ("floor", "clamp"):
         assert proc.returncode == 2, f"{case}: the client exited {proc.returncode}: {proc.stderr}"
@@ -951,8 +1167,13 @@ def test_without_a_declaration_the_same_age_still_starts_the_direct_read(tmp_pat
     try:
         proc, _ = estate.client(config, standin.pid)
     finally:
+        # Bounded, as the floor case's reap is (T215o).
         standin.kill()
-        standin.wait()
+        try:
+            standin.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            standin.kill()
+            standin.wait(timeout=10)
     starts = estate.psql_starts()
     if starts:
         _record("the client's start, from its launch to its direct read",
@@ -1285,8 +1506,23 @@ REGISTER_HEADER = ["# LANES.md", "",
                    "|---|---|---|---|---|---|---|"]
 #: A password in the configuration's password file, which no output carries.
 SECRET = "t215-secret-password"
+#: A password-file form, `<host>:<port>:<database>:<user>:<password>` (`*` for
+#: any of the first four, `\:` and `\\` escaped), wherever it is: in a run of
+#: text with no blank, all that follows the fourth colon is taken as the
+#: password, so a field more, before or after it, hides no password.
+_PASSWORD_FILE_FORM = re.compile(r"((?:(?:[^:\s\\]|\\.)*:){4})(?:[^\s\\]|\\.)+")
 #: The probe's answer where the database answers with the switch at primary.
 PRIMARY = [{"match": "register_switch", "stdout": "primary|5|cutover\n", "exit": 0}]
+
+
+def _redacted(text: str) -> str:
+    """`text` as a failure may quote it (T219k): SECRET, and the last field of
+    each password-file form, read `<password>`. The two password-absence
+    cases take each oracle on their output as a bool, from the output itself,
+    and quote the output only redacted, so that neither a message of theirs
+    nor pytest's rewrite of an operand prints a password (Codex's SHOULD 7 on
+    P09 at `21dd3642`; 6931509747)."""
+    return _PASSWORD_FILE_FORM.sub(r"\1<password>", (text or "").replace(SECRET, "<password>"))
 
 
 def _register(session_cell: str) -> str:
@@ -1355,20 +1591,26 @@ def test_the_guards_outage_refusal_names_the_store_the_cause_and_both_ways_out(t
                                encoding="utf-8")
     config = estate.config()
     result = estate.guard(config)
-    out = result["out"]
+    # NO PASSWORD IN A FAILURE (T219k): each oracle on the output is a bool
+    # taken from the raw text, and each message quotes it `_redacted`; no
+    # assert has the output as an operand, which pytest's rewrite prints.
+    raw, leaked = result["out"], SECRET in result["err"]
+    out, err = _redacted(raw), _redacted(result["err"])
     assert not result["killed"], "the hook was killed at 5 s, and the prompt passed"
     assert estate.psql_starts(), (
         f"the guard made no direct read: the fake psql has no call: {out[-600:]}")
     assert result["exit"] == 2, f"the guard exited {result['exit']}"
-    added = re.search(r"the register could not be read \(([^)]*)\)", out)
+    added = re.search(r"the register could not be read \(([^)]*)\)", raw)
     assert added, f"the refusal adds no name after `the register could not be read`: {out[-600:]}"
-    assert "register_db" in added.group(1), (
-        f"the added name {added.group(1)!r} does not name the database as register_url= gives it")
-    assert "t215_login" not in added.group(1), (
-        f"the added name {added.group(1)!r} carries the URL's user")
-    assert SECRET not in result["err"], f"stderr carries the password: {result['err'][-600:]}"
+    name = added.group(1)
+    names_db, names_user = "register_db" in name, "t215_login" in name
+    assert names_db, (
+        f"the added name {_redacted(name)!r} does not name the database as register_url= gives it")
+    assert not names_user, f"the added name {_redacted(name)!r} carries the URL's user"
+    assert not leaked, f"stderr carries the password: {err[-600:]}"
     for words in ("lanes-index status", "lanes-index rollback", "CLAUDE_NO_LANE=1"):
-        assert words in out, f"the refusal does not carry {words!r}: {out[-600:]}"
+        carried = words in raw
+        assert carried, f"the refusal does not carry {words!r}: {out[-600:]}"
 
 
 def test_claude_no_lane_lets_a_session_through_before_any_input(tmp_path):
@@ -1433,14 +1675,105 @@ def test_status_and_rollback_run_with_no_lane_session_and_no_guard(tmp_path, ver
     lane = WINDOW if verb == "rollback" else None
     env = estate.guard_env(config, TMUX=None, TMUX_PANE=None, LANES_LANE=lane)
     proc, elapsed = _index(estate, config, verb, env=env)
-    out = proc.stdout + proc.stderr
+    # NO PASSWORD IN A FAILURE (T219k), as in the guard's refusal above: no
+    # operand is the output, or `proc`, whose repr pytest's rewrite would print
+    # with its stdout and stderr.
+    raw = proc.stdout + proc.stderr
+    code, leaked, out = proc.returncode, SECRET in raw, _redacted(raw)
     bound = WAY_OUT_BOUND[verb]
     assert elapsed < 2 * bound, f"{verb} took {elapsed:.2f} s"
     _record(f"{verb} with the database stopped", elapsed, bound, "timing rule 2")
-    assert proc.returncode == 69, f"{verb} exited {proc.returncode}: {out[-600:]}"
+    assert code == 69, f"{verb} exited {code}: {out[-600:]}"
     if verb == "status":
-        assert _names_the_store(out), f"{verb} names no store: {out[-600:]}"
-    assert SECRET not in out
+        named = _names_the_store(raw)
+        assert named, f"{verb} names no store: {out[-600:]}"
+    assert not leaked, f"{verb}'s output carries the password: {out[-600:]}"
+
+
+class _Leaky:
+    """T219k's stand-in for `Estate` in the two password-absence cases: no
+    guard runs, and `guard()` and `psql_starts()` answer as the case gives."""
+
+    def __init__(self, root: Path, answer: dict, started: bool = True):
+        self.passfile = root / "pgpass"
+        self.answer, self.started = answer, started
+
+    def config(self) -> Path:
+        return self.passfile.parent / "lanes-index.conf"
+
+    def guard(self, config: Path) -> dict:
+        return dict(self.answer)
+
+    def psql_starts(self) -> list:
+        return [{"start": 0.0}] if self.started else []
+
+    def guard_env(self, config: Path, **extra) -> dict:
+        return {}
+
+
+def test_a_password_absence_case_that_fails_prints_no_password(tmp_path, monkeypatch):
+    """T219k (Codex's SHOULD 7 on P09 at `21dd3642`; 6931509747), with no
+    guard, no `lanes-index` and no database: the guard's refusal case and
+    both ids of the way-out case run on stand-ins for `Estate` and `_index`
+    whose output carries SECRET, bare and in its password-file line, and
+    another password, in a password-file line of its own. Each oracle of the
+    two cases is made to fail in turn; each failure is that oracle's own, and
+    its text, the message with pytest's rewrite of the operands, holds
+    neither password. A healthy output passes both cases. Before T219k the
+    messages quoted the raw output, and `assert SECRET not in out`, rewritten,
+    printed SECRET and the output. Each check here is a bool, so no failure of
+    this case prints a password either."""
+    module = sys.modules[__name__]
+    other = uuid.uuid4().hex
+    lines = (f"127.0.0.1:55432:other_db:t215_login:{SECRET}\n"
+             f"*:*:other_db:lanes_w_t219:{other}\n"
+             f"psql: the password {SECRET} was refused\n")
+    refusal = "lanes-index: the register could not be read (database register_db at 127.0.0.1:55432)\n"
+    ways = "run lanes-index status, or lanes-index rollback from a shell or a CLAUDE_NO_LANE=1 session\n"
+
+    def guard(out: str, err: str, started: bool = True, code: int = 2):
+        def run():
+            answer = {"exit": code, "killed": False, "out": out + err, "err": err,
+                      "t0": 0.0, "elapsed": 0.1}
+            monkeypatch.setattr(module, "Estate", lambda root, messages: _Leaky(root, answer, started))
+            test_the_guards_outage_refusal_names_the_store_the_cause_and_both_ways_out(tmp_path)
+        return run
+
+    def way_out(verb: str, out: str, err: str, code: int = 69):
+        def run():
+            proc = subprocess.CompletedProcess(["lanes-index", verb], code, out, err)
+            monkeypatch.setattr(module, "Estate", lambda root, messages: _Leaky(root, {}))
+            monkeypatch.setattr(module, "_index", lambda *argv, **options: (proc, 0.1))
+            test_status_and_rollback_run_with_no_lane_session_and_no_guard(tmp_path, verb)
+        return run
+
+    failing = [
+        ("no-read", guard(lines, refusal + ways, started=False), "the fake psql has no call"),
+        ("exit", guard(lines, refusal + ways, code=0), "the guard exited 0"),
+        ("no-name", guard(lines, ways), "adds no name"),
+        ("no-database", guard(lines, f"the register could not be read (login {SECRET})\n" + ways),
+         "does not name the database"),
+        ("user", guard(lines, f"the register could not be read (register_db t215_login:{SECRET})\n"
+                       + ways), "carries the URL's user"),
+        ("stderr", guard("", refusal + ways + lines), "stderr carries the password"),
+        ("way-out", guard(lines, refusal + "run lanes-index status\n"),
+         "does not carry 'lanes-index rollback'"),
+        ("status-exit", way_out("status", lines, refusal, code=1), "status exited 1"),
+        ("status-no-store", way_out("status", lines, "lanes-index: the store is down\n"),
+         "status names no store"),
+        ("status-leak", way_out("status", refusal, lines), "status's output carries the password"),
+        ("rollback-exit", way_out("rollback", lines, refusal, code=0), "rollback exited 0"),
+        ("rollback-leak", way_out("rollback", "", lines), "rollback's output carries the password"),
+    ]
+    for case, run, want in failing:
+        with pytest.raises(AssertionError) as failed:
+            run()
+        said = str(failed.value)
+        kept, own = SECRET in said or other in said, want in said
+        assert not kept, f"[{case}] the failure's text holds a password"
+        assert own, f"[{case}] the failure is not the oracle's own, {want!r}: {said[-300:]}"
+    for run in (guard("", refusal + ways), way_out("status", refusal, ""), way_out("rollback", "", "")):
+        run()
 
 
 def test_outage_declare_writes_its_fields_and_clear_removes_it(tmp_path):

@@ -122,16 +122,26 @@ meets F1 after the hook exits, bounded as AT-F6's fixture bounds its binds
 (`LANES_BIND_BOUND_S`). The wrapper names each call's session
 (`os.getsid`), and the bind runs in a session of its own (`setsid`), so the
 hook's calls are told from the bind's.
+
+NO WRITER'S TEXT IN A FAILURE (T257zj; lane 2's pre-review RV9-37 of P09 at
+`d9a1f2bf`, B1): this module is PYTEST_DONT_REWRITE, as managed and measure
+are, since pytest's assertion rewriting would add each tested operand's value
+to a failure's message, a writer's raw stream or a whole `CompletedProcess`
+with its stderr among them, so an assertion here reports its own message,
+made through `_said_safely`, and nothing else.
 """
 
 from __future__ import annotations
 
+import ast
+import contextlib
 import json
 import os
 import pty
 import re
 import select
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -284,6 +294,56 @@ def _private(path: Path, text: str = "") -> Path:
     return path
 
 
+def _error_safely(error) -> str:
+    """What a failure message may show of an exception that the code under
+    test raised (T257zs; lane 3's ruling 6949488277 on lane 2's pre-review
+    RV9-38 of P09 at `3f9fcac4`, B2): its class's name, its `kind` where it
+    has one that is a word of lowercase letters and hyphens (the product's
+    `StoreUnusable` has, else `[withheld]`), its exit where it has an int
+    `returncode`, and its text's count of lines. No text of it is shown:
+    `StoreUnusable`'s text can hold a raw line of psql's stderr
+    (lanes-index's `StoreUnusable("unreachable", err[0] or err[-1])`)."""
+    if error is None:
+        return "nothing"
+    parts = [type(error).__name__]
+    kind = getattr(error, "kind", None)
+    if isinstance(kind, str):
+        parts.append(f"kind {kind if re.fullmatch(r'[a-z][a-z-]*', kind) else '[withheld]'}")
+    code = getattr(error, "returncode", None)
+    if isinstance(code, int) and not isinstance(code, bool):
+        parts.append(f"exit {code}")
+    parts.append(f"its text {len(str(error).splitlines())} line(s), not shown")
+    return ", ".join(parts)
+
+
+def _raised_nothing(error, what: str) -> None:
+    """Fail where `what`, the code under test, raised `error`, showing it
+    only as `_error_safely` does (T257zs; RV9-38, B2)."""
+    assert error is None, f"{what} raised {_error_safely(error)}"
+
+
+def test_a_store_error_shows_its_kind_and_counts_and_no_text_in_pytests_report(request):
+    """T257zs (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09 at `3f9fcac4`, B2), with no engine and no process: the product's
+    `StoreUnusable`, carrying a planted line of psql's stderr as lanes-index
+    raises it where psql fails, reaches `_raised_nothing`, the check of the
+    bounds sites that ask a store to answer. Its failure shows the class,
+    the kind and the counts, and the planted value is in neither its message
+    nor pytest's own report of it (`_reported`). Before T257zs those sites
+    formatted `{error!r}`, the line whole. The planted value is no
+    credential of any login."""
+    mod = load_indexer()
+    planted = f"fake-{uuid.uuid4().hex}"
+    error = mod.StoreUnusable("unreachable", f'psql: error: FATAL:  role "{planted}" does not exist')
+    assert planted in str(error), "the planted line is not in the store's error, so this proves nothing"
+    with pytest.raises(AssertionError) as failed:
+        _raised_nothing(error, "PostgresStore(cfg, 'register_reader').request(...)")
+    said = str(failed.value)
+    assert said == ("PostgresStore(cfg, 'register_reader').request(...) raised StoreUnusable, "
+                    "kind unreachable, its text 1 line(s), not shown"), f"the failure says: {said}"
+    assert planted not in _reported(request, failed), "the planted value is in pytest's report"
+
+
 @pytest.mark.parametrize("role", list(ROLES))
 def test_postgres_store_register_roles_connect_by_their_own_url_with_one_joined_request(
         tmp_path, monkeypatch, role):
@@ -341,8 +401,7 @@ def test_postgres_store_register_roles_connect_by_their_own_url_with_one_joined_
         store.request(list(STATEMENTS), row)
     except Exception as exc:  # the code under test, not this test, failed
         error = exc
-    assert error is None, (f"PostgresStore(cfg, {store_role!r}).request(<2 statements>, "
-                           f"{row!r}) raised {error!r}")
+    _raised_nothing(error, f"PostgresStore(cfg, {store_role!r}).request(<2 statements>, {row!r})")
 
     records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     calls = [r for r in records if r.get("kind") != "version"]
@@ -374,8 +433,8 @@ def test_postgres_store_register_roles_connect_by_their_own_url_with_one_joined_
         store._query_many(list(STATEMENTS), snapshot=True, row=row)
     except Exception as exc:  # the code under test, not this test, failed
         error = exc
-    assert error is None, (f"PostgresStore(cfg, {store_role!r})._query_many(<2 queries>, "
-                           f"snapshot=True, row={row!r}) raised {error!r}")
+    _raised_nothing(error, f"PostgresStore(cfg, {store_role!r})._query_many(<2 queries>, "
+                           f"snapshot=True, row={row!r})")
     assert requests == [row], f"one request carries the snapshot: {requests}"
     records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     calls = [r for r in records if r.get("kind") != "version"]
@@ -398,12 +457,16 @@ def test_postgres_store_register_roles_connect_by_their_own_url_with_one_joined_
 class SilentListener:
     """F1: a listener on loopback, port 0, that accepts and never speaks."""
 
+    #: `close()`'s one deadline for every join (T220p).
+    CLOSE_WAIT = 10.0
+
     def __init__(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.bind(("127.0.0.1", 0))
         self.sock.listen(64)
         self.port = self.sock.getsockname()[1]
         self.held, self.done = [], False
+        self.lock, self.pumps = threading.Lock(), []
         self.thread = threading.Thread(target=self._accept, daemon=True)
         self.thread.start()
 
@@ -412,15 +475,39 @@ class SilentListener:
         while not self.done:
             try:
                 conn, _ = self.sock.accept()
-                self.held.append(conn)
             except OSError:
                 continue
+            with self.lock:                 # held under close()'s lock, or closed (T220o)
+                if self.done:
+                    conn.close()
+                    return
+                self.held.append(conn)
 
     def close(self):
-        self.done = True
-        for conn in self.held:
+        """No new connection; every held socket shut down, a pair whose
+        upstream connect is under way among them, so that a pump blocked in
+        `sendall()` ends at once; the accept thread and every pump joined by
+        one deadline, CLOSE_WAIT from now; every socket and the listener
+        closed; and then a thread still alive raised as a RuntimeError that
+        names it (T220p; Codex's SHOULD 3 on P09 at `21dd3642`). The snapshot
+        is taken under the lock each accept registers under, so nothing
+        registered after it is left open or unjoined (T220o)."""
+        with self.lock:
+            self.done = True
+            held, threads = list(self.held), [self.thread] + self.pumps
+        for conn in held:
+            with contextlib.suppress(OSError):
+                conn.shutdown(socket.SHUT_RDWR)
+        end_by = time.monotonic() + self.CLOSE_WAIT
+        for thread in threads:              # each loop sees `done` within its 0.2 s
+            thread.join(max(0.0, end_by - time.monotonic()))
+        left = [thread.name for thread in threads if thread.is_alive()]
+        for conn in held:
             conn.close()
         self.sock.close()
+        if left:
+            raise RuntimeError(f"the relay on port {self.port} has {left} alive at its "
+                               f"close()'s {self.CLOSE_WAIT:g} s deadline")
 
 
 class StartupRelay(SilentListener):
@@ -438,6 +525,9 @@ class StartupRelay(SilentListener):
     went silent."""
 
     READY = re.compile(rb"Z\x00\x00\x00\x05[ITE]")
+    #: The bound on each upstream connect (T220p). A Unix socket's connect can
+    #: wait on a full backlog until it completes or times out: `CONNECT_WAIT` bounds it.
+    CONNECT_WAIT = 5.0
 
     def __init__(self, unix_path: str, armed=None):
         self.unix_path, self.armed, self.silenced = unix_path, armed, 0
@@ -450,17 +540,49 @@ class StartupRelay(SilentListener):
                 conn, _ = self.sock.accept()
             except OSError:
                 continue
-            fault = self.armed is None or bool(self.armed())
-            upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            upstream.connect(self.unix_path)
+            self._relay(conn, self.armed is None or bool(self.armed()))
+
+    def _relay(self, conn, fault):
+        """`conn` relayed to the cluster's socket (T220p): its upstream is
+        tracked with it under `close()`'s lock before a bounded connect, so
+        `close()` shuts both down whatever the connect is doing; a connect
+        that fails untracks and closes both, unless `close()` has begun,
+        which then owns them; and the pump is listed and started under that
+        lock, or not at all once `done` is set (T220o)."""
+        upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        with self.lock:
+            if self.done:
+                conn.close()
+                upstream.close()
+                return
             self.held += [conn, upstream]
-            threading.Thread(target=self._pump, args=(conn, upstream, fault),
-                             daemon=True).start()
+        try:
+            upstream.settimeout(self.CONNECT_WAIT)
+            upstream.connect(self.unix_path)
+            upstream.settimeout(None)
+        except OSError:
+            with self.lock:
+                if self.done:
+                    return
+                self.held.remove(conn)
+                self.held.remove(upstream)
+            conn.close()
+            upstream.close()
+            return
+        with self.lock:
+            if not self.done:
+                pump = threading.Thread(target=self._pump, args=(conn, upstream, fault),
+                                        daemon=True)
+                self.pumps.append(pump)
+                pump.start()
 
     def _pump(self, client, server, fault=True):
         seen, silent = b"", False
         while not self.done:
-            ready, _, _ = select.select([client, server], [], [], 0.2)
+            try:
+                ready, _, _ = select.select([client, server], [], [], 0.2)
+            except (OSError, ValueError):   # a socket `close()` has closed (T220p)
+                return
             for end in ready:
                 try:
                     data = end.recv(65536)
@@ -470,14 +592,168 @@ class StartupRelay(SilentListener):
                     return
                 if silent:
                     continue
-                if end is server:
-                    seen = (seen + data)[-64:]
-                    (client.sendall(data))
-                    if fault and self.READY.search(seen):
-                        silent = True
-                        self.silenced += 1
-                else:
-                    server.sendall(data)
+                try:                        # `close()`'s shutdown ends a blocked sendall() (T220p)
+                    if end is server:
+                        seen = (seen + data)[-64:]
+                        client.sendall(data)
+                        if fault and self.READY.search(seen):
+                            silent = True
+                            self.silenced += 1
+                    else:
+                        server.sendall(data)
+                except OSError:
+                    return
+
+
+#: T220p's cases (Codex's SHOULD 3 on P09 at `21dd3642`), and the bound on each
+#: of their waits, which only a failure waits out.
+RELAY_CASES, RELAY_WAIT = ["full-backlog", "blocked-pump", "thread-left"], 10.0
+
+
+class _Accepting:
+    """A relay's listener, as its accept thread reads it (T220p): `waiting`
+    is set once an accept waits through it, so a client that connects after
+    that is accepted through it; `accepted`, once an accept returns, so the
+    relay has its client and goes on to its upstream connect, which `done`
+    does not stop."""
+
+    def __init__(self, sock):
+        self.sock, self.waiting, self.accepted = sock, threading.Event(), threading.Event()
+
+    def accept(self):
+        self.waiting.set()
+        pair = self.sock.accept()
+        self.accepted.set()
+        return pair
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
+
+
+def _cluster_stand_in(backlog: int) -> tuple:
+    """A Unix listener of the standard library in place of the cluster's
+    socket, in Linux's abstract namespace, so that no path's length or file
+    is in play: (the listener, the name a relay connects to). With a backlog
+    of 0, one connection queued fills it."""
+    name = f"\0t220p-{uuid.uuid4().hex}"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(name)
+    listener.listen(backlog)
+    return listener, name
+
+
+def _relay_threads_left(relay) -> list:
+    """The names of the relay's threads still alive: its accept thread and each pump."""
+    return [t.name for t in [relay.thread] + list(relay.pumps) if t.is_alive()]
+
+
+def _peer_closed(sock, wait: float) -> bool:
+    """Whether `sock`'s peer closed it within `wait` seconds, by EOF or by a
+    reset, after whatever it had sent."""
+    sock.settimeout(wait)
+    try:
+        while sock.recv(65536):
+            pass
+        return True
+    except socket.timeout:
+        return False
+    except OSError:
+        return True
+
+
+def _stalls(sock) -> bool:
+    """Send `sock` zeros, which hold no ReadyForQuery, until a send waits a
+    second: the relay reading from it has stopped, its pump blocked in
+    `sendall()` to a client that never reads. False if 512 MiB went first."""
+    sock.settimeout(1.0)
+    chunk, sent = bytes(65536), 0
+    while sent < (512 << 20):
+        try:
+            sent += sock.send(chunk)
+        except socket.timeout:
+            return True
+    return False
+
+
+def _relay_case(relay, stand_in, name: str, case: str, label: str) -> tuple:
+    """T220p's case `case` on `relay`, in front of `stand_in` at `name`, its
+    stuck pump named `label`: (what `close()` raised or None, the relay's
+    threads left after it, whether the client's end was closed). Everything
+    it opens is closed before it returns."""
+    opened, release, raised = [stand_in], threading.Event(), None
+    listener = relay.sock = _Accepting(relay.sock)
+    try:
+        waiting = listener.waiting.wait(RELAY_WAIT)
+        assert waiting, f"[{case}] the relay's accept thread never waited through its listener"
+        if case == "full-backlog":                  # the backlog's one place taken
+            opened.append(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM))
+            opened[-1].connect(name)
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        opened.append(client)
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        client.settimeout(RELAY_WAIT)
+        client.connect(("127.0.0.1", relay.port))
+        accepted = listener.accepted.wait(RELAY_WAIT)
+        assert accepted, f"[{case}] the relay never accepted its client"
+        if case == "blocked-pump":
+            stand_in.settimeout(RELAY_WAIT)
+            server, _ = stand_in.accept()
+            opened.append(server)
+            stalled = _stalls(server)
+            pumping = bool(relay.pumps) and relay.pumps[0].is_alive()
+            assert stalled and pumping, f"[{case}] no pump blocked in sendall(): {stalled}, {pumping}"
+        if case == "thread-left":
+            stuck = threading.Thread(target=release.wait, args=(RELAY_WAIT,), daemon=True,
+                                     name=label)
+            stuck.start()
+            with relay.lock:
+                relay.pumps.append(stuck)
+            relay.CLOSE_WAIT = 0.5
+        try:
+            relay.close()
+        except RuntimeError as error:
+            raised = error
+        return raised, _relay_threads_left(relay), _peer_closed(client, 5.0)
+    finally:
+        release.set()
+        for sock in opened:
+            sock.close()
+        with contextlib.suppress(RuntimeError):
+            relay.close()
+
+
+def _relay_closed_as_t220p_has_it(case: str, label: str, raised, left: list, closed: bool) -> None:
+    if case == "thread-left":
+        named = raised is not None and label in str(raised)
+        assert named and left == [label], (
+            f"[{case}] close() did not fail on the one pump left alive, and only on it: "
+            f"{raised!r}, {left}")
+    else:
+        assert raised is None and left == [] and closed, (
+            f"[{case}] close() left {left} alive (raised {raised!r}), or the client's end open "
+            f"({closed})")
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="T220p's stand-in for the cluster is in Linux's abstract Unix namespace")
+@pytest.mark.parametrize("case", RELAY_CASES)
+def test_the_relays_close_ends_a_connect_and_a_blocked_pump_and_fails_on_a_thread_left(case):
+    """T220p (Codex's SHOULD 3 on P09 at `21dd3642`), with no engine: a Unix
+    listener of the standard library stands in for the cluster's socket, in
+    front of `StartupRelay`, whose `close()` is `SilentListener`'s.
+    `[full-backlog]`: the stand-in's backlog is full, so a connect to it
+    would wait; the relay's has a bound, its client's end is closed, and
+    `close()` leaves no thread. `[blocked-pump]`: the stand-in sends to a
+    client that never reads until the pump blocks in `sendall()`; `close()`
+    shuts the sockets down before it joins, so the pump ends and no thread
+    is left. `[thread-left]`: a pump that never ends; `close()` fails at its
+    deadline, naming it and only it. Before T220p the connect came before
+    the sockets were tracked and had no bound, the pumps were joined before
+    the sockets were shut down, and a join that timed out passed unchecked."""
+    stand_in, name = _cluster_stand_in(0 if case == "full-backlog" else 16)
+    relay = StartupRelay(name)
+    _relay_closed_as_t220p_has_it(case, "t220p-stuck-pump",
+                                  *_relay_case(relay, stand_in, name, case, "t220p-stuck-pump"))
 
 
 TIMING_PSQL = r'''#!/usr/bin/env python3
@@ -935,17 +1211,19 @@ class Bench:
                               capture_output=True, text=True, env=env, cwd=str(self.wip),
                               timeout=400, stdin=subprocess.DEVNULL)
         assert proc.returncode == 0, \
-            f"the bench's import --at C (lane 1's T115): {proc.returncode}: {proc.stderr}"
+            f"the bench's import --at C (lane 1's T115): {proc.returncode}: {_said_safely(proc.stderr)}"
         tree = subprocess.run(["git", "rev-parse", f"{self.c}:lanes"], cwd=str(self.wip),
                               env=self.env, capture_output=True, text=True,
                               check=True).stdout.strip()
         _to_primary(self.pg, SimpleNamespace(c=self.c, tree=lambda sha: tree), load_indexer())
-        rows = self.pg.psql(f"SELECT text FROM {SCHEMA}.doc_lines WHERE path = 'lanes/STORE' "
-                            f"ORDER BY line_no;").stdout
+        read = self.pg.psql(f"SELECT text FROM {SCHEMA}.doc_lines WHERE path = 'lanes/STORE' "
+                            f"ORDER BY line_no;")
+        rows = read.stdout
         digest = self.pg.psql(f"SELECT sha256 FROM {SCHEMA}.files WHERE path = 'lanes/STORE' "
                               f"AND final_newline;").stdout.strip()
-        assert hashlib.sha256(rows.encode("utf-8")).hexdigest() == digest, \
-            f"lanes/STORE as the register holds it: {rows!r}, sha256 {digest!r}"
+        assert hashlib.sha256(rows.encode("utf-8")).hexdigest() == digest, (
+            f"lanes/STORE as the register holds it does not hash to the sha256 it holds for it "
+            f"(the text's read: {_said_safely(read)}; the sha256 read has {len(digest)} characters)")
         # A clone of its own, so the bench's checkout and W keep their last fetch.
         marker = self.root / "marker"
         subprocess.run(["git", "clone", "-q", str(self.origin), str(marker)], check=True,
@@ -1186,11 +1464,8 @@ class Bench:
 
     @staticmethod
     def stop_service(serve: subprocess.Popen) -> None:
-        serve.terminate()
-        try:
-            serve.wait(10)
-        except subprocess.TimeoutExpired:
-            serve.kill()
+        """`serve` and every process of its session ended and reaped (T237zzl)."""
+        _end_process(serve, group=True)
 
     def stream(self) -> None:
         """`STREAM_PSQL` first on `PATH` in place of `TIMING_PSQL` (T237y)."""
@@ -1202,6 +1477,121 @@ class Bench:
         log = self.bin / "psql-stream.log"
         return [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] \
             if log.exists() else []
+
+
+def _end_process(proc: subprocess.Popen, *, group: bool, wait: float = 10.0) -> None:
+    """`proc` ended and reaped, and never signalled once its pid may be
+    another process's (T237zzn; Codex's review of P09 at `21dd3642`,
+    BLOCKING). A process already reaped, `returncode` set, as after a `poll()`
+    or a `communicate()` that saw it end, gets no signal. Otherwise each
+    signal is sent while it is still unreaped, so its pid, and with `group`
+    the id of the process group `start_new_session=True` made it lead, are
+    still its own: TERM; up to `wait` s for its exit, watched by
+    `os.waitid(..., WNOWAIT)`, which does not reap it; KILL; then one reap,
+    `proc.wait(wait)`, whose `TimeoutExpired` is raised, not suppressed. A
+    reap by anything else meanwhile raises `ChildProcessError` from
+    `os.waitid`, before the KILL. With `group`, TERM and KILL go to the
+    group, so a child it started, such as the service's `psql`, gets them."""
+    if proc.returncode is not None:
+        return
+
+    def send(sig: int) -> None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            (os.killpg if group else os.kill)(proc.pid, sig)
+    send(signal.SIGTERM)
+    end = time.monotonic() + wait
+    while time.monotonic() < end:
+        if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+            break
+        time.sleep(0.05)
+    send(signal.SIGKILL)
+    proc.wait(wait)
+
+
+def _signals_kept_to_unreaped(monkeypatch) -> list:
+    """For the no-engine cases of the bench's clean-up (T237zzx): `os.kill`
+    and `os.killpg` replaced, for the case, by forms that send a signal only
+    while its target, a pid or the group its pid leads, is still an unreaped
+    child of this process, as `os.waitid(..., WNOWAIT)` sees it. Any other
+    signal is sent to nothing and recorded, as (call, pid, signal), in the
+    list returned."""
+    late, real = [], {"kill": os.kill, "killpg": os.killpg}
+
+    def unreaped(pid: int) -> bool:
+        try:
+            os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return False
+        return True
+
+    def kept(call: str):
+        def send(pid: int, sig: int) -> None:
+            if unreaped(pid):
+                real[call](pid, sig)
+            else:
+                late.append((call, pid, signal.Signals(sig).name))
+        return send
+    monkeypatch.setattr(os, "kill", kept("kill"))
+    monkeypatch.setattr(os, "killpg", kept("killpg"))
+    return late
+
+
+def test_the_bench_cleanup_signals_a_process_only_while_it_is_unreaped_and_raises_a_failed_reap(
+        monkeypatch):
+    """`_end_process` (T237zzn; Codex's review of P09 at `21dd3642`,
+    BLOCKING), with no engine (T237zzx): on processes this case starts, each
+    in a session of its own as the service is, with `group` and without, and
+    `_signals_kept_to_unreaped` between it and every signal.
+
+    (a) A process already reaped, as `start_service`'s `poll()` leaves a
+    service that ended before it bound: no signal at all.
+    (b) One that TERM ends: its exit is -SIGTERM, and nothing is signalled
+    once it is reaped.
+    (c) One deaf to TERM: KILL ends it once `wait` has passed.
+    (d) One whose reap times out (its `wait` replaced by one that raises):
+    `TimeoutExpired` is raised, not suppressed.
+
+    Before T237zzn, with `group`, (a) sent TERM and KILL to the reaped
+    process's number and (b) KILL after its own reap; and (d) returned as if
+    the process were reaped, in both modes."""
+    late = _signals_kept_to_unreaped(monkeypatch)
+
+    def start(argv: list) -> subprocess.Popen:
+        return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                start_new_session=True)
+
+    for group in (True, False):
+        proc = start(["true"])
+        proc.communicate(timeout=30)
+        _end_process(proc, group=group, wait=5)
+        assert late == [], f"(a) group={group}: a reaped process was signalled: {late}"
+
+        proc = start(["sleep", "30"])
+        _end_process(proc, group=group, wait=5)
+        proc.stdout.close()
+        assert (proc.returncode, late) == (-signal.SIGTERM, []), \
+            f"(b) group={group}: exit {proc.returncode}, signals after the reap {late}"
+
+        proc = start(["bash", "-c", "trap '' TERM; echo deaf; exec sleep 30"])
+        assert proc.stdout.readline() == b"deaf\n", "(c) the stand-in never ignored TERM"
+        _end_process(proc, group=group, wait=0.5)
+        proc.stdout.close()
+        assert (proc.returncode, late) == (-signal.SIGKILL, []), \
+            f"(c) group={group}: exit {proc.returncode}, signals after the reap {late}"
+
+        proc = start(["sleep", "30"])
+
+        def stuck(timeout=None, proc=proc):
+            raise subprocess.TimeoutExpired(proc.args, timeout)
+        proc.wait = stuck
+        try:
+            with pytest.raises(subprocess.TimeoutExpired):
+                _end_process(proc, group=group, wait=5)
+        finally:
+            del proc.wait
+            proc.wait(30)
+            proc.stdout.close()
+        assert late == [], f"(d) group={group}: signals after the reap {late}"
 
 
 def _record(row: str, elapsed: float, bound: float, rule: str) -> None:
@@ -1287,7 +1677,7 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
         if session is not None:
             _end(session)
     if spec["exit"] is not None:
-        assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
+        assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {_said_safely(proc.stderr)}"
     else:
         assert proc.returncode != 0, f"{case}: the path ended without its read"
     if row == "reader":
@@ -1296,7 +1686,7 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
         # every form (4.18:758-760; B14 tasks:454), so a refused reader's
         # "nothing on stdout" (TP:3603) is its `mode primary` line alone.
         assert proc.stdout == "mode primary\n", \
-            f"a reader's 69 prints its mode line and nothing more: {proc.stdout!r}"
+            f"a reader's 69 prints its mode line and nothing more: {_said_safely(proc)!r}"
     if row == "mode-query":
         assert proc.stdout == "index\n" and bench.calls() == [], "the query reads no database"
     if row == "status":
@@ -1361,7 +1751,7 @@ def _answer_2_row(pg, tmp_path: Path, request, fault: str) -> None:
         assert made.returncode == 2 and record.get("mode") == "name-drift" \
             and record.get("to") == OFFER_TO, \
             f"{case}: the guard made no offer on a healthy register: {made.returncode}: " \
-            f"{record}: {made.stderr}"
+            f"{record}: {_said_safely(made.stderr)}"
         begun = len(_begin_log(bench))
         mark.append(len(bench.calls()))
         proc, elapsed = bench.run("answer-2", config)
@@ -1369,8 +1759,8 @@ def _answer_2_row(pg, tmp_path: Path, request, fault: str) -> None:
             outcome = _bind_outcome(offer, ANSWER_2_WAIT_S)
     finally:
         relay.close()
-    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
-    assert "BINDING" in proc.stdout + proc.stderr, f"{case}: no BINDING: {proc.stderr}"
+    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {_said_safely(proc.stderr)}"
+    assert "BINDING" in proc.stdout + proc.stderr, f"{case}: no BINDING: {_said_safely(proc)}"
     assert elapsed < spec["bound"], f"{case}: {elapsed:.2f} s, not under {spec['bound']} s"
     reads = [c for c in bench.calls()[mark[0]:] if c.get("sid") == mine]
     assert len(reads) == 1 and reads[0]["exit"] == 0, \
@@ -1471,7 +1861,7 @@ def _service_57014(bench: Bench, spec: dict, user: str) -> None:
                 break
             time.sleep(0.25)
         assert warm, (f"service: no guard run of {WARM_RUNS} was answered through the "
-                      f"service: {proc.returncode}: {proc.stderr}")
+                      f"service: {proc.returncode}: {_said_safely(proc.stderr)}")
         _slow_statement(bench.pg, spec["table"], spec["group"], 4 * statement_s + 5)
         proc, _ = bench.run("service", config, service=serve)
     finally:
@@ -1481,7 +1871,7 @@ def _service_57014(bench: Bench, spec: dict, user: str) -> None:
     took = held[0]["error"] - held[0]["request"]
     assert statement_s <= took < 2 * statement_s, \
         f"service: the held child's 57014 {took:.3f} s after its request"
-    assert proc.returncode == spec["exit"], f"service: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == spec["exit"], f"service: {proc.returncode}: {_said_safely(proc.stderr)}"
     _record("service-F4", took, statement_s, "timing rules 2 and 3, the held child's request")
 
 
@@ -1526,7 +1916,7 @@ def test_a_slow_statement_meets_57014_before_the_client_timer(pg, tmp_path, requ
     took = ended[0]["end"] - ended[0]["start"]
     assert statement_s <= took < 2 * statement_s, f"{row}: 57014 after {took:.2f} s"
     if spec["exit"] is not None:
-        assert proc.returncode == spec["exit"], f"{row}: {proc.returncode}: {proc.stderr}"
+        assert proc.returncode == spec["exit"], f"{row}: {proc.returncode}: {_said_safely(proc.stderr)}"
     _record(f"{row}-F4", took, statement_s, "timing rules 2 and 3")
 
 
@@ -1578,10 +1968,10 @@ def test_the_outage_declare_probe_ends_inside_its_bound_and_the_declaration_foll
             _end(session)
     declaration = config.parent / "register-outage"
     if form == "word":
-        assert proc.returncode == 0, proc.stderr
+        assert proc.returncode == 0, _said_safely(proc)
         assert declaration.exists(), "the declaration is written"
     else:
-        assert proc.returncode == 2, proc.stderr
+        assert proc.returncode == 2, _said_safely(proc)
         assert not declaration.exists(), "no file in the --rollback form"
     assert elapsed < 2 * 8, f"{case}: {elapsed:.2f} s"
     _record(f"outage-probe-{case}", elapsed, 8, "timing rule 2")
@@ -1688,7 +2078,8 @@ def test_a_waiting_migration_gives_up_at_its_own_lock_timeout(pg, tmp_path, requ
     still runs `bootstrap`, for the migration's connect."""
     bench = Bench(pg, tmp_path, request)
     reader = bench.login("lanes_register_reader")
-    number = int(pg.psql(f"SELECT version FROM {SCHEMA}.schema_version WHERE id = 1;").stdout) + 1
+    number = _whole(pg.psql(f"SELECT version FROM {SCHEMA}.schema_version WHERE id = 1;").stdout,
+                    "schema_version's version") + 1
     held = pg.session(user=reader, appname="t220-reader")
     held.stdin.write(f"BEGIN;\nSELECT seq FROM {SCHEMA}.register_head;\n")
     held.stdin.flush()
@@ -1703,7 +2094,7 @@ def test_a_waiting_migration_gives_up_at_its_own_lock_timeout(pg, tmp_path, requ
         start = time.monotonic()
         proc = pg.psql(_own_migration(number), check=False)
         elapsed = time.monotonic() - start
-        said = f": migration {number} exited {proc.returncode}: {proc.stderr.strip()}"
+        said = f": migration {number} exited {proc.returncode}: {_said_safely(proc.stderr)}"
         assert proc.returncode != 0, "the waiting migration is refused" + said
         assert "55P03" in proc.stderr, "the migration gave up at its lock_timeout, 55P03" + said
         # Y:2342 (design 1.5 step 3): each migration is one transaction that
@@ -1720,9 +2111,10 @@ def test_a_waiting_migration_gives_up_at_its_own_lock_timeout(pg, tmp_path, requ
     proc = pg.psql(_own_migration(number), check=False)
     assert proc.returncode == 0, ("the rerun succeeds once the reader's transaction ends: "
                                   f"migration {number} exited {proc.returncode}: "
-                                  f"{proc.stderr.strip()}")
+                                  f"{_said_safely(proc.stderr.strip())}")
     version = pg.psql(f"SELECT version FROM {SCHEMA}.schema_version WHERE id = 1;").stdout
-    assert int(version) == number, f"the rerun left version {version.strip()}, not {number}"
+    left = _whole(version, "the rerun's schema_version")
+    assert left == number, f"the rerun left version {left}, not {number}"
 
 
 def test_import_and_reconcile_set_their_bounds_at_connect(tmp_path):
@@ -1797,7 +2189,7 @@ def test_import_and_reconcile_set_their_bounds_at_connect(tmp_path):
                               cwd=str(wip), timeout=120, stdin=subprocess.DEVNULL)
         calls = [json.loads(l) for l in log.read_text().splitlines()] if log.exists() else []
         calls = [c for c in calls if c.get("kind") != "version"]
-        assert calls, f"{argv[0]} made no psql call: {proc.returncode}: {proc.stderr[-400:]}"
+        assert calls, f"{argv[0]} made no psql call: {proc.returncode}: {_said_safely(proc.stderr[-400:])}"
         for call in calls:
             assert call["connect_timeout"] == str(C), (argv[0], call["connect_timeout"])
             assert all(o in (call["options"] or "") for o in options), (argv[0], call["options"])
@@ -1876,7 +2268,7 @@ def test_a_register_path_drops_each_inherited_pg_variable_before_psql(tmp_path, 
         store.request(["SELECT 1"], "read")
     except Exception as exc:  # the code under test, not this test, failed
         error = exc
-    assert error is None, f"PostgresStore(cfg, 'register_reader').request(...) raised {error!r}"
+    _raised_nothing(error, "PostgresStore(cfg, 'register_reader').request(...)")
     records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     requests = [r for r in records if r.get("kind") != "version"]
     assert len(requests) == 1, f"one psql call carries the request: {len(requests)}"
@@ -1891,14 +2283,51 @@ def test_a_register_path_drops_each_inherited_pg_variable_before_psql(tmp_path, 
                 assert key not in pg, f"the inherited {key} reached {record['argv']}: {pg[key]!r}"
 
 
+#: The under-2 refusal's own words on libpq's reading of each value under 2
+#: (P10's T103 follow-up), the one place a bare 1 or 0 may stand in it (T257zb).
+LIBPQ_READING = "libpq reads 1 as 2 and 0 as no limit"
+
+
+def _t257u_refused_with_no_value(said: str, key: str, value: str, its_exit: int | None) -> None:
+    """An under-2 refusal's text, the case's `tmp_path` blanked out, as T257s's
+    refused ids read theirs (T257u): it names the URL's key, `connect_timeout=`
+    and the minimum, and shows no value of the case, neither its
+    `connect_timeout=` with the value nor the URL's own parts, nor the value
+    as a token of its own, not part of a word or a dotted number, anywhere
+    outside the refusal's own words on libpq's reading, `LIBPQ_READING`
+    (T257zb; Codex's review of P09 at `b8f9e35a`, SHOULD 11: the bare value
+    was not looked for, so "value 1 is under 2" passed). `its_exit` is the
+    exit of what refused, or None where it has none, and the helper shows
+    it (T257zq; lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`, S9; an int
+    or None since T257zx, lane 2's targeted check RV9-39 of P09 at
+    `3c5b68bc`, S5: as free text it was a channel no rule watched)."""
+    case = f"[{key}, connect_timeout={value}]"
+    assert f"`{key}=`" in said, f"{case} the key is not named: {_said_safely(said, exit=its_exit)}"
+    assert "`connect_timeout=`" in said and "under 2" in said, (
+        f"{case} `connect_timeout=` and its minimum are not named: {_said_safely(said, exit=its_exit)}")
+    shown = [v for v in (f"connect_timeout={value}", "t257_", "register_db", "127.0.0.1", "55432")
+             if v in said]
+    assert not shown, f"{case} the refusal shows {shown}: {_said_safely(said, exit=its_exit)}"
+    bare = re.findall(rf"(?<![\w.]){re.escape(value)}(?!\w|\.\d)", said.replace(LIBPQ_READING, ""))
+    assert not bare, (f"{case} the refusal shows the value {value} as a token of its own: "
+                      f"{_said_safely(said, exit=its_exit)}")
+
+
 def test_a_connect_timeout_under_2_is_refused_at_load_config(tmp_path, monkeypatch):
     """AT-D9c (b)'s refusal (SVC-2; the phase plan's "`c` and `N_a`, the
     connect bound"): `connect_timeout=1` and `connect_timeout=0`, in
     `register_url=` or in `reader_url=`, are refused at `load_config`, as
-    `Refusal` (2), naming the key and its value, before any `psql` call:
-    libpq reads 1 as 2 and 0 as no limit. `connect_timeout=2`, `c`'s floor,
+    `Refusal` (2), naming the key, `connect_timeout=` and the minimum, 2,
+    and never the value, before any `psql` call: libpq reads 1 as 2 and 0 as
+    no limit. `lanes-index mode` then exits 2 with an empty stdout and no
+    value of the case on either stream. `connect_timeout=2`, `c`'s floor,
     loads. No engine. It fails until lane 1's line C (T103's `pg_url_env`,
-    which `load_config` runs on each URL by T106)."""
+    which `load_config` runs on each URL by T106), and until T103's
+    follow-up in P10, which names no value (T257u: contracts/config.md:119
+    and exit-codes.md:57, as lane 3 rules for P10, #165 6938005990, and for
+    this case, 6938959205; the form of T257s's refused ids). Its gate row
+    waits for T103, so it never runs against P09's own refusal text, which
+    prints the value: an ungated run of it before P10 lands is no reading."""
     log = _register_fake(tmp_path, monkeypatch)
     config = Path(os.environ["LANES_INDEX_CONFIG"])
     text = config.read_text(encoding="utf-8")
@@ -1914,8 +2343,15 @@ def test_a_connect_timeout_under_2_is_refused_at_load_config(tmp_path, monkeypat
             except Exception as exc:  # the refusal under test, or another failure
                 error = exc
             assert isinstance(error, mod.Refusal), \
-                f"{key}=...?connect_timeout={value} loaded: {error!r}"
-            assert f"connect_timeout={value}" in str(error) and key in str(error), str(error)
+                f"{key}=...?connect_timeout={value} loaded: {_error_safely(error)}"
+            _t257u_refused_with_no_value(str(error).replace(str(tmp_path), "<tmp>"), key, value,
+                                         None)  # load_config's Refusal, raised in this process
+            res = _cli(["mode"], tmp_path)
+            streams = (res.stdout + res.stderr).replace(str(tmp_path), "<tmp>")
+            assert res.returncode == 2 and res.stdout == "", (
+                f"[{key}, connect_timeout={value}] mode exits {res.returncode}, not 2 with an "
+                f"empty stdout: {_said_safely(streams)}")
+            _t257u_refused_with_no_value(streams, key, value, res.returncode)
     config.write_text("".join(
         line + ("?connect_timeout=2" if line.startswith(("register_url=", "reader_url=")) else "")
         + "\n" for line in text.splitlines()), encoding="utf-8")
@@ -2035,7 +2471,7 @@ def test_each_register_call_is_one_request(tmp_path, monkeypatch, call):
                           "commit")
         except Exception as exc:  # the code under test, not this test, failed
             error = exc
-        assert error is None, f"lane 1's commit request could not be sent: {error!r}"
+        _raised_nothing(error, "sending lane 1's commit request")
         calls, _ = _fake_log(log)
         assert len(calls) == 1, f"one psql call carries the commit: {len(calls)}"
         assert calls[0]["argv"] == REGISTER_ARGV
@@ -2055,7 +2491,7 @@ def test_each_register_call_is_one_request(tmp_path, monkeypatch, call):
                     [{"match": "find_write", "stdout": FOUND_OUT}])
         calls, _ = _fake_log(log)
         assert len(calls) == 1, \
-            f"one try, one psql call: {len(calls)}; exit {proc.returncode}: {proc.stderr}"
+            f"one try, one psql call: {len(calls)}; exit {proc.returncode}: {_said_safely(proc.stderr)}"
         assert calls[0]["argv"] == REGISTER_ARGV
         write = f"'{WRITE['write_id']}'"
         assert _one_request(calls[0]) == [
@@ -2071,21 +2507,21 @@ def test_each_register_call_is_one_request(tmp_path, monkeypatch, call):
             "ORDER BY x.o, x.p COLLATE \"C\") TO STDOUT",
             "ROLLBACK"]
         assert (proc.returncode, proc.stdout) == (0, FOUND_PRINTED), \
-            f"exit {proc.returncode}: {proc.stdout!r}: {proc.stderr}"
+            f"exit {proc.returncode}: {_said_safely(proc.stdout)!r}: {_said_safely(proc.stderr)}"
         return
     if call == "snapshot-psql-14":
         proc = _cli(SNAPSHOT_ARGV, tmp_path,
                     [{"kind": "version", "stdout": "psql (PostgreSQL) 14.11\n"}])
         calls, probes = _fake_log(log)
-        assert proc.returncode == 69, f"exit {proc.returncode}: {proc.stderr}"
-        assert "14.11" in proc.stderr, f"the 69 names the version: {proc.stderr}"
+        assert proc.returncode == 69, f"exit {proc.returncode}: {_said_safely(proc.stderr)}"
+        assert "14.11" in proc.stderr, f"the 69 names the version: {_said_safely(proc)}"
         assert len(probes) == 1 and calls == [], \
             f"one --version call and no request: {len(probes)}, {len(calls)}"
         return
     proc = _cli(SNAPSHOT_ARGV, tmp_path)
     calls, _ = _fake_log(log)
     assert len(calls) == 1, \
-        f"one psql call carries the snapshot: {len(calls)}; exit {proc.returncode}: {proc.stderr}"
+        f"one psql call carries the snapshot: {len(calls)}; exit {proc.returncode}: {_said_safely(proc.stderr)}"
     assert calls[0]["argv"] == REGISTER_ARGV
     parts = _one_request(calls[0])
     assert parts[0].startswith("SET search_path TO ") and T257_SCHEMA in parts[0], parts[0]
@@ -2142,7 +2578,7 @@ def test_connect_timeout_and_register_addresses_set_each_calls_timer(tmp_path, m
         store = mod.PostgresStore(mod.load_config(), "register_writer")
     except Exception as exc:  # the code under test, not this test, failed
         error = exc
-    assert error is None, f"PostgresStore(cfg, 'register_writer') at [{case}]: {error!r}"
+    _raised_nothing(error, f"PostgresStore(cfg, 'register_writer') at [{case}]")
     for row, timer in timers.items():
         failure = None
         start = time.monotonic()
@@ -2153,7 +2589,7 @@ def test_connect_timeout_and_register_addresses_set_each_calls_timer(tmp_path, m
         took = time.monotonic() - start
         assert failure is not None, f"{row}: a call that never answers was answered"
         assert getattr(failure, "timer_expired", False) is True, \
-            f"{row}: ended by {failure!r}, not by its client timer"
+            f"{row}: ended by {_error_safely(failure)}, not by its client timer"
         assert timer <= took < 2 * timer, f"{row} at [{case}]: {took:.2f} s against its {timer} s"
         _record(f"{row}-{case}", took, timer, "timing rules 2 and 3")
     calls, probes = _fake_log(log)
@@ -2252,8 +2688,8 @@ def test_the_lookups_tries_start_inside_the_window_and_end_in_3(pg, tmp_path, re
             listener.close()
         if session is not None:
             _end(session)
-    assert proc.returncode == 3, f"lookup-{fault}: {proc.returncode}: {proc.stderr}"
-    assert bench.write_id in proc.stderr, f"the 3 names the write's id: {proc.stderr}"
+    assert proc.returncode == 3, f"lookup-{fault}: {proc.returncode}: {_said_safely(proc.stderr)}"
+    assert bench.write_id in proc.stderr, f"the 3 names the write's id: {_said_safely(proc)}"
     tries = [b["begin"] for b in bench.begins()]
     assert tries, "the lookup made no try"
     for before, after in zip(tries, tries[1:]):
@@ -2327,7 +2763,10 @@ def _writer(bench: Bench, config: Path, state: str, *,
     bench's lane, T257a's rows' path, which on primary is lane 4's L4-B3
     (T413 to T415). `deadline` is `LANES_REGISTER_DEADLINE_S`; unset, the
     deadline is D7's 30 s, as in AT-4 (c). The lane's own checkout is made
-    first, where the bench has none yet (`Bench.lane_checkout`, T257l)."""
+    first, where the bench has none yet (`Bench.lane_checkout`, T257l). The
+    writer leads a session, and so a process group, of its own, so its end,
+    `_end_writers`, reaches the `python3`, `psql` and `git` it starts
+    (T257t)."""
     bench.lane_checkout()
     env = dict(bench.env, LANES_INDEX_CONFIG=str(config), LANES_LANE="repoA-2")
     env.pop("LANES_REGISTER_DEADLINE_S", None)
@@ -2336,7 +2775,208 @@ def _writer(bench: Bench, config: Path, state: str, *,
     return subprocess.Popen(["bash", str(bench.copy.parent / "lanes-edit.sh"), "set-row-state",
                              "repoA-2", state], stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-                            cwd=str(bench.wip))
+                            cwd=str(bench.wip), start_new_session=True)
+
+
+#: How long `_end_writers` reads a writer's pipes after its end, before it
+#: closes them (T257w).
+WRITER_DRAIN_S = 5.0
+
+
+def _drained_and_closed(proc: subprocess.Popen) -> None:
+    """`proc`'s stdout and stderr, each still open, as a `communicate()` that
+    timed out or never ran leaves them, read together to their ends for up to
+    `WRITER_DRAIN_S`, what they hold dropped, then closed whatever the read
+    did (T257w). Pipes a `communicate()` read to their ends are closed
+    already. A pipe that did not reach its end in that time is raised, after
+    the closes: a process outside the writer's group holds it."""
+    pipes = [pipe for pipe in (proc.stdout, proc.stderr) if pipe is not None and not pipe.closed]
+    live: list = []
+    try:
+        live = [pipe.fileno() for pipe in pipes]
+        end = time.monotonic() + WRITER_DRAIN_S
+        while live and time.monotonic() < end:
+            ready, _, _ = select.select(live, [], [], max(0.0, end - time.monotonic()))
+            live = [fd for fd in live if fd not in ready or os.read(fd, 65536)]
+    finally:
+        for pipe in pipes:
+            pipe.close()
+    if live:
+        raise RuntimeError(f"writer {proc.pid}'s pipes did not reach their ends {WRITER_DRAIN_S} s "
+                           f"after its end: a process outside its group holds them")
+
+
+def _end_writers(procs: list) -> None:
+    """Each writer `_writer` started ended with its process group and
+    reaped, by `_end_process(proc, group=True)` (T257t; Codex's review of P09
+    at `21dd3642`, SHOULD 4), which signals no writer whose `returncode` is
+    set, as `communicate()` leaves one it saw end; then, whatever that end
+    raised, its pipes drained for up to `WRITER_DRAIN_S` and closed
+    (`_drained_and_closed`; T257w, Codex's review of P09 at `d3a2fd5c`,
+    SHOULD 4). Every writer is tried, and the first failure, of an end or of
+    a drain, is raised after the last."""
+    failed = []
+    for proc in procs:
+        try:
+            _end_process(proc, group=True)
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            failed.append(exc)
+        try:
+            _drained_and_closed(proc)
+        except (OSError, RuntimeError) as exc:
+            failed.append(exc)
+    if failed:
+        raise failed[0]
+
+
+def _communicated(writer: subprocess.Popen, timeout: float = 300) -> tuple:
+    """`writer.communicate(timeout=timeout)`'s (stdout, stderr), with
+    `_end_writers([writer])` in a `finally`, so its group and its pipes are
+    ended on a timeout too (T257w). The lookup-wait and delayed-link cases
+    both call it, and T257w's regression calls it, so a lost `finally` fails
+    that regression (T257za; Codex's review of P09 at `b8f9e35a`, SHOULD
+    10: the regression had its own copy of the two callers' `finally`)."""
+    try:
+        return writer.communicate(timeout=timeout)
+    finally:
+        _end_writers([writer])
+
+
+def test_each_writer_leads_a_session_of_its_own_and_its_end_reaches_its_descendants(
+        tmp_path, monkeypatch):
+    """`_writer` and `_end_writers` (T257t; Codex's review of P09 at
+    `21dd3642`, SHOULD 4), with no engine: `_writer` runs a stand-in
+    `lanes-edit.sh` of the case's own, which starts a descendant, as the real
+    one starts `python3`, `psql` and `git`, says so on stdout and waits for
+    it; or, with the state `quick`, exits 0 at once. Each running writer must
+    lead a session of its own; `_end_writers` must end its descendant with
+    it, so its stdout reaches its end, as `_end_writers` checks while it
+    drains and closes both pipes (T257w); and a writer `communicate()` reaped
+    gets no signal (`_signals_kept_to_unreaped`). Before T257t a writer was
+    in the case's own session and the burst's end signalled its `bash`
+    alone, so the descendant outlived the case, holding the pipes."""
+    late = _signals_kept_to_unreaped(monkeypatch)
+    (tmp_path / "lanes-edit.sh").write_text(
+        '[ "$3" = quick ] && exit 0\nsleep 30 &\necho started\nwait\n', encoding="utf-8")
+
+    class Bare:
+        """What `_writer` reads of a `Bench`."""
+        def __init__(self, root: Path):
+            self.copy, self.wip, self.env = root / "lanes-index", root, dict(os.environ)
+
+        def lane_checkout(self) -> Path:
+            return self.wip
+
+    bench = Bare(tmp_path)
+    quick = _writer(bench, tmp_path / "lanes-index.conf", "quick")
+    quick.communicate(timeout=60)
+    slow = []
+    try:
+        for i in range(2):
+            slow.append(_writer(bench, tmp_path / "lanes-index.conf", f"slow {i}"))
+            assert slow[-1].stdout.readline() == "started\n", "the stand-in started no descendant"
+        assert all(os.getsid(proc.pid) == proc.pid for proc in slow), \
+            "a writer runs in the case's own session, not one of its own"
+    finally:
+        _end_writers([quick, *slow])
+    assert late == [], f"a writer was signalled once it was reaped: {late}"
+    assert [proc.returncode for proc in slow] == [-signal.SIGTERM] * 2, \
+        f"the writers' exits: {[proc.returncode for proc in slow]}"
+    closed = [pipe.closed for proc in slow for pipe in (proc.stdout, proc.stderr)]
+    assert closed == [True] * 4, f"_end_writers left a writer's pipe open: {closed}"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="the stand-in names its descendant by /proc/<pid>/stat field 22, "
+                           "and the case finds it gone through /proc: Linux only (T257z)")
+def test_a_writer_whose_communicate_times_out_is_ended_with_its_group_and_its_pipes_closed(
+        tmp_path, monkeypatch):
+    """T257w (Codex's review of P09 at `d3a2fd5c`, SHOULD 4: the lookup-wait
+    and delayed-link cases' `communicate(timeout=300)` had no `finally`, and
+    `_end_writers` closed no pipe), with no engine, on a stand-in
+    `lanes-edit.sh` of the case's own that starts a descendant, writes its pid
+    and start time (`/proc` stat field 22) to a mark, and waits. One writer's
+    `communicate()` times out in `_communicated`, which the two cases now
+    call, and its `finally`, `_end_writers([writer])`, must end it with its
+    group, the descendant
+    included, reap it and close both its pipes, signalling nothing once it is
+    reaped. Then two writers, the first one's end made to raise: `_end_writers`
+    must still end the second, close all four pipes within its drain bound,
+    and raise the first one's error. Before T257w both pipes of each writer
+    were left open. The wait for the two marks has a monotonic deadline, and
+    a stand-in that exits before its mark ends it at once, each one's exit
+    named; one `finally` passes every writer started to `_end_writers`
+    (T257y; Codex's review of P09 at `b8f9e35a`, BLOCKING 2: the wait had no
+    deadline, and its failures ended `first` alone). It runs on Linux alone:
+    the stand-in names its descendant by `/proc/<pid>/stat`, which the oracle
+    reads too (T257z; Codex's review of P09 at `b8f9e35a`, SHOULD 9, as
+    T224q)."""
+    late = _signals_kept_to_unreaped(monkeypatch)
+    monkeypatch.setitem(globals(), "WRITER_DRAIN_S", 1.0)
+    mark = tmp_path / "descendant"
+    (tmp_path / "lanes-edit.sh").write_text(
+        f'sleep 30 &\necho "$! $(cut -d" " -f22 /proc/$!/stat)" > "{mark}.$3"\n'
+        f'echo started\nwait\n', encoding="utf-8")
+
+    class Stand:
+        """What `_writer` reads of a `Bench`, on the case's own folder."""
+        copy, wip, env = tmp_path / "lanes-index", tmp_path, dict(os.environ)
+
+        @staticmethod
+        def lane_checkout() -> Path:
+            return tmp_path
+
+    def gone(state: str) -> bool:
+        pid, started = Path(f"{mark}.{state}").read_text().split()
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        except OSError:
+            return True
+        return fields[19] != started or fields[0] in ("Z", "X")
+    conf, real, started = tmp_path / "lanes-index.conf", _end_process, []
+
+    def first_fails(proc, *, group, wait=10.0):
+        if proc is first:
+            raise ChildProcessError("T257w's stand-in: the first writer was reaped elsewhere")
+        real(proc, group=group, wait=wait)
+    try:
+        writer = _writer(Stand, conf, "one")
+        started.append(writer)
+        with pytest.raises(subprocess.TimeoutExpired):
+            _communicated(writer, timeout=1.0)
+        end = time.monotonic() + 5
+        while not gone("one") and time.monotonic() < end:
+            time.sleep(0.05)
+        said = (writer.returncode, writer.stdout.closed, writer.stderr.closed, gone("one"))
+        assert said == (-signal.SIGTERM, True, True, True), (
+            f"after a timeout the writer's exit, stdout closed, stderr closed and descendant gone "
+            f"are {said}, not ({-signal.SIGTERM}, True, True, True)")
+        for state in ("two-a", "two-b"):
+            started.append(_writer(Stand, conf, state))
+        first, second = started[1:]
+        end = time.monotonic() + 10
+        while True:
+            exits = [proc.poll() for proc in (first, second)]
+            marked = [Path(f"{mark}.{state}").exists() for state in ("two-a", "two-b")]
+            if all(marked):
+                break
+            assert exits == [None, None] and time.monotonic() < end, (
+                f"the stand-ins two-a and two-b have marked {marked}, their exits {exits}: each "
+                f"must mark within 10 s and keep running")
+            time.sleep(0.05)
+        monkeypatch.setitem(globals(), "_end_process", first_fails)
+        start = time.monotonic()
+        with pytest.raises(ChildProcessError, match="the first writer"):
+            _end_writers([first, second])
+        took = time.monotonic() - start
+        pipes = [pipe.closed for proc in (first, second) for pipe in (proc.stdout, proc.stderr)]
+        assert second.returncode == -signal.SIGTERM and pipes == [True] * 4 and took < 1.0 + 5, (
+            f"with the first writer's end raising, the second's exit is {second.returncode}, "
+            f"the pipes closed are {pipes}, after {took:.1f} s")
+    finally:
+        monkeypatch.setitem(globals(), "_end_process", real)
+        _end_writers(started)
+    assert late == [], f"a writer was signalled once it was reaped: {late}"
 
 
 def _activity(pg, appname: str) -> tuple:
@@ -2347,7 +2987,7 @@ def _activity(pg, appname: str) -> tuple:
     if not said:
         return "", 0.0
     state, _, age = said.splitlines()[0].partition("|")
-    return state, float(age or 0)
+    return state, _whole(age or 0, "pg_stat_activity's state age", float)
 
 
 #: The idle bound on a writer's open transaction, the group's
@@ -2383,7 +3023,7 @@ def test_an_orphaned_writer_transaction_is_ended_by_the_idle_bound(pg, tmp_path,
     first = _writer(bench, config, f"PAUSED {DOT} T257's orphan, unsent", deadline="3")
     out, err = first.communicate(timeout=300)
     scripts = [e["stdin"] for e in _shim_calls(where) if "commit_write" in e.get("stdin", "")]
-    assert scripts, f"the first writer sent no commit call: {first.returncode}: {err}"
+    assert scripts, f"the first writer sent no commit call: {first.returncode}: {_said_safely(err)}"
     parts = [part.strip() for part in scripts[0].strip().rstrip(";").split(SEP)]
     assert parts[-1] == "COMMIT", f"the commit call's script ends with COMMIT: {parts}"
     # ITS `not_after` MOVES WITH THE REPLAY (T257m; line BD-18): the entry's
@@ -2419,11 +3059,13 @@ def test_an_orphaned_writer_transaction_is_ended_by_the_idle_bound(pg, tmp_path,
             f"the idle bound ended the orphan {ended:.2f} s after it idled"
         _record("orphaned-writer", ended, IDLE_BOUND_S, "timing rules 2 and 3")
         out, err = waiting.communicate(timeout=300)
-        assert waiting.returncode == 0, f"the waiting write did not commit: {waiting.returncode}: {err}"
+        assert waiting.returncode == 0, f"the waiting write did not commit: {waiting.returncode}: {_said_safely(err)}"
     finally:
-        if waiting is not None and waiting.poll() is None:
-            waiting.kill()
-        _end(orphan)
+        try:
+            if waiting is not None:
+                _end_writers([waiting])     # its process group, reaped (T257t)
+        finally:
+            _end(orphan)
 
 
 #: AT-D9c (a)'s engine half: #160's reads that need no clock, so that two
@@ -2505,9 +3147,9 @@ def test_the_joined_snapshot_logs_one_statement_and_reads_byte_identical_to_the_
     lines.append("COMMIT;")
     one_by_one = subprocess.run([db.psql_bin, *REGISTER_ARGV], input="\n".join(lines) + "\n",
                                 capture_output=True, text=True, env=db.env(FX_WRITER), timeout=60)
-    assert one_by_one.returncode == 0, one_by_one.stderr
+    assert one_by_one.returncode == 0, _said_safely(one_by_one)
     assert outs[0] == one_by_one.stdout, \
-        f"the joined snapshot read {outs[0]!r}, one by one {one_by_one.stdout!r}"
+        f"the joined snapshot read {outs[0]!r}, one by one {_said_safely(one_by_one)!r}"
 
 
 #: `C`, the commit's client timer, at `c` = 2 and `N_a` = 1 (D9).
@@ -2539,15 +3181,16 @@ def test_the_lookups_wait_counts_from_the_snapshot_calls_end_and_gets_no_lr011(
     where = _shim(bench, [{"mode": "window", "ms": 2500, "call": 1},
                           {"mode": "before", "match": "commit_write", "call": 1}], timed=True)
     writer = _writer(bench, config, f"PAUSED {DOT} T257's lookup wait", deadline="1")
-    out, err = writer.communicate(timeout=300)
+    out, err = _communicated(writer)    # its group, its pipes, on a timeout too (T257w)
     scripts, times = _shim_calls(where), bench.calls()
     assert len(times) == len(scripts), \
-        f"a call was cut by its timer: {len(scripts)} sent, {len(times)} ended: {err}"
+        (f"a call was cut by its timer: {len(scripts)} sent, {len(times)} ended: "
+         f"{_said_safely(subprocess.CompletedProcess(writer.args, writer.returncode, out, err))}")
     snapshot = next((i for i, e in enumerate(scripts) if "commit_write" not in e["stdin"]
                      and "find_write" not in e["stdin"]), None)
     lookup = next((i for i, e in enumerate(scripts) if "find_write" in e["stdin"]), None)
     assert snapshot is not None and lookup is not None, \
-        f"the writer made no snapshot and lookup: {writer.returncode}: {err}"
+        f"the writer made no snapshot and lookup: {writer.returncode}: {_said_safely(err)}"
     assert "LR011" not in times[lookup]["first"], f"the first try met LR011: {times[lookup]}"
     gap = times[lookup]["start"] - times[snapshot]["end"]
     assert COMMIT_C_S - 1 <= gap < 2 * COMMIT_C_S + 1, \
@@ -2598,8 +3241,8 @@ def test_over_a_delayed_tls_link_no_healthy_call_meets_its_timer(tls_cluster, tm
         config = _link_config(tmp_path / "conf" / "lanes-index.conf", tls_cluster, relay.port,
                               FX_WRITER)
         writer = _writer(bench, config, f"PAUSED {DOT} T257's delayed link")
-        _, err = writer.communicate(timeout=300)
-        assert writer.returncode == 0, f"the healthy write: {writer.returncode}: {err}"
+        _, err = _communicated(writer)  # its group, its pipes, on a timeout too (T257w)
+        assert writer.returncode == 0, f"the healthy write: {writer.returncode}: {_said_safely(err)}"
         kinds = ["commit" if "commit_write" in e["stdin"] else "snapshot"
                  for e in _shim_calls(where)]
         proc, _ = bench.run("lookup", config)
@@ -2616,20 +3259,367 @@ def test_over_a_delayed_tls_link_no_healthy_call_meets_its_timer(tls_cluster, tm
         _record(f"link-{kind}", took, LINK_TIMERS[kind], "AT-D9c (d), recorded")
 
 
+#: THE LINES OF A WRITER'S STDERR A FAILURE MESSAGE SHOWS, AND HOW (T257zc;
+#: Codex's review of P09 at `fb359e64`, lane 3's post 6945142764, BLOCKING 1;
+#: Brett's 6931509747: "sanitize failure diagnostics and avoid publishing
+#: credential-bearing stdout/stderr or password-file lines"). T257x showed each
+#: line that held `WARNING: ` whole, so a WARNING that carried a `PGPASSWORD=`
+#: value, a password-file line, a SCRAM verifier or a server's text that psql
+#: passed on was shown with it. Now a line is shown only where it matches, in
+#: full, one of these templates: the fixed texts of `lanes-edit.sh`'s WARNING
+#: sites, the twelve at `fb359e64` (eight `note` lines to stderr, "CROSS-REPO",
+#: "explicitly allowed", "names disagree", "an uncommitted edit to its
+#: register", "a per-profile clone", "uncommitted LANES.md changes", "the
+#: rename comment" and "the GitHub comment", and four `printf` lines to
+#: stdout, "could not be read", two "superseded transcript" and "this window
+#: is lane"), and the eleven more of line R's `lanes-edit.sh` at `548b8f2e`,
+#: against which the burst case's writers run (hosted run 44016287671): the
+#: three files-mode questions, with each `<why>` their callers pass, the stale
+#: pending record, a write already in the register, and the six rename moves.
+#: A variable part is shown only in a form that cannot hold a secret: `{n}`, a
+#: number of at most ten digits; `{id}`, a write id, a UUID; `{cmd}`, one of
+#: the product's own verbs. Every other variable part, `{…}`, may be any text,
+#: and is never shown: the report prints the template's text, with
+#: `[withheld]` in that part's place, and never the line. A line that holds
+#: `WARNING` and matches no template is not shown at all, only counted.
+_WARNING_VERBS = ("replace-in-row", "append-session-id", "append-line", "add-row",
+                  "start-record", "set-row-state", "migrate-state-cells", "retire-rows",
+                  "archive-rows", "commit", "log", "claim", "release", "request-handoff",
+                  "rename-lane", "register-text", "register-grep")
+_WARNING_PARTS = {"{n}": "[0-9]{1,10}",
+                  "{id}": "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}",
+                  "{cmd}": "(?:" + "|".join(re.escape(verb) for verb in _WARNING_VERBS) + ")",
+                  "{…}": ".*?"}
+_WARNING_PART = re.compile("|".join(re.escape(part) for part in _WARNING_PARTS))
+_FILES_MODE = (" so {cmd} runs in files mode", " so {cmd} reads in files mode",
+               " so the guard reads in files mode")
+_FILES_WHY = ("could not be run: there is no lanes-index beside {…}/lanes-edit.sh or on PATH",
+              "could not be asked: no temporary directory could be made under {…} to hold "
+              "its answer",
+              "could not be asked: no cache file could be made under {…} to hold its answer",
+              "exited 0 without answering one line, index or primary",
+              "exited 0 without answering one line, mode index or mode primary",
+              "did not answer within its 5 s timer, and was stopped (exit 124)",
+              "was killed (exit 137): by its 5 s timer after it ignored the stop, or by a signal",
+              "was killed by a signal (exit 137)",
+              "exited {n}", "exited {n} ({…})")
+_RENAME_OWED = " The move is owed: {…}."
+_WARNING_TEMPLATES = tuple(
+    ["lanes-edit: WARNING: " + text for text in (
+        "CROSS-REPO — {…} is not lane {…}'s home ({…}). Proceeding: Amendment 7 warns here, it "
+        "never refuses.",
+        "this lane/session name mismatch was explicitly allowed for this transcript. It will "
+        "remain allowed only while the lane and session names stay unchanged.",
+        "the lane and Claude session names disagree. This prompt is paused until you choose how "
+        "to repair or explicitly allow this lane.",
+        "W ({…}) holds an uncommitted edit to its register ({…}), and under LANES_ROUTE_WRITES=1 "
+        "nothing commits in W: this write goes through {…}/ and carries its own edit only, so "
+        "that one stays in W, unpublished and untouched (Amendment 23 S5). {…}.",
+        "LANES_REPO names {…}, a per-profile clone of the register beside W. It is honoured, and "
+        "nothing new should write through it (Amendment 23 S6.2): this lane's own checkout is "
+        "{…}/. Unset LANES_REPO, LANES_DIR and LANES_FILE in this window, or relaunch it.",
+        "uncommitted LANES.md changes touch row(s) other than this lane ({…}): {…}",
+        "the rename comment could not be posted on:{…}. The commit IS the rename and it has "
+        "landed; post them by hand so that a reader outside this estate can see it.",
+        "the GitHub comment could not be posted. The log line IS the claim and it has landed; "
+        "post the comment by hand so that a reader outside this estate can see it.",
+        "the pending record of this command, write {id} made at {…} against register generation "
+        "{id}, was last updated at {…}, more than {n} s ago, so this run does not reuse its id: "
+        "it writes anew, as write {id}, and replaces that record. {…}",
+        "register write {id} is in the register at seq {n}; {…}.",
+        "register write {id} is in the register at seq {n}, {…}.",
+        "the rename is in the register at seq {n}, and its handoff's move could not be handed "
+        "to the parent that makes it ({…}/rl-move could not be written), so it is NOT made: the "
+        "row's handoff column names {…}, which is not there yet." + _RENAME_OWED,
+        "lane {…} is lane {…} in the register already (seq {n}), so this run wrote no register "
+        "line; its handoff's move could not be handed to the parent that makes it ({…}/rl-move "
+        "could not be written), so it is NOT made: the row's handoff column names {…}."
+        + _RENAME_OWED,
+        "{…}; its handoff's move was named for the checkout {…}, not lane {…}'s {…}, so it is "
+        "NOT made: the row's handoff column names {…}, which is not there yet." + _RENAME_OWED,
+        "{…}; the push of its handoff's move and RENAMED stamp in {…} was not confirmed (exit "
+        "{n}, above). A re-run of these steps confirms the move on origin or makes it: {…}.",
+        "{…}; its handoff's move and RENAMED stamp in {…} did not complete (exit {n}, above), "
+        "and the row's handoff column names {…}, which is there: the refusal above says why the "
+        "act stopped. Once a person has settled what it names, what this rename still owes is "
+        "made by hand: {…}.",
+        "{…}; its handoff's move and RENAMED stamp in {…} did not complete (exit {n}, above), so "
+        "the row's handoff column names {…}, which is not there yet." + _RENAME_OWED)]
+    + ["WARNING: {…} could not be read, so a window named for a lane RENAMED since could not be "
+       "resolved to it (Amendment 16(e)) — this block may be about to say no lane binds a window "
+       "that one does",
+       "WARNING: this is a superseded transcript of lane {…}; the live one is {…}, which the row "
+       "records as `unknown` — a relaunch would record nothing either, so run: lane-start "
+       "--no-launch {…}",
+       "WARNING: this is a superseded transcript of lane {…}; the live one is {…}; you resumed "
+       "{…} — exit this session and run: lane-start {…}",
+       "WARNING: this window is lane {…} whose current session is {…}; this session {…} is in "
+       "no row — the harness minted a new transcript — run: lane-start --no-launch {…}"]
+    + ["lanes-edit: WARNING: `lanes-index " + asked + "` " + why + "," + mode.replace(
+        "{cmd}", "`{cmd}`") + ", as on a workstation with no lanes-index configuration (feature "
+       "007, D3)." for asked, mode in (("mode", _FILES_MODE[0]),
+                                       ("register read --prefetch", _FILES_MODE[1]),
+                                       ("register read --for guard --prefetch", _FILES_MODE[2]))
+       for why in _FILES_WHY])
+
+
+def _template_pattern(template: str):
+    """`template` as a pattern its line must match in full: its fixed text
+    as it stands, each variable part in its form, the i-th as group `p<i>`
+    (T257zc). Each `{…}` but a template's last part ends where the fixed
+    text after it first occurs, and is never tried at a later place: the
+    lookahead `(?=(?P<p<i>>.*?)<text>)` finds that place, and the
+    backreference `(?P=p<i>)` takes what lies before it (T257zd). So no `{…}`
+    is tried again, and a line costs time in proportion to its length, not
+    to a power of it. A line whose `{…}` holds the fixed text that follows
+    it may therefore match no template; it is then counted, never shown."""
+    parts = list(_WARNING_PART.finditer(template))
+    at, pattern = 0, []
+    for i, part in enumerate(parts):
+        pattern.append(re.escape(template[at:part.start()]))
+        form = _WARNING_PARTS[part.group()]
+        if part.group() == "{…}" and i + 1 < len(parts):
+            after = template[part.end():parts[i + 1].start()]
+            assert after, f"a `{{…}}` with no fixed text after it: {template}"
+            pattern.append(f"(?=(?P<p{i}>{form}){re.escape(after)})(?P=p{i})")
+        else:
+            pattern.append(f"(?P<p{i}>{form})")
+        at = part.end()
+    return re.compile("".join(pattern) + re.escape(template[at:]), re.S)
+
+
+_WARNING_PATTERNS = tuple((template, _template_pattern(template))
+                          for template in _WARNING_TEMPLATES)
+#: The longest line `_shown_warning` matches against the templates (T257zd);
+#: a longer one is counted, never shown.
+_WARNING_MAX = 4096
+
+
+def _shown_warning(line: str):
+    """`line` as a failure message may show it, or None where it matches no
+    WARNING template in full (T257zc): the template's fixed text, each `{n}`,
+    `{id}` and `{cmd}` as the line has it, and `[withheld]` for each `{…}`.
+    Nothing of the line but those bounded parts is copied. A line longer than
+    `_WARNING_MAX` is matched against no template (T257zd)."""
+    if len(line) > _WARNING_MAX:
+        return None
+    for template, pattern in _WARNING_PATTERNS:
+        matched = pattern.fullmatch(line)
+        if not matched:
+            continue
+        shown, at = [], 0
+        for i, part in enumerate(_WARNING_PART.finditer(template)):
+            shown += [template[at:part.start()],
+                      "[withheld]" if part.group() == "{…}" else matched.group(f"p{i}")]
+            at = part.end()
+        return "".join(shown) + template[at:]
+    return None
+
+
+def _warnings_of(err: str) -> tuple:
+    """Of a writer's stderr `err`: its lines that match a WARNING template in
+    full, in order, each as `_shown_warning` shows it; and the count of its
+    other lines that hold `WARNING`, which are not shown (T257zc). No other
+    line of it is read (T257x)."""
+    shown, withheld = [], 0
+    for line in (err or "").splitlines():
+        if "WARNING" not in line:
+            continue
+        told = _shown_warning(line)
+        if told is None:
+            withheld += 1
+        else:
+            shown.append(told)
+    return shown, withheld
+
+
+def _whole(text, what: str, kind=int):
+    """`kind(text)`, an int by default, or an AssertionError that names
+    `what` and quotes none of `text` (T257zl; lane 2's pre-review RV9-37 of
+    P09 at `d9a1f2bf`, S5): int()'s and float()'s own ValueError quotes up
+    to 200 characters of its input, which is a tool's or a writer's output
+    here. The AssertionError is raised after the `except`, not in it, so
+    its `__cause__` is None and its `__context__` is not that ValueError
+    (None, unless `_whole` is itself called inside an `except`): nothing of
+    `text` is kept on it (T257zr; lane 2's pre-review RV9-38 of P09 at
+    `3f9fcac4`, N3: before T257zr, `from None` only hid the ValueError from
+    display, and `__context__` still held it). `text` is still this frame's
+    argument, which a long traceback prints and a short one does not
+    (T205e)."""
+    try:
+        return kind(text)
+    except (TypeError, ValueError):
+        pass
+    raise AssertionError(f"{what} is not a number; its text is not shown")
+
+
+def _short_only(request) -> None:
+    """Under an explicit `--tb=long`, `--fulltrace` (which forces long) or
+    `--showlocals`, which print frames' arguments or locals, fail at once,
+    naming the run's style: an explicit override is not secret-safe, and the
+    suite's protection of a failure's report holds only under its default
+    (T257zzi; lane 2's pre-review RV9-40 of P09 at `161c3087`, N3). Every
+    report regression calls it before it renders a report: `_reported`,
+    `_t257zza_seen` and `_t257zzb_seen` (T257zzzh; lane 2's pre-review
+    RV9-42 of P09 at `857a41d2`, N4). It never skips."""
+    style = request.config.getoption("tbstyle", "auto")
+    shown = request.config.getoption("showlocals", False)
+    full = request.config.getoption("fulltrace", False)
+    assert style != "long" and not shown and not full, (
+        f"this run's --tb={style}, showlocals={shown}, fulltrace={full} prints frames' arguments or "
+        f"locals: an explicit override is not secret-safe, and this suite's protection of a failure's "
+        f"report holds only under its default, --tb=short (T205e), so this case cannot pass here")
+
+
+def _reported(request, failed) -> str:
+    """pytest's own report of the failure `failed`, a `pytest.raises`
+    ExceptionInfo, as the running test's item renders a failed test under
+    the suite's own settings (T257zr; lane 3's ruling 6949488277 on lane 2's
+    pre-review RV9-38 of P09 at `3f9fcac4`, B1): the terminal's text, which
+    is also --junitxml's failure body, then --junitxml's failure message.
+    Under an explicit `--tb=long`, `--fulltrace` or `--showlocals` it fails
+    at once (`_short_only`; T257zzi). It never skips."""
+    _short_only(request)
+    longrepr = request.node.repr_failure(failed)
+    return f"{longrepr}\n{longrepr.reprcrash.message}"
+
+
+def test_the_suites_tracebacks_are_short_unless_a_person_asks_for_another_style(request):
+    """T257zv (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09 at `3f9fcac4`, B1; T205e), with no engine and no process: conftest's
+    `pytest_configure` turns pytest's default `--tb=auto` into `short`, the
+    style that prints no frame's arguments, and leaves each style a person
+    gives (`long`, `short`, `no`, `line`, `native`) as given. It is run on a
+    stand-in config for each, its root refusal and its engine plugin's
+    registration as in this session. And this session's own style is no
+    longer `auto`: the hook ran before this case. Every report regression
+    here (`_reported`) renders under that style."""
+    import types
+    import conftest
+
+    def configured(given: str) -> str:
+        option = types.SimpleNamespace(tbstyle=given)
+        config = types.SimpleNamespace(
+            option=option, getoption=lambda name, default=None: getattr(option, name, default),
+            pluginmanager=types.SimpleNamespace(has_plugin=lambda name: True))
+        conftest.pytest_configure(config)
+        return option.tbstyle
+
+    styles = {given: configured(given) for given in ("auto", "long", "short", "no", "line", "native")}
+    assert styles == {"auto": "short", "long": "long", "short": "short", "no": "no", "line": "line",
+                      "native": "native"}, f"--tb given, and the style after the hook: {styles}"
+    assert request.config.getoption("tbstyle") != "auto", "this session's style is still pytest's auto"
+
+
+def test_whole_keeps_no_text_it_could_not_parse_on_its_error_or_in_the_report(request):
+    """T257zr (lane 2's pre-review RV9-38 of P09 at `3f9fcac4`, N3; lane 3's
+    ruling 6949488277, B1), with no engine and no process: `_whole` is given
+    a planted value it cannot parse, as an int and as a float. Its
+    AssertionError has no `__cause__` and no `__context__`, and the planted
+    value is in none of its `str`, `repr`, `args`, formatted traceback or
+    pytest's own report of the failure (`_reported`). Before T257zr its
+    `__context__` was int()'s ValueError, which quotes the value. The
+    planted value is no credential of any login."""
+    import traceback
+    planted = f"fake-{uuid.uuid4().hex}"
+    for kind in (int, float):
+        with pytest.raises(AssertionError) as failed:
+            _whole(f"x {planted} y", "a planted value", kind)
+        error = failed.value
+        assert error.__cause__ is None, f"{kind.__name__}: a cause is kept"
+        assert error.__context__ is None, \
+            f"{kind.__name__}: a {type(error.__context__).__name__} is kept as its context"
+        shown = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+        for where, said in (("str", str(error)), ("repr", repr(error)), ("args", repr(error.args)),
+                            ("formatted traceback", shown), ("pytest's report", _reported(request, failed))):
+            assert planted not in said, f"{kind.__name__}: the planted value is in the error's {where}"
+
+
+class _NotGiven:
+    """`_said_safely`'s `exit` where no caller gave one (T257zx)."""
+
+
+_NOT_GIVEN = _NotGiven()
+
+
+def _said_safely(said, stream: str = "output", exit: int | None | _NotGiven = _NOT_GIVEN) -> str:
+    """What a failure message may show of a process's output (T257zh; lane
+    3's ruling 6946445277 on lane 2's pre-review RV9-36 of P09 at
+    `2407ea06`, S2: every failure message that showed a writer's or a
+    tool's raw stdout or stderr shows this instead). `said` is a captured
+    stream, text or bytes, or something that ran, with an exit and its two
+    streams: a `CompletedProcess`, or a writer with `code`, `out` and
+    `err`. Shown are its exit, where it has one, and for each stream its
+    count of lines and of WARNING lines, and the WARNING lines that match a
+    template of the product's WARNING sites in full, as `_shown_warning`
+    shows them. No other text of it is shown: no line that no template
+    matches, whole or in part. Text built from a stream, a slice or a
+    `strip()` of it, is a stream here too. A bare stream's counts are
+    labelled `stream`, "stderr" or "stdout" where the caller knows which,
+    else "output" (T257zm; lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`,
+    N4). An exit is shown only where it is an int, else as `[withheld]`
+    (T257zm; RV9-37, N3). A bare stream's `exit` may be given: an int is
+    shown as `exit N`, None as `no exit` (T257zx; lane 2's targeted check
+    RV9-39 of P09 at `3c5b68bc`, S5)."""
+    if said is None or isinstance(said, (str, bytes, bytearray)):
+        code, streams = None, [(stream, said)]
+        if exit is None:
+            code = "no exit"
+        elif not isinstance(exit, _NotGiven):
+            code = exit
+    else:
+        code = getattr(said, "returncode", getattr(said, "code", None))
+        streams = [("stdout", getattr(said, "stdout", getattr(said, "out", None))),
+                   ("stderr", getattr(said, "stderr", getattr(said, "err", None)))]
+    if code is None:
+        parts = []
+    elif code == "no exit":
+        parts = ["no exit"]
+    elif isinstance(code, int) and not isinstance(code, bool):
+        parts = [f"exit {int(code)}"]
+    else:
+        parts = ["exit [withheld]"]
+    for name, text in streams:
+        if isinstance(text, (bytes, bytearray)):
+            text = bytes(text).decode("utf-8", "replace")
+        if text is not None and not isinstance(text, str):
+            parts.append(f"{name}: not captured as text")
+            continue
+        shown, withheld = _warnings_of(text or "")
+        parts.append(f"{name}: {len((text or '').splitlines())} line(s), "
+                     f"{len(shown) + withheld} of them WARNING lines, {withheld} of no known "
+                     f"template withheld; no other line is shown")
+        parts.extend(f"  {name}'s WARNING line: {line}" for line in shown)
+    return "\n".join(parts)
+
+
 def _burst_report(logins: str, writers: list, ends: list, rows: list, calls: list) -> str:
     """What the burst test's assertions print when one fails (T257o; lane 4's
-    6899167909): each writer's index, login, exit, time and stderr tail, from
-    `ends`; the journal's new rows, `seq|write_id`, in `rows`; and each
-    `commit_write` call in the shim's log, `calls`, in the log's order, with its
-    write id, whether and where the journal has it, its `PGUSER`, and the
-    `burst N` its state text names (`?` where the log holds none). It reads
-    nothing and decides nothing."""
+    6899167909): each writer's index, login, exit and time, from `ends`, with
+    its stderr's WARNING lines; the journal's new rows, `seq|write_id`, in
+    `rows`; and each `commit_write` call in the shim's log, `calls`, in the
+    log's order, with its write id, whether and where the journal has it, its
+    `PGUSER`, and the `burst N` its state text names (`?` where the log holds
+    none). It reads nothing and decides nothing.
+
+    Each writer's WARNING lines are printed wherever they fall (T257v), each
+    that matches a template of the product's WARNING sites in full as
+    `_shown_warning` shows it, the others only counted, and no other line of
+    its stderr (T257x, T257zc, `_warnings_of`): a writer whose `lanes-index
+    mode` question failed says why in a WARNING (`reg_mode_files`, line R's
+    `lanes-edit.sh`:6415), of which a 300-character tail kept only the last
+    18 characters (run 44016287671, writer 3). A writer's time is when the
+    collection, which reads the writers in order, reached its end, so a writer
+    that ended early shows a later writer's time."""
     seq_of = {write_id: seq for seq, _, write_id in (row.partition("|") for row in rows)}
     lines = [f"burst [{logins}]: {len(ends)} writers' ends, {len(rows)} new journal rows, "
              f"and the shim's commit_write calls:"]
     for i, (code, took, err) in enumerate(ends):
-        lines.append(f"  writer {i} ({writers[i]}): exit {code} after {took:.2f} s, "
-                     f"stderr tail {(err or '')[-300:]!r}")
+        lines.append(f"  writer {i} ({writers[i]}): exit {code} after {took:.2f} s")
+        shown, withheld = _warnings_of(err)
+        lines.extend(f"    its WARNING line: {line}" for line in shown)
+        if withheld:
+            lines.append(f"    and {withheld} WARNING line(s) of no known template, withheld")
     for row in rows:
         seq, _, write_id = row.partition("|")
         lines.append(f"  journal seq {seq}: write id {write_id}")
@@ -2680,18 +3670,24 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
         assert code == 0, f"login add fx2 exited {code}"
         tls_cluster.passwords.update(PASSWORD_LINE.findall(out))
         writers = [FX_WRITER] * 5 + ["lanes_w_fx2"] * 5
-    head = int(db.psql(f"SELECT seq FROM {SCHEMA}.register_head;").stdout.strip() or 0)
+    head = _whole(db.psql(f"SELECT seq FROM {SCHEMA}.register_head;").stdout.strip() or 0,
+                  "register_head's seq")
     with delayed_loopback(tls_cluster.port, DELAY_S) as relay:
         configs = {login: _link_config(tmp_path / "conf" / login / "lanes-index.conf", tls_cluster,
                                        relay.port, login) for login in set(writers)}
         bench.lane_checkout()
         release = time.monotonic()
-        procs = [_writer(bench, configs[login], f"PAUSED {DOT} T257's burst {i}")
-                 for i, login in enumerate(writers)]
-        ends = []
-        for proc in procs:
-            _, err = proc.communicate(timeout=300)
-            ends.append((proc.returncode, time.monotonic() - release, err))
+        procs, ends = [], []
+        try:
+            for i, login in enumerate(writers):
+                procs.append(_writer(bench, configs[login], f"PAUSED {DOT} T257's burst {i}"))
+            for proc in procs:
+                _, err = proc.communicate(timeout=300)
+                ends.append((proc.returncode, time.monotonic() - release, err))
+        finally:
+            # Whatever ended the collection, no writer it started outlives it, nor
+            # anything a writer started (T257q; T257t).
+            _end_writers(procs)
     codes = [code for code, _, _ in ends]
     rows = db.psql(f"SELECT seq, write_id FROM {SCHEMA}.journal WHERE seq > {head} "
                    f"ORDER BY seq;").stdout.split()
@@ -2702,23 +3698,1263 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
     assert set(codes) <= {0, 75}, f"a writer ended another way:\n{told()}"
     # A writer whose `lanes-index mode` question fails warns on stderr, writes to git in files
     # mode and ends 0 with no journal row (lane 4's 6899400726; `reg_mode_files`' own words).
-    files_mode = [f"  writer {i} ({writers[i]}): stderr tail {(err or '')[-300:]!r}"
+    files_mode = [f"  writer {i} ({writers[i]}), whose WARNING lines follow"
                   for i, (_, _, err) in enumerate(ends) if "runs in files mode" in (err or "")]
     assert not files_mode, ("a writer says it ran in files mode, so its write is in git and not "
                             "the journal:\n" + "\n".join(files_mode) + f"\n{told()}")
-    seqs = [int(row.split("|")[0]) for row in rows]
+    seqs = [_whole(row.split("|")[0], "a new journal row's seq") for row in rows]
     assert seqs == list(range(head + 1, head + 1 + codes.count(0))), \
         f"one entry for each writer that committed, no gap, no repeat: {seqs}, {codes}\n{told()}"
     sent = set(re.findall(r"commit_write\([0-9-]+, '([0-9a-f-]{36})'",
                           "".join(e["stdin"] for e in _shim_calls(where))))
     written = [row.split("|")[1] for row in rows]
     assert len(set(written)) == len(written) and set(written) <= sent, \
-        f"each write id committed once, and only the burst's: {written}\n{told()}"
+        (f"each write id committed once, and only the burst's: {len(written)} new journal rows, "
+         f"{len(set(written))} write ids, {len(set(written) - sent)} not the burst's\n{told()}")
+    # Each writer by its write id (T257r): a commit call names its writer's `burst <i>` in the
+    # new row text its entry carries, and only a sha256 of the row it replaces.
+    named: dict = {}
+    for script in (e.get("stdin", "") for e in _shim_calls(where)):
+        call = re.search(r"commit_write\([0-9-]+, '([0-9a-f-]{36})'", script)
+        if call:
+            named.setdefault(call.group(1), set()).update(re.findall(r"burst ([0-9]+)", script))
+    assert all(len(burst) == 1 for burst in named.values()), \
+        f"a write id's commit calls name no writer, or more than one: {named}\n{told()}"
+    owners = sorted(_whole(min(named[write_id]), "a commit call's burst number") for write_id in written)
+    assert owners == [i for i, code in enumerate(codes) if code == 0], \
+        (f"the journal's rows are by writers {owners}, not one by each writer that exited 0 "
+         f"and none by one that exited 75: {codes}\n{told()}")
     snapshots = sum(1 for e in _shim_calls(where) if "commit_write" not in e["stdin"])
     for i, (code, took, _) in enumerate(ends):
         print(f"D9c burst [{logins}] writer {i} ({writers[i]}): exit {code} after {took:.2f} s")
     print(f"D9c burst [{logins}]: {codes.count(0)} committed, {codes.count(75)} out with 75, "
           f"{snapshots} snapshot calls")
+
+
+def test_the_burst_report_prints_each_warning_whole_and_no_credential():
+    """`_burst_report` (T257v, T257x), with no engine, on run 44016287671's
+    writer 3: `lanes-edit.sh` warned that its `lanes-index mode` question
+    failed (`reg_mode_files`, :6415), ran in files mode, met the marker and
+    exited 69 (`cs_marker_refuse`, :3971-3972); its 300-character tail kept
+    only the warning's last 18 characters, `feature 007, D3).`, so why the
+    question failed was lost. The report must carry each writer's exit and its
+    WARNING line as the line's template shows it, and no other line of any
+    writer's stderr (T257x; Codex's review of P09 at `b8f9e35a`, BLOCKING 1;
+    T257zc): not the refusal's lines, and none of the credential forms
+    planted here, a password-file line bare and prefixed, `password=` and
+    `PGPASSWORD=` values, a URL's secret, a dict's repr, a value on the line
+    after its key, and a SCRAM verifier. This warning's template has no part
+    that is withheld, so here the shown line equals the line. The name still
+    says "whole", from T257v, since a new name would be a new node id; a
+    WARNING line is shown only through its template (`_shown_warning`,
+    T257zc), and never whole (T257zg; lane 2's pre-review RV9-36 of P09 at
+    `2407ea06`, N4). The planted value is no credential of any login."""
+    planted = "planted-not-a-password"
+    warning = ("lanes-edit: WARNING: `lanes-index mode` did not answer within its 5 s timer, and was "
+               "stopped (exit 124), so `set-row-state` runs in files mode, as on a "
+               "workstation with no lanes-index configuration (feature 007, D3).")
+    refusal = ("lanes-edit: lanes/STORE is on origin/main at 17ceb1c26f81, the tip this "
+               "write's own fetch returned. This workstation writes in files mode, so "
+               "`set-row-state` refuses, and nothing was written (feature 007, FR-004).\n"
+               "lanes-edit: this estate's register is SQL; configure `mode=primary`\n")
+    leaked = (f"*:*:*:lanes_w_fx:{planted}\n"
+              f"lanes-edit: 127.0.0.1:5432:register:lanes_w_fx:{planted} with a blank\n"
+              f"lanes-edit: a libpq text with password={planted} and PGPASSWORD = '{planted}'\n"
+              f"lanes-edit: postgresql://lanes_w_fx:{planted}/x@127.0.0.1:5432/register\n"
+              f"lanes-edit: its environment {{'PGPASSWORD': '{planted}'}}\n"
+              f"lanes-edit: PGPASSWORD=\n{planted}\n"
+              f"lanes-edit: SCRAM-SHA-256$4096:{planted}${planted}:{planted}\n")
+    committed = "lanes-edit: state cell REPLACED: 46 chars → 46 chars\n"
+    ends = [(0, 23.5, committed), (69, 23.5, leaked + warning + "\n" + refusal),
+            (75, 32.85, "lanes-edit: register busy; nothing was written\n" + leaked)]
+    told = _burst_report("two-logins", ["lanes_w_fx", "lanes_w_fx", "lanes_w_fx2"], ends,
+                         [], [])
+    assert (warning + "\n" + refusal)[-300:].startswith("feature 007, D3).\n"), \
+        "the case's tail is not run 44016287671's"
+    assert f"    its WARNING line: {warning}\n" in told, f"the warning, whole:\n{told}"
+    assert told.count("its WARNING line:") == 1, f"one WARNING line, writer 1's:\n{told}"
+    exits = [f"  writer {i} ({login}): exit {code} after "
+             for i, (login, code) in enumerate([("lanes_w_fx", 0), ("lanes_w_fx", 69),
+                                                ("lanes_w_fx2", 75)])]
+    assert all(said in told for said in exits), f"each writer's exit:\n{told}"
+    others = [line for _, _, err in ends for line in err.splitlines()
+              if line.strip() and line != warning]
+    shown = [line for line in others if line in told]
+    assert not shown and planted not in told, \
+        f"{len(shown)} line(s) of stderr other than a WARNING are printed:\n{told}"
+
+
+@pytest.mark.parametrize("form", ["pgpassword", "password-file", "scram-verifier",
+                                  "server-warning"])
+def test_the_burst_report_shows_no_credential_a_warning_line_holds(capsys, form):
+    """`_burst_report` (T257zc; Codex's review of P09 at `fb359e64`, lane 3's
+    post 6945142764, BLOCKING 1), with no engine: a credential inside a
+    WARNING line is in no failure message and on no printed stream. `form` is
+    `PGPASSWORD=` and a generated value, a password-file line after
+    `lanes-edit: `'s prefix, a SCRAM verifier, or a server's WARNING that psql
+    passes on. Each is planted twice in one writer's stderr: as a WARNING line
+    of its own, which matches no template and is counted, never shown; and as
+    the text a failed `lanes-index mode` printed, inside `reg_mode_files`'
+    WARNING (`exited 2 (...)`), which matches that template and is shown with
+    `[withheld]` in that text's place. The planted value is no credential of
+    any login.
+
+    `_burst_report` returns its text and prints nothing, at `fb359e64` as
+    here, so the `capsys` half cannot fail today: it guards only against a
+    print added to `_burst_report` later. The failure-message half is the
+    one that fails at `fb359e64` (T257zg; lane 2's pre-review RV9-36 of P09
+    at `2407ea06`, N1)."""
+    planted = f"fake-{uuid.uuid4().hex}"
+    held = {"pgpassword": f"PGPASSWORD={planted}",
+            "password-file": f"lanes-edit: 127.0.0.1:5432:register:lanes_w_fx:{planted}",
+            "scram-verifier": f"SCRAM-SHA-256$4096:{planted}=${planted}=:{planted}=",
+            "server-warning": f'psql:<stdin>:3: WARNING:  role "lanes_w_fx" password "{planted}"'}
+    line = held[form] if form == "server-warning" else f"lanes-edit: WARNING: {held[form]}"
+    mode = ("lanes-edit: WARNING: `lanes-index mode` exited 2 ({}), so `set-row-state` runs in "
+            "files mode, as on a workstation with no lanes-index configuration (feature 007, D3).")
+    ends = [(0, 23.5, f"{line}\n{mode.format(held[form])}\n")]
+    told = _burst_report("one-login", ["lanes_w_fx"], ends, [], [])
+    printed = capsys.readouterr()
+    assert planted not in told, f"the planted {form} is in the failure message:\n{told}"
+    assert planted not in printed.out + printed.err, f"the planted {form} was printed"
+    assert f"    its WARNING line: {mode.format('[withheld]')}\n" in told, \
+        f"the files-mode warning, its why withheld:\n{told}"
+    assert told.count("its WARNING line:") == 1, f"one WARNING line shown:\n{told}"
+    assert "    and 1 WARNING line(s) of no known template, withheld" in told, \
+        f"the unknown WARNING line, counted:\n{told}"
+
+
+def test_a_shown_part_of_a_warning_template_is_never_the_head_of_other_text():
+    """`_WARNING_TEMPLATES`' shape (T257ze; lane 2's pre-review RV9-36 of P09
+    at `2407ea06`, B1), with no engine: in each template, each part shown as
+    the line has it, `{n}`, `{id}` or `{cmd}`, is followed by fixed text that
+    does not begin with a letter, a digit, `_` or `-`, or ends the template.
+    A shown part followed straight by another part, as `seq {n}{…}.` was,
+    showed the head of the text after it: up to ten digits of whatever came
+    after `at seq `. Each template that breaks this is named."""
+    broken = []
+    for template in _WARNING_TEMPLATES:
+        parts = list(_WARNING_PART.finditer(template))
+        for i, part in enumerate(parts):
+            if part.group() == "{…}":
+                continue
+            end = parts[i + 1].start() if i + 1 < len(parts) else len(template)
+            after = template[part.end():end]
+            if (i + 1 < len(parts) and not after) or re.match(r"[\w-]", after):
+                broken.append(f"{part.group()}, then {after[:12]!r}, in {template!r}")
+    assert not broken, ("a shown part with no fixed text after it, or with text it can run "
+                        "into:\n" + "\n".join(broken))
+
+
+def test_the_burst_report_shows_no_digit_of_a_value_after_at_seq():
+    """`_burst_report` (T257ze; lane 2's pre-review RV9-36 of P09 at
+    `2407ea06`, B1), with no engine: a WARNING line in the shape of
+    `lanes-edit.sh`'s `pw_tail_said` (line R's :10604), `register write <id>
+    is in the register at seq <s><joiner><what>.`, whose `<s>` is a value in
+    `token_urlsafe`'s alphabet that starts with ten digits, shows none of it.
+    The template `... at seq {n}{…}.` showed `{n}`, the value's first ten
+    digits, with the rest `[withheld]`. Now `{n}` must end at one of the
+    product's two joiners, `; ` (its default) or `, ` (:10657, :10659), so
+    that line matches no template and is counted; the product's own lines,
+    a seq and then a joiner, are still shown. The planted value is no
+    credential of any login."""
+    planted = f"9081726354{uuid.uuid4().hex}-fake_value"
+    lead = ("lanes-edit: WARNING: register write 0f1e2d3c-4b5a-4968-8776-655443322110 is in the "
+            "register at seq ")
+    told = _burst_report("one-login", ["lanes_w_fx"], [(0, 1.0, f"{lead}{planted}.\n")], [], [])
+    assert "9081726354" not in told and planted not in told, \
+        f"the value's leading digits are in the failure message:\n{told}"
+    assert not re.search(r"at seq [0-9]", told), f"a seq is shown:\n{told}"
+    assert "    and 1 WARNING line(s) of no known template, withheld" in told, \
+        f"the line, counted:\n{told}"
+    for joiner in ("; ", ", "):
+        line = f"{lead}42{joiner}its after-COMMIT steps ran at 2026-11-17T10:00:00Z in pid 4242."
+        assert _shown_warning(line) == f"{lead}42{joiner}[withheld].", \
+            f"the product's line, joined by {joiner!r}, is not shown: {_shown_warning(line)!r}"
+
+
+def test_the_pending_record_warning_is_shown_with_its_generation_id():
+    """`_shown_warning` (T257zf; lane 2's pre-review RV9-36 of P09 at
+    `2407ea06`, S1), with no engine: the WARNING `lanes-edit.sh` prints where
+    a pending record is too old to reuse (line R's :8650) names the
+    record's register generation, `$WR_REC_GENERATION`, a lower-case UUID
+    (`generation=`, :9145-9146), not a number. Its template took `{n}`
+    there, so the real line matched none and was only counted; with `{id}`
+    it is shown, the write ids, the generation and the age as the line has
+    them, and the times and the lookup text `[withheld]`."""
+    ids = ("0f1e2d3c-4b5a-4968-8776-655443322110", "5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9",
+           "11112222-3333-4444-8555-666677778888")
+    said = ("lanes-edit: WARNING: the pending record of this command, write {0} made at {3} against "
+            "register generation {1}, was last updated at {4}, more than 900 s ago, so this run does "
+            "not reuse its id: it writes anew, as write {2}, and replaces that record. {5}")
+    line = said.format(*ids, "2026-11-17T09:00:00Z", "2026-11-17T09:05:00Z",
+                       "Its lookup's last call may still run until 2026-11-17T09:06:00Z.")
+    want = said.format(*ids, "[withheld]", "[withheld]", "[withheld]")
+    assert _shown_warning(line) == want, f"the pending record's line is not shown: {line}"
+    assert _warnings_of(line + "\n") == ([want], 0), _warnings_of(line + "\n")
+
+
+def test_a_failure_message_shows_no_line_of_a_writers_output_that_no_template_matches():
+    """`_said_safely` (T257zh; lane 3's ruling 6946445277 on lane 2's
+    pre-review RV9-36 of P09 at `2407ea06`, S2), with no engine and no
+    process: a writer that ended 75 with a password-file line, a
+    `PGPASSWORD=` value and a SCRAM verifier on lines of its stderr that no
+    template matches, and the same value on its stdout, fails a
+    representative assert, `_sent_a_snapshot`'s, as a writer that sent no
+    snapshot request does. Its message shows the exit, stderr's counts and
+    the one WARNING line that matches a template, and not the planted
+    value. Before T257zh the message held the writer's whole stderr. The
+    planted value is no credential of any login."""
+    planted = f"fake-{uuid.uuid4().hex}"
+    warning = ("lanes-edit: WARNING: `lanes-index mode` did not answer within its 5 s timer, and was stopped "
+               "(exit 124), so `set-row-state` runs in files mode, as on a workstation with no "
+               "lanes-index configuration (feature 007, D3).")
+    proc = subprocess.CompletedProcess(
+        ["lanes-edit.sh"], 75, f"lanes-edit: {planted}\n",
+        f"127.0.0.1:5432:register:lanes_w_fx:{planted}\nlanes-edit: PGPASSWORD={planted}\n"
+        f"lanes-edit: SCRAM-SHA-256$4096:{planted}=${planted}=:{planted}=\n{warning}\n"
+        "lanes-edit: register busy; nothing was written\n")
+
+    class _SentNothing:
+        def sent(self) -> list:
+            return []
+
+    with pytest.raises(AssertionError) as failed:
+        _sent_a_snapshot(_SentNothing(), "[T257zh]", proc)
+    said = str(failed.value)
+    assert planted not in said, "the planted value is in the failure message"
+    assert f"output's WARNING line: {warning}" in said, f"the template's line, shown:\n{said}"
+    assert "output: 5 line(s), 1 of them WARNING lines, 0 of no known template withheld" in said, \
+        f"stderr's counts:\n{said}"
+    assert "register busy" not in said, f"a line no template matches is shown:\n{said}"
+
+
+#: T257zt's planted writer: it writes the planted value, from its
+#: environment, to its stdout and its stderr, then outlives its timeout.
+T257ZT_WRITER = ("import os, sys, time\n"
+                 "sys.stdout.write('out ' + os.environ['T257ZT_PLANTED'] + '\\n'); sys.stdout.flush()\n"
+                 "sys.stderr.write('lanes-edit: ' + os.environ['T257ZT_PLANTED'] + '\\n'); sys.stderr.flush()\n"
+                 "time.sleep(60)\n")
+
+
+@pytest.mark.parametrize("case", ["sent-a-snapshot", "refused-with-no-value", "json-loads",
+                                  "timed-out-writer"])
+def test_pytests_own_report_of_a_failure_shows_no_planted_writer_text(request, case):
+    """T257zt (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09 at `3f9fcac4`, B1), with no engine: a failure whose raising frames
+    hold a planted value as arguments or locals, rendered as pytest renders
+    a failed test under the suite's own settings (`_reported`: the running
+    item's `repr_failure`, the terminal text that is also --junitxml's
+    failure body, and the JUnit failure message), holds no planted value.
+    Each case first proves the value is there to be shown:
+      - `sent-a-snapshot`: `_sent_a_snapshot`'s argument `proc`, a writer's
+        `CompletedProcess` whose stdout and stderr hold it;
+      - `refused-with-no-value`: `_t257u_refused_with_no_value`'s argument
+        `said`, a refusal's text that holds it;
+      - `json-loads`: `json.loads` of a writer's output that holds it, whose
+        frames in the standard library take the text as `s`;
+      - `timed-out-writer`: a planted writer, run by `subprocess.run` with a
+        timeout it outlives, whose partial stdout and stderr the standard
+        library's frames hold (`stdout_seq`, `stderr_seq`) and its
+        `TimeoutExpired` keeps; its command line holds no planted value.
+    Under pytest's default `--tb=auto` the first three and the last show it
+    as a long entry's arguments; T205e's short style shows none. An
+    explicit `--tb=long` or `--fulltrace` shows them again, and fails this
+    case: those are not secret-safe. The planted value is no credential of
+    any login."""
+    planted = f"fake-{uuid.uuid4().hex}"
+    if case == "sent-a-snapshot":
+        proc = subprocess.CompletedProcess(["lanes-edit.sh"], 75, f"out {planted}\n", f"lanes-edit: {planted}\n")
+
+        class _SentNothing:
+            def sent(self) -> list:
+                return []
+
+        with pytest.raises(AssertionError) as failed:
+            _sent_a_snapshot(_SentNothing(), "[T257zt]", proc)
+        assert planted in str(failed.getrepr(style="long", funcargs=True)), \
+            "a long report does not show the planted value, so this proves nothing"
+    elif case == "refused-with-no-value":
+        with pytest.raises(AssertionError) as failed:
+            _t257u_refused_with_no_value(f"lanes-index: {planted} refused", "register_url", "1", 3)
+        assert planted in str(failed.getrepr(style="long", funcargs=True)), \
+            "a long report does not show the planted value, so this proves nothing"
+    elif case == "json-loads":
+        with pytest.raises(json.JSONDecodeError) as failed:
+            json.loads(f"lanes-index: {planted}")
+        assert planted in failed.value.doc, "the planted output is not json's document, so this proves nothing"
+    else:
+        with pytest.raises(subprocess.TimeoutExpired) as failed:
+            subprocess.run([sys.executable, "-I", "-c", T257ZT_WRITER], capture_output=True, timeout=2,
+                           env=dict(os.environ, T257ZT_PLANTED=planted))
+        kept = (failed.value.stdout or b"") + (failed.value.stderr or b"")
+        assert planted.encode() in kept, "the writer's output did not reach its TimeoutExpired, so this proves nothing"
+    assert planted not in _reported(request, failed), f"[{case}] the planted value is in pytest's report"
+
+
+#: What a failure message may not format but through `_said_safely` (T257zi;
+#: T257zp; T257zy): a captured stream's attribute, a name these modules give a
+#: stream, and the helpers that showed one before T257zh, T255s and T258l.
+_STREAM_ATTRS = ("stdout", "stderr", "err", "out", "errs", "output")
+_STREAM_NAMES = ("err", "out", "streams", "stdout", "stderr")
+_STREAM_CALLS = ("_said", "_masked")
+#: Calls whose result shows no text of the stream given as their first argument
+#: (T257zp); each other argument they show as it is, so a stream there is a
+#: place (T257zy): `_said_safely`'s `stream`, `_whole`'s `what`.
+_SAFE_CALLS = ("_said_safely", "_lanes_shown", "_whole", "len", "_error_safely")
+#: Calls whose arguments reach a failure's output, but a `file=` destination,
+#: besides an assert's message, a raise, a call whose name ends `Error` or
+#: `Exception`, a logging call and a terminal reporter's write (T257zi, T257zp,
+#: T257zy, T257zzzd). A call counts by its dotted name with its first part
+#: resolved (T257zzzd; lane 2's pre-review RV9-42 of P09 at `857a41d2`, S1): a
+#: name from-imported from a module of `_IMPORTED_FROM` is that module's
+#: (`stderr.write` after `from sys import stderr` is `sys.stderr.write`), and
+#: a module imported under another name is that module (`pt.fail` after
+#: `import pytest as pt` is `pytest.fail`). `_raised_nothing` takes its message.
+_SINK_CALLS = ("pytest.fail", "pytest.skip", "pytest.xfail", "pytest.exit", "print",
+               "sys.stderr.write", "sys.stdout.write", "sys.__stderr__.write",
+               "sys.__stdout__.write", "sys.stderr.writelines", "sys.stdout.writelines",
+               "sys.__stderr__.writelines", "sys.__stdout__.writelines", "os.write",
+               "warnings.warn", "_raised_nothing")
+_IMPORTED_FROM = ("pytest", "os", "sys", "warnings", "logging", "subprocess", "textwrap")
+#: A terminal reporter's write (T257zzzd; RV9-42, S1): `.write_line`,
+#: `.write_sep`, `.line`, `.write_raw`, `.section` or `.rewrite` of any object,
+#: and `.write` of a name of `_REPORTERS`, of an attribute `_tw`, or of a
+#: call's result `get_terminal_writer()` (T257zzzm; lane 2's targeted check
+#: RV9-44 of P09 at `3faf9453`, N-2). pgcluster's `pytest_terminal_summary`
+#: writes the run's foot so, to CI's terminal.
+_REPORTER_WRITES = ("write_line", "write_sep", "line", "write_raw", "section", "rewrite")
+_REPORTERS = ("terminalreporter", "tr", "reporter", "tw", "_tw")
+#: The one place the check is told not to name, as (file, function, name)
+#: (T257zzzd; RV9-42, S1; lane 2's pre-review RV9-41 of P09 at `4895579`,
+#: N4): in pgcluster's `pytest_terminal_summary`, the module list `_DATACL`,
+#: which holds psql's raw answer for a clone's `pg_database.datacl`, its
+#: access list, and which the run's foot prints, as open point 12 requires.
+#: It exempts every use of the name in that function, a second write, a loop
+#: over it, a name bound from it and a function nested in it among them, not
+#: the one foot line, in any module whose file is named pgcluster.py
+#: (T257zzzn; lane 2's targeted check RV9-44 of P09 at `3faf9453`, N-1).
+#: Today the foot line is its one use there.
+_EXEMPT = (("pgcluster.py", "pytest_terminal_summary", "_DATACL"),)
+#: A logging call (T257zy): `logging.<method>`, or `<name>.<method>` where the
+#: name is `log` or `logger`, in any case.
+_LOG_METHODS = ("debug", "info", "warning", "warn", "error", "exception", "critical", "log")
+#: Calls whose result keeps the text of a stream given to them; a name bound to
+#: any other call's result is not followed (T257zp; T257zy).
+_TEXT_CALLS = ("str", "repr", "format", "sorted", "list", "tuple", "set", "reversed", "next",
+               "min", "max", "iter", "enumerate", "zip", "filter", "map", "dict", "vars",
+               "textwrap.indent", "textwrap.dedent", "textwrap.fill", "textwrap.wrap",
+               "textwrap.shorten")
+#: Methods whose result is a stream's text, of whatever object they are called
+#: on (T257zy; lane 2's targeted check RV9-39 of P09 at `3c5b68bc`, S2):
+#: managed's `Session.send`, `said = held.send(...)`. Their object is the
+#: stream's base.
+_STREAM_RESULTS = ("send",)
+#: A whole process (T257zy): a name of these, a name its function binds to one
+#: of these calls, or a parameter annotated as one. Formatted whole (`{proc}`,
+#: `{proc!r}`, `repr(proc)`), a `CompletedProcess` shows both its streams.
+_PROCESS_NAMES = ("proc", "process", "result", "completed")
+_PROCESS_CALLS = ("subprocess.run", "subprocess.Popen", "subprocess.CompletedProcess",
+                  "CompletedProcess", "Popen")
+#: The words, in a string of the message's own, that say a stream given bare to
+#: the helper has no exit (T257zy). They are taken at their word. A string
+#: inside a call of `_said_safely`, its `stream=` among them, is the helper's
+#: and not the message's (T257zzze; RV9-42, N2).
+_NO_EXIT = "no exit"
+#: Functions whose returned text is a failure message (T257zy): pgcluster's
+#: `_psql_failed` (T229k), `_counted` (T229m) and `Cluster.log_tail` (T229l).
+#: Their returns are read as messages. A call of one in a message is read but
+#: for a whole process given to it, whose exit and counts it shows (T257zzzf;
+#: lane 2's pre-review RV9-42 of P09 at `857a41d2`, N1). A maker's own
+#: parameters are no streams to the check, so one that returned its text
+#: parameter's text would pass: that is a limit, named here.
+_MESSAGE_MAKERS = ("_psql_failed", "_counted", "log_tail")
+
+
+def _raw_streams_in(path: Path, only: tuple = ()) -> list:
+    """Each place in `path`'s source where a failure message formats a
+    captured stream other than through `_said_safely` (T257zi; T257zp, lane
+    2's pre-review RV9-37 of P09 at `d9a1f2bf`, S6; T257zy, lane 2's
+    pre-review RV9-38 of P09 at `3f9fcac4`, S1, and targeted check RV9-39 at
+    `3c5b68bc`, S1, S2 and S4). Each is `file:line: the expression`. With
+    `only`, qualified function names (`Cluster.psql`), only places inside
+    those functions are named, and the module's docstring is not read.
+
+    A failure message is an assert's message, the arguments of a raise of
+    any class, or of a name its function bound to a call and then raised,
+    the value a function of `_MESSAGE_MAKERS` returns, and the arguments of
+    a call of `_SINK_CALLS` but its `file=` destination, of a logging call
+    (`_LOG_METHODS`), of a terminal reporter's write (`_REPORTER_WRITES`,
+    `_REPORTERS`; T257zzzd), or of a call whose name ends `Error` or
+    `Exception`, each by its dotted name with its first part resolved
+    (`_SINK_CALLS`' note). A
+    stream there is an attribute of `_STREAM_ATTRS`, `getattr(x, "<one of
+    them>")`, a name of `_STREAM_NAMES`, a call of `_STREAM_CALLS` or of a
+    method of `_STREAM_RESULTS`, a call `.said()`, a name its function or an
+    enclosing function binds to text built from any of these (below), or a
+    whole process (`_PROCESS_NAMES`, a name bound to a call of
+    `_PROCESS_CALLS`, a parameter annotated `CompletedProcess` or `Popen`)
+    formatted whole. Inside a call of `_SAFE_CALLS` only its first argument
+    is exempt: `_said_safely`'s `stream`, `_whole`'s `what` and every other
+    argument is read as the message is. A pipe's `.closed` is no stream.
+
+    Also a place, anywhere in a function: `int()` or `float()` of a stream,
+    whose ValueError quotes the text in its own message, which every
+    traceback style prints; and `pytest.raises(match=<a stream>)`, whose
+    failure prints its pattern.
+
+    A name is bound to a stream's text (T257zp) by `=`, `+=`, `:=`, a `for`
+    or a `with` anywhere in its function, from an expression that holds a
+    stream: an attribute or a slice of one, a method of one (`strip()`,
+    `split()`, `splitlines()`, `decode()`), a str's `join` of one, one of
+    `_TEXT_CALLS` given one, or a literal, an f-string or an operator that
+    holds one. The order of the function's statements is not read: such a
+    name is one in the whole of its function, in each function nested in it
+    (a closure, T257zy), and, where a nested function binds it, in its
+    enclosing function too. A comprehension's result holds a stream where its
+    element does, its loop names taking their iterables' text. A tuple or
+    list literal is followed by position, so `said[0]` of `said =
+    (proc.returncode, proc.stdout)` is not a stream, nor is `argv[0]` where
+    `argv` is looped over rows of literals and only its third item came from
+    a stream. A name the module binds at its top level, which a function
+    gives a stream's text by `.append`, `.extend` or `.insert`
+    (`_DATACL.append(...)`), is a stream in every function (T257zzzd).
+
+    A module whose docstring does not say PYTEST_DONT_REWRITE is a place too
+    (T257zj): pytest's assertion rewriting would add each tested operand, a
+    raw stream among them, to a failure's message.
+
+    THE EXIT (T257zn; T257zq; structural since T257zy, RV9-39's S1: before
+    it, any `exit`, `returncode` or `.code` anywhere in the message's text,
+    identifiers and prose among them, counted). Each call of `_said_safely`
+    in a message, or in a value bound to a name the message formats, that
+    is given a bare stream, must show that stream's exit, or say that it has
+    none. Such a name is followed through every value its function binds it
+    to by `=`, an annotated `=`, `+=` or `:=`, from name to name, in no
+    order, its rebindings included (T257zzze; lane 2's pre-review RV9-42 of
+    P09 at `857a41d2`, S2), and what those values show is the message's
+    too. Bare is: an expression holding a stream attribute, a name bound to
+    a stream's text, a name bound to a call of a method of
+    `_STREAM_RESULTS`, a parameter annotated as text (`str`, `bytes`,
+    `bytearray` or `AnyStr`, anywhere in its annotation, `*args` and
+    `**kwargs` included), or a `CompletedProcess` made in the message, or
+    bound to a name, with an exit other than `<X>.returncode` (a constant,
+    `-1`, `returncode=-9`; T257zzze). The stream's object is its base: `proc` of
+    `proc.stderr` or of `copied = proc.stderr.strip()`, `held` of `said =
+    held.send(...)`. Its exit is shown by `exit=` given to the helper, as
+    `<base>.returncode` or `<base>.code`, as None (the helper says "no
+    exit"), or as a parameter annotated `int` where the stream has no base;
+    or, in the message, by `<base>.returncode`, `<base>.code`,
+    `<base>.exit_now()` or `_said_safely(<base>)`; or by the words of
+    `_NO_EXIT` in a string of the message's own, outside any call of
+    `_said_safely` (T257zzze; RV9-42, N2: `stream="no exit"` is the
+    helper's).
+
+    What it cannot see (T257zp; T257zy): a name bound to the result of any
+    other call (`files = m.passfiles(proc.stdout)`, `with ctx(proc.stdout)
+    as t`), though a call given a stream inside a message is a place; text
+    that reaches a message through another function (`_burst_report`'s
+    rows), an attribute (`self.err = proc.stderr`) or a container's item
+    assigned later, but a top-level name's `.append`, `.extend` or
+    `.insert`; a module-level statement; an exception's own text
+    formatted in a message (`str(failed.value)`, `{exc}`), which the check
+    cannot tell from a helper's message, and an exception that code the test
+    calls raises with text of its own, which pytest prints under every
+    traceback style (T257zs's `_error_safely` is the form for the product's
+    errors; `Cluster.psql`'s is T229k's); `pytest.raises(match=...)`'s
+    failure, which prints the exception's text beside its pattern; a
+    parser but `int()` and `float()` whose error quotes the text it was
+    given, which every traceback style prints: a dict's lookup by a stream's
+    text as its key (its KeyError), `list.index`, `datetime.fromisoformat`,
+    `strptime` and `ipaddress`'s parsers (T257zzzg; lane 2's pre-review
+    RV9-42 of P09 at `857a41d2`, N3); `json.loads` of a stream, whose
+    error quotes no text but whose frame's argument `s` a long traceback
+    prints, as it prints every frame's
+    arguments: pytest's own report of a failed test, a fixture or a
+    teardown prints no frame's arguments only at the short style T205e makes
+    the default, and an explicit `--tb=long`, `--fulltrace` or
+    `--showlocals` prints them; the words of `_NO_EXIT`, taken as true; a
+    name bound more than once, whose every binding is read as one and
+    whose exit evidence in any binding counts for all, since neither the
+    order of statements nor a branch is read (`shown =
+    _said_safely(copied)`, then `if flag: shown = f"exit
+    {proc.returncode}"`; T257zzzn; RV9-44, N-3); and
+    output that a test's process writes itself, a child's output on an
+    inherited stream among them.
+
+    One deliberate exception, named here and in `_EXEMPT`, so not a place
+    (lane 2's pre-review RV9-41 of P09 at `4895579`, N4; T257zzzd, RV9-42,
+    S1): pgcluster's `_DATACL` foot line, which `pytest_terminal_summary`
+    writes with `write_line` on every real-engine run (`... statements (open
+    point 12): <datacl>`), shows psql's raw answer for the clone's
+    `pg_database.datacl`, its access list, as open point 12 requires. The
+    check follows that answer from `new_database`'s `_DATACL.append(...)` to
+    the foot line, and `_EXEMPT` makes `_DATACL` no stream in that one
+    function: every use of it there, not only the foot line (T257zzzn;
+    RV9-44, N-1). Before T257zzzd no terminal reporter's write was a sink, so a
+    raw stream written there directly passed too."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found = []
+    if not only and "PYTEST_DONT_REWRITE" not in (ast.get_docstring(tree, clean=False) or ""):
+        found.append(f"{path.name}:1: its docstring does not say PYTEST_DONT_REWRITE")
+    aliases = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in _IMPORTED_FROM:
+            aliases.update({alias.asname or alias.name: f"{node.module}.{alias.name}" for alias in node.names})
+        elif isinstance(node, ast.Import):
+            aliases.update({alias.asname: alias.name for alias in node.names if alias.asname})
+
+    def dotted(func) -> str:
+        name = ast.unparse(func)
+        head, dot, rest = name.partition(".")
+        return aliases[head] + dot + rest if head in aliases else name
+
+    def names(target) -> list:
+        if isinstance(target, ast.Starred):
+            return names(target.value)
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return [name for element in target.elts for name in names(element)]
+        return [target.id] if isinstance(target, ast.Name) else []
+
+    def raw(node, derived: dict, message: bool = True, whole: frozenset = frozenset()):
+        """The first stream in `node`, or None. In a message (`message`) a
+        call given a stream is one, and so is a whole process of `whole`; in
+        a bound value only `_TEXT_CALLS` and methods are, and a comparison
+        is not."""
+        if isinstance(node, ast.Call) and (dotted(node.func) in _MESSAGE_MAKERS or (
+                isinstance(node.func, ast.Attribute) and node.func.attr in _MESSAGE_MAKERS)):
+            if not message:
+                return None
+            shown = [*node.args, *(k.value for k in node.keywords)]
+            return next((hit for part in shown for hit in [raw(part, derived, message)] if hit), None)
+        if isinstance(node, ast.Call) and dotted(node.func) in _SAFE_CALLS:
+            if not message:
+                return None
+            shown = [*node.args[1:], *(k.value for k in node.keywords
+                                       if k.arg not in ("said", "text", "fields", "error"))]
+            return next((hit for part in shown for hit in [raw(part, derived, message, whole)] if hit), None)
+        if isinstance(node, ast.Attribute) and node.attr == "closed":
+            return None
+        if isinstance(node, ast.Call) and dotted(node.func) == "getattr" and len(node.args) > 1 and \
+                isinstance(node.args[1], ast.Constant) and node.args[1].value in _STREAM_ATTRS:
+            return node
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and \
+                isinstance(derived.get(node.value.id), frozenset) and \
+                isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, int):
+            return node if node.slice.value in derived[node.value.id] else None
+        if ((isinstance(node, ast.Attribute) and node.attr in _STREAM_ATTRS)
+                or (isinstance(node, ast.Name) and (node.id in _STREAM_NAMES or node.id in derived))
+                or (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in _STREAM_CALLS)
+                or (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "said" and not node.args)
+                or (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in _STREAM_RESULTS)
+                or (message and isinstance(node, ast.Name) and node.id in whole)):
+            return node
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+            inner = dict(derived)
+            for loop in node.generators:
+                for name in names(loop.target):
+                    inner.pop(name, None)
+                bind(loop.target, loop.iter, inner, loop=True)
+            parts = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
+            return next((hit for part in parts for hit in [raw(part, inner, message, whole)] if hit), None)
+        if not message and isinstance(node, ast.Call) and not (
+                (isinstance(node.func, ast.Attribute)
+                 and (isinstance(node.func.value, ast.Constant)
+                      or raw(node.func.value, derived, message) is not None))
+                or dotted(node.func) in _TEXT_CALLS):
+            return None
+        if not message and isinstance(node, (ast.Compare, ast.Lambda)):
+            return None
+        for child in ast.iter_child_nodes(node):
+            base = (isinstance(node, ast.Attribute) and child is node.value) or \
+                (isinstance(node, ast.Call) and child is node.func)
+            hit = raw(child, derived, message, frozenset() if base else whole)
+            if hit is not None:
+                return hit
+        return None
+
+    def shape(value, derived: dict, loop: bool):
+        """What of `value` is a stream's text: "all", or the positions of a
+        literal's items that are (a loop's: of any of its rows)."""
+        rows = value.elts if loop and isinstance(value, (ast.Tuple, ast.List)) else \
+            [value] if not loop and isinstance(value, (ast.Tuple, ast.List)) else None
+        if rows is None:
+            return "all" if raw(value, derived, message=False) is not None else frozenset()
+        if any(not isinstance(row, (ast.Tuple, ast.List)) and raw(row, derived, message=False)
+               for row in rows):
+            return "all"
+        return frozenset(i for row in rows if isinstance(row, (ast.Tuple, ast.List))
+                         for i, item in enumerate(row.elts)
+                         if raw(item, derived, message=False) is not None)
+
+    def bind(target, value, derived: dict, loop: bool = False) -> bool:
+        """Mark the names `target` binds from `value` that hold a stream's
+        text; True where one is new."""
+        if isinstance(target, ast.Starred):
+            target = target.value
+        if isinstance(target, (ast.Tuple, ast.List)):
+            rows = value.elts if loop and isinstance(value, (ast.Tuple, ast.List)) else \
+                [value] if not loop and isinstance(value, (ast.Tuple, ast.List)) else None
+            if rows is not None and all(isinstance(row, (ast.Tuple, ast.List))
+                                        and len(row.elts) == len(target.elts) for row in rows):
+                columns = [ast.Tuple(elts=[row.elts[i] for row in rows], ctx=ast.Load())
+                           for i in range(len(target.elts))]
+                return any([bind(part, column, derived, loop=True)
+                            for part, column in zip(target.elts, columns)])
+            return any([bind(part, value, derived, loop) for part in target.elts])
+        if not isinstance(target, ast.Name):
+            return False
+        held = shape(value, derived, loop)
+        if not held or derived.get(target.id) in (held, "all"):
+            return False
+        derived[target.id] = held if target.id not in derived else "all"
+        return True
+
+    def bindings(function) -> list:
+        """Each (target, value, loop) its function binds, nested ones too."""
+        pairs = []
+        for node in ast.walk(function):
+            if isinstance(node, ast.Assign):
+                pairs += [(target, node.value, False) for target in node.targets]
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr, ast.AugAssign)) and node.value is not None:
+                pairs.append((node.target, node.value, False))
+            elif isinstance(node, ast.For):
+                pairs.append((node.target, node.iter, True))
+            elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+                pairs.append((node.optional_vars, node.context_expr, False))
+        return pairs
+
+    def derived_in(function, seed: dict) -> dict:
+        derived, changed = dict(seed), True
+        while changed:
+            changed = False
+            for target, value, loop in bindings(function):
+                changed = bind(target, value, derived, loop) or changed
+        return derived
+
+    def bases(expr, origin: dict) -> set:
+        """The objects whose streams `expr` holds (its bases)."""
+        found_ = set()
+        for node in ast.walk(expr):
+            if isinstance(node, ast.Attribute) and node.attr in _STREAM_ATTRS:
+                found_.add(ast.unparse(node.value))
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and \
+                    node.func.attr in _STREAM_RESULTS:
+                found_.add(ast.unparse(node.func.value))
+            elif isinstance(node, ast.Name) and node.id in origin:
+                found_ |= origin[node.id]
+        return found_
+
+    def origins_in(function, seed: dict, derived: dict) -> dict:
+        """Each name bound to a stream's text, or by `X.communicate()` or
+        bounds' `_communicated(X)`: its bases."""
+        origin, changed = {k: set(v) for k, v in seed.items()}, True
+        while changed:
+            changed = False
+            for target, value, _ in bindings(function):
+                if isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) and \
+                        value.func.attr == "communicate":
+                    held = {ast.unparse(value.func.value)}
+                elif isinstance(value, ast.Call) and dotted(value.func) == "_communicated" and value.args:
+                    held = {ast.unparse(value.args[0])}
+                elif raw(value, derived, message=False) is not None:
+                    held = bases(value, origin)
+                else:
+                    continue
+                for name in names(target):
+                    if not held <= origin.get(name, set()):
+                        origin[name] = origin.get(name, set()) | held
+                        changed = True
+        return origin
+
+    def annotated(function, pattern: str) -> set:
+        given = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs,
+                 *[a for a in (function.args.vararg, function.args.kwarg) if a is not None]]
+        return {a.arg for a in given if a.annotation is not None
+                and re.search(pattern, ast.unparse(a.annotation))}
+
+    def made_in(function) -> dict:
+        """Each name its function binds to a call: the call (its last)."""
+        return {target.id: node.value for node in ast.walk(function)
+                if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)) and isinstance(node.value, ast.Call)
+                for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+                if isinstance(target, ast.Name)}
+
+    def told_in(function) -> dict:
+        """Each name its function binds by `=`, an annotated `=`, `+=` or
+        `:=`: every value it is given, in no order."""
+        told_ = {}
+        for node in ast.walk(function):
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)) and \
+                    node.value is not None:
+                for target in (node.targets if isinstance(node, ast.Assign) else [node.target]):
+                    for name in names(target):
+                        told_.setdefault(name, []).append(node.value)
+        return told_
+
+    functions = [node for node in ast.walk(tree)
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    owner = {id(node): function for function in functions for node in ast.walk(function)}
+    enclosing = {}
+
+    def nest(node, outer) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if outer is not None:
+                    enclosing[id(child)] = outer
+                nest(child, child)
+            else:
+                nest(child, outer)
+    nest(tree, None)
+    qualified = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                prefix = qualified.get(id(node))
+                qualified[id(child)] = f"{prefix}.{child.name}" if prefix else child.name
+    top = {name for node in tree.body if isinstance(node, (ast.Assign, ast.AnnAssign))
+           for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+           for name in names(target)}
+    kept = {}
+    for function in functions:
+        local = derived_in(function, {})
+        kept.update({node.func.value.id: "all" for node in ast.walk(function)
+                     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                     and node.func.attr in ("append", "extend", "insert")
+                     and isinstance(node.func.value, ast.Name) and node.func.value.id in top
+                     and any(raw(arg, local, message=False) is not None for arg in node.args)})
+    bound, origins, wholes, texts, ints, made, told, helps = {}, {}, {}, {}, {}, {}, {}, {}
+
+    def facts(function) -> None:
+        if id(function) in bound:
+            return
+        outer = enclosing.get(id(function))
+        if outer is not None:
+            facts(outer)
+        texts[id(function)] = annotated(function, r"\b(str|bytes|bytearray|AnyStr)\b") | \
+            (texts[id(outer)] if outer is not None else set())
+        ints[id(function)] = annotated(function, r"\bint\b") - texts[id(function)]
+        bound[id(function)] = derived_in(function, bound[id(outer)] if outer is not None else {
+            name: held for name, held in kept.items()
+            if (path.name, qualified.get(id(function)), name) not in _EXEMPT})
+        origins[id(function)] = origins_in(function, origins[id(outer)] if outer is not None else {},
+                                           bound[id(function)])
+        made[id(function)] = {**(made[id(outer)] if outer is not None else {}), **made_in(function)}
+        told[id(function)] = {name: list(values) for name, values in
+                              (told[id(outer)] if outer is not None else {}).items()}
+        for name, values in told_in(function).items():
+            told[id(function)].setdefault(name, []).extend(values)
+        helps[id(function)], changed = set(), True
+        while changed:
+            changed = False
+            for name, values in told[id(function)].items():
+                if name not in helps[id(function)] and any(
+                        (isinstance(n, ast.Call) and dotted(n.func) == "_said_safely")
+                        or (isinstance(n, ast.Name) and n.id in helps[id(function)])
+                        for value in values for n in ast.walk(value)):
+                    helps[id(function)].add(name)
+                    changed = True
+        wholes[id(function)] = frozenset(
+            set(_PROCESS_NAMES) | annotated(function, r"\b(CompletedProcess|Popen)\b")
+            | {name for name, call in made[id(function)].items() if dotted(call.func) in _PROCESS_CALLS}
+            | (wholes[id(outer)] if outer is not None else frozenset())) - set(bound[id(function)])
+
+    for function in functions:
+        facts(function)
+
+    def inside(node) -> bool:
+        if not only:
+            return True
+        function = owner.get(id(node))
+        while function is not None:
+            if qualified.get(id(function)) in only:
+                return True
+            function = enclosing.get(id(function))
+        return False
+
+    def place(line: int, text: str) -> None:
+        if f"{path.name}:{line}: {text}" not in found:
+            found.append(f"{path.name}:{line}: {text}")
+
+    def walk(message: list, function, line: int, here: bool) -> None:
+        derived = bound[id(function)] if function is not None else {}
+        whole = wholes[id(function)] if function is not None else frozenset(_PROCESS_NAMES)
+        for part in message:
+            hit = raw(part, derived, True, whole)
+            if hit is not None:
+                place(line if here else getattr(hit, "lineno", line), ast.unparse(hit)[:80])
+
+    def exitless(message: list, function, line: int) -> None:
+        derived = bound[id(function)] if function is not None else {}
+        origin = origins[id(function)] if function is not None else {}
+        text_args = texts[id(function)] if function is not None else set()
+        int_args = ints[id(function)] if function is not None else set()
+        named = made[id(function)] if function is not None else {}
+        values = told[id(function)] if function is not None else {}
+        followed = helps[id(function)] if function is not None else set()
+        parts, seen, nodes = list(message), set(), []
+        while parts:
+            for n in ast.walk(parts.pop()):
+                nodes.append(n)
+                if isinstance(n, ast.Name) and n.id in followed and n.id not in seen:
+                    seen.add(n.id)
+                    parts += values[n.id]
+        calls = [n for n in nodes if isinstance(n, ast.Call) and dotted(n.func) == "_said_safely"]
+        helpers = {id(n) for call in calls for n in ast.walk(call)}
+        words = " ".join(n.value for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                         and id(n) not in helpers)
+
+        def closed(expr):
+            """The object whose ended process `expr` is: `X` where its
+            function bound `expr` to `X.close()`."""
+            call = named.get(expr.id) if isinstance(expr, ast.Name) else None
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "close":
+                return ast.unparse(call.func.value)
+            return None
+
+        def fabricated(expr) -> bool:
+            """A `CompletedProcess` made in the message, or in any value
+            bound to the name `expr`, whose exit is not `<X>.returncode`."""
+            for call in values.get(expr.id, []) if isinstance(expr, ast.Name) else [expr]:
+                if isinstance(call, ast.Call) and dotted(call.func).endswith("CompletedProcess"):
+                    code = call.args[1] if len(call.args) > 1 else next(
+                        (k.value for k in call.keywords if k.arg == "returncode"), None)
+                    if not (isinstance(code, ast.Attribute) and code.attr == "returncode"):
+                        return True
+            return False
+
+        for call in calls:
+            said = call.args[0] if call.args else next((k.value for k in call.keywords if k.arg == "said"), None)
+            if said is None:
+                continue
+            base = bases(said, origin)
+            bare = fabricated(said) or raw(said, derived, message=False) is not None or \
+                (isinstance(said, ast.Name) and said.id in text_args)
+            if not bare:
+                continue
+            given = next((k.value for k in call.keywords if k.arg == "exit"), None)
+            if given is not None:
+                shown = (isinstance(given, ast.Constant) and given.value is None) or \
+                    (isinstance(given, ast.Attribute) and given.attr in ("returncode", "code")
+                     and ast.unparse(given.value) in base) or \
+                    (isinstance(given, ast.Name) and given.id in int_args and not base)
+            else:
+                shown = _NO_EXIT in words or any(
+                    (isinstance(n, ast.Attribute) and n.attr in ("returncode", "code")
+                     and ast.unparse(n.value) in base)
+                    or (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                        and n.func.attr == "exit_now" and ast.unparse(n.func.value) in base)
+                    or (isinstance(n, ast.Call) and dotted(n.func) == "_said_safely" and n.args
+                        and (ast.unparse(n.args[0]) in base or closed(n.args[0]) in base))
+                    for n in nodes)
+            if not shown:
+                place(line, f"a bare stream and no exit: {ast.unparse(call)[:70]}")
+
+    for node in ast.walk(tree):
+        if not inside(node):
+            continue
+        function = owner.get(id(node))
+        if isinstance(node, ast.Assert) and node.msg is not None:
+            message = [node.msg]
+        elif isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
+            message = [*node.exc.args, *(k.value for k in node.exc.keywords)]
+        elif isinstance(node, ast.Raise) and isinstance(node.exc, ast.Name) and function is not None \
+                and node.exc.id in made[id(function)]:
+            call = made[id(function)][node.exc.id]
+            message = [*call.args, *(k.value for k in call.keywords)]
+            walk(message, function, node.lineno, True)
+            exitless(message, function, node.lineno)
+            continue
+        elif isinstance(node, ast.Return) and node.value is not None and function is not None and \
+                function.name in _MESSAGE_MAKERS:
+            message = [node.value]
+        elif isinstance(node, ast.Call) and (
+                dotted(node.func) in _SINK_CALLS or dotted(node.func).endswith(("Error", "Exception"))
+                or (isinstance(node.func, ast.Attribute) and node.func.attr in _REPORTER_WRITES)
+                or (isinstance(node.func, ast.Attribute) and node.func.attr == "write"
+                    and ((isinstance(node.func.value, ast.Name) and node.func.value.id in _REPORTERS)
+                         or (isinstance(node.func.value, ast.Attribute) and node.func.value.attr == "_tw")
+                         or (isinstance(node.func.value, ast.Call)
+                             and ast.unparse(node.func.value.func).endswith("get_terminal_writer"))))
+                or (isinstance(node.func, ast.Attribute) and node.func.attr in _LOG_METHODS
+                    and (dotted(node.func.value) == "logging"
+                         or (isinstance(node.func.value, ast.Name)
+                             and node.func.value.id.lower() in ("log", "logger"))))):
+            message = [*node.args, *(k.value for k in node.keywords if k.arg != "file")]
+        elif isinstance(node, ast.Call) and dotted(node.func) in ("int", "float") and node.args:
+            derived = bound[id(function)] if function is not None else {}
+            hit = raw(node.args[0], derived)
+            if hit is not None:
+                place(node.lineno, f"{dotted(node.func)}() of a stream: {ast.unparse(hit)[:60]}")
+            continue
+        elif isinstance(node, ast.Call) and dotted(node.func) == "pytest.raises":
+            derived = bound[id(function)] if function is not None else {}
+            for k in node.keywords:
+                hit = raw(k.value, derived) if k.arg == "match" else None
+                if hit is not None:
+                    place(node.lineno, f"pytest.raises(match=) of a stream: {ast.unparse(hit)[:60]}")
+            continue
+        else:
+            continue
+        walk(message, function, node.lineno, False)
+        exitless(message, function, node.lineno)
+    return found
+
+
+def test_no_failure_message_formats_a_captured_stream_but_through_the_one_helper():
+    """The static check (T257zi; lane 3's ruling 6946445277 on lane 2's
+    pre-review RV9-36 of P09 at `2407ea06`, S2: "a test reads the three
+    modules and fails if an assert message formats a captured stdout or
+    stderr other than through the helper, so the class stays closed"), with
+    no engine and nothing imported: bounds, measure and managed are parsed,
+    and no failure message in them formats a captured stream other than
+    through `_said_safely` (`_raw_streams_in`). Each place found is named
+    by file and line. Each of the three must also say PYTEST_DONT_REWRITE in
+    its docstring (T257zj; RV9-37, B1), since pytest's assertion rewriting
+    would put each tested operand's value, a raw stream or a whole
+    `CompletedProcess` among them, beside every message the helper made.
+    And each message that gives the helper a bare stream shows that
+    stream's exit, or says it has none (T257zn; T257zq; structural since
+    T257zy). Since T257zy it also reads the whole of `tests/pgcluster.py`
+    (lane 3's rulings 6947252648, S4, and 6949488277, B2: T229k to T229s
+    made its raises show exits and counts only), docstring rule included.
+
+    The forms it catches and the forms it cannot see are listed in
+    `_raw_streams_in`'s docstring, so a 0 here is no proof that no text of
+    a stream reaches a failure's output."""
+    here = Path(__file__).resolve().parent
+    found = [place for name in ("test_sql_register_bounds.py", "test_sql_register_measure.py",
+                                "test_sql_register_managed.py")
+             for place in _raw_streams_in(here / name)]
+    found += _raw_streams_in(here / "pgcluster.py")
+    assert not found, (f"{len(found)} place(s) can show a captured stream other than "
+                       f"through _said_safely:\n" + "\n".join(found))
+
+
+#: A module for `test_the_static_check_names_each_kind_of_place_it_catches`
+#: (T257zp; T257zy): each line marked `# planted` is a place, each marked
+#: `# clean` is not. Parsed only, never imported or run.
+_PLANTED = '''"""PYTEST_DONT_REWRITE"""
+import logging
+import os
+import subprocess
+import sys
+import textwrap
+import warnings
+
+import pytest
+import pytest as pt
+from pytest import fail
+from sys import stderr
+
+_HELD: list = []
+
+
+def test_planted(proc, session, failed, ends, said_by, other, held, log):
+    message = f"the writer said {proc.stderr}"
+    assert proc.returncode == 0, message  # planted
+    pytest.fail(message)  # planted
+    assert session, f"held: {session.errs}"  # planted
+    assert failed, f"called: {failed.output}"  # planted
+    raise SystemExit(proc.stdout)  # planted
+    raise Stopped(proc.stderr)  # planted
+    pytest.exit(proc.stderr)  # planted
+    sys.stderr.write(proc.stderr)  # planted
+    sys.stdout.write(proc.stdout)  # planted
+    warnings.warn(proc.stdout)  # planted
+    tail = proc.stderr.strip().splitlines()[-3:]
+    assert proc.returncode == 0, f"its last lines: {tail}"  # planted
+    for line in proc.stdout.splitlines():
+        assert "LR" in line, line  # planted
+    parts = "|".join(proc.stdout.split())
+    assert parts, f"{parts}"  # planted
+    assert proc.returncode == 0, f"{_said_safely(proc)} {len(proc.stderr)} {_whole(proc.stdout, 'n')}"  # clean
+    assert proc.stdout.closed, f"{proc.stdout.closed}"  # clean
+    ended = (proc.returncode, proc.stdout, len(proc.stderr))
+    assert not ended[0], f"exit {ended[0]} after {ended[2]} bytes"  # clean
+    for argv, tool in ((["import", "--at", proc.stdout], "a"), (["reconcile"], "b")):
+        assert tool, f"{argv[0]} made no call"  # clean
+    shown = [f"writer {i}" for i, (_, _, err) in enumerate(ends) if "files mode" in err]
+    assert not shown, f"{shown}"  # clean
+    copied = proc.stderr.strip()
+    assert not copied, f"its stderr: {_said_safely(copied)}"  # planted
+    assert not copied, f"exit {proc.returncode}: {_said_safely(copied, stream='stderr')}"  # clean
+    assert not said_by, f"{_said_safely(said_by)}"  # clean
+
+    def check():
+        assert not proc.returncode, f"{tail}"  # planted
+    assert proc.returncode == 0, f"{proc}"  # planted
+    assert proc.returncode == 0, f"{proc!r}"  # planted
+    assert proc.returncode == 0, repr(proc)  # planted
+    assert proc.returncode == 0, f"{proc.returncode}: {_said_safely(proc, stream=proc.stderr)}"  # planted
+    assert proc.returncode == 0, _whole(proc.stdout, proc.stderr)  # planted
+    count = int(proc.stdout)  # planted
+    with pytest.raises(ValueError, match=proc.stderr):  # planted
+        count = int("1")  # clean
+    logging.warning(proc.stderr)  # planted
+    log.error(proc.stderr)  # planted
+    os.write(2, proc.stderr)  # planted
+    fail(proc.stderr)  # planted
+    sys.__stderr__.write(proc.stdout)  # planted
+    sys.stderr.writelines(proc.stdout.splitlines())  # planted
+    print(proc.stderr, file=sys.stderr)  # planted
+    print(f"{count} fixed words", file=sys.stderr)  # clean
+    wrapped = textwrap.indent(proc.stderr, "  ")
+    assert not count, wrapped  # planted
+    assert not count, getattr(proc, "stderr")  # planted
+    stopped = Stopped(proc.stderr)
+    raise stopped  # planted
+    assert not copied, f"the exit is not known: {_said_safely(copied)}"  # planted
+    exit_note = "x"
+    assert not copied, f"{exit_note}: {_said_safely(copied)}"  # planted
+    assert not copied, f"{other.returncode}: {_said_safely(proc.stderr)}"  # planted
+    assert not copied, f"{proc.codec}: {_said_safely(proc.stderr)}"  # planted
+    assert not copied, _said_safely(copied, stream="exit")  # planted
+    assert not copied, _said_safely(subprocess.CompletedProcess([], 0, copied, ""))  # planted
+    precomputed = _said_safely(proc.stderr)
+    assert not copied, f"{precomputed}"  # planted
+    assert not copied, f"{_said_safely(other)} {_said_safely(copied)}"  # planted
+    assert not copied, f"{_said_safely(proc)} {_said_safely(copied)}"  # clean
+    assert not copied, _said_safely(proc.stderr, exit=proc.returncode)  # clean
+    assert not copied, _said_safely(proc.stderr, exit=other.returncode)  # planted
+    answered = held.send("SELECT 1;", "m")
+    assert "ERROR" not in answered, f"{_said_safely(answered, stream='stderr')}"  # planted
+    assert "ERROR" not in answered, f"({held.exit_now()}) {_said_safely(answered, stream='stderr')}"  # clean
+    terminalreporter.write_line(proc.stdout)  # planted
+    terminalreporter.write_line(f"real-engine: {proc.stdout}")  # planted
+    reporter.write(proc.stderr)  # planted
+    tr.line(proc.stderr)  # planted
+    tr.write_sep("=", proc.stderr)  # planted
+    terminalreporter.write_raw(proc.stdout)  # planted
+    terminalreporter.write_line(f"{count} fixed words")  # clean
+    notes.write(proc.stderr)  # clean
+    stderr.write(proc.stderr)  # planted
+    pt.fail(proc.stderr)  # planted
+    config.get_terminal_writer().write(proc.stdout)  # planted
+    terminalreporter._tw.write(proc.stderr)  # planted
+    tw = terminalreporter._tw
+    tw.write(proc.stderr)  # planted
+    terminalreporter.section(proc.stdout)  # planted
+    terminalreporter.rewrite(proc.stdout)  # planted
+    terminalreporter._tw.write(f"{count} fixed words")  # clean
+    _HELD.append(proc.stderr.strip())
+    summed: str = _said_safely(copied)
+    assert not copied, f"{summed}"  # planted
+    noted = f"its stderr: {_said_safely(copied)}"
+    assert not copied, noted  # planted
+    joined = _said_safely(copied) + ""
+    assert not copied, joined  # planted
+    rebound = _said_safely(copied)
+    assert not copied, f"{rebound}"  # planted
+    rebound = len(copied)
+    assert not copied, _said_safely(subprocess.CompletedProcess([], -1, copied, ""))  # planted
+    assert not copied, _said_safely(subprocess.CompletedProcess(args=[], returncode=-9, stdout=copied))  # planted
+    assert not copied, _said_safely(copied, stream="no exit")  # planted
+    kept: str = f"exit {proc.returncode}: {_said_safely(proc.stderr)}"
+    assert not copied, kept  # clean
+    assert not copied, _said_safely(subprocess.CompletedProcess([], proc.returncode, proc.stderr, ""))  # clean
+    raise ClusterError(_psql_failed(proc.stderr, "db", proc))  # planted
+    raise ClusterError(log_tail(proc.stdout))  # planted
+    raise ClusterError(f"{_psql_failed(user, 'db', proc)} {_counted(proc)} {held.log_tail()}")  # clean
+
+
+def _planted_foot(terminalreporter):
+    terminalreporter.write_line(f"held: {_HELD[0]}")  # planted
+
+
+def _planted_text(text: str, data: bytes):
+    assert not text, f"{_said_safely(text)}"  # planted
+    assert not data, f"{_said_safely(data, stream='stderr')}"  # planted
+    assert not text, f"{_said_safely(text)}, and has no exit"  # clean
+
+
+def _planted_exit(said: str, its_exit: str, code: int | None):
+    assert not said, f"({its_exit}) {_said_safely(said)}"  # planted
+    assert not said, _said_safely(said, exit=code)  # clean
+    assert not said, _said_safely(said, exit=its_exit)  # planted
+
+
+def _planted_annotations(a: Optional[bytes], b: "str", *c: str, d: typing.Optional[str] = None,
+                         e: str | bytes = "", f: AnyStr = "", g: Union[str, bytes] = ""):
+    assert not a, f"{_said_safely(a)}"  # planted
+    assert not b, f"{_said_safely(b)}"  # planted
+    assert not c, f"{_said_safely(c)}"  # planted
+    assert not d, f"{_said_safely(d)}"  # planted
+    assert not e, f"{_said_safely(e)}"  # planted
+    assert not f, f"{_said_safely(f)}"  # planted
+    assert not g, f"{_said_safely(g)}"  # planted
+'''
+#: A module named pgcluster.py for the same test (T257zzzd; RV9-42, S1):
+#: `_EXEMPT`'s `_DATACL` line is no place, and the same line of another list,
+#: or of `_DATACL` in another function, is one.
+_PLANTED_FOOT = '''"""PYTEST_DONT_REWRITE"""
+_DATACL: list = []
+_OTHER: list = []
+
+
+def new_database(cluster):
+    acl = cluster.psql("SELECT 1").stdout.strip()
+    _DATACL.append(acl)
+    _OTHER.append(acl)
+
+
+def pytest_terminal_summary(terminalreporter):
+    terminalreporter.write_line(f"open point 12: {_DATACL[0]}")  # clean
+    terminalreporter.write_line(f"open point 12: {_OTHER[0]}")  # planted
+
+
+def elsewhere(terminalreporter):
+    terminalreporter.write_line(f"open point 12: {_DATACL[0]}")  # planted
+'''
+
+
+def test_the_static_check_names_each_kind_of_place_it_catches(tmp_path):
+    """T257zp (lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`, S6; lane 3's
+    ruling 6947252648: "the static check's blind spots, named"), with no
+    engine and nothing imported: `_raw_streams_in` reads a planted module,
+    `_PLANTED`, and names each place of each kind T257zi's check did not
+    see: a message built in a name before its assert or its `pytest.fail`,
+    `.errs` and `.output`, a raise of a class whose name ends neither
+    `Error` nor `Exception`, `pytest.exit`, `sys.stderr.write`,
+    `sys.stdout.write` and `warnings.warn`, text sliced from a stream into a
+    name, a loop over a stream's lines, and a str's `join` of one. And, for
+    the exit (T257zq; RV9-37, S9, the limit T257zn stated), a message that
+    gives the helper only a name holding a stream's text, or a parameter
+    annotated `str` or `bytes`, and shows no exit.
+
+    Since T257zy (lane 2's pre-review RV9-38 of P09 at `3f9fcac4`, S1, and
+    targeted check RV9-39 at `3c5b68bc`, S1, S2, S4 and S5), each kind those
+    reviews found unseen: a closure; a whole process formatted (`{proc}`,
+    `{proc!r}`, `repr(proc)`); a stream as the helper's `stream` or as
+    `_whole`'s `what`; `int()` of a stream and `pytest.raises(match=)` of
+    one; `logging`, a logger's method, `os.write`, `fail` imported from
+    pytest, `sys.__stderr__.write`, `.writelines` and a stream as `print`'s
+    content where its `file=` is stderr; `textwrap` and `getattr` of a
+    stream; an exception made in a name and then raised. For the exit, each
+    of RV9-39's forms that passed the word rule: "exit" in prose or in an
+    identifier, another process's `returncode`, `.codec`, `stream='exit'`, a
+    `CompletedProcess` made with a constant exit, a helper's text made
+    before the message, a message whose other helper call shows another
+    process's exit, an `exit=` of another process, a name bound to
+    `held.send(...)`, `its_exit` as text, and the parameter annotations
+    `Optional[bytes]`, a quoted `"str"`, `*args: str`,
+    `typing.Optional[str]`, `str | bytes`, `AnyStr` and `Union[str,
+    bytes]`. It names no line marked clean: the helper, `len()` and
+    `_whole()`, a pipe's `.closed`, a literal's item that holds no stream
+    (`ended[0]`, `argv[0]`), a comprehension whose element holds none, a
+    message whose stream's own exit is shown (by its `returncode`, the
+    helper given its process whole, `exit=` of its own `returncode` or of an
+    `int` parameter, or `exit_now()` of its session), a message that says
+    it has no exit, and fixed words printed to stderr.
+
+    Since T257zzzd (lane 2's pre-review RV9-42 of P09 at `857a41d2`, S1):
+    a terminal reporter's `write_line`, `write`, `line`, `write_sep` and
+    `write_raw`, `stderr.write` after `from sys import stderr`, `pt.fail`
+    after `import pytest as pt`, and a module list a function appends a
+    stream's text to, written in another function; and, in a module named
+    pgcluster.py (`_PLANTED_FOOT`), the same line of `_DATACL` in
+    `pytest_terminal_summary` (`_EXEMPT`) is clean while that of another
+    list, or of `_DATACL` elsewhere, is a place. A file's `write` and fixed
+    words written to the terminal are clean. Since T257zzzm (RV9-44, N-2):
+    `get_terminal_writer().write`, `_tw.write` (of the attribute, or of a
+    name `tw` bound to it), `.section` and `.rewrite`.
+
+    Since T257zzze (RV9-42, S2 and N2), for the exit: a helper's text made
+    before the message by an annotated `=`, in an f-string held in a name,
+    by a concatenation, or in a name later rebound to another call; a
+    `CompletedProcess` made with exit `-1` or `returncode=-9`; and the words
+    "no exit" only in the helper's own `stream=`. A message built in a name
+    that shows its stream's exit, and a `CompletedProcess` made with its
+    process's `returncode`, are clean.
+
+    Since T257zzzf (RV9-42, N1): a stream given to a message maker
+    (`_MESSAGE_MAKERS`) is a place; its process given whole is clean."""
+    (tmp_path / "foot").mkdir()
+    for planted, text in ((tmp_path / "test_planted.py", _PLANTED),
+                          (tmp_path / "foot" / "pgcluster.py", _PLANTED_FOOT)):
+        planted.write_text(text, encoding="utf-8")
+        lines = text.splitlines()
+        want = sorted(i + 1 for i, line in enumerate(lines) if line.endswith("# planted"))
+        clean = {i + 1 for i, line in enumerate(lines) if line.endswith("# clean")}
+        found = _raw_streams_in(planted)
+        named = sorted({int(place.split(":")[1]) for place in found})
+        assert named == want, (f"in {planted.name}, the check named lines {named}, not the planted "
+                               f"{want}:\n" + "\n".join(found))
+        assert not clean & set(named), f"the check named a clean line: {sorted(clean & set(named))}"
+        assert all(place.startswith(f"{planted.name}:") for place in found), "\n".join(found)
+
+
+def test_a_failed_psqls_cluster_error_shows_no_line_of_its_stderr(monkeypatch):
+    """T257zk (lane 3's ruling 6947252648 on lane 2's pre-review RV9-37 of
+    P09 at `d9a1f2bf`, S4; T229k), with no engine and no process: psql,
+    run by `Cluster.psql`, exits 3 with stderr that echoes a role statement
+    holding a planted value, once at psql's default verbosity and once at
+    verbose, with a SQLSTATE. The `ClusterError` raised shows the exit, the
+    SQLSTATE where there is one and the counts, and the planted value is in
+    neither its `str` nor its `repr` nor its formatted traceback. Before
+    T229k the error held psql's whole stderr. The planted value is no
+    credential of any login."""
+    import traceback
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+    cluster = object.__new__(pgcluster.Cluster)
+    cluster.root, cluster.bindir, cluster.port = Path("/nonexistent"), Path("/nonexistent/bin"), 5432
+    for err, state in ((f"psql:<stdin>:1: ERROR:  syntax error at or near \"x\"\n"
+                        f"LINE 1: CREATE ROLE r LOGIN PASSWORD '{planted}' x;\n        ^\n",
+                        "no SQLSTATE in its text"),
+                       (f"ERROR:  42601: syntax error at or near \"x\"\n"
+                        f"LINE 1: ALTER ROLE r PASSWORD '{planted}' x;\n"
+                        f"LOCATION:  scanner_yyerror, scan.l:1188\n", "SQLSTATE 42601")):
+        monkeypatch.setattr(pgcluster.subprocess, "run",
+                            lambda argv, err=err, **k: subprocess.CompletedProcess(argv, 3, "", err))
+        with pytest.raises(pgcluster.ClusterError) as failed:
+            cluster.psql("SELECT 1", dbname="register", user="lanes_admin")
+        said = "".join(traceback.format_exception(failed.type, failed.value, failed.tb))
+        assert planted not in str(failed.value), "the planted value is in the error's text"
+        assert planted not in repr(failed.value), "the planted value is in the error's repr"
+        assert planted not in said, "the planted value is in the formatted traceback"
+        assert str(failed.value) == (f"psql as lanes_admin on register exited 3: {state}; stderr: "
+                                     f"3 line(s), 1 of them ERROR, FATAL or PANIC lines; no line "
+                                     f"of it is shown"), f"the error says: {failed.value}"
+
+
+def test_a_failed_psql_given_a_password_shows_it_in_no_failure_output(monkeypatch, request):
+    """T257zu (lane 2's pre-review RV9-38 of P09 at `3f9fcac4`, S2; lane 3's
+    rulings 6947252648, S4, and 6949488277, B1), with no engine and no
+    process: `Cluster.psql` is given a role statement whose password is a
+    planted value, as managed sends one (`CREATE ROLE ... LOGIN PASSWORD
+    '...'`), and psql, a stand-in, fails on it and echoes the statement it
+    was given, as psql does (`LINE 1: ...`). T257zk's case gave psql
+    `SELECT 1` and echoed a statement never sent. The `ClusterError` holds
+    the planted value in none of its `str`, `repr`, `args` or formatted
+    traceback, nor does pytest's own report of the failure (`_reported`),
+    where the statement is the raising frame's argument `sql`. The planted
+    value is no credential of any login."""
+    import traceback
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+    cluster = object.__new__(pgcluster.Cluster)
+    cluster.root, cluster.bindir, cluster.port = Path("/nonexistent"), Path("/nonexistent/bin"), 5432
+    echoed = []
+
+    def psql(argv, input=None, **kwargs):
+        first = (input or "").splitlines()[0]
+        echoed.append(first)
+        return subprocess.CompletedProcess(argv, 3, "", (f"psql:<stdin>:1: ERROR:  syntax error at or near \"x\"\n"
+                                                         f"LINE 1: {first}\n        ^\n"))
+    monkeypatch.setattr(pgcluster.subprocess, "run", psql)
+    with pytest.raises(pgcluster.ClusterError) as failed:
+        cluster.psql(f"CREATE ROLE lanes_w_bare LOGIN PASSWORD '{planted}' x;\n", dbname="register",
+                     user="lanes_admin")
+    assert echoed and planted in echoed[0], "psql was not given the planted statement, so this proves nothing"
+    error = failed.value
+    shown = "".join(traceback.format_exception(type(error), error, failed.tb))
+    for where, said in (("its str", str(error)), ("its repr", repr(error)), ("its args", repr(error.args)),
+                        ("its formatted traceback", shown), ("pytest's report", _reported(request, failed))):
+        assert planted not in said, f"the planted value is in {where}"
 
 
 # ============================== D9's rollback and cutover rows (T278), real engine
@@ -2831,11 +5067,11 @@ class Operator:
                                  f"2026-10-01T05:20:00Z: opensoft/repoH main {TIP_A}",
                                  env={"LANES_LANE": OPERATOR})
             assert proc.returncode == 0, (
-                f"the dead HOLD's release, lanes-edit.sh append-line: {proc.stdout}{proc.stderr}")
+                f"the dead HOLD's release, lanes-edit.sh append-line: {_said_safely(proc)}")
             self.reg.c = self.reg.tip()
         proc = self.reg.import_at(pg, self.reg.c)
         assert proc.returncode == 0, \
-            f"lanes-index import --at C (lane 1's T115): {proc.returncode}: {proc.stderr}"
+            f"lanes-index import --at C (lane 1's T115): {proc.returncode}: {_said_safely(proc.stderr)}"
         self.bin = tmp_path / "bin"
         self.bin.mkdir()
         (self.bin / "psql").write_text(TIMING_PSQL, encoding="utf-8")
@@ -2863,7 +5099,7 @@ class Operator:
                                {"PATH": self.reg.env["PATH"]})
             assert proc.returncode == 0, (
                 f"the estate's cutover --import C (lane 3's T327): {proc.returncode}: "
-                f"{proc.stderr}")
+                f"{_said_safely(proc.stderr)}")
             switch = self.state()[0].split("|")[:2]
             assert switch == ["primary", "present"], f"the estate's cutover left {switch}"
             assert self.origin_tip() != self.reg.c, "the cutover's marker commit is not on origin"
@@ -3071,15 +5307,36 @@ class ArmedFault(StartupRelay):
             except OSError:
                 continue
             on = bool(self.armed())
-            if on and self.fault == "F1":
+            if not (on and self.fault == "F1"):
+                # Tracked before a bounded connect, the pump started under
+                # close()'s lock or not at all: `StartupRelay._relay` (T278i).
+                self._relay(conn, on and self.fault == "F2")
+                continue
+            with self.lock:                 # F1: held under close()'s lock, never spoken to (T278h)
+                if self.done:
+                    conn.close()
+                    return
                 self.held.append(conn)
                 self.silenced += 1
-                continue
-            upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            upstream.connect(self.unix_path)
-            self.held += [conn, upstream]
-            threading.Thread(target=self._pump, args=(conn, upstream, on and self.fault == "F2"),
-                             daemon=True).start()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="T278i's stand-in for the cluster is in Linux's abstract Unix namespace")
+@pytest.mark.parametrize("fault", ["F1", "F2"])
+def test_an_armed_faults_relayed_connection_is_tracked_before_a_bounded_connect(fault):
+    """T278i (Codex's SHOULD 3 on P09 at `21dd3642`), with no engine:
+    `ArmedFault`, not yet armed, relays each connection whole, in front of
+    a Unix listener of the standard library whose backlog is full, so a
+    connect to it would wait. The relay's connect has a bound, its client's
+    end is closed, and `close()` leaves no thread, for F1 and F2 alike.
+    Before T278i its accept connected with no bound before it tracked
+    either socket, so the connect waited on, out of `close()`'s reach, and
+    the client stayed open. T220p's case, `[full-backlog]`."""
+    stand_in, name = _cluster_stand_in(0)
+    relay = ArmedFault(name, fault, lambda: False)
+    _relay_closed_as_t220p_has_it(
+        "full-backlog", "t278i-stuck-pump",
+        *_relay_case(relay, stand_in, name, "full-backlog", "t278i-stuck-pump"))
 
 
 def _did(call: dict, what: str) -> bool:
@@ -3177,7 +5434,7 @@ def _operator_row(pg, tmp_path: Path, request, row: str, fault: str) -> None:
     finally:
         listener.close()
     case = f"{row}-{fault}"
-    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {_said_safely(proc.stderr)}"
     if after is not None:
         assert any(_did(c, after) and c["exit"] == 0 for c in op.calls()), \
             f"{case}: the {after} call before the fault never reached the cluster"
@@ -3211,7 +5468,7 @@ def _operator_57014(pg, tmp_path: Path, request, row: str) -> None:
     assert ended, f"{row}: no call ended with 57014: {op.calls()}"
     took = ended[0]["end"] - ended[0]["start"]
     assert statement_s <= took < 2 * statement_s, f"{row}: 57014 after {took:.2f} s"
-    assert proc.returncode == spec["f4_exit"], f"{row}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == spec["f4_exit"], f"{row}: {proc.returncode}: {_said_safely(proc.stderr)}"
     _record(f"{row}-F4", took, statement_s, "timing rules 2 and 3")
 
 
@@ -3251,13 +5508,13 @@ def _snapshot_miss(pg, tmp_path: Path, request, fault: str) -> None:
     spec = ROWS["snapshot-miss"]
     case = f"snapshot-miss-{fault}"
     op = Operator(pg, tmp_path, request, "primary")
-    head = int(op.state()[1])
+    head = _whole(op.state()[1], "the register's head")
     planted = subprocess.run([sys.executable, "-c", MISS_CACHE, str(op.copy), str(head + 5),
                               "lanes/LANES.md", "# LANES.md\n"], capture_output=True, text=True,
                              env=op.env, cwd=str(op.reg.wip), timeout=120,
                              stdin=subprocess.DEVNULL)
     assert planted.stdout.strip() == str(head + 5), \
-        f"{case}: the cache's head was not planted at {head + 5}: {planted.stdout}{planted.stderr}"
+        f"{case}: the cache's head was not planted at {head + 5}: {_said_safely(planted)}"
     relay = StartupRelay(f"{pg.host}/.s.PGSQL.{pg.port}",
                          armed=lambda: any(c.get("snapshot") for c in op.calls()))
     argv = ["register", "snapshot", "--write-id", "new", "--lane", op.lane,
@@ -3267,13 +5524,13 @@ def _snapshot_miss(pg, tmp_path: Path, request, fault: str) -> None:
         proc, _ = op.run(argv, op.config("127.0.0.1", relay.port))
     finally:
         relay.close()
-    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {_said_safely(proc.stderr)}"
     first = [c for c in op.calls() if c.get("snapshot")]
     assert first and first[0]["exit"] == 0, \
         f"{case}: the first request never reached the cluster: {op.calls()}"
     requests = op.begins()
     assert len(requests) == 2, \
-        f"{case}: the miss's second request was not sent: {len(requests)} requests: {proc.stderr}"
+        f"{case}: the miss's second request was not sent: {len(requests)} requests: {_said_safely(proc)}"
     assert relay.silenced, f"{case}: the second request never met F2"
     elapsed = op.exited - requests[0]["begin"]
     assert elapsed < 2 * spec["bound"], f"{case}: {elapsed:.2f} s against {spec['bound']} s"
@@ -3290,7 +5547,7 @@ def _sent_a_snapshot(op: Operator, case: str, proc) -> None:
     """The writer sent its snapshot request: its SQL path ran (T257j)."""
     assert any(s.get("snapshot") for s in op.sent()), \
         (f"{case}: the writer sent no snapshot request, so {NO_SQL_WRITER}: "
-         f"{proc.returncode}: {proc.stderr}")
+         f"{proc.returncode}: {_said_safely(proc.stderr)}")
 
 
 def _primary_writer_row(pg, tmp_path: Path, request, row: str, fault: str) -> None:
@@ -3328,7 +5585,7 @@ def _primary_writer_row(pg, tmp_path: Path, request, row: str, fault: str) -> No
         if session is not None:
             _end(session)
     _sent_a_snapshot(op, case, proc)
-    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {_said_safely(proc.stderr)}"
     if row == "writer-commit-f2":
         # Every snapshot request sent before the commit's, a miss's second
         # among them, reached the cluster and ended 0, and the commit's
@@ -3384,7 +5641,7 @@ def _primary_writer_57014(pg, tmp_path: Path, request, row: str) -> None:
     assert ended, f"{row}: no call ended with 57014: {op.calls()}"
     took = ended[0]["end"] - ended[0]["start"]
     assert statement_s <= took < 2 * statement_s, f"{row}: 57014 after {took:.2f} s"
-    assert proc.returncode == spec["f4_exit"], f"{row}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == spec["f4_exit"], f"{row}: {proc.returncode}: {_said_safely(proc.stderr)}"
     _record(f"{row}-F4", took, statement_s, "timing rules 2 and 3")
 
 
@@ -3414,7 +5671,7 @@ def test_a_rollback_whose_first_call_expires_rereads_the_switch(pg, tmp_path, re
         proc, _ = op.run(["rollback"], op.config("127.0.0.1", relay.port))
     finally:
         relay.close()
-    assert proc.returncode == 69, f"rollback: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == 69, f"rollback: {proc.returncode}: {_said_safely(proc.stderr)}"
     calls = op.calls()
     assert calls and all(c["exit"] == 0 for c in calls), \
         f"a call of the check before step 1 did not answer: {calls}"
@@ -3457,7 +5714,7 @@ def test_a_rollback_that_keeps_losing_its_turn_exits_75_at_the_deadline_with_not
                                {"LANES_REGISTER_DEADLINE_S": str(ROLLBACK_DEADLINE_S)})
     finally:
         _end(session)
-    assert proc.returncode == 75, f"rollback-F3: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == 75, f"rollback-F3: {proc.returncode}: {_said_safely(proc.stderr)}"
     assert any("55P03" in c["first"] for c in op.calls()), \
         f"no call ended with 55P03: {op.calls()}"
     assert op.state() == before, f"the rollback wrote: {before} -> {op.state()}"
@@ -3510,7 +5767,7 @@ def test_a_cutover_whose_call_expires_leaves_the_switch_unknown_and_its_rerun_re
             listener.close()
         if session is not None:
             _end(session)
-    assert proc.returncode == 69, f"cutover-{fault}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == 69, f"cutover-{fault}: {proc.returncode}: {_said_safely(proc.stderr)}"
     assert op.state() == before, f"cutover-{fault} wrote or pushed: {before} -> {op.state()}"
     calls = op.calls()
     assert calls and calls[0]["exit"] == 0, f"the cutover's read never answered: {calls}"
@@ -3522,12 +5779,13 @@ def test_a_cutover_whose_call_expires_leaves_the_switch_unknown_and_its_rerun_re
         pg.psql(f"DROP TRIGGER t278_slow ON {SCHEMA}.journal;")
     mark = len(op.calls())
     proc, _ = op.run(op.argv("cutover"), op.config())
-    assert proc.returncode == 0, f"the rerun: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == 0, f"the rerun: {proc.returncode}: {_said_safely(proc.stderr)}"
     rerun = op.calls()[mark:]
     assert rerun and "commit_write" not in rerun[0]["calls"], \
         f"the rerun's first call is not a read of the switch: {rerun}"
     entries = pg.psql(f"SELECT count(*) FROM {SCHEMA}.journal WHERE kind = 'cutover';").stdout
-    assert entries.strip() == "1", f"one cutover entry: {entries.strip()}"
+    assert entries.strip() == "1", \
+        f"one cutover entry, not {_whole(entries, 'the count of cutover entries')}"
     mode, marker, _ = op.state()[0].split("|")
     assert mode == "primary" and marker in ("adding", "present"), op.state()
 
@@ -3560,7 +5818,7 @@ def test_the_aborts_call_that_expires_is_run_again_or_found_done_by_its_rerun(
     arm = {"mode": "before"} if landed == "not-landed" else {"mode": "timer", "ms": 20000}
     where = _shim(op, [dict(arm, match="switch_to_files")])
     proc, _ = op.run(op.argv("switch-to-files"), op.config())
-    assert proc.returncode == 69, f"abort-{landed}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == 69, f"abort-{landed}: {proc.returncode}: {_said_safely(proc.stderr)}"
     sent = [e for e in _shim_calls(where) if "switch_to_files(" in e["stdin"]]
     assert len(sent) == 1, f"abort-{landed}: one abort call: {len(sent)}"
     mode = op.state()[0].split("|")[:2]
@@ -3573,14 +5831,14 @@ def test_the_aborts_call_that_expires_is_run_again_or_found_done_by_its_rerun(
     aborts = [e for e in rerun if "switch_to_files(" in e["stdin"]]
     if landed == "not-landed":
         assert len(aborts) == 1, f"the rerun runs the abort again, once: {len(aborts)}"
-        assert proc.returncode == 2, f"the rerun's abort: {proc.returncode}: {proc.stderr}"
+        assert proc.returncode == 2, f"the rerun's abort: {proc.returncode}: {_said_safely(proc.stderr)}"
     else:
         writes = [[w[:-1] for w in WRITE_CALLS if w in e["stdin"]] for e in rerun]
         writes = [w for w in writes if w]
         assert writes and writes[0] == ["commit_write"], \
             f"the rerun's first write call is commit_write, never switch_to_files: {writes}"
         assert len(aborts) == 1, f"the rerun aborts its own entry once: {len(aborts)}"
-        assert proc.returncode == 2, f"the rerun's own abort: {proc.returncode}: {proc.stderr}"
+        assert proc.returncode == 2, f"the rerun's own abort: {proc.returncode}: {_said_safely(proc.stderr)}"
         assert op.state()[1] == imported, \
             f"the head is back at the import's seq {imported}: {op.state()}"
     assert op.state()[0].split("|")[:2] == ["files", "absent"], op.state()
@@ -3610,7 +5868,7 @@ def test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusi
     os.mkfifo(fifo)
     where = _shim(op, [{"mode": "hold", "match": "record_marker", "fifo": str(fifo)}])
     proc, elapsed = op.run(op.argv("record-marker"), op.config())
-    assert proc.returncode == 69, f"record-marker: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == 69, f"record-marker: {proc.returncode}: {_said_safely(proc.stderr)}"
     assert any("record_marker(" in e["stdin"] for e in _shim_calls(where)), \
         "the cutover made no record_marker call"
     assert op.origin_tip() != op.reg.c, "the cutover's push stands on origin"
@@ -3624,7 +5882,7 @@ def test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusi
                             capture_output=True, text=True, timeout=300, cwd=str(op.reg.wip),
                             stdin=subprocess.DEVNULL,
                             env=dict(op.env, LANES_INDEX_CONFIG=str(config)))
-    assert writer.returncode == 69, f"the writer's commit: {writer.returncode}: {writer.stderr}"
+    assert writer.returncode == 69, f"the writer's commit: {writer.returncode}: {_said_safely(writer.stderr)}"
     # THE MARKER'S REFUSAL (T278f; line BD17): the write "exits 69 on the switch
     # its snapshot reads, or on LR002" (TP:4221-4222). T415's writer meets
     # the marker at its first snapshot, whose own words name the switch it read,
@@ -3632,12 +5890,12 @@ def test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusi
     # Either is the marker's, never T409's placeholder, which names no marker.
     assert "LR002" in writer.stderr or "marker adding" in writer.stderr, \
         (f"the writer's 69 is the marker's refusal, at its snapshot or LR002, not T409's "
-         f"placeholder: {writer.stderr}")
+         f"placeholder: {_said_safely(writer)}")
     mark = len(_shim_calls(where))
     proc, _ = op.run(op.argv("record-marker"), op.config())
     recorded = [e for e in _shim_calls(where)[mark:] if "record_marker(" in e["stdin"]]
     assert proc.returncode == 0 and len(recorded) == 1, \
-        f"the rerun records the marker once: {proc.returncode}, {len(recorded)}: {proc.stderr}"
+        f"the rerun records the marker once: {proc.returncode}, {len(recorded)}: {_said_safely(proc.stderr)}"
     assert op.state()[0].split("|")[:2] == ["primary", "present"], op.state()
 
 
@@ -3664,7 +5922,7 @@ def test_a_stray_ways_out_commit_call_is_in_doubt_like_a_writers(pg, tmp_path, r
         proc, _ = op.run(op.argv("stray-commit", form), op.config("127.0.0.1", relay.port))
     finally:
         relay.close()
-    assert proc.returncode == 3, f"{form}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == 3, f"{form}: {proc.returncode}: {_said_safely(proc.stderr)}"
     assert any(c.get("snapshot") and c["exit"] == 0 for c in op.calls()), \
         f"{form}: the snapshot never reached the cluster: {op.calls()}"
     assert relay.silenced, f"{form}: no call met F2 after the snapshot"
@@ -3675,3 +5933,628 @@ def test_a_stray_ways_out_commit_call_is_in_doubt_like_a_writers(pg, tmp_path, r
     elapsed = op.exited - start
     assert elapsed < 2 * 35.5, f"{form}: {elapsed:.2f} s against 35.5 s"
     _record(f"stray-{form}", elapsed, 35.5, "timing rule 2, from the commit call's start")
+
+
+# ============================== no tool's or server log's text in pgcluster's failures (T257zza-T257zzf), no engine
+
+def _t257zza_seen(request, failed, planted: str) -> list:
+    """Where `planted` shows in a failure (T257zza; lane 3's ruling
+    6949488277 on lane 2's pre-review RV9-38 of P09, B2): the exception's
+    `str`, `repr`, `args` and formatted traceback, and pytest's own report
+    of it, rendered through the running item as pytest renders a failed
+    test, `request.node.repr_failure(failed)`: its `str()` is what the
+    terminal and JUnit's failure body print, and its `reprcrash.message` is
+    JUnit's message. Each place that holds it is named; none is printed.
+    The report must name the exception's class, or the rendering is not
+    one. Under an explicit `--tb=long`, `--fulltrace` or `--showlocals` it
+    fails at once (`_short_only`; T257zzzh)."""
+    import traceback
+    _short_only(request)
+    report = request.node.repr_failure(failed)
+    crash = getattr(report, "reprcrash", None)
+    shown = {"str": str(failed.value), "repr": repr(failed.value), "args": repr(failed.value.args),
+             "traceback": "".join(traceback.format_exception(failed.type, failed.value, failed.tb)),
+             "report": str(report), "reprcrash": "" if crash is None else str(crash.message)}
+    assert failed.type.__name__ in shown["report"], "pytest's report of the failure was not rendered"
+    return sorted(name for name, text in shown.items() if planted in text)
+
+
+def test_a_server_log_holding_a_roles_password_reaches_no_cluster_error_or_its_report(
+        monkeypatch, tmp_path, request):
+    """T257zza (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09, B2; T229l), with no engine and no process: under `log_statement =
+    'all'` the server log holds a role's statement with its password,
+    planted here in `server.log` as `statement: CREATE ROLE ... PASSWORD
+    '<planted>'`. A start whose postmaster exits, a start not ready by the
+    deadline and a stop that outlasts it each raise a `ClusterError` that
+    shows the log's counts, and the planted value is in none of its `str`,
+    `repr`, `args` or formatted traceback, nor in pytest's report of it, as
+    the terminal and JUnit print it (`_t257zza_seen`). Before T229l each
+    held the log's last five lines. A log whose last lines name a bind sets
+    `could_not_bind`, which `TLSCluster.launch` now reads in place of the
+    text: it moves to a new port at a first start, three tries in all, and
+    raises at once on a restart. The planted value is no credential of any
+    login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+    stamp = "2026-11-17 00:00:00.000 UTC [4242]"
+    logged = [f"{stamp} LOG:  statement: CREATE ROLE lanes_w_t LOGIN PASSWORD '{planted}';",
+              f"{stamp} ERROR:  role \"lanes_w_t\" already exists"]
+    bound = [f"{stamp} LOG:  could not bind IPv4 address \"127.0.0.1\": Address already in use",
+             f"{stamp} FATAL:  could not create any TCP/IP sockets"]
+    started = []
+
+    class Postmaster:
+        """A stand-in postmaster: `code` None runs on, else it has exited."""
+        pid = 4242
+
+        def __init__(self, code):
+            self.returncode = code
+
+        def poll(self):
+            return self.returncode
+
+        def send_signal(self, sig):
+            pass
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(["postgres"], timeout)
+
+    def popen(code):
+        def made(argv, **kw):
+            started.append(argv[0])
+            return Postmaster(code)
+        return made
+
+    monkeypatch.setattr(pgcluster, "DIE_WITH_PYTEST", False)
+    monkeypatch.setattr(pgcluster, "_free_port", lambda: 40000 + len(started))
+    cluster = pgcluster.Cluster(tmp_path / "bin")
+    cluster.root = tmp_path
+    (tmp_path / "data").mkdir()
+    for lines, bind in ((logged, False), (logged + bound, True)):
+        (tmp_path / "server.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        for case, code in (("exited", 1), ("not-ready", None)):
+            monkeypatch.setattr(pgcluster.subprocess, "Popen", popen(code))
+            monkeypatch.setattr(pgcluster, "DEADLINE", -1.0 if code is None else 30.0)
+            with pytest.raises(pgcluster.ClusterError) as failed:
+                cluster.launch()
+            assert not _t257zza_seen(request, failed, planted), \
+                f"{case}: the planted value shows in {_t257zza_seen(request, failed, planted)}"
+            assert (f"server.log: {len(lines)} line(s), {1 + bind} of them ERROR, FATAL or PANIC lines"
+                    in str(failed.value)), f"{case}: the error shows no count of the log's lines"
+            assert getattr(failed.value, "could_not_bind", None) is bind, \
+                f"{case}: could_not_bind is not {bind}"
+        cluster.proc = Postmaster(None)
+        with pytest.raises(pgcluster.ClusterError) as failed:
+            cluster.stop()
+        assert not _t257zza_seen(request, failed, planted), \
+            f"stop: the planted value shows in {_t257zza_seen(request, failed, planted)}"
+    # TLSCluster.launch reads the flag: three tries at a first start, one at a restart.
+    monkeypatch.setattr(pgcluster.subprocess, "Popen", popen(1))
+    monkeypatch.setattr(pgcluster, "DEADLINE", 30.0)
+    for restarting, tries in ((False, 3), (True, 1)):
+        tls = pgcluster.TLSCluster(tmp_path / "bin")
+        tls.root, tls.restarting, before = tmp_path, restarting, len(started)
+        with pytest.raises(pgcluster.ClusterError) as failed:
+            tls.launch()
+        assert len(started) - before == tries, \
+            f"restarting={restarting}: {len(started) - before} start(s), not {tries}"
+        assert not _t257zza_seen(request, failed, planted), \
+            f"restarting={restarting}: the planted value shows in {_t257zza_seen(request, failed, planted)}"
+    (tmp_path / "server.log").write_text("\n".join(logged) + "\n", encoding="utf-8")
+    tls = pgcluster.TLSCluster(tmp_path / "bin")
+    tls.root, before = tmp_path, len(started)
+    with pytest.raises(pgcluster.ClusterError):
+        tls.launch()
+    assert len(started) - before == 1, "a start that failed with no bind was tried again"
+
+
+def _t257zzb_seen(request, failed, planted: str) -> list:
+    """`_t257zza_seen`'s places (T257zzb), for any failure pytest renders,
+    a `pytest.fail(..., pytrace=False)` among them, whose report is its
+    message alone: the exception's `str`, `repr`, `args` and formatted
+    traceback, and `request.node.repr_failure(failed)`'s `str()` (the
+    terminal's and JUnit's failure body) and `reprcrash.message` (JUnit's
+    message). The `reprcrash` must name the exception's class, or the
+    rendering is not one. Under an explicit `--tb=long`, `--fulltrace` or
+    `--showlocals` it fails at once (`_short_only`; T257zzzh)."""
+    import traceback
+    _short_only(request)
+    report = request.node.repr_failure(failed)
+    crash = getattr(report, "reprcrash", None)
+    message = "" if crash is None else str(crash.message)
+    assert failed.type.__name__ in message, "pytest's report of the failure was not rendered"
+    shown = {"str": str(failed.value), "repr": repr(failed.value), "args": repr(failed.value.args),
+             "traceback": "".join(traceback.format_exception(failed.type, failed.value, failed.tb)),
+             "report": str(report), "reprcrash": message}
+    return sorted(name for name, text in shown.items() if planted in text)
+
+
+@pytest.mark.parametrize("kind", ["initdb", "bootstrap", "import", "lanes-edit", "git", "commit-id",
+                                  "openssl", "login-add", "tls-connect"])
+def test_a_failed_tools_cluster_error_in_pgcluster_shows_no_line_of_its_output(
+        monkeypatch, tmp_path, request, kind):
+    """T257zzb (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09, B2; T229m), with no engine and no process: each tool pgcluster
+    runs fails with a planted value on both its streams, subprocess.run or
+    the cluster's own runner being a stand-in, and the failure shows only
+    the exit and counts. The kinds: initdb in `start()`; `lanes-index
+    bootstrap`; `lanes-index import --at`, whose failure is
+    `imported_problem`, raised as `pg_imported` raises it; `lanes-edit.sh`
+    through `_run_ok`; git; `git rev-parse` printing no commit id (exit 0);
+    openssl; `lanes-index login add`, with a password-file line among its
+    output; and the TLS smoke's verify-full connect. The planted value is
+    in none of the failure's `str`, `repr`, `args` or formatted traceback,
+    nor in pytest's report of it (`_t257zzb_seen`). Before T229m each
+    showed the tool's text. The planted value is no credential of any
+    login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+    said_on = (f"{planted} on stdout\n", f"{kind}: {planted} on stderr\n")
+
+    def ran(code=1, answer=None):
+        def run(argv, **kw):
+            lines = said_on if answer is None else (answer, "")
+            if not kw.get("text"):
+                lines = tuple(part.encode() for part in lines)
+            return subprocess.CompletedProcess(argv, code, *lines)
+        return run
+
+    monkeypatch.setattr(pgcluster, "_IMPORTED", [])
+    cluster = pgcluster.Cluster(tmp_path / "bin")
+    cluster.root = tmp_path
+    register = object.__new__(pgcluster.ImportedRegister)
+    register.root, register.wip, register.env = tmp_path, tmp_path, {}
+    kinds = pgcluster.ClusterError
+    if kind == "initdb":
+        root = tmp_path / "root"
+        root.mkdir()
+        cluster.root = None
+        monkeypatch.setattr(pgcluster, "sweep_stale", lambda: [])
+        monkeypatch.setattr(pgcluster.tempfile, "mkdtemp", lambda **kw: str(root))
+        monkeypatch.setattr(pgcluster, "SOCKET_MAX", 1 << 20)
+        monkeypatch.setattr(pgcluster.subprocess, "run", ran())
+        call = cluster.start
+    elif kind == "bootstrap":
+        monkeypatch.setattr(cluster, "lanes_index", lambda argv: ran()(argv, text=True))
+        call = lambda: cluster.bootstrap(pgcluster.TEMPLATE, pgcluster.FX_LABEL)  # noqa: E731
+    elif kind == "import":
+        class Register:
+            def __init__(self, root, bindir):
+                self.c = "0" * 40
+
+            def import_at(self, cluster, database, user):
+                return ran()(["lanes-index", "import"], text=True)
+        cluster.label = pgcluster.FX_LABEL
+        monkeypatch.setattr(pgcluster, "ImportedRegister", Register)
+        monkeypatch.setattr(cluster, "psql", lambda *a, **kw: subprocess.CompletedProcess(a, 0, "", ""))
+        monkeypatch.setattr(cluster, "drop_database", lambda name: None)
+
+        def call():
+            cluster.build_imported()
+            # `pg_imported`'s own words, where the session has no tmpl_imported
+            pytest.fail(f"no {pgcluster.IMPORTED} on the session cluster, so this case cannot "
+                        f"clone it: {cluster.imported_problem}", pytrace=False)
+        kinds = pytest.fail.Exception
+    elif kind == "lanes-edit":
+        monkeypatch.setattr(pgcluster.subprocess, "run", ran())
+        call = lambda: register._run_ok(["bash", "lanes-edit.sh", "log"])  # noqa: E731
+    elif kind == "git":
+        monkeypatch.setattr(pgcluster.subprocess, "run", ran(code=128))
+        call = lambda: register.git("push", "-q", "origin", "main")  # noqa: E731
+    elif kind == "commit-id":
+        monkeypatch.setattr(pgcluster.subprocess, "run", ran(code=0, answer=planted))
+        call = lambda: register.commit_of("origin/main")  # noqa: E731
+    elif kind == "openssl":
+        monkeypatch.setattr(pgcluster.subprocess, "run", ran())
+        call = lambda: pgcluster._openssl(["req", "-x509"], tmp_path)  # noqa: E731
+    elif kind == "login-add":
+        line = f"*:*:{pgcluster.TEMPLATE}:{pgcluster.FX_WRITER}:{planted}\n"
+        monkeypatch.setattr(cluster, "lanes_index_tty",
+                            lambda argv: (1, line + said_on[0], said_on[1]))
+        call = lambda: cluster.make_logins(pgcluster.TEMPLATE)  # noqa: E731
+    else:
+        class Found:
+            bindir = tmp_path / "bin"
+
+        def connect(argv, **kw):
+            failing = any("pg_stat_ssl" in part for part in argv)
+            return ran(code=2 if failing else 0, answer=None if failing else "")(argv, text=True)
+        monkeypatch.setattr(pgcluster.TLSCluster, "start", lambda self: None)
+        monkeypatch.setattr(pgcluster.TLSCluster, "client_env", lambda self, *a, **kw: {})
+        monkeypatch.setattr(pgcluster.TLSCluster, "destroy", lambda self: None)
+        monkeypatch.setattr(pgcluster.subprocess, "run", connect)
+        call = lambda: pgcluster._smoke_tls(Found())  # noqa: E731
+    with pytest.raises(kinds) as failed:
+        call()
+    assert not _t257zzb_seen(request, failed, planted), \
+        f"{kind}: the planted value shows in {_t257zzb_seen(request, failed, planted)}"
+    assert "line(s)" in str(failed.value), f"{kind}: the failure shows no count of lines"
+
+
+@pytest.mark.parametrize("kind", ["select-1", "standby-answer", "standby-failed", "imported-check"])
+def test_a_psql_answer_pgcluster_did_not_expect_is_counted_never_quoted(
+        monkeypatch, tmp_path, request, kind):
+    """T257zzc (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09, B2, `{said!r}` at pgcluster :845 and :1899; T229n), with no engine
+    and no process: psql, run by `Cluster.psql` with subprocess.run a
+    stand-in, answers with a planted value where pgcluster expects a fixed
+    answer: `SELECT 1` in the smokes' `_select_1`; `pg_is_in_recovery()` in
+    `start_again(standby=True)`, once on stdout and once failing with it
+    on stderr, the server log holding a role's statement with the planted
+    password too; and `_imported_check`'s journal|head|switch, raised as
+    `pg_imported` raises `imported_problem`. The planted value is in none
+    of the failure's `str`, `repr`, `args` or formatted traceback, nor in
+    pytest's report of it (`_t257zzb_seen`). Before T229n each quoted the
+    answer. The planted value is no credential of any login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+
+    class Postmaster:
+        pid, returncode = 4242, None
+
+        def poll(self):
+            return None
+
+    def answers(code, said, told=""):
+        return lambda argv, **kw: subprocess.CompletedProcess(argv, code, said, told)
+
+    monkeypatch.setattr(pgcluster, "DIE_WITH_PYTEST", False)
+    cluster = pgcluster.Cluster(tmp_path / "bin")
+    cluster.root = tmp_path
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "postmaster.pid").write_text(
+        "\n".join(["4242", str(tmp_path / "data"), "0", "5432", str(tmp_path), "*", "0", "ready"])
+        + "\n", encoding="utf-8")
+    (tmp_path / "server.log").write_text(
+        f"LOG:  statement: ALTER ROLE lanes_w_t PASSWORD '{planted}';\n", encoding="utf-8")
+    monkeypatch.setattr(pgcluster.subprocess, "Popen", lambda argv, **kw: Postmaster())
+    kinds = pgcluster.ClusterError
+    if kind == "select-1":
+        monkeypatch.setattr(pgcluster.subprocess, "run", answers(0, f"{planted}\n"))
+        call = lambda: pgcluster._select_1(cluster)  # noqa: E731
+    elif kind == "standby-answer":
+        monkeypatch.setattr(pgcluster.subprocess, "run", answers(0, f"{planted}\n"))
+        call = lambda: cluster.start_again(standby=True)  # noqa: E731
+    elif kind == "standby-failed":
+        monkeypatch.setattr(pgcluster.subprocess, "run",
+                            answers(2, "", f"psql: error: {planted}\nLINE 1: {planted}\n"))
+        call = lambda: cluster.start_again(standby=True)  # noqa: E731
+    else:
+        monkeypatch.setattr(pgcluster.subprocess, "run",
+                            answers(0, f"0:import:{planted}|0|files:absent\n"))
+
+        def call():
+            problem = cluster._imported_check("0" * 40)
+            # `pg_imported`'s own words, where the session has no tmpl_imported
+            pytest.fail(f"no {pgcluster.IMPORTED} on the session cluster, so this case cannot "
+                        f"clone it: {problem}", pytrace=False)
+        kinds = pytest.fail.Exception
+    with pytest.raises(kinds) as failed:
+        call()
+    assert not _t257zzb_seen(request, failed, planted), \
+        f"{kind}: the planted value shows in {_t257zzb_seen(request, failed, planted)}"
+
+
+@pytest.mark.parametrize("kind", ["version", "pg-config"])
+def test_the_engine_probes_problem_shows_no_text_a_tool_printed(monkeypatch, tmp_path, request, kind):
+    """T257zzd (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09, B2; T229o), with no engine and no process: the probe that finds
+    the binaries (`Probe`) meets a tool whose output holds a planted value,
+    subprocess.run a stand-in. `[version]`: `PG_BIN` names a directory of
+    the four tools, whose `--version` names another major beside the
+    planted value. `[pg-config]`: `PG_BIN` unset, the only `pg_config` on
+    `PATH` prints a directory named by the planted value. The problem,
+    failed as `pg_engine` fails it under the switch, holds `real
+    PostgreSQL 16`, `PG_BIN` and the package's name, as the fixture's tests
+    and the gate read them, and the planted value is in none of the
+    failure's `str`, `repr`, `args` or formatted traceback, nor in pytest's
+    report of it (`_t257zzb_seen`). Before T229o the problem quoted the
+    `--version` line and printed `pg_config`'s output twice. The planted
+    value is no credential of any login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    for name in pgcluster.TOOLS + ("pg_config",):
+        (tools / name).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        (tools / name).chmod(0o755)
+
+    def run(argv, **kw):
+        said = (f"/nonexistent/{planted}\n" if argv[-1] == "--bindir" else
+                f"{Path(argv[0]).name} {planted} (PostgreSQL) {pgcluster.MAJOR - 1}.4\n")
+        return subprocess.CompletedProcess(argv, 0, said, "")
+
+    monkeypatch.setattr(pgcluster.subprocess, "run", run)
+    if kind == "version":
+        monkeypatch.setenv("PG_BIN", str(tools))
+    else:
+        monkeypatch.delenv("PG_BIN", raising=False)
+        monkeypatch.setenv("PATH", str(tools))
+    found = pgcluster.Probe()
+    assert found.bindir is None and found.problem, f"{kind}: the probe found binaries"
+    for word in (pgcluster.SKIP_TAG, "PG_BIN", pgcluster.PACKAGE):
+        assert word in found.problem, f"{kind}: the problem does not say {word}"
+    with pytest.raises(pytest.fail.Exception) as failed:
+        pytest.fail(found.problem, pytrace=False)  # `pg_engine`'s, under the switch
+    assert not _t257zzb_seen(request, failed, planted), \
+        f"{kind}: the planted value shows in {_t257zzb_seen(request, failed, planted)}"
+
+
+@pytest.mark.parametrize("form", ["five-capitals", "across-a-newline", "verbose"])
+def test_a_failed_psqls_sqlstate_is_taken_only_from_its_verbose_form_on_one_line(
+        monkeypatch, request, form):
+    """T257zze (lane 2's pre-review RV9-38 of P09, N1; lane 3's ruling
+    6949488277, "`_SQLSTATE`'s pattern made strict"; T229p), with no engine
+    and no process: psql, run by `Cluster.psql` with subprocess.run a
+    stand-in, exits 3. `[five-capitals]`, RV9-38's F2 `fiveupper` case:
+    its message's first word is five capitals and a colon (`ERROR:
+    <word>: ...`). `[across-a-newline]`: an `ERROR:` line ends, and the
+    next line begins with five of `[0-9A-Z]`, a digit among them, and a
+    colon, at once and after psql's own prefix. Neither word is shown, as
+    a SQLSTATE or at all, and the error says "no SQLSTATE in its text".
+    `[verbose]`: psql's real verbose form, `ERROR:  42601: ...` after its
+    prefix and `ERROR:<tab>42P01: ...`, shows SQLSTATE 42601 and 42P01,
+    and the planted value echoed on a `LINE 1:` is shown nowhere. Each is
+    checked in the error's `str`, `repr`, `args` and formatted traceback,
+    and in pytest's report of it (`_t257zzb_seen`). Each word is drawn at
+    run time, and drawn again while any source or path a report prints
+    holds it (T257zzzb; lane 2's pre-review RV9-41 of P09, N2), so only
+    the error can show it. The planted value is no credential of any
+    login."""
+    import pgcluster
+    # T257zzzb: the letters by their code points, so no run of them is in any
+    # source; and a word is drawn again while this module's or pgcluster's
+    # source or path, or the working directory, holds it.
+    letters = [chr(code) for code in (74, 75, 81, 86, 87, 88, 90)]
+    printed = "\n".join([Path(__file__).read_text(encoding="utf-8"),
+                         Path(pgcluster.__file__).read_text(encoding="utf-8"),
+                         str(Path(__file__).resolve()), str(Path(pgcluster.__file__).resolve()),
+                         os.getcwd()])
+
+    def drawn(size: int, digit: bool) -> str:
+        while True:
+            candidate = "".join(letters[b % 7] for b in os.urandom(size))
+            candidate += str(os.urandom(1)[0] % 10) if digit else ""
+            if candidate not in printed:
+                return candidate
+    word, coded = drawn(5, False), drawn(4, True)
+    planted = f"fake-{uuid.uuid4().hex}"
+    told, state, hidden = {
+        "five-capitals": (f"ERROR:  {word}: a planted head\n", "no SQLSTATE in its text", word),
+        "across-a-newline": (f"ERROR:\n{coded}: a planted line\npsql:<stdin>:2: ERROR:  \n"
+                             f"{coded}: again\n", "no SQLSTATE in its text", coded),
+        "verbose": (f"psql:<stdin>:1: ERROR:  42601: syntax error at or near \"x\"\n"
+                    f"LINE 1: ALTER ROLE r PASSWORD '{planted}' x;\nERROR:\t42P01: relation "
+                    f"\"t\" does not exist\n", "SQLSTATE 42601, 42P01", planted),
+    }[form]
+    cluster = pgcluster.Cluster(Path("/nonexistent/bin"))
+    cluster.root = Path("/nonexistent")
+    monkeypatch.setattr(pgcluster.subprocess, "run",
+                        lambda argv, **kw: subprocess.CompletedProcess(argv, 3, "", told))
+    with pytest.raises(pgcluster.ClusterError) as failed:
+        cluster.psql("SELECT 1", dbname="register", user="lanes_admin")
+    assert not _t257zzb_seen(request, failed, hidden), \
+        f"{form}: the planted word shows in {_t257zzb_seen(request, failed, hidden)}"
+    assert str(failed.value).startswith(f"psql as lanes_admin on register exited 3: {state}; "), \
+        f"{form}: the error does not say {state}"
+
+
+def test_a_failed_psqls_raising_frame_keeps_no_stream_of_its_run(monkeypatch, request):
+    """T257zzf (lane 2's pre-review RV9-38 of P09, N2; T229q), with no
+    engine and no process: psql, run by `Cluster.psql` with subprocess.run
+    a stand-in, exits 3 with a planted value on both its streams. The
+    `ClusterError`'s traceback keeps each frame it passed through, and
+    pytest prints a frame's locals under `--showlocals`; no local of any
+    frame of pgcluster's in it holds the planted value, nor does its
+    `str`, `repr`, `args`, formatted traceback, or pytest's report of it
+    (`_t257zzb_seen`). Before T229q the raising frame kept psql's run as
+    `proc`, its stdout and stderr with it. `sql`, the frame's argument,
+    is the caller's own, here `SELECT 1`. The planted value is no
+    credential of any login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+    cluster = pgcluster.Cluster(Path("/nonexistent/bin"))
+    cluster.root = Path("/nonexistent")
+    monkeypatch.setattr(pgcluster.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(
+        argv, 3, f"{planted}\n", f"psql:<stdin>:1: ERROR:  42601: x\nLINE 1: {planted}\n"))
+    with pytest.raises(pgcluster.ClusterError) as failed:
+        cluster.psql("SELECT 1", dbname="register", user="lanes_admin")
+    assert not _t257zzb_seen(request, failed, planted), \
+        f"the planted value shows in {_t257zzb_seen(request, failed, planted)}"
+    ours, held = 0, []
+    tb = failed.tb
+    while tb is not None:
+        frame = tb.tb_frame
+        if Path(frame.f_code.co_filename).resolve() == Path(pgcluster.__file__).resolve():
+            ours += 1
+            held += [f"{frame.f_code.co_name}.{name}" for name, value in frame.f_locals.items()
+                     if planted in repr(value)]
+        tb = tb.tb_next
+    assert ours, "no frame of pgcluster's is in the error's traceback"
+    assert not held, f"a frame of pgcluster's keeps the planted value in: {held}"
+
+
+@pytest.mark.parametrize("path", ["started", "from-lanes-edit", "from-git"])
+def test_a_chained_pgcluster_failure_shows_no_tool_text_in_pytests_report(
+        monkeypatch, tmp_path, request, path):
+    """T257zzza (lane 2's pre-review RV9-41 of P09 at `4895579`, S1, and its
+    B1; lane 3's ruling 6949488277; the coordinator's 6949514036 asks for
+    chained-exception cases), with no engine and no process: a failing
+    tool's two streams hold a planted value, and the failure reaches
+    pytest's report chained, as the fixtures' real paths chain it.
+    `[started]`: initdb fails in `_started`, which the cluster fixtures
+    call, and whose `pytest.fail(..., pytrace=False)`, raised in its
+    `except`, carries the `ClusterError` as its implicit context, which
+    pytest prints. `[from-lanes-edit]` and `[from-git]`:
+    `ImportedRegister._run_ok`'s and `.git`'s `ClusterError`, wrapped as
+    disaster's and drill's estates wrap it, `raise AssertionError(...)
+    from exc`. The chain is checked to be there, and to be rendered: the
+    report holds pytest's block for that very link ("During handling of
+    the above exception" for `__context__`, "The above exception was the
+    direct cause" for `__cause__`), and before it the chained error's own
+    text and, for a cause, the file and line of the last entry of its own
+    traceback, as each style prints it (T257zzzi; lane 2's targeted check RV9-43 of P09 at
+    `94a40564`, NIT A: before, the error's first words were looked for
+    anywhere in the report, where the message's own `{exc}` put them, so a
+    severed chain passed). And the planted value is in neither the
+    error's `str`, `repr` or `args` nor in pytest's report,
+    rendered by `_reported` under the suite's own style, the JUnit message
+    included. Before T229t, under pytest 8.3.4 with long tracebacks, the
+    cause's last entry printed `_run_ok`'s and `git`'s `proc`. The planted
+    value is no credential of any login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+
+    def run(argv, **kw):
+        lines = (f"{planted} on stdout\n", f"{path}: {planted} on stderr\n")
+        if not kw.get("text"):
+            lines = tuple(part.encode() for part in lines)
+        return subprocess.CompletedProcess(argv, 1, *lines)
+
+    monkeypatch.setattr(pgcluster.subprocess, "run", run)
+    if path == "started":
+        class Found:
+            bindir, how = tmp_path / "bin", "a stand-in"
+        root = tmp_path / "root"
+        root.mkdir()
+        monkeypatch.setattr(pgcluster, "sweep_stale", lambda: [])
+        monkeypatch.setattr(pgcluster.tempfile, "mkdtemp", lambda **kw: str(root))
+        monkeypatch.setattr(pgcluster, "SOCKET_MAX", 1 << 20)
+        with pytest.raises(pytest.fail.Exception) as failed:
+            pgcluster._started(Found(), "")
+        chained = failed.value.__context__
+    else:
+        register = object.__new__(pgcluster.ImportedRegister)
+        register.root, register.wip, register.env = tmp_path, tmp_path, {}
+        with pytest.raises(AssertionError) as failed:
+            try:
+                if path == "from-lanes-edit":
+                    register._run_ok(["bash", "lanes-edit.sh", "log"])
+                else:
+                    register.git("push", "-q", "origin", "main")
+            except pgcluster.ClusterError as exc:
+                raise AssertionError(f"[B] the estate's register was not built: {exc}") from exc
+        chained = failed.value.__cause__
+    assert isinstance(chained, pgcluster.ClusterError), f"{path}: no ClusterError is chained"
+    said = _reported(request, failed)
+    link = ("During handling of the above exception" if path == "started" else
+            "The above exception was the direct cause")
+    assert link in said, f"{path}: pytest's report renders no chained error"
+    before = said.split(link, 1)[0]
+    # A pytrace=False failure's chain is rendered as each error's text alone, with no class.
+    assert str(chained).splitlines()[0] in before, f"{path}: the chain rendered is not the chained error's"
+    if path != "started":
+        last = chained.__traceback__
+        while last.tb_next is not None:
+            last = last.tb_next
+        entry = f"{Path(last.tb_frame.f_code.co_filename).name}:{last.tb_lineno}: "
+        assert entry in before, f"{path}: the chain rendered does not end where the chained error was raised"
+    shown = [name for name, text in (("str", str(failed.value)), ("repr", repr(failed.value)),
+                                     ("args", repr(failed.value.args)), ("report", said))
+             if planted in text]
+    assert not shown, f"{path}: the planted value shows in {shown}"
+
+
+@pytest.mark.parametrize("site", ["run-ok", "git", "make-logins", "make-logins-then-psql"])
+def test_a_failed_tools_raising_frame_in_pgcluster_keeps_no_text_of_its_run(monkeypatch, tmp_path, site):
+    """T257zzzj (lane 2's targeted check RV9-43 of P09 at `94a40564`, NIT
+    B; T229t; T229u), with no engine and no process: a tool's run fails
+    with a planted value on both its streams, in `ImportedRegister._run_ok`
+    (`[run-ok]`) and `.git` (`[git]`), whose run is a stand-in of
+    subprocess.run, and in `Cluster.make_logins` (`[make-logins]`), whose
+    `login add` under the pty is a stand-in. The `ClusterError`'s
+    traceback, walked frame by frame, holds the planted value in no local
+    of any frame of pgcluster's, whatever the traceback style: pytest
+    8.3.4 prints a long entry's locals as the arguments of `_run_ok`'s
+    `**env` and `git`'s `*args`, and every style but short prints frames'
+    arguments, `--showlocals` their locals. `[make-logins-then-psql]`
+    (T257zzzl; lane 2's targeted check RV9-44 of P09 at `3faf9453`, S-1):
+    `login add` succeeds, printing the planted value, and the psql that
+    follows in `make_logins` raises, so its frame is walked past T229u's
+    `del` after a successful `login add`, not only past the one before
+    its own raise. Under the suite's short style
+    T257zzza's and T257zzb's cases pass with T229t undone; this one does
+    not. Before T229t `_run_ok` and `git` kept the run as `proc`; before
+    T229u `make_logins` kept `login add`'s `out` and `err`, its printed
+    password lines among them. The planted value is no credential of any
+    login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+
+    def run(argv, **kw):
+        lines = (f"{planted} on stdout\n", f"{site}: {planted} on stderr\n")
+        if not kw.get("text"):
+            lines = tuple(part.encode() for part in lines)
+        return subprocess.CompletedProcess(argv, 1, *lines)
+
+    monkeypatch.setattr(pgcluster.subprocess, "run", run)
+    with pytest.raises(pgcluster.ClusterError) as failed:
+        if site == "make-logins":
+            cluster = object.__new__(pgcluster.Cluster)
+            cluster.passwords = {}
+            monkeypatch.setattr(cluster, "admin_service", lambda database: f"fx_{database}")
+            monkeypatch.setattr(cluster, "lanes_index_tty", lambda argv: (
+                1, f"{planted} printed\n", f"{site}: {planted} on stderr\n"))
+            cluster.make_logins("register")
+        elif site == "make-logins-then-psql":
+            cluster = object.__new__(pgcluster.Cluster)
+            cluster.passwords = {}
+
+            def psql(sql, **kwargs):
+                raise pgcluster.ClusterError("psql as postgres on register exited 2: a stand-in")
+            monkeypatch.setattr(cluster, "admin_service", lambda database: f"fx_{database}")
+            monkeypatch.setattr(cluster, "lanes_index_tty", lambda argv: (
+                0, f"{planted} printed\n", f"{site}: {planted} on stderr\n"))
+            monkeypatch.setattr(cluster, "psql", psql)
+            cluster.make_logins("register")
+        else:
+            register = object.__new__(pgcluster.ImportedRegister)
+            register.root, register.wip, register.env = tmp_path, tmp_path, {}
+            if site == "run-ok":
+                register._run_ok(["bash", "lanes-edit.sh", "log"])
+            else:
+                register.git("push", "-q", "origin", "main")
+    ours, held = [], []
+    tb = failed.tb
+    while tb is not None:
+        frame = tb.tb_frame
+        if Path(frame.f_code.co_filename).resolve() == Path(pgcluster.__file__).resolve():
+            ours.append(frame.f_code.co_name)
+            held += [f"{frame.f_code.co_name}.{name}" for name, value in frame.f_locals.items()
+                     if planted in repr(value)]
+        tb = tb.tb_next
+    want = {"run-ok": "_run_ok", "git": "git", "make-logins": "make_logins",
+            "make-logins-then-psql": "make_logins"}[site]
+    assert want in ours, f"{site}: {want} is not in the error's traceback, only {ours}"
+    assert not held, f"{site}: a frame of pgcluster's keeps the planted value in: {held}"
+    assert planted not in str(failed.value), f"{site}: the planted value is in the error's text"
+
+
+@pytest.mark.parametrize("prefix", ["none", "default", "pid"])
+def test_a_server_logs_severe_lines_are_counted_under_each_prefix_the_fixture_uses(tmp_path, prefix):
+    """T257zzzk (lane 2's targeted check RV9-43 of P09 at `94a40564`, NIT
+    C; T229v; T229x), with no engine and no process: `Cluster.log_tail`
+    counts a server log's lines at ERROR, FATAL or PANIC, and shows none of
+    them, under each `log_line_prefix` the fixture's clusters write: none,
+    the default `%m [%p] ` (`[default]`), and `%p ` (`[pid]`), which
+    managed sets on its clusters. The planted log has 7 lines, 4 of them
+    truly severe (ERROR, FATAL, PANIC, and a verbose `ERROR:  42601:`); a
+    logged statement holding `ERROR:  `, a `STATEMENT:` echo of a role's
+    password and a connection line are not. Before T229x a `%p ` line was
+    never counted. The planted value is no credential of any login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+    lead = {"none": "", "default": "2026-11-17 14:48:04.123 UTC [1234] ", "pid": "1234 "}[prefix]
+    lines = [f"LOG:  statement: SELECT 'ERROR:  {planted}'", "ERROR:  relation \"t\" does not exist",
+             f"STATEMENT:  ALTER ROLE r PASSWORD '{planted}'",
+             "FATAL:  password authentication failed for user \"x\"",
+             "LOG:  connection received: host=[local]", "PANIC:  could not write to file",
+             "ERROR:  42601: syntax error at or near \"x\""]
+    (tmp_path / "server.log").write_text("".join(f"{lead}{line}\n" for line in lines), encoding="utf-8")
+    cluster = object.__new__(pgcluster.Cluster)
+    cluster.root = tmp_path
+    said = cluster.log_tail()
+    assert planted not in said, f"[{prefix}] the planted value is in log_tail's text"
+    assert said == ("server.log: 7 line(s), 4 of them ERROR, FATAL or PANIC lines; no line of it "
+                    "is shown"), f"[{prefix}] log_tail says: {said}"

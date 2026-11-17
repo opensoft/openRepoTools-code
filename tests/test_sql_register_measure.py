@@ -71,7 +71,9 @@ edit and the `files` row, the image's digest computed here, and no
 structured rows, which `commit_write` takes as empty lists.
 
 REAL ENGINE. Every case depends on `pg_engine` (T205), so without
-PostgreSQL 16 each skips with T205's banner. They fail until lane 1's T107
+PostgreSQL 16 each skips with T205's banner; the cases of this module's own
+clean-up helpers (from T237zzy on) are the exception, take no engine and
+run on any host with bash. The engine's cases fail until lane 1's T107
 (L1-A6, the schema and `commit_write`), T111 (L1-A9, `register snapshot`),
 T112 (L1-A10, `register commit`) and T114 (L1-A12, `journal --last`), lane
 5's L5-A3 and L5-A5 (T506's `swapped` on primary), and lane 2's T227 (the
@@ -82,6 +84,13 @@ waits for lane 4's L4-B9 and lane 5's L5-A1 and L5-B1. `lanes-index` runs as T20
 so `mode=primary` loads (open point 3), and connects as two logins of this
 module's own, members of the writer and the reader groups, by the cluster's
 trust.
+
+NO WRITER'S TEXT IN A FAILURE (T255t; lane 2's pre-review RV9-37 of P09 at
+`d9a1f2bf`, B1): this module is PYTEST_DONT_REWRITE, as managed is, since
+pytest's assertion rewriting would add each tested operand's value to a
+failure's message, a writer's raw stream or a whole `CompletedProcess` with
+its stderr among them, so an assertion here reports its own message, made
+through `_said_safely`, and nothing else.
 """
 
 from __future__ import annotations
@@ -94,11 +103,14 @@ import importlib.util
 import json
 import os
 import platform
+import queue
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -109,6 +121,8 @@ import pgcluster
 from conftest import REPO, WINDOWS_SKIP
 from pgcluster import Database
 from sql_register_helpers import LANES_INDEX, RENDER_GIT_HALF_LINE, flipped_copy
+from test_sql_register_bounds import _said_safely  # the one helper for a failure's output (T255s)
+from test_sql_register_bounds import _reported  # pytest's own report of a failure (T255z)
 
 pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
@@ -239,9 +253,17 @@ SEED = {
 
 # ------------------------------------------------------------------ the estate
 def git(cwd: Path, *args: str, env: dict | None = None) -> str:
+    """git's stdout, or an AssertionError that shows its exit and counts. Its
+    run is dropped before the raise (T255zf; lane 2's pre-review RV9-41 of
+    P09 at `4895579`, B1): pytest 8.3.4 prints a long entry's locals as its
+    arguments where the function takes `*args`, so `proc`, both streams,
+    would show under an explicit `--tb=long`."""
     proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
                           env=env, check=False)
-    assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {proc.stderr}{proc.stdout}"
+    if proc.returncode != 0:
+        said = f"git {' '.join(args)} in {cwd}: {_said_safely(proc)}"
+        del proc
+        raise AssertionError(said)
     return proc.stdout
 
 
@@ -312,7 +334,7 @@ def psql(db, script: str, role: str = None) -> subprocess.CompletedProcess:
 def sql(db, script: str, role: str = None) -> str:
     proc = psql(db, script, role)
     assert proc.returncode == 0, (f"psql{' as ' + role if role else ''} exited "
-                                  f"{proc.returncode}: {proc.stderr.strip()}\n{script}")
+                                  f"{proc.returncode}: {_said_safely(proc.stderr.strip())}\n{script}")
     return proc.stdout.strip()
 
 
@@ -363,7 +385,7 @@ def _commit_call(db, base: int, body: dict) -> int:
     out = sql(db, f"BEGIN ISOLATION LEVEL SERIALIZABLE;\n"
                   f"SELECT {SCHEMA}.commit_write({base}, '{uuid.uuid4()}'::uuid, {version}, "
                   f"'{gen}'::uuid, '{literal}'::jsonb);\nCOMMIT;", WRITER)
-    return int(out.splitlines()[-1])
+    return _whole(out.splitlines()[-1], "commit_write's seq on psql's last line")
 
 
 def import_to_primary(db, estate: Estate) -> int:
@@ -531,7 +553,7 @@ def fake_write(copy: Path, env: dict, checkout: Path, root: Path, lane: str, ver
     fields = out["fields"] = keys(snap.stdout)
     tree = root / "tree"
     (root / "snapshot").write_text(snap.stdout, encoding="utf-8")
-    done = edit(tree, utc_of(int(fields["clock"])))
+    done = edit(tree, utc_of(_whole(fields["clock"], "the snapshot's clock")))
     out["line"] = done["line"]
     git(tree, "add", "-A", "--", "lanes", env=env)
     changes = []
@@ -770,7 +792,7 @@ def test_one_write_cost_is_recorded_and_every_write_commits(pg_engine, request, 
             sent = writes.statements(writes.entry("repoA-1", log, [text]))
             ms, proc = timed(lambda: one_call(db, sent))
             assert (proc.returncode, proc.stdout.strip()) == (0, str(before + k + 1)), (
-                f"write {k}: exit {proc.returncode}: {proc.stderr.strip()[-600:]}")
+                f"write {k}: exit {proc.returncode}: {_said_safely(proc.stderr.strip()[-600:])}")
             times.append(ms)
         committed_once(db, before, writes.write_ids)
         lines.append(figure("M1", f"{store} cluster, Unix socket", "one commit call, new `psql`",
@@ -782,10 +804,10 @@ def test_one_write_cost_is_recorded_and_every_write_commits(pg_engine, request, 
                 reg.copy, reg.env, reg.estate.checkout, tmp_path / "attempts" / str(k), "repoA-1",
                 "log", _edit_log_noted("repoA-1", SID_A1, f"t226 design write {k}"),
                 f"lanes-edit.sh log: t226 design write {k}"))
-            assert done["code"] == 0, (done["snapshot"].stderr,
-                                       done["commit"] and done["commit"].stderr)
+            assert done["code"] == 0, (_said_safely(done["snapshot"]),
+                                       _said_safely(done["commit"]) if done["commit"] else "the commit did not run, so it has no exit")
             assert done["commit"].stdout.split() == ["committed", str(design_before + k + 1)], (
-                done["commit"].stdout)
+                _said_safely(done["commit"]))
             totals.append(ms)
         assert head(db) == design_before + 1 + N_WARM, "each design-form write committed once"
         assert rows(db, f"SELECT count(DISTINCT write_id) AS d FROM journal WHERE seq > "
@@ -796,7 +818,7 @@ def test_one_write_cost_is_recorded_and_every_write_commits(pg_engine, request, 
     else:
         batch = [writes.statements(writes.entry("repoA-1", log, [text])) for text in texts]
         proc = in_one_session(db, batch, timing=True)
-        assert proc.returncode == 0, proc.stderr.strip()[-800:]
+        assert proc.returncode == 0, _said_safely(proc)
         out = proc.stdout.splitlines()
         seqs = [line for line in out if line.isdigit()]
         stamps = [float(m.group(1)) for m in map(re.compile(r"^Time: ([0-9.]+) ms").match, out) if m]
@@ -826,15 +848,15 @@ def test_a_tls_and_scram_connect_on_loopback_is_timed_and_verified(pg_engine, re
     for _ in range(1 + N_WARM):
         ms, proc = timed(lambda: subprocess.run(argv, capture_output=True, text=True, env=env,
                                                 timeout=60, check=False))
-        assert (proc.returncode, proc.stdout.strip()) == (0, "1"), proc.stderr
+        assert (proc.returncode, proc.stdout.strip()) == (0, "1"), _said_safely(proc)
         times.append(ms)
     check = dict(env, PGREQUIREAUTH="scram-sha-256")
     said = subprocess.run([tls.tool("psql"), "-X", "-A", "-t", "-F", "|", "-c",
                            "SELECT ssl, version FROM pg_stat_ssl WHERE pid = pg_backend_pid()"],
                           capture_output=True, text=True, env=check, timeout=60, check=False)
-    assert said.returncode == 0, f"a connect that requires SCRAM failed: {said.stderr}"
+    assert said.returncode == 0, f"a connect that requires SCRAM failed: {_said_safely(said)}"
     ssl, version = said.stdout.strip().split("|")
-    assert ssl == "t", f"pg_stat_ssl says the connect is not TLS: {said.stdout!r}"
+    assert ssl == "t", f"pg_stat_ssl says the connect is not TLS: {_said_safely(said)!r}"
     record([figure("M12", "TLS cluster, loopback TCP", "`psql -c 'SELECT 1'`, a new connect",
                    times, f"rtt=0 (loopback), tls={version}, scram, c=1, q=1")])
 
@@ -943,7 +965,7 @@ def explained(db, statements: list) -> list:
                           input="\n".join(script) + "\n", capture_output=True, encoding="utf-8",
                           errors="replace", env=db.env(LOGIN_READER, appname="t226-explain"),
                           timeout=600, check=False)
-    assert proc.returncode == 0, f"EXPLAIN as {LOGIN_READER}: {proc.stderr.strip()[-800:]}"
+    assert proc.returncode == 0, f"EXPLAIN as {LOGIN_READER}: {_said_safely(proc)}"
     plans, text, at, decoder = [], proc.stdout, 0, json.JSONDecoder()
     while True:
         while at < len(text) and text[at].isspace():
@@ -974,7 +996,7 @@ def grow_to(db, target_edits: int, logs: list, batch: int, tag: str) -> int:
     if writes:
         before = head(db)
         proc = in_one_session(db, writes)
-        assert proc.returncode == 0, f"growth write: {proc.stderr.strip()[-800:]}"
+        assert proc.returncode == 0, f"growth write: {_said_safely(proc)}"
         committed_once(db, before, appends.write_ids)
     return len(writes)
 
@@ -1019,15 +1041,16 @@ def test_journal_last_is_explained_per_statement_and_timed_against_t_r(pg_engine
     appends = Appends(db, [target])
     proc = one_call(db, appends.statements(appends.entry(lane, target, [
         f"NOTED {EM} lane {lane}, session {SID_A1}@{WS}, 2026-11-10T00:00:00Z, lane:{lane} {EM} {key}"])))
-    assert proc.returncode == 0, proc.stderr
-    match, measured = int(proc.stdout.strip()), target
+    assert proc.returncode == 0, _said_safely(proc)
+    match, measured = _whole(proc.stdout.strip(), "the appended entry's seq"), target
     if log == "renamed-log":
         measured = f"lanes/log/{lane}-t226-renamed.md"
         done = fake_write(copy, env, estate.checkout, tmp_path / "rename", lane, "rename-lane",
                           _edit_rename_log(target, measured),
                           f"lanes-edit.sh rename-lane: t226 renames {target}")
-        assert done["code"] == 0, (done["snapshot"].stderr, done["commit"] and done["commit"].stderr)
-        match = int(done["commit"].stdout.split()[1])
+        assert done["code"] == 0, (_said_safely(done["snapshot"]),
+                                   _said_safely(done["commit"]) if done["commit"] else "the commit did not run, so it has no exit")
+        match = _whole(done["commit"].stdout.split()[1], "the rename commit's seq")
         assert rows(db, f"SELECT count(*) AS n FROM journal_edits WHERE seq = {match} AND op = "
                         f"'rename' AND path = '{target}' AND to_path = '{measured}'")[0]["n"] == 1
     statements = last_statements(measured)
@@ -1050,8 +1073,8 @@ def test_journal_last_is_explained_per_statement_and_timed_against_t_r(pg_engine
         for _ in range(1 + N_WARM):
             ms, proc = timed(lambda: run_index(copy, ["journal", "--last", "--path", measured,
                                                       "--grep", key], env))
-            assert proc.returncode == 0, f"journal --last exited {proc.returncode}: {proc.stderr}"
-            assert proc.stdout.splitlines() == ["format=1", f"n={n}", f"seq={match}"], proc.stdout
+            assert proc.returncode == 0, f"journal --last exited {proc.returncode}: {_said_safely(proc.stderr)}"
+            assert proc.stdout.splitlines() == ["format=1", f"n={n}", f"seq={match}"], _said_safely(proc)
             times.append(ms)
         lines.append(figure("--last", where, f"{log} `journal --last`, exec to exit", times,
                             f"rtt=0, tls=none, c=1, q=1; T_r={T_R_S} s (CLI412:255)"))
@@ -1097,6 +1120,103 @@ def _paused(lane: str, k: int) -> str:
             f"profile p{k}; agent a{k}; transcript t{k}")
 
 
+def _lanes_shown(fields: list) -> list:
+    """`swapped`'s listed lanes as a failure message may show them (T255u;
+    lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`, B2): a field that is one
+    of this module's own lane names (`CANDIDATES`) is shown, and any other is
+    `[withheld]`. A field is a stdout line's text up to its first tab, so
+    where a line has no tab it is the whole line, a writer's text that is
+    never shown raw."""
+    return [field if field in CANDIDATES else "[withheld]" for field in fields]
+
+
+def _listed_as_expected(proc, mode: str, expected: list) -> None:
+    """`lanes-edit.sh swapped`'s stdout lists `expected`, each line's lane
+    before its first tab, or the assert fails with a message that shows the
+    listed lanes only as `_lanes_shown` does, beside the exit and the counts
+    `_said_safely` gives (T255u; RV9-37, B2)."""
+    listed = [line.split("\t", 1)[0] for line in proc.stdout.splitlines() if line]
+    assert listed == expected, (f"{mode} mode listed {_lanes_shown(listed)}, not {expected}: "
+                                f"{_said_safely(proc)}")
+
+
+def test_a_swapped_line_with_no_tab_is_withheld_from_the_failure_message():
+    """T255u (lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`, B2), with no
+    engine and no process: `swapped` exited 0 with one listed lane, a line
+    with a planted value and no tab, and a `PGPASSWORD=` line. The listing
+    is not what was expected, so `_listed_as_expected` fails, and its message
+    shows the one known lane, `[withheld]` for each other line, the exit
+    and the counts, and not the planted value. Before T255u the message
+    showed each line up to its first tab, so the whole of a line with none.
+    The planted value is no credential of any login."""
+    planted = f"fake-{uuid.uuid4().hex}"
+    proc = subprocess.CompletedProcess(
+        ["lanes-edit.sh", "swapped", WS], 0,
+        f"{CANDIDATES[1]}\tw2\n{planted}\nPGPASSWORD={planted}\n", "")
+    with pytest.raises(AssertionError) as failed:
+        _listed_as_expected(proc, "files", [CANDIDATES[1], CANDIDATES[0]])
+    said = str(failed.value)
+    assert planted not in said, "the planted value is in the failure message"
+    assert f"listed ['{CANDIDATES[1]}', '[withheld]', '[withheld]']" in said, \
+        f"the listed lanes, shown:\n{said}"
+    assert "exit 0" in said, f"the exit, shown:\n{said}"
+
+
+@pytest.mark.parametrize("case", ["listed-as-expected", "end-held-chain"])
+def test_pytests_own_report_of_a_measure_failure_shows_no_planted_writer_text(request, case):
+    """T255zb (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09 at `3f9fcac4`, B1), with no engine and no process: a failure whose
+    frames or chain hold a planted value, rendered as pytest renders a
+    failed test under the suite's own settings (bounds' `_reported`), holds
+    no planted value. Each case first proves the value is there:
+      - `listed-as-expected`: `_listed_as_expected`'s argument `proc`,
+        `swapped`'s `CompletedProcess`, whose stdout holds it (RV9-38:
+        measure :1124, T255u's new path);
+      - `end-held-chain`: `_end_held`'s explicit chain (T255q, T255r): a
+        held session whose kill fails, whose bounded reap times out with
+        the planted value in its `TimeoutExpired`'s kept stdout and stderr,
+        and whose stdin's close fails. pytest prints each error of the
+        chain, under short too; none of their messages holds a stream.
+    Under pytest's default `--tb=auto` the first shows the value as a long
+    entry's argument; T205e's short style shows none. An explicit
+    `--tb=long` or `--fulltrace` is not secret-safe. The planted value is no
+    credential of any login."""
+    planted = f"fake-{uuid.uuid4().hex}"
+    if case == "listed-as-expected":
+        proc = subprocess.CompletedProcess(["lanes-edit.sh", "swapped", WS], 0,
+                                           f"{CANDIDATES[1]}\tw2\n{planted}\n", "")
+        with pytest.raises(AssertionError) as failed:
+            _listed_as_expected(proc, "files", [CANDIDATES[0]])
+        assert planted in str(failed.getrepr(style="long", funcargs=True)), \
+            "a long report does not show the planted value, so this proves nothing"
+    else:
+        class _Pipe:
+            def close(self) -> None:
+                raise BrokenPipeError(32, "Broken pipe")
+
+        class _Held:
+            args, returncode, readers = ["psql", "-X", "-q"], None, []
+            stdin = stdout = stderr = _Pipe()
+
+            def poll(self):
+                return None
+
+            def kill(self) -> None:
+                raise ProcessLookupError(3, "No such process")
+
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired(self.args, timeout, output=f"out {planted}\n".encode(),
+                                                stderr=f"psql: {planted}\n".encode())
+
+        with pytest.raises(ProcessLookupError) as failed:
+            _end_held(_Held(), kill=True)
+        reaped = failed.value.__cause__
+        assert isinstance(reaped, subprocess.TimeoutExpired) and planted.encode() in reaped.output, \
+            "the chain does not hold the planted output, so this proves nothing"
+        assert isinstance(reaped.__cause__, BrokenPipeError), "the chain does not end at the close's error"
+    assert planted not in _reported(request, failed), f"[{case}] the planted value is in pytest's report"
+
+
 def test_swapped_with_several_candidates_is_timed_beside_its_journal_last_calls(pg_engine, pg, tmp_path):
     """Lane 3's third `--last` row (#165 6755922262): `lanes-edit.sh swapped
     <ws>` with one, three and six swapped lanes, exec to exit, cold once and
@@ -1133,7 +1253,7 @@ def test_swapped_with_several_candidates_is_timed_beside_its_journal_last_calls(
             text = _paused(lane, paused + 1)
             appends = Appends(pg, [path])
             proc = one_call(pg, appends.statements(appends.entry(lane, path, [text])))
-            assert proc.returncode == 0, proc.stderr
+            assert proc.returncode == 0, _said_safely(proc)
             target = checkout / path
             target.write_bytes(target.read_bytes() + text.encode("utf-8") + b"\n")
             git(checkout, "commit", "-q", "-am", f"{lane}: PAUSED", env=reg.estate.env)
@@ -1148,9 +1268,8 @@ def test_swapped_with_several_candidates_is_timed_beside_its_journal_last_calls(
                     ["bash", str(bin_dir / "lanes-edit.sh"), "swapped", WS], capture_output=True,
                     encoding="utf-8", errors="replace", env=env, cwd=str(checkout), timeout=120,
                     check=False))
-                assert proc.returncode == 0, f"swapped in {mode} mode: {proc.stderr}"
-                listed = [line.split("\t", 1)[0] for line in proc.stdout.splitlines() if line]
-                assert listed == expected, f"{mode} mode listed {listed}, not {expected}"
+                assert proc.returncode == 0, f"swapped in {mode} mode: {_said_safely(proc)}"
+                _listed_as_expected(proc, mode, expected)
                 if mode == "primary":
                     lasts = [c.split("\t") for c in calls.read_text(encoding="utf-8").splitlines()
                              if c.startswith("journal\t--last")]
@@ -1255,7 +1374,8 @@ class VerbEstate:
                               stdin=subprocess.DEVNULL, check=False)
 
     def origin_commits(self) -> int:
-        return int(git(self.estate.origin, "rev-list", "--count", "main", env=self.estate.env).strip())
+        return _whole(git(self.estate.origin, "rev-list", "--count", "main", env=self.estate.env).strip(),
+                      "the origin's commit count")
 
 
 def _window(estate: VerbEstate, root: Path, lane: str, session_id: str = None):
@@ -1311,7 +1431,7 @@ def test_each_verb_is_timed_end_to_end_in_both_modes(pg_engine, pg, tmp_path, ve
             for argv in argvs:
                 proc = estate.run(argv)
                 assert proc.returncode == 0, (f"{verb} in {mode} mode, run {k}: `{' '.join(argv)}` "
-                                              f"exited {proc.returncode}: {(proc.stdout + proc.stderr)[-600:]}")
+                                              f"exited {proc.returncode}: {_said_safely((proc.stdout + proc.stderr)[-600:])}")
             times.append((time.monotonic_ns() - start) / 1e6)
         runs = 1 + N_WARM
         if mode == "primary":
@@ -1342,7 +1462,8 @@ def _counted(log: Path, offset: int) -> tuple:
 def _path_m1(reg, root: Path):
     done = fake_write(reg.copy, reg.env, reg.estate.checkout, root / "m1", "repoA-1", "log",
                       _edit_log_noted("repoA-1", SID_A1, "t255 m1"), "lanes-edit.sh log: t255 m1")
-    assert done["code"] == 0, (done["snapshot"].stderr, done["commit"] and done["commit"].stderr)
+    assert done["code"] == 0, (_said_safely(done["snapshot"]),
+                                   _said_safely(done["commit"]) if done["commit"] else "the commit did not run, so it has no exit")
 
 
 def _path_m2(reg, root: Path):
@@ -1350,17 +1471,17 @@ def _path_m2(reg, root: Path):
     appends = Appends(reg.pg, [log])
     text = f"NOTED {EM} lane repoA-1, session {SID_A1}@{WS}, 2026-11-10T00:00:00Z, lane:repoA-1 {EM} t255 m2"
     proc = in_one_session(reg.pg, [appends.statements(appends.entry("repoA-1", log, [text]))])
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == 0, _said_safely(proc)
 
 
 def _path_m6(reg, root: Path):
     proc = run_index(reg.copy, ["render", "--images", "--at", head(reg.pg), "--out", root / "m6"], reg.env)
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == 0, _said_safely(proc)
 
 
 def _path_m7(reg, root: Path):
     proc = VerbEstate(reg.pg, root, "primary", reg).run(["log", "NOTED", "lane:repoA-1", "t255 m7"])
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 0, _said_safely(proc)
 
 
 def _path_m9(reg, root: Path):
@@ -1376,7 +1497,7 @@ def _path_m9(reg, root: Path):
     try:
         for argv in (_bind_argv(), ["set-row-state", "repoA-1", f"PAUSED {DOT} t255 m9"]):
             proc = estate.run(argv)
-            assert proc.returncode == 0, f"`{' '.join(argv)}`: {(proc.stdout + proc.stderr)[-600:]}"
+            assert proc.returncode == 0, f"`{' '.join(argv)}`: {_said_safely(proc)}"
     finally:
         session.close()
 
@@ -1399,8 +1520,7 @@ def hook_pid():
     try:
         yield str(standin.pid)
     finally:
-        standin.kill()
-        standin.wait()
+        _end_group(standin)     # T255j: bounded, as `[m5]`'s service is (lane 5's pointer)
 
 
 def _path_m10(reg, root: Path):
@@ -1417,7 +1537,7 @@ def _path_m10(reg, root: Path):
         proc = run_index(reg.copy, ["register", "read", "--for", "guard", "--prefetch", "--cache",
                                     root / "m10" / "cache", "--pid", pid, "--repo",
                                     reg.estate.checkout, "--lane=repoA-1"], reg.env)
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == 0, _said_safely(proc)
 
 
 #: `[m5]`'S STATE HOME: SHORT, AND OUTSIDE THE TEMPORARY ROOT. The service's
@@ -1442,6 +1562,116 @@ SOCKET_MAX = 103
 #: `:3480`).
 FALLBACK = "guard: direct (service unavailable)"
 WARM_S = 15.0
+
+
+def _end_group(proc: subprocess.Popen, wait: float = 10.0) -> None:
+    """`proc`, started with `start_new_session=True`, ended with its process
+    group and reaped, and its group never signalled once its id may be
+    another's (T237zzo; Codex's review of P09 at `21dd3642`, BLOCKING). A
+    process already reaped, `returncode` set, as after a `poll()` that saw it
+    end, gets no signal. Otherwise each signal goes to its group while it is
+    still unreaped, so the group's id is still its own: TERM; up to `wait` s
+    for its exit, watched by `os.waitid(..., WNOWAIT)`, which does not reap
+    it; KILL; then one reap, `proc.wait(wait)`, whose `TimeoutExpired` is
+    raised, not suppressed. A reap by anything else meanwhile raises
+    `ChildProcessError` from `os.waitid`, before the KILL."""
+    if proc.returncode is not None:
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGTERM)
+    end = time.monotonic() + wait
+    while time.monotonic() < end:
+        if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+            break
+        time.sleep(0.05)
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    proc.wait(wait)
+
+
+def _signals_kept_to_unreaped(monkeypatch) -> list:
+    """For the no-engine cases of this module's clean-up (T237zzy):
+    `os.kill` and `os.killpg` replaced, for the case, by forms that send a
+    signal only while its target, a pid or the group its pid leads, is still
+    an unreaped child of this process, as `os.waitid(..., WNOWAIT)` sees it.
+    Any other signal is sent to nothing and recorded, as (call, pid,
+    signal), in the list returned."""
+    late, real = [], {"kill": os.kill, "killpg": os.killpg}
+
+    def unreaped(pid: int) -> bool:
+        try:
+            os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return False
+        return True
+
+    def kept(call: str):
+        def send(pid: int, sig: int) -> None:
+            if unreaped(pid):
+                real[call](pid, sig)
+            else:
+                late.append((call, pid, signal.Signals(sig).name))
+        return send
+    monkeypatch.setattr(os, "kill", kept("kill"))
+    monkeypatch.setattr(os, "killpg", kept("killpg"))
+    return late
+
+
+def test_m13s_group_cleanup_signals_a_group_only_while_its_leader_is_unreaped_and_raises_a_failed_reap(
+        monkeypatch):
+    """`_end_group` (T237zzo; Codex's review of P09 at `21dd3642`,
+    BLOCKING), with no engine (T237zzy): on process groups this case starts,
+    each led by a process in a session of its own as `[m5]`'s service and
+    `hook_pid`'s stand-in are, with `_signals_kept_to_unreaped` between it
+    and every signal.
+
+    (a) A leader already reaped, as `[m5]`'s `poll()` leaves a service that
+    ended before its socket: no signal at all.
+    (b) One that TERM ends: its exit is -SIGTERM, and nothing is signalled
+    once it is reaped.
+    (c) One deaf to TERM: KILL ends it once `wait` has passed.
+    (d) One whose reap times out (its `wait` replaced by one that raises):
+    `TimeoutExpired` is raised, not suppressed.
+
+    Before T237zzo, (a) sent TERM and KILL to the reaped leader's group, (b)
+    KILL after its own reap, and (d) returned as if the leader were reaped."""
+    late = _signals_kept_to_unreaped(monkeypatch)
+
+    def start(argv: list) -> subprocess.Popen:
+        return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                start_new_session=True)
+
+    proc = start(["true"])
+    proc.communicate(timeout=30)
+    _end_group(proc, wait=5)
+    assert late == [], f"(a) a reaped leader's group was signalled: {late}"
+
+    proc = start(["sleep", "30"])
+    _end_group(proc, wait=5)
+    proc.stdout.close()
+    assert (proc.returncode, late) == (-signal.SIGTERM, []), \
+        f"(b) exit {proc.returncode}, signals after the reap {late}"
+
+    proc = start(["bash", "-c", "trap '' TERM; echo deaf; exec sleep 30"])
+    assert proc.stdout.readline() == b"deaf\n", "(c) the stand-in never ignored TERM"
+    _end_group(proc, wait=0.5)
+    proc.stdout.close()
+    assert (proc.returncode, late) == (-signal.SIGKILL, []), \
+        f"(c) exit {proc.returncode}, signals after the reap {late}"
+
+    proc = start(["sleep", "30"])
+
+    def stuck(timeout=None, proc=proc):
+        raise subprocess.TimeoutExpired(proc.args, timeout)
+    proc.wait = stuck
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            _end_group(proc, wait=5)
+    finally:
+        del proc.wait
+        proc.wait(30)
+        proc.stdout.close()
+    assert late == [], f"(d) signals after the reap {late}"
 
 
 def _path_m5(reg, root: Path):
@@ -1505,19 +1735,17 @@ def _path_m5(reg, root: Path):
                     break
                 assert time.monotonic() < end, \
                     (f"no warming read was answered by the service in {WARM_S:.0f} s ({warmed} reads)",
-                     warm.returncode, warm.stderr)
+                     warm.returncode, _said_safely(warm.stderr, stream="stderr"))
                 time.sleep(0.2)
             proc = read("cache")
-            assert proc.returncode == 0, (proc.stderr, f"the last of {warmed} warming reads: {warm.returncode}",
-                                          warm.stderr)
+            assert proc.returncode == 0, (_said_safely(proc),
+                                          f"the last of {warmed} warming reads: {warm.returncode}",
+                                          _said_safely(warm.stderr, stream="stderr"))
             assert FALLBACK not in proc.stderr, \
-                (proc.stderr, f"the last of {warmed} warming reads: {warm.returncode}", warm.stderr)
+                (_said_safely(proc), f"the last of {warmed} warming reads: {warm.returncode}",
+                 _said_safely(warm.stderr, stream="stderr"))
         finally:
-            serve.terminate()
-            try:
-                serve.wait(10)
-            except subprocess.TimeoutExpired:
-                serve.kill()
+            _end_group(serve)
     finally:
         shutil.rmtree(state, ignore_errors=True)
 
@@ -1545,6 +1773,9 @@ def test_each_paths_connections_and_queries_are_counted(pg_engine, request, tmp_
         M13_PATHS[path](reg, tmp_path)
         c, q = _counted(log, offset)
         assert c >= 1, f"{path} made no connection the counting cluster logged"
+        # Each path's connections are `psql`'s, each sending its statements as simple Query
+        # messages, so a path that connected sent one; q = 0 is a count that failed (T255i).
+        assert q >= 1, f"{path} made {c} connection(s) and no Query message the cluster logged"
         record([f"| M13 | {platform.node()}, counting cluster, Unix socket | `{path}` | "
                 f"c={c}, q={q} | n=1 (a count does not vary with load) |"])
     finally:
@@ -1604,20 +1835,445 @@ SHAPE_READS = ["SET search_path TO pg_catalog", "BEGIN ISOLATION LEVEL REPEATABL
 RTTS_MS = (20, 150)
 
 
+#: How long `_ask` waits for its marker, by the monotonic clock (T255k).
+ASK_S = 60.0
+#: How long a held session's end waits for its reap once it is killed, and
+#: then for its two readers together (T255m).
+REAP_S = 10.0
+
+
+def _lines_of(stream, lines: queue.Queue) -> None:
+    """Each line of `stream` onto `lines`, then None, at its end or where a
+    read fails, so no reader ends without it (T255k; T255m). The reader
+    closes `stream` itself, in a `finally`, before its None (T255o; Codex's
+    review of P09 at `b8f9e35a`, item 7): no other thread need close a pipe
+    while its read may be blocked, and a reader that outlives its session's
+    end still closes its pipe when it reaches the pipe's end."""
+    try:
+        for line in stream:
+            lines.put(line)
+    finally:
+        try:
+            stream.close()
+        finally:
+            lines.put(None)
+
+
 def _held(env: dict, psql: str):
-    return subprocess.Popen([psql, "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1"], stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, bufsize=1)
+    """A held `psql` session, its stdout read line by line into
+    `session.lines` and its stderr into `session.errs`, each by a thread of
+    its own, both kept in `session.readers` (T255k; T255m). So `_ask` can
+    wait with a deadline, a full stderr pipe never stalls `psql`, and its end
+    (`_end_held`) can join both."""
+    session = subprocess.Popen([psql, "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1"],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, env=env, bufsize=1)
+    session.lines, session.errs = queue.Queue(), queue.Queue()
+    session.readers = [threading.Thread(target=_lines_of, args=(stream, into), daemon=True)
+                       for stream, into in ((session.stdout, session.lines),
+                                            (session.stderr, session.errs))]
+    for reader in session.readers:
+        reader.start()
+    return session
+
+
+def _whole(text, what: str) -> int:
+    """`text` as an int, or an AssertionError that names `what` and quotes
+    none of `text` (T255w; lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`,
+    S5): int()'s own ValueError quotes up to 200 characters of its input,
+    which is a tool's or a writer's output here. The AssertionError is
+    raised after the `except`, not in it, so its `__cause__` is None and its
+    `__context__` is not that ValueError (None, unless `_whole` is itself
+    called inside an `except`): nothing of `text` is kept on it (T255z; lane
+    2's pre-review RV9-38 of P09 at `3f9fcac4`, N3: before T255z, `from
+    None` only hid the ValueError from display, and `__context__` still held
+    it). `text` is still this frame's argument, which a long traceback
+    prints and a short one does not (T205e)."""
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        pass
+    raise AssertionError(f"{what} is not a whole number; its text is not shown")
+
+
+def test_measures_whole_keeps_no_text_it_could_not_parse_on_its_error_or_in_the_report(request):
+    """T255z (lane 2's pre-review RV9-38 of P09 at `3f9fcac4`, N3; lane 3's
+    ruling 6949488277, B1), with no engine and no process: measure's
+    `_whole` is given a planted value it cannot parse. Its AssertionError
+    has no `__cause__` and no `__context__`, and the planted value is in
+    none of its `str`, `repr`, `args`, formatted traceback or pytest's own
+    report of the failure (bounds' `_reported`). Before T255z its
+    `__context__` was int()'s ValueError, which quotes the value. The
+    planted value is no credential of any login."""
+    import traceback
+    planted = f"fake-{uuid.uuid4().hex}"
+    with pytest.raises(AssertionError) as failed:
+        _whole(f"x {planted} y", "a planted value")
+    error = failed.value
+    assert error.__cause__ is None, "a cause is kept"
+    assert error.__context__ is None, f"a {type(error.__context__).__name__} is kept as its context"
+    shown = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    for where, said in (("str", str(error)), ("repr", repr(error)), ("args", repr(error.args)),
+                        ("formatted traceback", shown), ("pytest's report", _reported(request, failed))):
+        assert planted not in said, f"the planted value is in the error's {where}"
+
+
+def _drained(lines: queue.Queue) -> str:
+    """What a reader put on `lines`, up to its None or to what is there now
+    (T255m)."""
+    text = []
+    while True:
+        try:
+            line = lines.get_nowait()
+        except queue.Empty:
+            return "".join(text)
+        if line is None:
+            return "".join(text)
+        text.append(line)
+
+
+def _end_pipes(session):
+    """The held session's two readers joined, `REAP_S` together by one
+    deadline, then its pipes closed: stdin, and the stdout and stderr whose
+    readers have ended (T255n; Codex's review of P09 at `d3a2fd5c`, SHOULD
+    2). A reader still running is blocked in a read of its pipe, and a close
+    of that pipe waits for that read, which a process the session started
+    can hold without end; so that pipe is left to its reader, which closes
+    it at that pipe's end (`_lines_of`, T255o), and the reader is named. An
+    ended reader has closed its own pipe, so its close here does nothing.
+    Returns the first failure, for `_end_held` to raise: a reader
+    still running, or a close that failed; None where all is ended. Each
+    later failure is the `__cause__` of the one before it, so none is
+    dropped (T255r; lane 2's pre-review RV9-36 of P09 at `2407ea06`, N2);
+    before T255r only the first was returned."""
+    end = time.monotonic() + REAP_S
+    for reader in session.readers:
+        reader.join(max(0.0, end - time.monotonic()))
+    alive = [reader.is_alive() for reader in session.readers]
+    running = [reader.name for reader, on in zip(session.readers, alive) if on]
+    failures = []
+    if running:
+        failures.append(AssertionError(
+            f"the held session's reader {', '.join(running)} still ran {REAP_S:g} s after its "
+            f"reap (exit {session.returncode}, None where the reap failed): a process it "
+            f"started, or the session itself where unreaped, holds its stdout or stderr"))
+    ended = [pipe for pipe, on in zip((session.stdout, session.stderr), alive) if not on]
+    for pipe in [session.stdin, *ended]:
+        try:
+            pipe.close()
+        except OSError as exc:
+            failures.append(exc)
+    for failure, cause in zip(failures, failures[1:]):
+        failure.__cause__ = cause
+    return failures[0] if failures else None
+
+
+def _end_held(session, *, kill: bool) -> None:
+    """The held session ended and reaped, its two readers joined and its
+    pipes closed, each wait bounded and each failure raised (T255m; T255n;
+    Codex's reviews of P09 at `21dd3642` and at `d3a2fd5c`, SHOULD 2 each).
+    Its stdin is closed under `suppress(OSError)` first, so a pipe a failed
+    `_ask` broke cannot skip the rest. Without `kill` it has 60 s to end once
+    its stdin is closed, and one that outlives them is killed, as T255l did:
+    the case does not fail for that alone. With `kill`, as `_ask` gives up,
+    it is killed at once. The kill is sent only while the session is
+    unreaped, `poll()` first; then one reap, `wait(REAP_S)`.
+
+    Whatever the kill and the reap do, the readers are joined and the pipes
+    closed (`_end_pipes`), in a `finally`. Before T255n a reap that raised
+    skipped both. A kill that raises is kept and the bounded reap is still
+    tried (T255p; Codex's review of P09 at `b8f9e35a`, item 8); before
+    T255p it skipped the reap. Each failure is kept and raised once all
+    are done, in one chain (T255q; Codex's review of P09 at `fb359e64`,
+    lane 3's post 6945142764, SHOULD 1): the kill's error first, then the
+    reap's, as its `TimeoutExpired`, then the first clean-up failure, each
+    the `__cause__` of the one before it, and each only where it happened.
+    So where both the kill and the reap fail, the raised error still says
+    that the session may be alive and unreaped; before T255q the reap's
+    error was dropped there."""
+    with contextlib.suppress(OSError):
+        session.stdin.close()
+    if not kill:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            session.wait(timeout=60)
+    killed = reaped = None
+    try:
+        try:
+            if session.poll() is None:
+                session.kill()
+        except Exception as exc:
+            killed = exc
+        try:
+            session.wait(timeout=REAP_S)
+        except Exception as exc:
+            reaped = exc
+    finally:
+        left = _end_pipes(session)
+    failures = [failure for failure in (killed, reaped, left) if failure is not None]
+    for failure, cause in zip(failures, failures[1:]):
+        failure.__cause__ = cause
+    if failures:
+        raise failures[0]
 
 
 def _ask(session, text: str) -> None:
-    """Send `text` on the held session and wait for its marker line."""
+    """Send `text` on the held session and wait for its marker line, `ASK_S`
+    at most (T255k; Codex's review of P09 at `f4f0ebce`, SHOULD 5; lane 3's
+    ruling 6932114864, by a reader thread): the lines come from
+    `session.lines`, with a monotonic deadline. Past it, or where the session
+    ends first, the session is ended, killed, reaped and its readers joined,
+    each bounded and raised where it fails (`_end_held`, T255m), and the case
+    fails with its exit and the stderr its reader read."""
     marker = f"t255-{uuid.uuid4().hex[:8]}"
     session.stdin.write(text + f"\n\\echo {marker}\n")
     session.stdin.flush()
-    for line in session.stdout:
-        if line.strip() == marker:
-            return
-    raise AssertionError(f"the held session ended: {session.stderr.read()}")
+    end, line = time.monotonic() + ASK_S, ""
+    while line is not None and line.strip() != marker:
+        try:
+            line = session.lines.get(timeout=max(0.0, end - time.monotonic()))
+        except queue.Empty:
+            line = None
+    if line is None:
+        _end_held(session, kill=True)
+        raise AssertionError(f"the held session gave no {marker} line within {ASK_S:g} s, or "
+                             f"ended (exit {session.returncode}); "
+                             f"{_said_safely(_drained(session.errs), stream='stderr')}")
+
+
+#: T255m's stand-ins for `psql`: one that answers each `\echo` line as
+#: `psql` does and ends at its stdin's end, and one that never answers and,
+#: with `T255M_HOLD` set, first starts a process that holds its stdout and
+#: stderr that many seconds.
+T255M_ANSWERS = r"""#!/bin/bash
+echo "t255m stand-in: answers" >&2
+while IFS= read -r line; do
+  case $line in
+    '\echo '*) printf '%s\n' "${line#'\echo '}" ;;
+  esac
+done
+"""
+T255M_SILENT = r"""#!/bin/bash
+echo "t255m stand-in: silent" >&2
+if [ -n "${T255M_HOLD:-}" ]; then sleep "$T255M_HOLD" & fi
+exec sleep 30
+"""
+
+
+@pytest.mark.parametrize("case", ["read-fails", "answers", "never-answers", "reap-times-out",
+                                  "end-reap-times-out", "pipe-held"])
+def test_a_held_sessions_end_is_bounded_joins_its_readers_and_raises_what_it_cannot_end(
+        tmp_path, monkeypatch, case):
+    """The held session's helpers, `_lines_of`, `_held`, `_ask` and
+    `_end_held` (T255m; Codex's review of P09 at `21dd3642`, SHOULD 2), with
+    no engine: `psql` is one of T255m's stand-ins, `ASK_S` is 0.5 s and
+    `REAP_S` 1 s.
+
+    `[read-fails]`: a reader whose read fails still ends its lines with None,
+    its stream closed by then (T255o). Every other case ends with both
+    readers ended and both their pipes closed (T255o; Codex's review of P09
+    at `b8f9e35a`, item 7).
+    `[answers]`: `_ask` returns, and `_end_held` ends the session 0 with both
+    readers joined. `[never-answers]`: `_ask` fails naming its marker and the
+    stderr the reader read, the session killed and reaped and both readers
+    joined. `[reap-times-out]`: the same, with the reap after the kill timing
+    out (the session's `wait` replaced by one that raises): `_ask` raises
+    `TimeoutExpired`. `[end-reap-times-out]`: `_end_held` without `kill`, on a
+    session that does not end at its stdin's end and whose reap after the
+    kill times out, raises `TimeoutExpired`. `[pipe-held]`: the session has
+    started a process that holds its pipes for 5 s; `_ask` fails within
+    `REAP_S` of its kill, naming the reader still running, and the readers end
+    once that process does, each closing its own pipe at that pipe's end.
+
+    Before T255m, a failed read ended the reader with no None; the reader
+    was never kept or joined; `_ask`'s reap after the kill and the shapes'
+    `finally`'s were suppressed; and `_ask` then read stderr to its end,
+    which waited as long as any process held the pipe. Before T255o a reader
+    closed no stream, so a pipe left to its reader at the deadline stayed
+    open after that reader's end."""
+    monkeypatch.setitem(globals(), "ASK_S", 0.5)
+    monkeypatch.setitem(globals(), "REAP_S", 1.0)
+    if case == "read-fails":
+        class Breaks:
+            closed = False
+
+            def __iter__(self):
+                yield "one\n"
+                raise OSError("the pipe broke")
+
+            def close(self):
+                self.closed = True
+        lines, broken = queue.Queue(), Breaks()
+        with pytest.raises(OSError):
+            _lines_of(broken, lines)
+        got = [lines.get_nowait() for _ in range(lines.qsize())]
+        assert got == ["one\n", None], f"a reader whose read fails must end with None: {got}"
+        assert broken.closed, "a reader whose read fails must close its own stream"
+        return
+    psql = tmp_path / "psql"
+    psql.write_text(T255M_ANSWERS if case == "answers" else T255M_SILENT, encoding="utf-8")
+    psql.chmod(0o755)
+    session = _held(dict(os.environ, T255M_HOLD="5" if case == "pipe-held" else ""), str(psql))
+    try:
+        if case == "answers":
+            _ask(session, "SELECT 1;")
+            _end_held(session, kill=False)
+            assert session.returncode == 0, f"the answering stand-in ended {session.returncode}"
+        elif case == "never-answers":
+            with pytest.raises(AssertionError, match="gave no t255-") as failed:
+                _ask(session, "SELECT 1;")
+            said = str(failed.value)
+            assert "t255m stand-in: silent" not in said, f"the stand-in's stderr is shown:\n{said}"
+            assert "); stderr: 1 line(s), 0 of them WARNING lines" in said, f"its stderr's counts:\n{said}"
+            assert session.returncode == -signal.SIGKILL, f"exit {session.returncode}"
+        elif case in ("reap-times-out", "end-reap-times-out"):
+            def stuck(timeout=None):
+                raise subprocess.TimeoutExpired(session.args, timeout)
+            session.wait = stuck
+            with pytest.raises(subprocess.TimeoutExpired):
+                if case == "reap-times-out":
+                    _ask(session, "SELECT 1;")
+                else:
+                    _end_held(session, kill=False)
+        else:
+            start = time.monotonic()
+            with pytest.raises(AssertionError, match="still ran"):
+                _ask(session, "SELECT 1;")
+            took = time.monotonic() - start
+            assert took < 3.5, f"_ask took {took:.1f} s, waiting on a pipe another process holds"
+            end = time.monotonic() + 30
+            for reader in session.readers:
+                reader.join(max(0.0, end - time.monotonic()))
+    finally:
+        session.__dict__.pop("wait", None)
+        if case != "pipe-held":
+            _end_held(session, kill=True)
+    assert not any(reader.is_alive() for reader in session.readers), "a reader outlived the end"
+    closed = (session.stdout.closed, session.stderr.closed)
+    assert closed == (True, True), f"(stdout, stderr) closed are {closed} once the readers ended"
+
+
+class _StandInPipe:
+    """One of a held session's pipes, for T255n's case: its close is
+    recorded in `events`, and then raises `OSError` where it `breaks`
+    (T255q)."""
+
+    def __init__(self, name: str, events: list, breaks: bool = False):
+        self.name, self.events, self.breaks = name, events, breaks
+
+    def close(self) -> None:
+        self.events.append(f"close {self.name}")
+        if self.breaks:
+            raise OSError(f"T255q's stand-in: the close of {self.name} failed")
+
+
+class _StandInReader:
+    """One of a held session's readers, for T255n's case: its join is
+    recorded in `events`, and it has ended once joined, unless it `stays`."""
+
+    def __init__(self, name: str, events: list, stays: bool):
+        self.name, self.events, self.stays, self.joined = name, events, stays, False
+
+    def join(self, timeout=None) -> None:
+        self.events.append(f"join {self.name}")
+        self.joined = True
+
+    def is_alive(self) -> bool:
+        return self.stays or not self.joined
+
+
+class _StandInSession:
+    """A held session that never ends in the time it is given, for T255n's
+    case, with no process: its kill and each wait are recorded in `events`,
+    with its readers' joins and its pipes' closes, and each wait raises
+    `TimeoutExpired`. Its stderr reader `stays` running where asked, its
+    kill raises `PermissionError` where it `refuses` (T255p), and its
+    stdout's close raises `OSError` where it `breaks` (T255q)."""
+
+    args, returncode = ("psql",), None
+
+    def __init__(self, stays: bool, refuses: bool = False, breaks: bool = False):
+        self.events, self.refuses = [], refuses
+        self.stdin, self.stdout, self.stderr = (_StandInPipe(name, self.events,
+                                                             breaks and name == "stdout")
+                                                for name in ("stdin", "stdout", "stderr"))
+        self.readers = [_StandInReader("stdout-reader", self.events, False),
+                        _StandInReader("stderr-reader", self.events, stays)]
+
+    def poll(self):
+        return None
+
+    def kill(self) -> None:
+        self.events.append("kill")
+        if self.refuses:
+            raise PermissionError("T255p's stand-in: the kill was refused")
+
+    def wait(self, timeout=None):
+        self.events.append(f"wait {timeout:g}")
+        raise subprocess.TimeoutExpired(self.args, timeout)
+
+
+@pytest.mark.parametrize("case", ["kill", "no-kill", "reader-left", "kill-fails", "reader-left-clean"])
+def test_a_held_sessions_end_joins_its_readers_and_closes_its_pipes_where_its_reap_fails(case):
+    """`_end_held` where the reap after the kill raises (T255n; Codex's
+    review of P09 at `d3a2fd5c`, SHOULD 2), with no engine and no process:
+    the session, its two readers and its three pipes are stand-ins that
+    record, in order, each kill, wait, join and close (`_StandInSession`),
+    and each of the session's waits raises `TimeoutExpired`.
+
+    `[kill]`, as `_ask` gives up, and `[no-kill]`, as a shape's `finally`
+    ends its session: the reap's `TimeoutExpired` is raised, and only once
+    both readers are joined and stdin, stdout and stderr closed. Before
+    T255n it was raised straight from the reap, with no reader joined and
+    neither reader's pipe closed. `[reader-left]`: the stderr reader still
+    runs at the deadline, and stdout's close raises `OSError`. The reap's
+    error is still the one raised, with that reader named in its cause and
+    stdout's `OSError` as that cause's own (T255r; lane 2's pre-review
+    RV9-36 of P09 at `2407ea06`, N2: before T255r the `OSError` was
+    dropped); stdin and stdout are closed, and stderr is left to its
+    reader, since a close of it would wait on the read the reader is
+    blocked in (`_end_pipes`). `[kill-fails]`: the kill raises
+    `PermissionError` (T255p; Codex's review of P09 at `b8f9e35a`, item 8),
+    and stdout's close raises `OSError` (T255q). The bounded reap is still
+    tried, and the kill's error is the one raised, once both readers are
+    joined and the three pipes closed, with the reap's `TimeoutExpired` as
+    its cause and stdout's `OSError` as the reap's (T255q; Codex's review of
+    P09 at `fb359e64`, lane 3's post 6945142764, SHOULD 1). Before T255p
+    the kill's error skipped the reap; before T255q the reap's error was
+    dropped, and the `OSError` was the kill's cause. `[reader-left-clean]`
+    (T255x; lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`, S8): the stderr
+    reader still runs at the deadline and every close succeeds, as
+    `[reader-left]` was before T255r. The reap's error is raised, with only
+    that reader's error as its cause, and nothing after it."""
+    session = _StandInSession(stays=case in ("reader-left", "reader-left-clean"),
+                              refuses=case == "kill-fails",
+                              breaks=case in ("kill-fails", "reader-left"))
+    raised = PermissionError if case == "kill-fails" else subprocess.TimeoutExpired
+    with pytest.raises(raised) as failed:
+        _end_held(session, kill=case != "no-kill")
+    want = (["close stdin"] + (["wait 60"] if case == "no-kill" else [])
+            + ["kill", f"wait {REAP_S:g}", "join stdout-reader", "join stderr-reader",
+               "close stdin", "close stdout"]
+            + ([] if case in ("reader-left", "reader-left-clean") else ["close stderr"]))
+    assert session.events == want, f"_end_held did {session.events}, not {want}"
+    cause = failed.value.__cause__
+    if case == "reader-left":
+        assert isinstance(cause, AssertionError) and "stderr-reader still ran" in str(cause), repr(cause)
+        after = cause.__cause__
+        assert isinstance(after, OSError) and "close of stdout" in str(after), \
+            f"the reader's error has not stdout's close as its cause: {after!r}"
+        assert after.__cause__ is None, f"the chain goes on: {after.__cause__!r}"
+    elif case == "reader-left-clean":
+        assert isinstance(cause, AssertionError) and "stderr-reader still ran" in str(cause), repr(cause)
+        assert cause.__cause__ is None, f"a clean close gave the reader's error a cause: {cause.__cause__!r}"
+    elif case == "kill-fails":
+        chain = [failed.value, cause, getattr(cause, "__cause__", None)]
+        assert isinstance(cause, subprocess.TimeoutExpired), \
+            f"the kill's error has not the reap's as its cause: {chain!r}"
+        assert isinstance(chain[2], OSError) and "close of stdout" in str(chain[2]), \
+            f"the reap's error has not stdout's close as its cause: {chain!r}"
+        assert chain[2].__cause__ is None, f"the chain goes on: {chain[2].__cause__!r}"
+    else:
+        assert cause is None, f"a clean clean-up gave the reap's error a cause: {cause!r}"
 
 
 @pytest.mark.parametrize("rtt", RTTS_MS, ids=[str(r) for r in RTTS_MS])
@@ -1643,7 +2299,7 @@ def test_each_shape_on_a_delayed_relay_is_recorded(pg_engine, request, shape, rt
                 ms, proc = timed(lambda: subprocess.run([psql, "-X", "-A", "-t", "-c", "SELECT 1"],
                                                         capture_output=True, text=True, env=env,
                                                         timeout=120, check=False))
-                assert (proc.returncode, proc.stdout.strip()) == (0, "1"), proc.stderr
+                assert (proc.returncode, proc.stdout.strip()) == (0, "1"), _said_safely(proc)
                 times.append(ms)
         else:
             session = _held(env, psql)
@@ -1654,8 +2310,10 @@ def test_each_shape_on_a_delayed_relay_is_recorded(pg_engine, request, shape, rt
                     ms, _none = timed(lambda: _ask(session, text))
                     times.append(ms)
             finally:
-                session.stdin.close()
-                session.wait(timeout=60)
+                # Ended, reaped and its readers joined, each wait bounded and each failure
+                # raised; one that outlives 60 s is still killed, and that alone does not
+                # fail the case (T255l; T255m).
+                _end_held(session, kill=False)
         return times[3:]
 
     env = tls.client_env()
@@ -1724,7 +2382,7 @@ def _bind_run(db, root: Path, mode: str) -> tuple:
                      ["set-row-state", "repoA-1", f"PAUSED {DOT} answer 2 bound this session to repoA-2"]):
             ms, proc = timed(lambda: estate.run(argv))
             assert proc.returncode == 0, (f"{mode}: `{' '.join(argv)}` exited {proc.returncode}: "
-                                          f"{(proc.stdout + proc.stderr)[-600:]}")
+                                          f"{_said_safely((proc.stdout + proc.stderr)[-600:])}")
             spent.append(ms)
     finally:
         session.close()

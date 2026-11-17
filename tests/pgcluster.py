@@ -91,6 +91,10 @@ and runs `SELECT 1` in it; `stoppable` starts a cluster, stops it by SIGINT,
 starts it again on the same directories and runs `SELECT 1`. It exits 0 when
 each named smoke passes, 1 when one fails or there is no engine, and 2 for a
 name it does not know.
+
+PYTEST_DONT_REWRITE (T229s): no assert here is rewritten, whatever hook loads
+this plugin, so an assert added later reports its own message and no
+operand's value, a tool's text among them.
 """
 
 from __future__ import annotations
@@ -207,22 +211,32 @@ def required(environ=os.environ) -> bool:
 
 
 # ------------------------------------------------------------ the binaries
-def check_bindir(bindir: Path) -> Optional[str]:
-    """None where `bindir` holds the four tools at major 16, else why not."""
+def check_bindir(bindir: Path, shown: Optional[str] = None) -> Optional[str]:
+    """None where `bindir` holds the four tools at major 16, else why not.
+    The reason shows no text a tool printed (T229o; lane 3's ruling
+    6949488277 on lane 2's pre-review RV9-38 of P09, B2): a `--version`
+    that does not say major 16 is shown by its exit and counts, and
+    `shown` names the directory in place of its path where that path is a
+    tool's output, `pg_config --bindir`'s."""
+    where = str(bindir) if shown is None else shown
     if not bindir.is_dir():
-        return f"{bindir} is not a directory"
+        return f"{where} is not a directory"
     missing = [t for t in TOOLS if not os.access(str(bindir / t), os.X_OK) or (bindir / t).is_dir()]
     if missing:
-        return f"{bindir} has no {', '.join(missing)}"
+        return f"{where} has no {', '.join(missing)}"
     for tool in TOOLS:
+        label = str(bindir / tool) if shown is None else f"{shown}'s {tool}"
         try:
-            said = subprocess.run([str(bindir / tool), "--version"], stdin=DEVNULL, capture_output=True,
-                                  text=True, timeout=20, check=False).stdout.strip()
+            ran = subprocess.run([str(bindir / tool), "--version"], stdin=DEVNULL, capture_output=True,
+                                 text=True, timeout=20, check=False)
         except (OSError, subprocess.SubprocessError) as exc:
-            said = f"<{exc}>"
-        m = re.search(r"\(PostgreSQL\) (\d+)", said)
+            return f"{label} --version did not run: {type(exc).__name__}"
+        version = ran.stdout or ""
+        m = re.search(r"\(PostgreSQL\) (\d+)", version)
         if not m or int(m.group(1)) != MAJOR:
-            return f"{bindir / tool} is not PostgreSQL {MAJOR}: it says {said!r}"
+            return (f"{label} is not PostgreSQL {MAJOR}: its --version exited {ran.returncode} "
+                    f"and names {'another major' if m else 'no PostgreSQL major'}; "
+                    f"{len(version.splitlines())} line(s), none shown")
     return None
 
 
@@ -237,14 +251,15 @@ def find_bindir(environ=os.environ) -> Tuple[Optional[Path], str]:
     pg_config = shutil.which("pg_config", path=environ.get("PATH", os.defpath))
     if pg_config:
         try:
-            out = subprocess.run([pg_config, "--bindir"], stdin=DEVNULL, capture_output=True,
-                                 text=True, timeout=20, check=False).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            out = ""
-        why = check_bindir(Path(out)) if out else "it printed nothing"
+            ran = subprocess.run([pg_config, "--bindir"], stdin=DEVNULL, capture_output=True,
+                                 text=True, timeout=20, check=False)
+            out, how = (ran.stdout or "").strip(), f"exited {ran.returncode}"
+        except (OSError, subprocess.SubprocessError) as exc:
+            out, how = "", f"did not run ({type(exc).__name__})"
+        why = check_bindir(Path(out), shown="the directory it printed") if out else "it printed nothing"
         if why is None:
             return Path(out), f"`{pg_config} --bindir`"
-        tried.append(f"`{pg_config} --bindir` says {out or '-'}, and {why}")
+        tried.append(f"`{pg_config} --bindir` {how}, and {why}")
     else:
         tried.append("no pg_config on PATH")
     why = check_bindir(DEBIAN_BIN)
@@ -408,7 +423,15 @@ def sweep_stale() -> List[str]:
 
 
 class ClusterError(Exception):
-    pass
+    """A cluster's failure. Its text shows exits and counts, never a line of
+    a tool's output or of the server's log (T229k; T229l). `could_not_bind`
+    is True where a start failed and the server log's last five lines name
+    `bind` (T229l): what `TLSCluster.launch` read in the text before, kept as
+    a flag, not as text."""
+
+    def __init__(self, *args, could_not_bind: bool = False) -> None:
+        super().__init__(*args)
+        self.could_not_bind = could_not_bind
 
 
 class Bootstrap:
@@ -429,11 +452,65 @@ def _masked(text: str) -> str:
     return _SECRET_FIELD.sub(lambda m: m.group(1) + "<password>", text or "")
 
 
-def _tail(proc: subprocess.CompletedProcess, size: int = 800) -> str:
-    """A command's last words, stdout then stderr, on one line."""
-    said = " | ".join(line.strip() for line in f"{proc.stdout or ''}\n{proc.stderr or ''}".splitlines()
-                      if line.strip())
-    return said[-size:] or "<nothing>"
+def _counted(proc) -> str:
+    """What a failure message here shows of a tool's run (T229m; lane 3's
+    ruling 6949488277 on lane 2's pre-review RV9-38 of P09, B2): its exit
+    and each stream's count of lines. No line of either is shown: initdb's,
+    git's, openssl's, psql's and lanes-index's own text can echo a
+    statement, a password-file line, a path or a server's message."""
+    parts = [f"exit {proc.returncode}"]
+    for name in ("stdout", "stderr"):
+        said = getattr(proc, name, None)
+        if isinstance(said, bytes):
+            said = said.decode("utf-8", "replace")
+        parts.append(f"{name}: {len(said.splitlines()) if isinstance(said, str) else 0} line(s)")
+    return "; ".join(parts) + "; no line of either is shown"
+
+
+#: An error line of psql's stderr, after psql's own `psql:<stdin>:1: ` where
+#: it is there, and its SQLSTATE where psql prints one (`ERROR:  42P01: ...`,
+#: at `VERBOSITY` verbose; at the default, psql prints none). The SQLSTATE is
+#: taken only from that form on one line (T229p; lane 2's pre-review RV9-38 of
+#: P09, N1): `ERROR:`, spaces or tabs, never a newline, then five of
+#: `[0-9A-Z]` with a digit among them, as every SQLSTATE of PostgreSQL's and
+#: of the product's has, then `:`. So no five-capital word, such as `SYNTH:`,
+#: nor the head of a line after an `ERROR:` that ends its own, is shown as one
+#: (T229w). Its limit (T229r): at psql's default verbosity, a message
+#: whose first word is five of `[0-9A-Z]` with a digit and a colon would be
+#: shown as a SQLSTATE. PostgreSQL's primary messages begin in lower case, and
+#: psql's echo of a statement is a `LINE n:` line, which never matches.
+_PSQL_ERROR = re.compile(r"^(?:psql:\S*: )?(?:ERROR|FATAL|PANIC):", re.M)
+_SQLSTATE = re.compile(r"^(?:psql:\S*: )?(?:ERROR|FATAL|PANIC):[ \t]+(?=[A-Z]{0,4}[0-9])([0-9A-Z]{5}):",
+                       re.M)
+#: A line of the server's log at ERROR, FATAL or PANIC (T229l; anchored by
+#: T229v, lane 2's pre-review RV9-41 of P09, N3): at the line's start, after
+#: one of the fixture's own `log_line_prefix` forms where it is there, the
+#: severity as the server writes it, then `:` and two spaces. The forms are
+#: the default, `%m [%p] ` (its time's three words and the pid in
+#: brackets), and `%p ` (the pid and a space), which managed sets on its
+#: clusters (T229x; lane 2's targeted check RV9-43 of P09 at `94a40564`, NIT
+#: C). So a logged statement whose text holds `ERROR:` is not counted; a
+#: continuation line of a logged statement that itself begins `ERROR:  `
+#: would be. It is a count only: no line is shown.
+_LOG_SEVERE = re.compile(r"^(?:\S+ \S+ \S+ \[\d+\] |\d+ )?(?:ERROR|FATAL|PANIC):  ")
+
+
+def _psql_failed(user: str, dbname: str, proc: subprocess.CompletedProcess) -> str:
+    """What `Cluster.psql`'s `ClusterError` says when psql fails (T229k;
+    lane 3's ruling 6947252648 on lane 2's pre-review RV9-37 of P09 at
+    `d9a1f2bf`, S4): psql's exit, the SQLSTATE where its text has one, and
+    its stderr's counts. No line of psql's text is shown, since psql echoes
+    a failed statement (`LINE 1: ...`), and a role's statement can hold its
+    password. Nothing of the text is kept on the exception: no caller needs
+    it (CX-36's scan of every caller on `main` and at P09's head)."""
+    text = proc.stderr if isinstance(proc.stderr, str) else ""
+    lines = text.splitlines()
+    states = sorted(set(_SQLSTATE.findall(text)))
+    errors = len(_PSQL_ERROR.findall(text))
+    return (f"psql as {user} on {dbname} exited {proc.returncode}: "
+            f"{'SQLSTATE ' + ', '.join(states) if states else 'no SQLSTATE in its text'}; "
+            f"stderr: {len(lines)} line(s), {errors} of them ERROR, FATAL or PANIC lines; "
+            f"no line of it is shown")
 
 
 def _client_env(host: Path, user: str, dbname: str, appname: str, bindir: Path,
@@ -502,14 +579,45 @@ class Cluster:
                                                            self.bindir, self.port),
                               check=False)
         if check and proc.returncode != 0:
-            raise ClusterError(f"psql as {user} on {dbname} exited {proc.returncode}: {proc.stderr.strip()}")
+            # T229q (lane 2's pre-review RV9-38 of P09, N2): the message is
+            # made, then psql's run is dropped, so no stream of it stays in
+            # this frame, which the raise's traceback keeps (`--showlocals`).
+            failed = _psql_failed(user, dbname, proc)
+            del proc
+            raise ClusterError(failed)
         return proc
 
     def log_tail(self) -> str:
+        """What a failure message shows of the server's log (T229l; lane 3's
+        ruling 6949488277 on lane 2's pre-review RV9-38 of P09, B2): its
+        count of lines and of ERROR, FATAL or PANIC lines. No line of it is
+        shown: under `log_statement = 'all'` a role's statement, its
+        password among it, is a line of it."""
         try:
-            return " | ".join((self.root / "server.log").read_text().splitlines()[-5:])
+            lines = (self.root / "server.log").read_text(errors="replace").splitlines()
         except OSError:
-            return "<no log>"
+            return "server.log: not read"
+        severe = sum(1 for line in lines if _LOG_SEVERE.search(line))
+        return (f"server.log: {len(lines)} line(s), {severe} of them ERROR, FATAL or PANIC "
+                f"lines; no line of it is shown")
+
+    def _could_not_bind(self) -> bool:
+        """Whether the server log's last five lines name `bind`, in any case
+        (T229l): what `TLSCluster.launch` looked for in a failed start's text
+        when that text held those lines."""
+        try:
+            last = (self.root / "server.log").read_text(errors="replace").splitlines()[-5:]
+        except OSError:
+            return False
+        return any("bind" in line.lower() for line in last)
+
+    def _start_failed(self, what: str) -> ClusterError:
+        """A failed start's error: `what`, the log's counts, and whether its
+        last lines name a bind, as words and as `could_not_bind` (T229l)."""
+        bind = self._could_not_bind()
+        return ClusterError(f"{what}: {self.log_tail()}"
+                            f"{'; its last 5 lines name a bind' if bind else ''}",
+                            could_not_bind=bind)
 
     def ready(self) -> bool:
         """The postmaster's own `ready` status, line 8 of postmaster.pid: what pg_ctl -w reads."""
@@ -534,7 +642,7 @@ class Cluster:
                               capture_output=True, text=True, env=self.server_env(), timeout=120,
                               check=False)
         if init.returncode != 0:
-            raise ClusterError(f"initdb exited {init.returncode}: {init.stderr.strip()}")
+            raise ClusterError(f"initdb failed: {_counted(init)}")
         t2 = time.monotonic()
         self.prepare()
         self.launch()
@@ -663,15 +771,23 @@ class Cluster:
                      ["login", "add", "--dump-job", "--admin-service", service]):
             code, out, err = self.lanes_index_tty(argv)
             if code != 0:
-                raise ClusterError(f"`lanes-index {' '.join(argv[:3])}` through the admin service "
-                                   f"on {database} exited {code}, so the fixture has no logins "
-                                   f"(lane 1's T110, L1-A8, builds `login`): "
-                                   f"{_masked(out)[-400:]} | {_masked(err)[-400:]}")
+                failed = (f"`lanes-index {' '.join(argv[:3])}` through the admin service "
+                          f"on {database} exited {code}, so the fixture has no logins "
+                          f"(lane 1's T110, L1-A8, builds `login`): stdout: "
+                          f"{len(out.splitlines())} line(s), "
+                          f"{len(PASSWORD_LINE.findall(out))} of them password-file "
+                          f"lines; stderr: {len(err.splitlines())} line(s); no line of "
+                          f"either is shown")
+                del out, err
+                raise ClusterError(failed)
             self.passwords.update(PASSWORD_LINE.findall(out))
+            # T229u (RV9-41, N1): `login add`'s output, its password-file lines
+            # with their clear passwords, stays in no frame a later raise keeps.
+            del out, err
         names = ", ".join(f"'{login}'" for login in FX_LOGINS)
         can = self.psql(f"SELECT rolname FROM pg_catalog.pg_roles WHERE rolcanlogin AND "
                         f"rolname IN ({names}) ORDER BY 1;").stdout.split()
-        missing = sorted(set(FX_LOGINS) - set(can)) + sorted(set(FX_LOGINS) - set(self.passwords))
+        missing = [login for login in FX_LOGINS if login not in can or login not in self.passwords]
         if missing:
             raise ClusterError(f"after `login add`, these logins cannot log in or printed no "
                                f"password line: {', '.join(missing)}")
@@ -700,7 +816,7 @@ class Cluster:
             raise ClusterError(f"`lanes-index bootstrap --no-passwords` through the admin "
                                f"service on {database} exited {proc.returncode}, so the "
                                f"template has no register (lane 1's T109, L1-A7, builds the "
-                               f"bootstrap): {_tail(proc)}")
+                               f"bootstrap): {_counted(proc)}")
         return proc.stdout
 
     def build_imported(self) -> None:
@@ -728,7 +844,7 @@ class Cluster:
                 if proc.returncode != 0:
                     self.imported_problem = (f"`lanes-index import --at {register.c}` as {user} "
                                              f"exited {proc.returncode} (lane 1's T115, L1-A13, "
-                                             f"builds it): {_tail(proc)}")
+                                             f"builds it): {_counted(proc)}")
                 else:
                     self.imported_problem = self._imported_check(register.c)
             except (ClusterError, OSError, subprocess.SubprocessError) as exc:
@@ -756,8 +872,12 @@ class Cluster:
             dbname=IMPORTED).stdout.strip()
         wanted = f"0:import:{commit}|0|files:absent"
         if said != wanted:
-            return (f"`lanes-index import --at {commit}` exited 0, and {IMPORTED} reads "
-                    f"{said!r} (journal|head|switch), not {wanted!r}")
+            got = said.split("|")
+            differ = [part for i, part in enumerate(("journal", "head", "switch"))
+                      if len(got) != 3 or got[i] != wanted.split("|")[i]]
+            return (f"`lanes-index import --at {commit}` exited 0, and {IMPORTED}'s "
+                    f"{', '.join(differ)} differ from {wanted!r} (journal|head|switch); none "
+                    f"of what it reads is shown (T229n)")
         return None
 
     def prepare(self) -> None:
@@ -776,9 +896,9 @@ class Cluster:
         end = time.monotonic() + DEADLINE
         while not self.ready():
             if self.proc.poll() is not None:
-                raise ClusterError(f"postgres exited {self.proc.returncode} starting: {self.log_tail()}")
+                raise self._start_failed(f"postgres exited {self.proc.returncode} starting")
             if time.monotonic() > end:
-                raise ClusterError(f"postgres was not ready in {DEADLINE:.0f} s: {self.log_tail()}")
+                raise self._start_failed(f"postgres was not ready in {DEADLINE:.0f} s")
             time.sleep(POLL)
 
     def stop(self) -> None:
@@ -815,9 +935,11 @@ class Cluster:
         if standby:
             answer = self.psql("SELECT pg_is_in_recovery();", check=False)
             if answer.returncode != 0 or answer.stdout.strip() != "t":
-                said = answer.stdout.strip() or answer.stderr.strip() or "nothing"
+                said = (_psql_failed(SUPERUSER, "postgres", answer) if answer.returncode != 0 else
+                        "f" if answer.stdout.strip() == "f" else
+                        f"neither t nor f: {len(answer.stdout.splitlines())} line(s), none shown")
                 raise ClusterError(f"the start with standby.signal is ready but not in recovery: "
-                                   f"pg_is_in_recovery() answered {said!r}: {self.log_tail()}")
+                                   f"pg_is_in_recovery() answered {said}: {self.log_tail()}")
 
     def new_database(self, template: str = TEMPLATE) -> str:
         """`CREATE DATABASE t_<n> TEMPLATE <template>`, then, where the
@@ -1090,7 +1212,7 @@ class ImportedRegister:
             f"repository: {self.origin}\npath: {self.ws}\n", encoding="utf-8")
         self.env["LANES_REPO"] = str(self.wip)
         self._run_ok(["bash", str(LANES_EDIT), *TEST7_NOTE], LANES_LANE=TEST7_OPERATOR)
-        self.c = self.git("rev-parse", "origin/main")
+        self.c = self.commit_of("origin/main")
 
     def run(self, argv: List[str], cwd: Optional[Path] = None, timeout: float = 120,
             **env: str) -> subprocess.CompletedProcess:
@@ -1101,8 +1223,12 @@ class ImportedRegister:
     def _run_ok(self, argv: List[str], **env: str) -> str:
         proc = self.run(argv, **env)
         if proc.returncode != 0:
-            raise ClusterError(f"{' '.join(argv[:3])} exited {proc.returncode} building test 7's "
-                               f"fixture register: {_tail(proc)}")
+            # T229t (RV9-41, B1): pytest 8.3.4 prints a long entry's locals as
+            # the arguments of a function with **kw, so no run stays here.
+            failed = (f"{' '.join(argv[:3])} exited {proc.returncode} building test 7's "
+                      f"fixture register: {_counted(proc)}")
+            del proc
+            raise ClusterError(failed)
         return proc.stdout.strip()
 
     def git(self, *args: str, data: Optional[bytes] = None) -> str:
@@ -1110,10 +1236,23 @@ class ImportedRegister:
         proc = subprocess.run(["git", *args], cwd=str(self.wip), env=self.env, input=data,
                               capture_output=True, timeout=120, check=False)
         if proc.returncode != 0:
-            raise ClusterError(f"git {' '.join(args[:2])} exited {proc.returncode} building test "
-                               f"7's fixture register: "
-                               f"{proc.stderr.decode('utf-8', 'replace').strip()[-400:]}")
+            # T229t (RV9-41, B1): as `_run_ok`, for a function with *args.
+            failed = (f"git {' '.join(args[:2])} exited {proc.returncode} building test "
+                      f"7's fixture register: {_counted(proc)}")
+            del proc
+            raise ClusterError(failed)
         return proc.stdout.decode("utf-8", "replace").strip()
+
+    def commit_of(self, ref: str) -> str:
+        """`git rev-parse <ref>` in the operator lane's checkout: a commit
+        id, or a ClusterError that shows none of git's text (T229m), since
+        the id is shown in `imported_problem` and at the run's foot."""
+        said = self.git("rev-parse", ref)
+        if not re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", said):
+            raise ClusterError(f"git rev-parse {ref} exited 0 and printed no commit id building "
+                               f"test 7's fixture register: {len(said.splitlines())} line(s), "
+                               f"none of them shown")
+        return said
 
     def configuration(self, cluster: "Cluster", database: str, user: str) -> Path:
         """The operator's 0600 configuration, outside every work tree:
@@ -1173,7 +1312,7 @@ def _openssl(args: List[str], cwd: Path) -> None:
     proc = subprocess.run(["openssl", *args], cwd=str(cwd), stdin=DEVNULL, capture_output=True,
                           text=True, env=env, timeout=60, check=False)
     if proc.returncode != 0:
-        raise ClusterError(f"openssl {' '.join(args[:2])} exited {proc.returncode}: {_tail(proc)}")
+        raise ClusterError(f"openssl {' '.join(args[:2])} failed: {_counted(proc)}")
 
 
 def make_test_ca(directory: Path) -> Dict[str, Path]:
@@ -1244,6 +1383,8 @@ class TLSCluster(Cluster):
                  leaf_only: bool = False) -> None:
         super().__init__(bindir, template_sql, imported)
         self.leaf_only = leaf_only
+        #: True while `start_again` runs, so `launch` keeps the port (T229h).
+        self.restarting = False
         self.root_cert: Optional[Path] = None
         self.database_name: Optional[str] = None
         self.labels: Dict[str, str] = {}
@@ -1269,16 +1410,24 @@ class TLSCluster(Cluster):
         if leaf_only is not None:
             self.leaf_only = leaf_only
             self._tls_settings()
-        super().start_again(standby=standby)
+        self.restarting = True
+        try:
+            super().start_again(standby=standby)
+        finally:
+            self.restarting = False
 
     def launch(self) -> None:
         """The start, with a new free port where another process took the
-        one chosen before the postmaster bound it."""
+        one chosen before the postmaster bound it: at the first start only.
+        A restart (`start_again`) keeps the port its clients and
+        configurations were given, so a bind failure there is raised, never
+        moved past (T229h). A bind failure is the error's `could_not_bind`,
+        since its text holds no line of the log (T229l)."""
         for attempt in range(3):
             try:
                 return super().launch()
             except ClusterError as exc:
-                if attempt == 2 or "bind" not in str(exc).lower():
+                if attempt == 2 or self.restarting or not exc.could_not_bind:
                     raise
                 self.port = _free_port()
 
@@ -1354,8 +1503,10 @@ def _seam(relay, point: str, name: str = "") -> None:
     calls it where a concurrent `close()` can meet one of its threads, and it
     does nothing unless a test has set the relay's `seam` to a callable
     `seam(point, name)`. The points: "accepted", in `_accept`, with a client
-    and its upstream in hand and neither registered; "listed", as `_spawn`
-    leaves the lock with the thread `name` listed; "snapshot", in `close()`,
+    and its upstream connected, neither registered in `DelayedLoopback`, both
+    registered before the connect in `SilentAfterStartup` (T229i); "listed",
+    as the thread `name`, listed and started, leaves the lock it was started
+    under; "snapshot", in `close()`,
     once it has taken its snapshot. A test's hook holds a thread at a point
     on an event, so a window that only the scheduler would open is open every
     time."""
@@ -1549,27 +1700,38 @@ class SilentAfterStartup:
         self.port = self.listener.getsockname()[1]
         self._spawn(self._accept, "accept")
 
-    def _spawn(self, target, name: str, *args) -> None:
+    #: The bound on each upstream connect (T229i). A Unix socket's connect can
+    #: wait on a full backlog until it completes or times out: `CONNECT_WAIT` bounds it.
+    CONNECT_WAIT = 10.0
+
+    def _start(self, target, name: str, *args) -> None:
+        """Under `self.lock`, list the thread and start it (T229f, T229i):
+        `close()` snapshots under the same lock, so it never joins a thread
+        not yet started, and no thread starts after its snapshot."""
         thread = threading.Thread(target=target, args=args, daemon=True,
                                   name=f"silent-after-startup-{self.port}-{name}")
+        self.threads = [t for t in self.threads if t.is_alive()] + [thread]
+        thread.start()
+
+    def _spawn(self, target, name: str, *args) -> None:
         with self.lock:                     # T229f: listed and started under `close()`'s lock
-            self.threads = [t for t in self.threads if t.is_alive()] + [thread]
-            thread.start()
+            self._start(target, name, *args)
         _seam(self, "listed", name)
 
     def _upstream(self) -> socket.socket:
+        """A socket for the target, not yet connected (T229i)."""
+        family = socket.AF_INET if self.socket_dir is None else socket.AF_UNIX
+        return socket.socket(family, socket.SOCK_STREAM)
+
+    def _connect(self, upstream: socket.socket) -> None:
+        """`upstream`'s connect to the target, bounded by CONNECT_WAIT; a
+        shutdown by `close()` ends a TCP connect under way at once (T229i)."""
+        upstream.settimeout(self.CONNECT_WAIT)
         if self.socket_dir is None:
-            upstream = socket.create_connection(("127.0.0.1", self.target_port), timeout=10)
+            upstream.connect(("127.0.0.1", self.target_port))
         else:
-            upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            upstream.settimeout(10)
-            try:
-                upstream.connect(f"{self.socket_dir}/.s.PGSQL.{self.target_port}")
-            except OSError:
-                upstream.close()
-                raise
+            upstream.connect(f"{self.socket_dir}/.s.PGSQL.{self.target_port}")
         upstream.settimeout(None)
-        return upstream
 
     def _accept(self) -> None:
         while True:
@@ -1582,14 +1744,29 @@ class SilentAfterStartup:
             except OSError:
                 client.close()
                 continue
-            _seam(self, "accepted")
-            with self.lock:
+            pair = (client, upstream)
+            with self.lock:                 # T229i: tracked before the connect, so `close()` shuts both
                 if self.done:
                     client.close()
                     upstream.close()
                     return
-                self.sockets.update((client, upstream))
-            self._spawn(self._pump, "pump", client, upstream)
+                self.sockets.update(pair)
+            try:
+                self._connect(upstream)
+            except OSError:
+                with self.lock:             # untracked and closed here, or left to `close()`
+                    if self.done:
+                        return
+                    self.sockets.difference_update(pair)
+                client.close()
+                upstream.close()
+                continue
+            _seam(self, "accepted")
+            with self.lock:                 # T229i: `done` read, and the pump listed and started, in one act
+                if self.done:
+                    return
+                self._start(self._pump, "pump", client, upstream)
+            _seam(self, "listed", "pump")
 
     def _pump(self, client: socket.socket, server: socket.socket) -> None:
         seen, silent, ends = b"", False, [client, server]
@@ -1640,7 +1817,14 @@ class SilentAfterStartup:
             return [t.name for t in self.threads if t.is_alive()]
 
     def close(self, wait: float = 10.0) -> None:
-        """End the relay: no new connection, and every held socket closed."""
+        """End the relay: no new connection; every socket it tracks, a pair
+        whose upstream connect is under way among them, shut down before any
+        join, so that no pump waits in `sendall()` and no TCP connect goes
+        on; every thread joined by one deadline, `wait` from now; every held
+        socket closed; and then, with `wait` above 0, a thread still alive
+        raised as a RuntimeError that names it (T229i; Codex's SHOULD 3 on
+        P09 at `21dd3642`). `close(wait=0)`, T229f's own case, joins without
+        waiting and raises nothing: its caller asks `alive()`."""
         with self.lock:
             self.done = True
             ends, threads = list(self.sockets), list(self.threads)
@@ -1655,6 +1839,10 @@ class SilentAfterStartup:
             thread.join(max(0.0, end_by - time.monotonic()))
         for end in ends:
             end.close()
+        left = [thread.name for thread in threads if thread.is_alive()]
+        if left and wait > 0:
+            raise RuntimeError(f"the silent-after-startup relay on port {self.port} has {left} "
+                               f"alive at its close()'s {wait:g} s deadline")
 
     def __enter__(self) -> "SilentAfterStartup":
         return self
@@ -1821,9 +2009,10 @@ def counting_cluster(pg_engine, pg_template_sql):
 
 # ------------------------------------------------------------ the smoke
 def _select_1(cluster: Cluster, dbname: str = "postgres") -> None:
-    said = cluster.psql("SELECT 1;", dbname=dbname).stdout.strip()
-    if said != "1":
-        raise ClusterError(f"SELECT 1 on {dbname} answered {said!r}")
+    answer = cluster.psql("SELECT 1;", dbname=dbname).stdout
+    if answer.strip() != "1":
+        raise ClusterError(f"SELECT 1 on {dbname} did not answer 1: "
+                           f"{len(answer.splitlines())} line(s), none shown")
 
 
 def _smoke_session(found: Probe) -> str:
@@ -1868,8 +2057,9 @@ def _smoke_tls(found: Probe) -> str:
         argv = [cluster.tool("psql"), "-X", "-A", "-t", "-F", "|", "-c",
                 "SELECT ssl, version FROM pg_stat_ssl WHERE pid = pg_backend_pid()"]
         said = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=60, check=False)
-        if (said.returncode, said.stdout.strip()) != (0, "t|TLSv1.3"):
-            raise ClusterError(f"the verify-full connect answered {said.returncode}: {_tail(said)}")
+        tls13 = said.returncode == 0 and said.stdout.strip() == "t|TLSv1.3"
+        if not tls13:
+            raise ClusterError(f"the verify-full connect did not answer t|TLSv1.3: {_counted(said)}")
         plain = subprocess.run(argv, capture_output=True, text=True, timeout=60, check=False,
                                env=dict(env, PGSSLMODE="disable"))
         if plain.returncode == 0:
