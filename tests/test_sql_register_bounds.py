@@ -3461,6 +3461,33 @@ def _reported(request, failed) -> str:
     return f"{longrepr}\n{longrepr.reprcrash.message}"
 
 
+def test_the_suites_tracebacks_are_short_unless_a_person_asks_for_another_style(request):
+    """T257zv (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09 at `3f9fcac4`, B1; T205e), with no engine and no process: conftest's
+    `pytest_configure` turns pytest's default `--tb=auto` into `short`, the
+    style that prints no frame's arguments, and leaves each style a person
+    gives (`long`, `short`, `no`, `line`, `native`) as given. It is run on a
+    stand-in config for each, its root refusal and its engine plugin's
+    registration as in this session. And this session's own style is no
+    longer `auto`: the hook ran before this case. Every report regression
+    here (`_reported`) renders under that style."""
+    import types
+    import conftest
+
+    def configured(given: str) -> str:
+        option = types.SimpleNamespace(tbstyle=given)
+        config = types.SimpleNamespace(
+            option=option, getoption=lambda name, default=None: getattr(option, name, default),
+            pluginmanager=types.SimpleNamespace(has_plugin=lambda name: True))
+        conftest.pytest_configure(config)
+        return option.tbstyle
+
+    styles = {given: configured(given) for given in ("auto", "long", "short", "no", "line", "native")}
+    assert styles == {"auto": "short", "long": "long", "short": "short", "no": "no", "line": "line",
+                      "native": "native"}, f"--tb given, and the style after the hook: {styles}"
+    assert request.config.getoption("tbstyle") != "auto", "this session's style is still pytest's auto"
+
+
 def test_whole_keeps_no_text_it_could_not_parse_on_its_error_or_in_the_report(request):
     """T257zr (lane 2's pre-review RV9-38 of P09 at `3f9fcac4`, N3; lane 3's
     ruling 6949488277, B1), with no engine and no process: `_whole` is given
