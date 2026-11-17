@@ -465,9 +465,16 @@ def _counted(proc) -> str:
 
 #: An error line of psql's stderr, after psql's own `psql:<stdin>:1: ` where
 #: it is there, and its SQLSTATE where psql prints one (`ERROR:  42P01: ...`,
-#: at `VERBOSITY` verbose; at the default, psql prints none).
+#: at `VERBOSITY` verbose; at the default, psql prints none). The SQLSTATE is
+#: taken only from that form on one line (T229p; lane 2's pre-review RV9-38 of
+#: P09, N1): `ERROR:`, spaces or tabs, never a newline, then five of
+#: `[0-9A-Z]` with a digit among them, as every SQLSTATE of PostgreSQL's and
+#: of the product's has, then `:`. So no word of psql's message, five
+#: capitals such as `SYNTH:`, nor a line after an `ERROR:` that ends its own,
+#: is shown as one.
 _PSQL_ERROR = re.compile(r"^(?:psql:\S*: )?(?:ERROR|FATAL|PANIC):", re.M)
-_SQLSTATE = re.compile(r"^(?:psql:\S*: )?(?:ERROR|FATAL|PANIC):\s+([0-9A-Z]{5}):", re.M)
+_SQLSTATE = re.compile(r"^(?:psql:\S*: )?(?:ERROR|FATAL|PANIC):[ \t]+(?=[A-Z]{0,4}[0-9])([0-9A-Z]{5}):",
+                       re.M)
 #: A line of the server's log at ERROR, FATAL or PANIC, after its prefix (T229l).
 _LOG_SEVERE = re.compile(r"\b(?:ERROR|FATAL|PANIC):")
 
