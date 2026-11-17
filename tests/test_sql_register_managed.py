@@ -454,7 +454,8 @@ class Session:
         end = time.monotonic() + deadline
         while marker.encode() not in self.err[start:]:
             assert time.monotonic() < end, (
-                f"psql gave no {marker!r} within {deadline:.0f} s: {_said_safely(self.err[start:])!r}")
+                f"psql gave no {marker!r} within {deadline:.0f} s, and has no exit, its session still open: "
+                f"{_said_safely(self.err[start:], stream='stderr')!r}")
             ready, _, _ = select.select([fd], [], [], 0.2)
             if ready:
                 chunk = os.read(fd, 65536)
@@ -1942,7 +1943,7 @@ def _w_creates(files: dict) -> tuple:
 def _w_git(cwd: Path, env: dict, *args: str) -> str:
     proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, env=env,
                           timeout=120, check=False)
-    assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {_said_safely(proc.stderr)}{_said_safely(proc.stdout)}"
+    assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {_said_safely(proc)}"
     return proc.stdout
 
 
@@ -2799,7 +2800,7 @@ def test_a_revoked_login_is_refused_69_and_writes_nothing(tmp_path, request, cas
         f"the open session's next statement after the revoke was not ended: {_said_safely(said)}")
     assert "42501" not in said and "permission denied" not in said, (
         f"the open session's next statement got 42501, so revoke returned between its steps: {_said_safely(said)}")
-    assert ended.stdout.split() == ["open"], f"the open session got an answer after the revoke: {_said_safely(ended.stdout)!r}"
+    assert ended.stdout.split() == ["open"], f"the open session got an answer after the revoke: {_said_safely(ended)!r}"
     assert m.value("SELECT count(*) FROM pg_roles WHERE rolname IN ('lanes_w_e2', 'lanes_r_e2');",
                    "postgres") == "2", "a revoked login's role was dropped"
     assert m.role(ADMIN)["super"] is False and m.value(
