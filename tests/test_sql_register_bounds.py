@@ -1257,6 +1257,92 @@ def _end_process(proc: subprocess.Popen, *, group: bool, wait: float = 10.0) -> 
     proc.wait(wait)
 
 
+def _signals_kept_to_unreaped(monkeypatch) -> list:
+    """For the no-engine cases of the bench's clean-up (T237zzx): `os.kill`
+    and `os.killpg` replaced, for the case, by forms that send a signal only
+    while its target, a pid or the group its pid leads, is still an unreaped
+    child of this process, as `os.waitid(..., WNOWAIT)` sees it. Any other
+    signal is sent to nothing and recorded, as (call, pid, signal), in the
+    list returned."""
+    late, real = [], {"kill": os.kill, "killpg": os.killpg}
+
+    def unreaped(pid: int) -> bool:
+        try:
+            os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return False
+        return True
+
+    def kept(call: str):
+        def send(pid: int, sig: int) -> None:
+            if unreaped(pid):
+                real[call](pid, sig)
+            else:
+                late.append((call, pid, signal.Signals(sig).name))
+        return send
+    monkeypatch.setattr(os, "kill", kept("kill"))
+    monkeypatch.setattr(os, "killpg", kept("killpg"))
+    return late
+
+
+def test_the_bench_cleanup_signals_a_process_only_while_it_is_unreaped_and_raises_a_failed_reap(
+        monkeypatch):
+    """`_end_process` (T237zzn; Codex's review of P09 at `21dd3642`,
+    BLOCKING), with no engine (T237zzx): on processes this case starts, each
+    in a session of its own as the service is, with `group` and without, and
+    `_signals_kept_to_unreaped` between it and every signal.
+
+    (a) A process already reaped, as `start_service`'s `poll()` leaves a
+    service that ended before it bound: no signal at all.
+    (b) One that TERM ends: its exit is -SIGTERM, and nothing is signalled
+    once it is reaped.
+    (c) One deaf to TERM: KILL ends it once `wait` has passed.
+    (d) One whose reap times out (its `wait` replaced by one that raises):
+    `TimeoutExpired` is raised, not suppressed.
+
+    Before T237zzn, with `group`, (a) sent TERM and KILL to the reaped
+    process's number and (b) KILL after its own reap; and (d) returned as if
+    the process were reaped, in both modes."""
+    late = _signals_kept_to_unreaped(monkeypatch)
+
+    def start(argv: list) -> subprocess.Popen:
+        return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                start_new_session=True)
+
+    for group in (True, False):
+        proc = start(["true"])
+        proc.communicate(timeout=30)
+        _end_process(proc, group=group, wait=5)
+        assert late == [], f"(a) group={group}: a reaped process was signalled: {late}"
+
+        proc = start(["sleep", "30"])
+        _end_process(proc, group=group, wait=5)
+        proc.stdout.close()
+        assert (proc.returncode, late) == (-signal.SIGTERM, []), \
+            f"(b) group={group}: exit {proc.returncode}, signals after the reap {late}"
+
+        proc = start(["bash", "-c", "trap '' TERM; echo deaf; exec sleep 30"])
+        assert proc.stdout.readline() == b"deaf\n", "(c) the stand-in never ignored TERM"
+        _end_process(proc, group=group, wait=0.5)
+        proc.stdout.close()
+        assert (proc.returncode, late) == (-signal.SIGKILL, []), \
+            f"(c) group={group}: exit {proc.returncode}, signals after the reap {late}"
+
+        proc = start(["sleep", "30"])
+
+        def stuck(timeout=None, proc=proc):
+            raise subprocess.TimeoutExpired(proc.args, timeout)
+        proc.wait = stuck
+        try:
+            with pytest.raises(subprocess.TimeoutExpired):
+                _end_process(proc, group=group, wait=5)
+        finally:
+            del proc.wait
+            proc.wait(30)
+            proc.stdout.close()
+        assert late == [], f"(d) group={group}: signals after the reap {late}"
+
+
 def _record(row: str, elapsed: float, bound: float, rule: str) -> None:
     """Timing rule 2's record: the measured time, the design's bound, its
     margin."""
