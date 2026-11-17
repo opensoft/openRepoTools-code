@@ -3191,21 +3191,156 @@ def test_over_a_delayed_tls_link_no_healthy_call_meets_its_timer(tls_cluster, tm
         _record(f"link-{kind}", took, LINK_TIMERS[kind], "AT-D9c (d), recorded")
 
 
-#: THE ONE LINE OF A WRITER'S STDERR A FAILURE MESSAGE SHOWS (T257x; Codex's
-#: review of P09 at `b8f9e35a`, BLOCKING 1; Brett's 6931509747: "sanitize
-#: failure diagnostics and avoid publishing credential-bearing stdout/stderr or
-#: password-file lines"): a WARNING, as `lanes-edit.sh`'s `note` (`lanes-edit:
-#: WARNING: ...`), `psql` (`psql:<stdin>:3: WARNING:  ...`) and libpq print one,
-#: shown whole (T257v). No other line is shown, so no password-file line, URL,
-#: `password=` value or verifier a stderr holds can reach a log, and nothing is
-#: masked: the product's WARNING texts name no credential.
-_WARNING_LINE = re.compile(r"(?:^|\s)WARNING:\s")
+#: THE LINES OF A WRITER'S STDERR A FAILURE MESSAGE SHOWS, AND HOW (T257zc;
+#: Codex's review of P09 at `fb359e64`, lane 3's post 6945142764, BLOCKING 1;
+#: Brett's 6931509747: "sanitize failure diagnostics and avoid publishing
+#: credential-bearing stdout/stderr or password-file lines"). T257x showed each
+#: line that held `WARNING: ` whole, so a WARNING that carried a `PGPASSWORD=`
+#: value, a password-file line, a SCRAM verifier or a server's text that psql
+#: passed on was shown with it. Now a line is shown only where it matches, in
+#: full, one of these templates: the fixed texts of `lanes-edit.sh`'s WARNING
+#: sites, the twelve at `fb359e64` (eight `note` lines to stderr, "CROSS-REPO",
+#: "explicitly allowed", "names disagree", "an uncommitted edit to its
+#: register", "a per-profile clone", "uncommitted LANES.md changes", "the
+#: rename comment" and "the GitHub comment", and four `printf` lines to
+#: stdout, "could not be read", two "superseded transcript" and "this window
+#: is lane"), and the eleven more of line R's `lanes-edit.sh` at `548b8f2e`,
+#: against which the burst case's writers run (hosted run 44016287671): the
+#: three files-mode questions, with each `<why>` their callers pass, the stale
+#: pending record, a write already in the register, and the six rename moves.
+#: A variable part is shown only in a form that cannot hold a secret: `{n}`, a
+#: number of at most ten digits; `{id}`, a write id, a UUID; `{cmd}`, one of
+#: the product's own verbs. Every other variable part, `{…}`, may be any text,
+#: and is never shown: the report prints the template's text, with
+#: `[withheld]` in that part's place, and never the line. A line that holds
+#: `WARNING` and matches no template is not shown at all, only counted.
+_WARNING_VERBS = ("replace-in-row", "append-session-id", "append-line", "add-row",
+                  "start-record", "set-row-state", "migrate-state-cells", "retire-rows",
+                  "archive-rows", "commit", "log", "claim", "release", "request-handoff",
+                  "rename-lane", "register-text", "register-grep")
+_WARNING_PARTS = {"{n}": "[0-9]{1,10}",
+                  "{id}": "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}",
+                  "{cmd}": "(?:" + "|".join(re.escape(verb) for verb in _WARNING_VERBS) + ")",
+                  "{…}": ".*?"}
+_WARNING_PART = re.compile("|".join(re.escape(part) for part in _WARNING_PARTS))
+_FILES_MODE = (" so {cmd} runs in files mode", " so {cmd} reads in files mode",
+               " so the guard reads in files mode")
+_FILES_WHY = ("could not be run: there is no lanes-index beside {…}/lanes-edit.sh or on PATH",
+              "could not be asked: no temporary directory could be made under {…} to hold "
+              "its answer",
+              "could not be asked: no cache file could be made under {…} to hold its answer",
+              "exited 0 without answering one line, index or primary",
+              "exited 0 without answering one line, mode index or mode primary",
+              "did not answer within 2 s, and was stopped (exit 124)",
+              "was killed (exit 137): by its 2 s timer after it ignored the stop, or by a signal",
+              "was killed by a signal (exit 137)",
+              "exited {n}", "exited {n} ({…})")
+_RENAME_OWED = " The move is owed: {…}."
+_WARNING_TEMPLATES = tuple(
+    ["lanes-edit: WARNING: " + text for text in (
+        "CROSS-REPO — {…} is not lane {…}'s home ({…}). Proceeding: Amendment 7 warns here, it "
+        "never refuses.",
+        "this lane/session name mismatch was explicitly allowed for this transcript. It will "
+        "remain allowed only while the lane and session names stay unchanged.",
+        "the lane and Claude session names disagree. This prompt is paused until you choose how "
+        "to repair or explicitly allow this lane.",
+        "W ({…}) holds an uncommitted edit to its register ({…}), and under LANES_ROUTE_WRITES=1 "
+        "nothing commits in W: this write goes through {…}/ and carries its own edit only, so "
+        "that one stays in W, unpublished and untouched (Amendment 23 S5). {…}.",
+        "LANES_REPO names {…}, a per-profile clone of the register beside W. It is honoured, and "
+        "nothing new should write through it (Amendment 23 S6.2): this lane's own checkout is "
+        "{…}/. Unset LANES_REPO, LANES_DIR and LANES_FILE in this window, or relaunch it.",
+        "uncommitted LANES.md changes touch row(s) other than this lane ({…}): {…}",
+        "the rename comment could not be posted on:{…}. The commit IS the rename and it has "
+        "landed; post them by hand so that a reader outside this estate can see it.",
+        "the GitHub comment could not be posted. The log line IS the claim and it has landed; "
+        "post the comment by hand so that a reader outside this estate can see it.",
+        "the pending record of this command, write {id} made at {…} against register generation "
+        "{n}, was last updated at {…}, more than {n} s ago, so this run does not reuse its id: "
+        "it writes anew, as write {id}, and replaces that record. {…}",
+        "register write {id} is in the register at seq {n}{…}.",
+        "the rename is in the register at seq {n}, and its handoff's move could not be handed "
+        "to the parent that makes it ({…}/rl-move could not be written), so it is NOT made: the "
+        "row's handoff column names {…}, which is not there yet." + _RENAME_OWED,
+        "lane {…} is lane {…} in the register already (seq {n}), so this run wrote no register "
+        "line; its handoff's move could not be handed to the parent that makes it ({…}/rl-move "
+        "could not be written), so it is NOT made: the row's handoff column names {…}."
+        + _RENAME_OWED,
+        "{…}; its handoff's move was named for the checkout {…}, not lane {…}'s {…}, so it is "
+        "NOT made: the row's handoff column names {…}, which is not there yet." + _RENAME_OWED,
+        "{…}; the push of its handoff's move and RENAMED stamp in {…} was not confirmed (exit "
+        "{n}, above). A re-run of these steps confirms the move on origin or makes it: {…}.",
+        "{…}; its handoff's move and RENAMED stamp in {…} did not complete (exit {n}, above), "
+        "and the row's handoff column names {…}, which is there: the refusal above says why the "
+        "act stopped. Once a person has settled what it names, what this rename still owes is "
+        "made by hand: {…}.",
+        "{…}; its handoff's move and RENAMED stamp in {…} did not complete (exit {n}, above), so "
+        "the row's handoff column names {…}, which is not there yet." + _RENAME_OWED)]
+    + ["WARNING: {…} could not be read, so a window named for a lane RENAMED since could not be "
+       "resolved to it (Amendment 16(e)) — this block may be about to say no lane binds a window "
+       "that one does",
+       "WARNING: this is a superseded transcript of lane {…}; the live one is {…}, which the row "
+       "records as `unknown` — a relaunch would record nothing either, so run: lane-start "
+       "--no-launch {…}",
+       "WARNING: this is a superseded transcript of lane {…}; the live one is {…}; you resumed "
+       "{…} — exit this session and run: lane-start {…}",
+       "WARNING: this window is lane {…} whose current session is {…}; this session {…} is in "
+       "no row — the harness minted a new transcript — run: lane-start --no-launch {…}"]
+    + ["lanes-edit: WARNING: `lanes-index " + asked + "` " + why + "," + mode.replace(
+        "{cmd}", "`{cmd}`") + ", as on a workstation with no lanes-index configuration (feature "
+       "007, D3)." for asked, mode in (("mode", _FILES_MODE[0]),
+                                       ("register read --prefetch", _FILES_MODE[1]),
+                                       ("register read --for guard --prefetch", _FILES_MODE[2]))
+       for why in _FILES_WHY])
 
 
-def _warnings_of(err: str) -> list:
-    """The WARNING lines of a writer's stderr `err`, each whole, in order, and
-    nothing else of it (T257x)."""
-    return [line for line in (err or "").splitlines() if _WARNING_LINE.search(line)]
+def _template_pattern(template: str):
+    """`template` as a pattern its line must match in full: its fixed text
+    as it stands, each variable part in its form (T257zc)."""
+    at, pattern = 0, []
+    for part in _WARNING_PART.finditer(template):
+        pattern += [re.escape(template[at:part.start()]), f"({_WARNING_PARTS[part.group()]})"]
+        at = part.end()
+    return re.compile("".join(pattern) + re.escape(template[at:]), re.S)
+
+
+_WARNING_PATTERNS = tuple((template, _template_pattern(template))
+                          for template in _WARNING_TEMPLATES)
+
+
+def _shown_warning(line: str):
+    """`line` as a failure message may show it, or None where it matches no
+    WARNING template in full (T257zc): the template's fixed text, each `{n}`,
+    `{id}` and `{cmd}` as the line has it, and `[withheld]` for each `{…}`.
+    Nothing of the line but those bounded parts is copied."""
+    for template, pattern in _WARNING_PATTERNS:
+        matched = pattern.fullmatch(line)
+        if not matched:
+            continue
+        shown, at = [], 0
+        for i, part in enumerate(_WARNING_PART.finditer(template)):
+            shown += [template[at:part.start()],
+                      "[withheld]" if part.group() == "{…}" else matched.group(i + 1)]
+            at = part.end()
+        return "".join(shown) + template[at:]
+    return None
+
+
+def _warnings_of(err: str) -> tuple:
+    """Of a writer's stderr `err`: its lines that match a WARNING template in
+    full, in order, each as `_shown_warning` shows it; and the count of its
+    other lines that hold `WARNING`, which are not shown (T257zc). No other
+    line of it is read (T257x)."""
+    shown, withheld = [], 0
+    for line in (err or "").splitlines():
+        if "WARNING" not in line:
+            continue
+        told = _shown_warning(line)
+        if told is None:
+            withheld += 1
+        else:
+            shown.append(told)
+    return shown, withheld
 
 
 def _burst_report(logins: str, writers: list, ends: list, rows: list, calls: list) -> str:
@@ -3217,19 +3352,24 @@ def _burst_report(logins: str, writers: list, ends: list, rows: list, calls: lis
     `PGUSER`, and the `burst N` its state text names (`?` where the log holds
     none). It reads nothing and decides nothing.
 
-    Each writer's WARNING lines are printed whole, wherever they fall (T257v),
-    and no other line of its stderr (T257x, `_warnings_of`): a writer whose
-    `lanes-index mode` question failed says why in a WARNING
-    (`reg_mode_files`, `lanes-edit.sh`:6415), of which a 300-character tail
-    kept only the last 18 characters (run 44016287671, writer 3). A writer's
-    time is when the collection, which reads the writers in order, reached its
-    end, so a writer that ended early shows a later writer's time."""
+    Each writer's WARNING lines are printed wherever they fall (T257v), each
+    that matches a template of the product's WARNING sites in full as
+    `_shown_warning` shows it, the others only counted, and no other line of
+    its stderr (T257x, T257zc, `_warnings_of`): a writer whose `lanes-index
+    mode` question failed says why in a WARNING (`reg_mode_files`, line R's
+    `lanes-edit.sh`:6415), of which a 300-character tail kept only the last
+    18 characters (run 44016287671, writer 3). A writer's time is when the
+    collection, which reads the writers in order, reached its end, so a writer
+    that ended early shows a later writer's time."""
     seq_of = {write_id: seq for seq, _, write_id in (row.partition("|") for row in rows)}
     lines = [f"burst [{logins}]: {len(ends)} writers' ends, {len(rows)} new journal rows, "
              f"and the shim's commit_write calls:"]
     for i, (code, took, err) in enumerate(ends):
         lines.append(f"  writer {i} ({writers[i]}): exit {code} after {took:.2f} s")
-        lines.extend(f"    its WARNING line: {line}" for line in _warnings_of(err))
+        shown, withheld = _warnings_of(err)
+        lines.extend(f"    its WARNING line: {line}" for line in shown)
+        if withheld:
+            lines.append(f"    and {withheld} WARNING line(s) of no known template, withheld")
     for row in rows:
         seq, _, write_id = row.partition("|")
         lines.append(f"  journal seq {seq}: write id {write_id}")
@@ -3385,6 +3525,40 @@ def test_the_burst_report_prints_each_warning_whole_and_no_credential():
     shown = [line for line in others if line in told]
     assert not shown and planted not in told, \
         f"{len(shown)} line(s) of stderr other than a WARNING are printed:\n{told}"
+
+
+@pytest.mark.parametrize("form", ["pgpassword", "password-file", "scram-verifier",
+                                  "server-warning"])
+def test_the_burst_report_shows_no_credential_a_warning_line_holds(capsys, form):
+    """`_burst_report` (T257zc; Codex's review of P09 at `fb359e64`, lane 3's
+    post 6945142764, BLOCKING 1), with no engine: a credential inside a
+    WARNING line is in no failure message and on no printed stream. `form` is
+    `PGPASSWORD=` and a generated value, a password-file line after
+    `lanes-edit: `'s prefix, a SCRAM verifier, or a server's WARNING that psql
+    passes on. Each is planted twice in one writer's stderr: as a WARNING line
+    of its own, which matches no template and is counted, never shown; and as
+    the text a failed `lanes-index mode` printed, inside `reg_mode_files`'
+    WARNING (`exited 2 (...)`), which matches that template and is shown with
+    `[withheld]` in that text's place. The planted value is no credential of
+    any login."""
+    planted = f"fake-{uuid.uuid4().hex}"
+    held = {"pgpassword": f"PGPASSWORD={planted}",
+            "password-file": f"lanes-edit: 127.0.0.1:5432:register:lanes_w_fx:{planted}",
+            "scram-verifier": f"SCRAM-SHA-256$4096:{planted}=${planted}=:{planted}=",
+            "server-warning": f'psql:<stdin>:3: WARNING:  role "lanes_w_fx" password "{planted}"'}
+    line = held[form] if form == "server-warning" else f"lanes-edit: WARNING: {held[form]}"
+    mode = ("lanes-edit: WARNING: `lanes-index mode` exited 2 ({}), so `set-row-state` runs in "
+            "files mode, as on a workstation with no lanes-index configuration (feature 007, D3).")
+    ends = [(0, 23.5, f"{line}\n{mode.format(held[form])}\n")]
+    told = _burst_report("one-login", ["lanes_w_fx"], ends, [], [])
+    printed = capsys.readouterr()
+    assert planted not in told, f"the planted {form} is in the failure message:\n{told}"
+    assert planted not in printed.out + printed.err, f"the planted {form} was printed"
+    assert f"    its WARNING line: {mode.format('[withheld]')}\n" in told, \
+        f"the files-mode warning, its why withheld:\n{told}"
+    assert told.count("its WARNING line:") == 1, f"one WARNING line shown:\n{told}"
+    assert "    and 1 WARNING line(s) of no known template, withheld" in told, \
+        f"the unknown WARNING line, counted:\n{told}"
 
 
 # ============================== D9's rollback and cutover rows (T278), real engine
