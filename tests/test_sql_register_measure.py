@@ -1111,6 +1111,48 @@ def _paused(lane: str, k: int) -> str:
             f"profile p{k}; agent a{k}; transcript t{k}")
 
 
+def _lanes_shown(fields: list) -> list:
+    """`swapped`'s listed lanes as a failure message may show them (T255u;
+    lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`, B2): a field that is one
+    of this module's own lane names (`CANDIDATES`) is shown, and any other is
+    `[withheld]`. A field is a stdout line's text up to its first tab, so
+    where a line has no tab it is the whole line, a writer's text that is
+    never shown raw."""
+    return [field if field in CANDIDATES else "[withheld]" for field in fields]
+
+
+def _listed_as_expected(proc, mode: str, expected: list) -> None:
+    """`lanes-edit.sh swapped`'s stdout lists `expected`, each line's lane
+    before its first tab, or the assert fails with a message that shows the
+    listed lanes only as `_lanes_shown` does, beside the exit and the counts
+    `_said_safely` gives (T255u; RV9-37, B2)."""
+    listed = [line.split("\t", 1)[0] for line in proc.stdout.splitlines() if line]
+    assert listed == expected, (f"{mode} mode listed {_lanes_shown(listed)}, not {expected}: "
+                                f"{_said_safely(proc)}")
+
+
+def test_a_swapped_line_with_no_tab_is_withheld_from_the_failure_message():
+    """T255u (lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`, B2), with no
+    engine and no process: `swapped` exited 0 with one listed lane, a line
+    with a planted value and no tab, and a `PGPASSWORD=` line. The listing
+    is not what was expected, so `_listed_as_expected` fails, and its message
+    shows the one known lane, `[withheld]` for each other line, the exit
+    and the counts, and not the planted value. Before T255u the message
+    showed each line up to its first tab, so the whole of a line with none.
+    The planted value is no credential of any login."""
+    planted = f"fake-{uuid.uuid4().hex}"
+    proc = subprocess.CompletedProcess(
+        ["lanes-edit.sh", "swapped", WS], 0,
+        f"{CANDIDATES[1]}\tw2\n{planted}\nPGPASSWORD={planted}\n", "")
+    with pytest.raises(AssertionError) as failed:
+        _listed_as_expected(proc, "files", [CANDIDATES[1], CANDIDATES[0]])
+    said = str(failed.value)
+    assert planted not in said, "the planted value is in the failure message"
+    assert f"listed ['{CANDIDATES[1]}', '[withheld]', '[withheld]']" in said, \
+        f"the listed lanes, shown:\n{said}"
+    assert "exit 0" in said, f"the exit, shown:\n{said}"
+
+
 def test_swapped_with_several_candidates_is_timed_beside_its_journal_last_calls(pg_engine, pg, tmp_path):
     """Lane 3's third `--last` row (#165 6755922262): `lanes-edit.sh swapped
     <ws>` with one, three and six swapped lanes, exec to exit, cold once and
@@ -1163,8 +1205,7 @@ def test_swapped_with_several_candidates_is_timed_beside_its_journal_last_calls(
                     encoding="utf-8", errors="replace", env=env, cwd=str(checkout), timeout=120,
                     check=False))
                 assert proc.returncode == 0, f"swapped in {mode} mode: {_said_safely(proc.stderr)}"
-                listed = [line.split("\t", 1)[0] for line in proc.stdout.splitlines() if line]
-                assert listed == expected, f"{mode} mode listed {listed}, not {expected}"
+                _listed_as_expected(proc, mode, expected)
                 if mode == "primary":
                     lasts = [c.split("\t") for c in calls.read_text(encoding="utf-8").splitlines()
                              if c.startswith("journal\t--last")]
