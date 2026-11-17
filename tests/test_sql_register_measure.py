@@ -114,6 +114,7 @@ import pgcluster
 from conftest import REPO, WINDOWS_SKIP
 from pgcluster import Database
 from sql_register_helpers import LANES_INDEX, RENDER_GIT_HALF_LINE, flipped_copy
+from test_sql_register_bounds import _said_safely  # the one helper for a failure's output (T255s)
 
 pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
@@ -246,7 +247,7 @@ SEED = {
 def git(cwd: Path, *args: str, env: dict | None = None) -> str:
     proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
                           env=env, check=False)
-    assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {proc.stderr}{proc.stdout}"
+    assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {_said_safely(proc.stderr)}{_said_safely(proc.stdout)}"
     return proc.stdout
 
 
@@ -317,7 +318,7 @@ def psql(db, script: str, role: str = None) -> subprocess.CompletedProcess:
 def sql(db, script: str, role: str = None) -> str:
     proc = psql(db, script, role)
     assert proc.returncode == 0, (f"psql{' as ' + role if role else ''} exited "
-                                  f"{proc.returncode}: {proc.stderr.strip()}\n{script}")
+                                  f"{proc.returncode}: {_said_safely(proc.stderr.strip())}\n{script}")
     return proc.stdout.strip()
 
 
@@ -775,7 +776,7 @@ def test_one_write_cost_is_recorded_and_every_write_commits(pg_engine, request, 
             sent = writes.statements(writes.entry("repoA-1", log, [text]))
             ms, proc = timed(lambda: one_call(db, sent))
             assert (proc.returncode, proc.stdout.strip()) == (0, str(before + k + 1)), (
-                f"write {k}: exit {proc.returncode}: {proc.stderr.strip()[-600:]}")
+                f"write {k}: exit {proc.returncode}: {_said_safely(proc.stderr.strip()[-600:])}")
             times.append(ms)
         committed_once(db, before, writes.write_ids)
         lines.append(figure("M1", f"{store} cluster, Unix socket", "one commit call, new `psql`",
@@ -787,10 +788,10 @@ def test_one_write_cost_is_recorded_and_every_write_commits(pg_engine, request, 
                 reg.copy, reg.env, reg.estate.checkout, tmp_path / "attempts" / str(k), "repoA-1",
                 "log", _edit_log_noted("repoA-1", SID_A1, f"t226 design write {k}"),
                 f"lanes-edit.sh log: t226 design write {k}"))
-            assert done["code"] == 0, (done["snapshot"].stderr,
-                                       done["commit"] and done["commit"].stderr)
+            assert done["code"] == 0, (_said_safely(done["snapshot"].stderr),
+                                       _said_safely(done["commit"] and done["commit"].stderr))
             assert done["commit"].stdout.split() == ["committed", str(design_before + k + 1)], (
-                done["commit"].stdout)
+                _said_safely(done["commit"].stdout))
             totals.append(ms)
         assert head(db) == design_before + 1 + N_WARM, "each design-form write committed once"
         assert rows(db, f"SELECT count(DISTINCT write_id) AS d FROM journal WHERE seq > "
@@ -801,7 +802,7 @@ def test_one_write_cost_is_recorded_and_every_write_commits(pg_engine, request, 
     else:
         batch = [writes.statements(writes.entry("repoA-1", log, [text])) for text in texts]
         proc = in_one_session(db, batch, timing=True)
-        assert proc.returncode == 0, proc.stderr.strip()[-800:]
+        assert proc.returncode == 0, _said_safely(proc.stderr.strip()[-800:])
         out = proc.stdout.splitlines()
         seqs = [line for line in out if line.isdigit()]
         stamps = [float(m.group(1)) for m in map(re.compile(r"^Time: ([0-9.]+) ms").match, out) if m]
@@ -831,15 +832,15 @@ def test_a_tls_and_scram_connect_on_loopback_is_timed_and_verified(pg_engine, re
     for _ in range(1 + N_WARM):
         ms, proc = timed(lambda: subprocess.run(argv, capture_output=True, text=True, env=env,
                                                 timeout=60, check=False))
-        assert (proc.returncode, proc.stdout.strip()) == (0, "1"), proc.stderr
+        assert (proc.returncode, proc.stdout.strip()) == (0, "1"), _said_safely(proc.stderr)
         times.append(ms)
     check = dict(env, PGREQUIREAUTH="scram-sha-256")
     said = subprocess.run([tls.tool("psql"), "-X", "-A", "-t", "-F", "|", "-c",
                            "SELECT ssl, version FROM pg_stat_ssl WHERE pid = pg_backend_pid()"],
                           capture_output=True, text=True, env=check, timeout=60, check=False)
-    assert said.returncode == 0, f"a connect that requires SCRAM failed: {said.stderr}"
+    assert said.returncode == 0, f"a connect that requires SCRAM failed: {_said_safely(said.stderr)}"
     ssl, version = said.stdout.strip().split("|")
-    assert ssl == "t", f"pg_stat_ssl says the connect is not TLS: {said.stdout!r}"
+    assert ssl == "t", f"pg_stat_ssl says the connect is not TLS: {_said_safely(said.stdout)!r}"
     record([figure("M12", "TLS cluster, loopback TCP", "`psql -c 'SELECT 1'`, a new connect",
                    times, f"rtt=0 (loopback), tls={version}, scram, c=1, q=1")])
 
@@ -948,7 +949,7 @@ def explained(db, statements: list) -> list:
                           input="\n".join(script) + "\n", capture_output=True, encoding="utf-8",
                           errors="replace", env=db.env(LOGIN_READER, appname="t226-explain"),
                           timeout=600, check=False)
-    assert proc.returncode == 0, f"EXPLAIN as {LOGIN_READER}: {proc.stderr.strip()[-800:]}"
+    assert proc.returncode == 0, f"EXPLAIN as {LOGIN_READER}: {_said_safely(proc.stderr.strip()[-800:])}"
     plans, text, at, decoder = [], proc.stdout, 0, json.JSONDecoder()
     while True:
         while at < len(text) and text[at].isspace():
@@ -979,7 +980,7 @@ def grow_to(db, target_edits: int, logs: list, batch: int, tag: str) -> int:
     if writes:
         before = head(db)
         proc = in_one_session(db, writes)
-        assert proc.returncode == 0, f"growth write: {proc.stderr.strip()[-800:]}"
+        assert proc.returncode == 0, f"growth write: {_said_safely(proc.stderr.strip()[-800:])}"
         committed_once(db, before, appends.write_ids)
     return len(writes)
 
@@ -1024,14 +1025,15 @@ def test_journal_last_is_explained_per_statement_and_timed_against_t_r(pg_engine
     appends = Appends(db, [target])
     proc = one_call(db, appends.statements(appends.entry(lane, target, [
         f"NOTED {EM} lane {lane}, session {SID_A1}@{WS}, 2026-11-10T00:00:00Z, lane:{lane} {EM} {key}"])))
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == 0, _said_safely(proc.stderr)
     match, measured = int(proc.stdout.strip()), target
     if log == "renamed-log":
         measured = f"lanes/log/{lane}-t226-renamed.md"
         done = fake_write(copy, env, estate.checkout, tmp_path / "rename", lane, "rename-lane",
                           _edit_rename_log(target, measured),
                           f"lanes-edit.sh rename-lane: t226 renames {target}")
-        assert done["code"] == 0, (done["snapshot"].stderr, done["commit"] and done["commit"].stderr)
+        assert done["code"] == 0, (_said_safely(done["snapshot"].stderr),
+                                   _said_safely(done["commit"] and done["commit"].stderr))
         match = int(done["commit"].stdout.split()[1])
         assert rows(db, f"SELECT count(*) AS n FROM journal_edits WHERE seq = {match} AND op = "
                         f"'rename' AND path = '{target}' AND to_path = '{measured}'")[0]["n"] == 1
@@ -1055,8 +1057,8 @@ def test_journal_last_is_explained_per_statement_and_timed_against_t_r(pg_engine
         for _ in range(1 + N_WARM):
             ms, proc = timed(lambda: run_index(copy, ["journal", "--last", "--path", measured,
                                                       "--grep", key], env))
-            assert proc.returncode == 0, f"journal --last exited {proc.returncode}: {proc.stderr}"
-            assert proc.stdout.splitlines() == ["format=1", f"n={n}", f"seq={match}"], proc.stdout
+            assert proc.returncode == 0, f"journal --last exited {proc.returncode}: {_said_safely(proc.stderr)}"
+            assert proc.stdout.splitlines() == ["format=1", f"n={n}", f"seq={match}"], _said_safely(proc.stdout)
             times.append(ms)
         lines.append(figure("--last", where, f"{log} `journal --last`, exec to exit", times,
                             f"rtt=0, tls=none, c=1, q=1; T_r={T_R_S} s (CLI412:255)"))
@@ -1138,7 +1140,7 @@ def test_swapped_with_several_candidates_is_timed_beside_its_journal_last_calls(
             text = _paused(lane, paused + 1)
             appends = Appends(pg, [path])
             proc = one_call(pg, appends.statements(appends.entry(lane, path, [text])))
-            assert proc.returncode == 0, proc.stderr
+            assert proc.returncode == 0, _said_safely(proc.stderr)
             target = checkout / path
             target.write_bytes(target.read_bytes() + text.encode("utf-8") + b"\n")
             git(checkout, "commit", "-q", "-am", f"{lane}: PAUSED", env=reg.estate.env)
@@ -1153,7 +1155,7 @@ def test_swapped_with_several_candidates_is_timed_beside_its_journal_last_calls(
                     ["bash", str(bin_dir / "lanes-edit.sh"), "swapped", WS], capture_output=True,
                     encoding="utf-8", errors="replace", env=env, cwd=str(checkout), timeout=120,
                     check=False))
-                assert proc.returncode == 0, f"swapped in {mode} mode: {proc.stderr}"
+                assert proc.returncode == 0, f"swapped in {mode} mode: {_said_safely(proc.stderr)}"
                 listed = [line.split("\t", 1)[0] for line in proc.stdout.splitlines() if line]
                 assert listed == expected, f"{mode} mode listed {listed}, not {expected}"
                 if mode == "primary":
@@ -1316,7 +1318,7 @@ def test_each_verb_is_timed_end_to_end_in_both_modes(pg_engine, pg, tmp_path, ve
             for argv in argvs:
                 proc = estate.run(argv)
                 assert proc.returncode == 0, (f"{verb} in {mode} mode, run {k}: `{' '.join(argv)}` "
-                                              f"exited {proc.returncode}: {(proc.stdout + proc.stderr)[-600:]}")
+                                              f"exited {proc.returncode}: {_said_safely((proc.stdout + proc.stderr)[-600:])}")
             times.append((time.monotonic_ns() - start) / 1e6)
         runs = 1 + N_WARM
         if mode == "primary":
@@ -1347,7 +1349,8 @@ def _counted(log: Path, offset: int) -> tuple:
 def _path_m1(reg, root: Path):
     done = fake_write(reg.copy, reg.env, reg.estate.checkout, root / "m1", "repoA-1", "log",
                       _edit_log_noted("repoA-1", SID_A1, "t255 m1"), "lanes-edit.sh log: t255 m1")
-    assert done["code"] == 0, (done["snapshot"].stderr, done["commit"] and done["commit"].stderr)
+    assert done["code"] == 0, (_said_safely(done["snapshot"].stderr),
+                                   _said_safely(done["commit"] and done["commit"].stderr))
 
 
 def _path_m2(reg, root: Path):
@@ -1355,17 +1358,17 @@ def _path_m2(reg, root: Path):
     appends = Appends(reg.pg, [log])
     text = f"NOTED {EM} lane repoA-1, session {SID_A1}@{WS}, 2026-11-10T00:00:00Z, lane:repoA-1 {EM} t255 m2"
     proc = in_one_session(reg.pg, [appends.statements(appends.entry("repoA-1", log, [text]))])
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == 0, _said_safely(proc.stderr)
 
 
 def _path_m6(reg, root: Path):
     proc = run_index(reg.copy, ["render", "--images", "--at", head(reg.pg), "--out", root / "m6"], reg.env)
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == 0, _said_safely(proc.stderr)
 
 
 def _path_m7(reg, root: Path):
     proc = VerbEstate(reg.pg, root, "primary", reg).run(["log", "NOTED", "lane:repoA-1", "t255 m7"])
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 0, _said_safely(proc.stdout) + _said_safely(proc.stderr)
 
 
 def _path_m9(reg, root: Path):
@@ -1381,7 +1384,7 @@ def _path_m9(reg, root: Path):
     try:
         for argv in (_bind_argv(), ["set-row-state", "repoA-1", f"PAUSED {DOT} t255 m9"]):
             proc = estate.run(argv)
-            assert proc.returncode == 0, f"`{' '.join(argv)}`: {(proc.stdout + proc.stderr)[-600:]}"
+            assert proc.returncode == 0, f"`{' '.join(argv)}`: {_said_safely((proc.stdout + proc.stderr)[-600:])}"
     finally:
         session.close()
 
@@ -1421,7 +1424,7 @@ def _path_m10(reg, root: Path):
         proc = run_index(reg.copy, ["register", "read", "--for", "guard", "--prefetch", "--cache",
                                     root / "m10" / "cache", "--pid", pid, "--repo",
                                     reg.estate.checkout, "--lane=repoA-1"], reg.env)
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == 0, _said_safely(proc.stderr)
 
 
 #: `[m5]`'S STATE HOME: SHORT, AND OUTSIDE THE TEMPORARY ROOT. The service's
@@ -1619,13 +1622,15 @@ def _path_m5(reg, root: Path):
                     break
                 assert time.monotonic() < end, \
                     (f"no warming read was answered by the service in {WARM_S:.0f} s ({warmed} reads)",
-                     warm.returncode, warm.stderr)
+                     warm.returncode, _said_safely(warm.stderr))
                 time.sleep(0.2)
             proc = read("cache")
-            assert proc.returncode == 0, (proc.stderr, f"the last of {warmed} warming reads: {warm.returncode}",
-                                          warm.stderr)
+            assert proc.returncode == 0, (_said_safely(proc.stderr),
+                                          f"the last of {warmed} warming reads: {warm.returncode}",
+                                          _said_safely(warm.stderr))
             assert FALLBACK not in proc.stderr, \
-                (proc.stderr, f"the last of {warmed} warming reads: {warm.returncode}", warm.stderr)
+                (_said_safely(proc.stderr), f"the last of {warmed} warming reads: {warm.returncode}",
+                 _said_safely(warm.stderr))
         finally:
             _end_group(serve)
     finally:
@@ -2128,7 +2133,7 @@ def test_each_shape_on_a_delayed_relay_is_recorded(pg_engine, request, shape, rt
                 ms, proc = timed(lambda: subprocess.run([psql, "-X", "-A", "-t", "-c", "SELECT 1"],
                                                         capture_output=True, text=True, env=env,
                                                         timeout=120, check=False))
-                assert (proc.returncode, proc.stdout.strip()) == (0, "1"), proc.stderr
+                assert (proc.returncode, proc.stdout.strip()) == (0, "1"), _said_safely(proc.stderr)
                 times.append(ms)
         else:
             session = _held(env, psql)
@@ -2211,7 +2216,7 @@ def _bind_run(db, root: Path, mode: str) -> tuple:
                      ["set-row-state", "repoA-1", f"PAUSED {DOT} answer 2 bound this session to repoA-2"]):
             ms, proc = timed(lambda: estate.run(argv))
             assert proc.returncode == 0, (f"{mode}: `{' '.join(argv)}` exited {proc.returncode}: "
-                                          f"{(proc.stdout + proc.stderr)[-600:]}")
+                                          f"{_said_safely((proc.stdout + proc.stderr)[-600:])}")
             spent.append(ms)
     finally:
         session.close()
