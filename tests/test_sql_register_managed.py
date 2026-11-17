@@ -417,7 +417,8 @@ def _passwords(text: str) -> dict:
     found: dict = {}
     for m in PASS_LINE.finditer(text):
         twice = m.group("login") in found
-        assert not twice, f"{m.group('login')}'s line is printed twice:\n{_said_safely(text)}"
+        assert not twice, (f"{m.group('login')}'s line is printed twice (_passwords is given the "
+                           f"text alone, so no exit):\n{_said_safely(text, stream='stdout')}")
         found[m.group("login")] = m.group(0)
     return found
 
@@ -1169,7 +1170,8 @@ def test_login_rotate_keeps_an_open_session_and_refuses_the_old_password(tmp_pat
     new = m.passfiles(proc.stdout, "passfiles-new")
     assert sorted(new) == ["lanes_r_e1", "lanes_w_e1"], _said_safely(proc)
     answered = held.send("SELECT 'after';", "t224-after")
-    assert "ERROR" not in answered, f"the session open across the rotation got an error:\n{_said_safely(answered)}"
+    assert "ERROR" not in answered, (f"the session open across the rotation got an error, and has no "
+                                     f"exit, its session still open:\n{_said_safely(answered, stream='stderr')}")
     ended = held.close()
     assert ended.returncode == 0 and ended.stdout.split() == ["before", "after"], (
         f"the session open across the rotation did not go on:\n{_said_safely(ended)}")
@@ -1257,7 +1259,8 @@ def test_an_open_session_gets_42501_between_the_revokes_steps_then_57p01(tmp_pat
     files = m.logins(service, "e1", "e2", dump=False)
     held = m.session("lanes_w_e2", "t224_reg", files["lanes_w_e2"])
     opened = held.send("SELECT 1;", "t224-open")
-    assert "ERROR" not in opened, f"e2's session did not open:\n{_said_safely(opened)}"
+    assert "ERROR" not in opened, (f"e2's session did not open, and has no exit, its session still "
+                                   f"open:\n{_said_safely(opened, stream='stderr')}")
     # [steps-by-hand]: the revoke block's steps 1 and 2, by the admin.
     m.psql(f"ALTER ROLE lanes_w_e2 NOLOGIN;\nREVOKE {WRITER} FROM lanes_w_e2;\n", "t224_reg",
            user=ADMIN)
@@ -1266,7 +1269,8 @@ def test_an_open_session_gets_42501_between_the_revokes_steps_then_57p01(tmp_pat
     read = held.send(f"SELECT seq FROM {REGISTER}.register_head;", "t224-read")
     for what, said in (("write", write), ("read", read)):
         assert "42501" in said and f"permission denied for schema {REGISTER}" in said, (
-            f"the open session's {what} between steps 2 and 3 is not 42501: {_said_safely(said)}")
+            f"the open session's {what} between steps 2 and 3 is not 42501, and has no exit, its "
+            f"session still open: {_said_safely(said, stream='stderr')}")
     # Step 3 by hand: its sessions ended.
     m.psql("GRANT lanes_w_e2 TO CURRENT_USER WITH INHERIT TRUE, SET FALSE;\n"
            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'lanes_w_e2';\n"
@@ -1275,8 +1279,12 @@ def test_an_open_session_gets_42501_between_the_revokes_steps_then_57p01(tmp_pat
     ended = held.close()
     said = after + ended.stderr
     assert "57P01" in said or "terminating connection due to administrator command" in said or \
-        "server closed the connection" in said, f"the next statement after step 3 was answered: {_said_safely(said)}"
-    assert "permission denied" not in after, f"after step 3 a statement got 42501, not 57P01: {_said_safely(after)}"
+        "server closed the connection" in said, (
+            f"the next statement after step 3 was answered: its stderr then and at its end, "
+            f"{_said_safely(said, stream='stderr')}; its end, {_said_safely(ended)}")
+    assert "permission denied" not in after, (f"after step 3 a statement got 42501, not 57P01: "
+                                              f"{_said_safely(after, stream='stderr')}; its end, "
+                                              f"{_said_safely(ended)}")
     assert m.connects("lanes_w_e1", "t224_reg", files["lanes_w_e1"]), "e1 can no longer log in"
 
 
@@ -2797,9 +2805,11 @@ def test_a_revoked_login_is_refused_69_and_writes_nothing(tmp_path, request, cas
     said += ended.stderr
     assert ("57P01" in said or "terminating connection due to administrator command" in said
             or "server closed the connection" in said), (
-        f"the open session's next statement after the revoke was not ended: {_said_safely(said)}")
+        f"the open session's next statement after the revoke was not ended: its stderr then and at its "
+        f"end, {_said_safely(said, stream='stderr')}; its end, {_said_safely(ended)}")
     assert "42501" not in said and "permission denied" not in said, (
-        f"the open session's next statement got 42501, so revoke returned between its steps: {_said_safely(said)}")
+        f"the open session's next statement got 42501, so revoke returned between its steps: its stderr "
+        f"then and at its end, {_said_safely(said, stream='stderr')}; its end, {_said_safely(ended)}")
     assert ended.stdout.split() == ["open"], f"the open session got an answer after the revoke: {_said_safely(ended)!r}"
     assert m.value("SELECT count(*) FROM pg_roles WHERE rolname IN ('lanes_w_e2', 'lanes_r_e2');",
                    "postgres") == "2", "a revoked login's role was dropped"
