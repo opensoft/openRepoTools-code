@@ -700,7 +700,11 @@ def load_config(text: str | None = None) -> dict:
             if not line or line.startswith("#"):
                 continue
             if "=" not in line:
-                raise Refusal(f"{path}:{number} is not `key=value`: {line!r}")
+                # ITS TEXT IS LEFT OUT WHERE A LOG WOULD KEEP IT (T512RF2, NIT 9;
+                # commit 36): a launched `serve` writes `unquoted` instead.
+                refusal = Refusal(f"{path}:{number} is not `key=value`: {line!r}")
+                refusal.unquoted = f"{path}:{number} is not `key=value` (its text is left out)"
+                raise refusal
             key, value = (part.strip() for part in line.split("=", 1))
             if key not in known:
                 raise Refusal(f"{path}:{number} names `{key}=`, which this indexer does not "
@@ -7659,10 +7663,11 @@ def register_serve_stamp(paths: dict, cause: str) -> tuple:
     the UTC and the fixed cause, and no other text, for the three causes that
     end `serve` before it listens: `path-too-long`, `config-refused` and
     `no-psql`. A stamp that cannot be written is passed over, and said: it
-    returns (True, "") only where it wrote the stamp, else (False, why), and
-    `cmd_serve`'s note says "stamped <cause>" only in the first case, and
-    otherwise "not stamped <cause>" and why (lane 5's re-review of
-    40713fa2, NIT A, commit 26). No exit depends on it.
+    returns (True, "") only where it wrote the stamp, (None, why) where its
+    own check of `run/` failed (T512RF2, SHOULD 1; commit 36), else (False,
+    why), and `cmd_serve`'s note says "stamped <cause>" only in the first
+    case, and otherwise "not stamped <cause>" and why (lane 5's re-review
+    of 40713fa2, NIT A, commit 26). No exit depends on it.
 
     ONLY UNDER `register.lock` (lane 1's U5 gate, #165 6882025131, N9;
     socket API 8.6, draft 13): `serve` makes these checks before it takes
@@ -7693,8 +7698,8 @@ def register_serve_stamp(paths: dict, cause: str) -> tuple:
     check."""
     run_fd, why = register_serve_dir_open(paths["run"])
     if why:                         # a `run/` that fails its check is never stamped (ERR-28)
-        return False, (f"its directory {paths['run']} {why}, at the stamp's own check by a "
-                       f"descriptor")
+        return None, (f"its directory {paths['run']} {why}, at the stamp's own check by a "
+                      f"descriptor")
     at = (os.open in os.supports_dir_fd and os.rename in os.supports_dir_fd
           and os.unlink in os.supports_dir_fd)
     lock = None
@@ -7817,18 +7822,29 @@ def register_serve_note(text: str, fd: int = 2) -> None:
 
     A FULL PIPE HOLDS IT FOR A BOUNDED TIME (lane 3's ruling on da6e30f4,
     #364 6944222705, BLOCKING 3; commit 35): each piece of at most
-    `PIPE_BUF` bytes is written only once `select` finds the descriptor
-    writable, within `REGISTER_SERVE_NOTE_WAIT_S`, so the write does not
-    block; where it is still full then, the rest of the line is dropped. A
-    descriptor `select` cannot take is passed over as a write error is.
-    Given `fd`, the line goes there instead (the handoff's; commit 33)."""
+    `PIPE_BUF` bytes is written only once `poll` finds the descriptor
+    writable, within `REGISTER_SERVE_NOTE_WAIT_S`; where it is still full
+    then, the rest of the line is dropped. Where `serve` is the pipe's sole
+    writer, the write then does not block. Another writer on the same pipe,
+    the caller or its shell, can fill it between the `poll` and the write,
+    and the write then waits for a reader, a limit (T512RF2, NIT 1; commit
+    36). `poll`, not `select`, so a descriptor at or above `FD_SETSIZE`
+    loses no line (NIT 3); a write that takes nothing ends the line, so it
+    never spins (NIT 2). A descriptor `poll` cannot take is passed over as a
+    write error is. Given `fd`, the line goes there instead (the handoff's;
+    commit 33)."""
     import select
     data = f"{PROG}: {text}\n".encode("utf-8", "backslashreplace")
     try:
+        waiter = select.poll()
+        waiter.register(fd, select.POLLOUT)
         while data:
-            if not select.select([], [fd], [], REGISTER_SERVE_NOTE_WAIT_S)[1]:
+            if not waiter.poll(int(REGISTER_SERVE_NOTE_WAIT_S * 1000)):
                 return          # still full after the wait: the rest is dropped
-            data = data[os.write(fd, data[:select.PIPE_BUF]):]
+            written = os.write(fd, data[:select.PIPE_BUF])
+            if written <= 0:
+                return          # nothing taken: the rest is dropped
+            data = data[written:]
     except (OSError, ValueError):
         pass
 
@@ -7940,9 +7956,9 @@ def register_serve_launch(paths: dict) -> str | None:
 
     A LOG THAT IS VISIBLY UNUSABLE IS REFUSED BEFORE THE LAUNCH (lane 5's
     re-review of b3e5f0fe, its decision 2; commit 31): socket API §9 gives
-    `serve --start` exit 2 "where `serve` could not be launched, its
-    `register.log` not opened or its start failing", and T511's carrier
-    states this check and its outcomes. The launcher `lstat`s
+    `serve --start`'s exits; T511's carrier restates them for this check
+    and its outcomes, and lands first, so nothing of §9 is quoted here
+    (T512RF2, SHOULD 2; commit 36). The launcher `lstat`s
     `run/register.log` by its path, which opens nothing, as the starters
     already read the stamp by its path; where it exists and is not a
     regular file of this uid, or the `lstat` fails but for its absence, it
@@ -8017,9 +8033,11 @@ def register_serve_launch(paths: dict) -> str | None:
     # 6944222705, SHOULD 3; commit 35): this refuses a log of another uid,
     # where `serve`'s open of `register.log` (`register_serve_log_open`)
     # takes any regular file it may write. While `run/` stays this uid's
-    # and 0700, which `serve` checks, only a privileged process can newly
-    # add another uid's file there; but one can predate `run/` being set
-    # back to 0700. The launcher refuses it, which is the safe side.
+    # and 0700, which `serve` checks, only this uid or a privileged process
+    # can add one there, this uid by a `rename` from a directory it can
+    # write or by a hard link (T512RF2, NIT 5; commit 36); and one can
+    # predate `run/` being set back to 0700. The launcher refuses it, which
+    # is the safe side.
     if st is not None and not (stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid()):
         return f"{paths['log']} is not a regular file of this uid"
     try:
@@ -8116,9 +8134,15 @@ def cmd_serve(args: list[str]) -> int:
     launcher started it (`register_serve_launched`), `register_serve_early`
     checks `run/` by a descriptor, opens the log relative to it and hands
     standard error to the log, or to `/dev/null`, before 2 to 4 above; from
-    then its lines go to that log. A stamp's "not stamped" is then not
-    written, since `run/` may by then have failed the stamp's own check, and
-    no line goes to a log in a `run/` that has failed a check (T237zzz)."""
+    then its lines go there. WHAT IT DROPS (T512RF2, SHOULD 1; commit 36):
+    a refusal at 2 to 4 whose stamp was not written because the stamp's own
+    check of `run/` failed (`register_serve_stamp`'s None) is not written
+    at all, since its standard error may be a log in that `run/`, and no
+    line goes to a log in a `run/` that has failed a check (T237zzz). Every
+    other refusal is written there with its cause, "not stamped" and why
+    among them (a held lock, a stamp that cannot be written). A
+    configuration line `load_config` quotes is left out of it
+    (`unquoted`; NIT 9)."""
     start_only = False
     for arg in args:
         if arg in ("-h", "--help"):
@@ -8156,16 +8180,17 @@ def cmd_serve(args: list[str]) -> int:
         store = PostgresStore(cfg, "register_reader")
     except Refusal as exc:
         stamped, why = register_serve_stamp(paths, "config-refused")
-        if stamped or not launched:
+        cause = (getattr(exc, "unquoted", None) if launched else None) or exc
+        if stamped is not None or not launched:
             register_serve_note(
-                f"serve: REFUSED: {exc}. The register service runs only where the "
+                f"serve: REFUSED: {cause}. The register service runs only where the "
                 f"configuration is mode=primary and loads; "
                 + ("stamped config-refused" if stamped else f"not stamped config-refused: {why}"))
         return EXIT_REFUSED
     size = register_serve_too_long(paths)
     if size:
         stamped, why = register_serve_stamp(paths, "path-too-long")
-        if stamped or not launched:
+        if stamped is not None or not launched:
             register_serve_note(
                 f"serve: REFUSED: the service's socket path {paths['sock']} is {size} bytes, "
                 f"over {REGISTER_SERVE_SOCKET_MAX}, and nothing shortens it (Y:3777-3781); "
@@ -8174,7 +8199,7 @@ def cmd_serve(args: list[str]) -> int:
     why = register_serve_psql(store)
     if why:
         stamped, unstamped = register_serve_stamp(paths, "no-psql")
-        if stamped or not launched:
+        if stamped is not None or not launched:
             register_serve_note(
                 f"serve: REFUSED: no usable psql: {why}; "
                 + ("stamped no-psql" if stamped else f"not stamped no-psql: {unstamped}"))
@@ -9754,8 +9779,10 @@ def register_serve_sweep(paths: dict, fd: int, log_fd: int | None = None) -> Non
     reading, #165 6935871785). Where `os.open` takes no `dir_fd`,
     `register_serve_run` opens `register.lock` by its path, after the check.
 
-    THE PLATFORM'S LINE GOES TO STANDARD ERROR, as the start's refusal of a
-    `run/` that fails its check does (`register_serve_run`), never to
+    THE PLATFORM'S LINE GOES TO STANDARD ERROR, as a refusal of a `run/`
+    that fails the start's own check does where it is written
+    (`register_serve_run`; a launched `serve` past its early handoff writes
+    none, commit 35; T512RF2, NIT 7), never to
     `register.log` by its path. Standard error resolves no path: by the
     sweep, standard error is still the starter's for a `serve` run by hand,
     and `register_serve_run` holds `register.log`, opened relative to the
@@ -9765,8 +9792,8 @@ def register_serve_sweep(paths: dict, fd: int, log_fd: int | None = None) -> Non
     there once (commit 35). It is written without a time, straight to each
     descriptor (`os.write`), unbuffered, and a write error (`OSError`) is
     passed over, so it changes nothing: the sweep is skipped all the same. A
-    full pipe holds it at most `REGISTER_SERVE_NOTE_WAIT_S` a piece
-    (`register_serve_note`).
+    full pipe holds it at most `REGISTER_SERVE_NOTE_WAIT_S` a piece where
+    `serve` is the pipe's sole writer (`register_serve_note`, its limit).
 
     The lines after the start's check has passed, a listing that fails and an
     entry that cannot be read or removed, go through `register_serve_log` as
@@ -9923,10 +9950,15 @@ def register_serve_launched() -> bool:
     working directory, so a `serve` that leads its own session
     (`os.getsid`) and runs in `/` is taken as launched. Nothing is added to
     the launcher's reduced environment or to `serve`'s options. A `serve`
-    run by hand in `/` under `setsid`, or by a service manager there, is
-    taken as launched too, and hands off early, which moves only its later
-    lines from its standard error to `register.log`; its exits are the
-    same."""
+    run by hand in `/` under `setsid`, or by a service manager or as a
+    container's entrypoint there, is taken as launched too, and hands off
+    early (T512RF2, NIT 4; commit 36): its later lines then go to
+    `register.log`, or to `/dev/null` where no log was opened, not to its
+    standard error; some are dropped, a refusal whose `run/` failed the
+    stamp's own check or the start's second check, and the standard-error
+    copy of a lock that cannot be taken; and where its early handoff fails,
+    it ends with 69 before a refusal with 2 that the hand-run order would
+    meet first."""
     try:
         return os.getsid(0) == os.getpid() and os.getcwd() == "/"
     except (AttributeError, OSError):
@@ -9944,7 +9976,9 @@ def register_serve_hold() -> str | None:
     the spare descriptor of `/dev/null` is closed whatever happens, so
     nothing leaks and nothing escapes to end the process with 1. Returns
     None, or why descriptor 2 could not be held, for the caller to end the
-    start with 69, its line tried on a descriptor 2 that may be closed."""
+    start with 69, its line tried on a descriptor 2 that may be closed; a
+    close-on-exec flag that cannot be cleared on a `/dev/null` already on
+    descriptor 2 is named as that (T512RF2, NIT 6; commit 36)."""
     try:
         os.fstat(2)
         closed = False
@@ -9962,7 +9996,10 @@ def register_serve_hold() -> str | None:
             else:
                 os.dup2(held, 2)
         except OSError as exc:
-            return (f"descriptor 2 is closed, and /dev/null could not be held on it "
+            if held == 2:       # `/dev/null` is on descriptor 2; only its flag is left
+                return (f"descriptor 2 was closed, and /dev/null is on it now, but its "
+                        f"close-on-exec flag could not be cleared ({exc.strerror or exc})")
+            return (f"descriptor 2 is closed, and /dev/null could not be put on it "
                     f"({exc.strerror or exc})")
         finally:
             if held != 2:
@@ -9984,8 +10021,8 @@ def register_serve_own_check(paths: dict, say: bool = True):
     refusal's line where `say` holds: the descriptor, for the caller to
     close, or None after that line, for the caller to end the start with 2.
     A launched `serve` past its early handoff passes `say` False, since its
-    standard error is then a log in the `run/` that has just failed (T237zzz;
-    commit 35)."""
+    standard error may then be a log in that `run/`, or `/dev/null`, or the
+    log of a `run/` since replaced (T237zzz; commit 35; T512RF2, NIT 7)."""
     run_fd, why = register_serve_dir_open(paths["run"])
     if why:
         if say:
@@ -10173,8 +10210,11 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple,
     its early handoff, `register_serve_early`; commit 35), standard error
     is already the log, or `/dev/null`: no log is opened here, the check's
     refusal is not written, since that log may be in the `run/` that has
-    just failed (T237zzz), each later line goes to standard error once, and
-    no handoff is made here; then
+    just failed (T237zzz), each later line this start sends to standard
+    error goes there once, while the lock's failure, the sweep's listing
+    and entry lines, a taken name and "listening" go to the log by its
+    path, as for a `serve` run by hand (T512RF2, NIT 7), and no handoff is
+    made here; then
     `register.lock`, opened relative to that descriptor
     (by its path where `os.open` takes no `dir_fd`), by `flock`, taken
     without blocking, tried five times over 100 ms (NIT-B), and held
@@ -10227,7 +10267,8 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple,
     # is written by `register_serve_note`, straight to descriptor 2
     # (`os.write`), unbuffered: a write error (`OSError`) is passed over and
     # leaves nothing buffered, so the exit is 2 whether or not it is written;
-    # a full pipe holds each piece at most `REGISTER_SERVE_NOTE_WAIT_S`.
+    # a full pipe holds each piece at most `REGISTER_SERVE_NOTE_WAIT_S` where
+    # `serve` is its sole writer (`register_serve_note`, its limit).
     run_fd = register_serve_own_check(paths, say=not handed)
     if run_fd is None:
         return EXIT_REFUSED
@@ -10270,8 +10311,9 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple,
     # across the probe, the sweep, the temporary name (`os.urandom`), the
     # bind, the logging and the handoff to the service, through `serve()`'s
     # return. Every return and every exception on the way closes the lock
-    # once, here. A socket whose bind, listen, owner file or rename fails is
-    # closed and given up by the bind block itself (`server = None`), and this
+    # once, here. A socket whose bind, listen, owner file, rename or `lstat`
+    # after it fails is closed and given up by the bind block itself
+    # (`server = None`; T512RF2, NIT 7), and this
     # `finally` closes any socket still owned, once (lane 3's ruling on
     # da6e30f4, #364 6944222705, NIT 1; commit 35). The log's descriptor is
     # closed here too, or just after the handoff has put it on descriptor 2
