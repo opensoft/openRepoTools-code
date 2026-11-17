@@ -437,11 +437,19 @@ def _masked(text: str) -> str:
     return _SECRET_FIELD.sub(lambda m: m.group(1) + "<password>", text or "")
 
 
-def _tail(proc: subprocess.CompletedProcess, size: int = 800) -> str:
-    """A command's last words, stdout then stderr, on one line."""
-    said = " | ".join(line.strip() for line in f"{proc.stdout or ''}\n{proc.stderr or ''}".splitlines()
-                      if line.strip())
-    return said[-size:] or "<nothing>"
+def _counted(proc) -> str:
+    """What a failure message here shows of a tool's run (T229m; lane 3's
+    ruling 6949488277 on lane 2's pre-review RV9-38 of P09, B2): its exit
+    and each stream's count of lines. No line of either is shown: initdb's,
+    git's, openssl's, psql's and lanes-index's own text can echo a
+    statement, a password-file line, a path or a server's message."""
+    parts = [f"exit {proc.returncode}"]
+    for name in ("stdout", "stderr"):
+        said = getattr(proc, name, None)
+        if isinstance(said, bytes):
+            said = said.decode("utf-8", "replace")
+        parts.append(f"{name}: {len(said.splitlines()) if isinstance(said, str) else 0} line(s)")
+    return "; ".join(parts) + "; no line of either is shown"
 
 
 #: An error line of psql's stderr, after psql's own `psql:<stdin>:1: ` where
@@ -595,7 +603,7 @@ class Cluster:
                               capture_output=True, text=True, env=self.server_env(), timeout=120,
                               check=False)
         if init.returncode != 0:
-            raise ClusterError(f"initdb exited {init.returncode}: {init.stderr.strip()}")
+            raise ClusterError(f"initdb failed: {_counted(init)}")
         t2 = time.monotonic()
         self.prepare()
         self.launch()
@@ -726,13 +734,16 @@ class Cluster:
             if code != 0:
                 raise ClusterError(f"`lanes-index {' '.join(argv[:3])}` through the admin service "
                                    f"on {database} exited {code}, so the fixture has no logins "
-                                   f"(lane 1's T110, L1-A8, builds `login`): "
-                                   f"{_masked(out)[-400:]} | {_masked(err)[-400:]}")
+                                   f"(lane 1's T110, L1-A8, builds `login`): stdout: "
+                                   f"{len(out.splitlines())} line(s), "
+                                   f"{len(PASSWORD_LINE.findall(out))} of them password-file "
+                                   f"lines; stderr: {len(err.splitlines())} line(s); no line of "
+                                   f"either is shown")
             self.passwords.update(PASSWORD_LINE.findall(out))
         names = ", ".join(f"'{login}'" for login in FX_LOGINS)
         can = self.psql(f"SELECT rolname FROM pg_catalog.pg_roles WHERE rolcanlogin AND "
                         f"rolname IN ({names}) ORDER BY 1;").stdout.split()
-        missing = sorted(set(FX_LOGINS) - set(can)) + sorted(set(FX_LOGINS) - set(self.passwords))
+        missing = [login for login in FX_LOGINS if login not in can or login not in self.passwords]
         if missing:
             raise ClusterError(f"after `login add`, these logins cannot log in or printed no "
                                f"password line: {', '.join(missing)}")
@@ -761,7 +772,7 @@ class Cluster:
             raise ClusterError(f"`lanes-index bootstrap --no-passwords` through the admin "
                                f"service on {database} exited {proc.returncode}, so the "
                                f"template has no register (lane 1's T109, L1-A7, builds the "
-                               f"bootstrap): {_tail(proc)}")
+                               f"bootstrap): {_counted(proc)}")
         return proc.stdout
 
     def build_imported(self) -> None:
@@ -789,7 +800,7 @@ class Cluster:
                 if proc.returncode != 0:
                     self.imported_problem = (f"`lanes-index import --at {register.c}` as {user} "
                                              f"exited {proc.returncode} (lane 1's T115, L1-A13, "
-                                             f"builds it): {_tail(proc)}")
+                                             f"builds it): {_counted(proc)}")
                 else:
                     self.imported_problem = self._imported_check(register.c)
             except (ClusterError, OSError, subprocess.SubprocessError) as exc:
@@ -1151,7 +1162,7 @@ class ImportedRegister:
             f"repository: {self.origin}\npath: {self.ws}\n", encoding="utf-8")
         self.env["LANES_REPO"] = str(self.wip)
         self._run_ok(["bash", str(LANES_EDIT), *TEST7_NOTE], LANES_LANE=TEST7_OPERATOR)
-        self.c = self.git("rev-parse", "origin/main")
+        self.c = self.commit_of("origin/main")
 
     def run(self, argv: List[str], cwd: Optional[Path] = None, timeout: float = 120,
             **env: str) -> subprocess.CompletedProcess:
@@ -1163,7 +1174,7 @@ class ImportedRegister:
         proc = self.run(argv, **env)
         if proc.returncode != 0:
             raise ClusterError(f"{' '.join(argv[:3])} exited {proc.returncode} building test 7's "
-                               f"fixture register: {_tail(proc)}")
+                               f"fixture register: {_counted(proc)}")
         return proc.stdout.strip()
 
     def git(self, *args: str, data: Optional[bytes] = None) -> str:
@@ -1172,9 +1183,19 @@ class ImportedRegister:
                               capture_output=True, timeout=120, check=False)
         if proc.returncode != 0:
             raise ClusterError(f"git {' '.join(args[:2])} exited {proc.returncode} building test "
-                               f"7's fixture register: "
-                               f"{proc.stderr.decode('utf-8', 'replace').strip()[-400:]}")
+                               f"7's fixture register: {_counted(proc)}")
         return proc.stdout.decode("utf-8", "replace").strip()
+
+    def commit_of(self, ref: str) -> str:
+        """`git rev-parse <ref>` in the operator lane's checkout: a commit
+        id, or a ClusterError that shows none of git's text (T229m), since
+        the id is shown in `imported_problem` and at the run's foot."""
+        said = self.git("rev-parse", ref)
+        if not re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", said):
+            raise ClusterError(f"git rev-parse {ref} exited 0 and printed no commit id building "
+                               f"test 7's fixture register: {len(said.splitlines())} line(s), "
+                               f"none of them shown")
+        return said
 
     def configuration(self, cluster: "Cluster", database: str, user: str) -> Path:
         """The operator's 0600 configuration, outside every work tree:
@@ -1234,7 +1255,7 @@ def _openssl(args: List[str], cwd: Path) -> None:
     proc = subprocess.run(["openssl", *args], cwd=str(cwd), stdin=DEVNULL, capture_output=True,
                           text=True, env=env, timeout=60, check=False)
     if proc.returncode != 0:
-        raise ClusterError(f"openssl {' '.join(args[:2])} exited {proc.returncode}: {_tail(proc)}")
+        raise ClusterError(f"openssl {' '.join(args[:2])} failed: {_counted(proc)}")
 
 
 def make_test_ca(directory: Path) -> Dict[str, Path]:
@@ -1978,8 +1999,9 @@ def _smoke_tls(found: Probe) -> str:
         argv = [cluster.tool("psql"), "-X", "-A", "-t", "-F", "|", "-c",
                 "SELECT ssl, version FROM pg_stat_ssl WHERE pid = pg_backend_pid()"]
         said = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=60, check=False)
-        if (said.returncode, said.stdout.strip()) != (0, "t|TLSv1.3"):
-            raise ClusterError(f"the verify-full connect answered {said.returncode}: {_tail(said)}")
+        tls13 = said.returncode == 0 and said.stdout.strip() == "t|TLSv1.3"
+        if not tls13:
+            raise ClusterError(f"the verify-full connect did not answer t|TLSv1.3: {_counted(said)}")
         plain = subprocess.run(argv, capture_output=True, text=True, timeout=60, check=False,
                                env=dict(env, PGSSLMODE="disable"))
         if plain.returncode == 0:
