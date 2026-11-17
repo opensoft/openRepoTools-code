@@ -6429,3 +6429,61 @@ def test_a_chained_pgcluster_failure_shows_no_tool_text_in_pytests_report(
                                      ("args", repr(failed.value.args)), ("report", said))
              if planted in text]
     assert not shown, f"{path}: the planted value shows in {shown}"
+
+
+@pytest.mark.parametrize("site", ["run-ok", "git", "make-logins"])
+def test_a_failed_tools_raising_frame_in_pgcluster_keeps_no_text_of_its_run(monkeypatch, tmp_path, site):
+    """T257zzzj (lane 2's targeted check RV9-43 of P09 at `94a40564`, NIT
+    B; T229t; T229u), with no engine and no process: a tool's run fails
+    with a planted value on both its streams, in `ImportedRegister._run_ok`
+    (`[run-ok]`) and `.git` (`[git]`), whose run is a stand-in of
+    subprocess.run, and in `Cluster.make_logins` (`[make-logins]`), whose
+    `login add` under the pty is a stand-in. The `ClusterError`'s
+    traceback, walked frame by frame, holds the planted value in no local
+    of any frame of pgcluster's, whatever the traceback style: pytest
+    8.3.4 prints a long entry's locals as the arguments of `_run_ok`'s
+    `**env` and `git`'s `*args`, and every style but short prints frames'
+    arguments, `--showlocals` their locals. Under the suite's short style
+    T257zzza's and T257zzb's cases pass with T229t undone; this one does
+    not. Before T229t `_run_ok` and `git` kept the run as `proc`; before
+    T229u `make_logins` kept `login add`'s `out` and `err`, its printed
+    password lines among them. The planted value is no credential of any
+    login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+
+    def run(argv, **kw):
+        lines = (f"{planted} on stdout\n", f"{site}: {planted} on stderr\n")
+        if not kw.get("text"):
+            lines = tuple(part.encode() for part in lines)
+        return subprocess.CompletedProcess(argv, 1, *lines)
+
+    monkeypatch.setattr(pgcluster.subprocess, "run", run)
+    with pytest.raises(pgcluster.ClusterError) as failed:
+        if site == "make-logins":
+            cluster = object.__new__(pgcluster.Cluster)
+            cluster.passwords = {}
+            monkeypatch.setattr(cluster, "admin_service", lambda database: f"fx_{database}")
+            monkeypatch.setattr(cluster, "lanes_index_tty", lambda argv: (
+                1, f"{planted} printed\n", f"{site}: {planted} on stderr\n"))
+            cluster.make_logins("register")
+        else:
+            register = object.__new__(pgcluster.ImportedRegister)
+            register.root, register.wip, register.env = tmp_path, tmp_path, {}
+            if site == "run-ok":
+                register._run_ok(["bash", "lanes-edit.sh", "log"])
+            else:
+                register.git("push", "-q", "origin", "main")
+    ours, held = [], []
+    tb = failed.tb
+    while tb is not None:
+        frame = tb.tb_frame
+        if Path(frame.f_code.co_filename).resolve() == Path(pgcluster.__file__).resolve():
+            ours.append(frame.f_code.co_name)
+            held += [f"{frame.f_code.co_name}.{name}" for name, value in frame.f_locals.items()
+                     if planted in repr(value)]
+        tb = tb.tb_next
+    want = {"run-ok": "_run_ok", "git": "git", "make-logins": "make_logins"}[site]
+    assert want in ours, f"{site}: {want} is not in the error's traceback, only {ours}"
+    assert not held, f"{site}: a frame of pgcluster's keeps the planted value in: {held}"
+    assert planted not in str(failed.value), f"{site}: the planted value is in the error's text"
