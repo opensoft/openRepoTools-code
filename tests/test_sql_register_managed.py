@@ -888,7 +888,7 @@ def _t224p_child_gone_by(mark: Path, start: float) -> bool:
     can satisfy it, never the watchdog. The clock is read after each look,
     so a pause of the case past the deadline fails it (`_gone_by`; T224r)."""
     pid, started = Path(f"{mark}.child").read_text().split()
-    return _gone_by(int(pid), started, start + RUN_S + END_S)
+    return _gone_by(_whole(pid, "the stand-in's pid"), started, start + RUN_S + END_S)
 
 
 def _t224p_end_child(mark: Path) -> None:
@@ -898,7 +898,7 @@ def _t224p_end_child(mark: Path) -> None:
     child = Path(f"{mark}.child")
     if child.exists():
         pid, started = child.read_text().split()
-        _end_if_left(int(pid), started)
+        _end_if_left(_whole(pid, "the stand-in's pid"), started)
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"),
@@ -938,7 +938,7 @@ def test_run_reads_its_terminal_and_stderr_together_and_ends_a_run_at_its_one_de
         assert took < RUN_S + END_S, (      # T224r: `_run` itself ends within 5 s
             f"_run ended a hung run after {took:.1f} s, past its {RUN_S + END_S:.0f} s bound")
         try:
-            os.waitid(os.P_PID, int(mark.read_text()), os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            os.waitid(os.P_PID, _whole(mark.read_text(), "the hung run's pid"), os.WEXITED | os.WNOHANG | os.WNOWAIT)
             reaped = False
         except ChildProcessError:
             reaped = True
@@ -2560,7 +2560,7 @@ def test_a_phase_w_writer_that_exits_while_its_group_holds_a_pipe_is_reaped_afte
         _t258f_recorded(monkeypatch, writer, events)
         with pytest.raises(AssertionError, match=f"w-{held}'s run ended, but its pipes did not"):
             writer.wait(1.0)
-        gone = _gone_by(int(pid), started, time.monotonic() + 2)     # seen before it (T258i)
+        gone = _gone_by(_whole(pid, "the stand-in's pid"), started, time.monotonic() + 2)     # seen before it (T258i)
         kinds = [event[0] for event in events]
         ordered = kinds.count("reap") == 1 and kinds[-1] == "reap" and "killpg" in kinds
         assert ordered and events[-1][1:] == (False, True, True), (
@@ -2574,7 +2574,7 @@ def test_a_phase_w_writer_that_exits_while_its_group_holds_a_pipe_is_reaped_afte
         assert events == [], f"[{held}] the teardown signalled a writer already reaped: {events}"
     finally:
         if pid is not None:
-            _end_if_left(int(pid), started)
+            _end_if_left(_whole(pid, "the stand-in's pid"), started)
         Phase.writers = [writer] if writer.proc.returncode is None else []
         PhaseW._stop(Phase)
         writer._thread.join(15)
@@ -2688,7 +2688,7 @@ def test_a_phase_w_writers_reader_cut_by_a_pipe_held_outside_its_group_ends_and_
             assert time.monotonic() < end, "the stand-in writer did not exit in 10 s"
             time.sleep(0.05)
         pid, started = mark.read_text().split()
-        assert os.getsid(int(pid)) != writer.proc.pid, "the holder is in the writer's session"
+        assert os.getsid(_whole(pid, "the stand-in's pid")) != writer.proc.pid, "the holder is in the writer's session"
         _t258f_recorded(monkeypatch, writer, events)
         with pytest.raises(RuntimeError, match="a process outside its group holds them"):
             writer.stop()
@@ -2699,7 +2699,7 @@ def test_a_phase_w_writers_reader_cut_by_a_pipe_held_outside_its_group_ends_and_
             f"closed, stderr closed at each) and its reader alive are {state}")
     finally:
         if pid is not None:
-            _end_if_left(int(pid), started)
+            _end_if_left(_whole(pid, "the stand-in's pid"), started)
         Phase.writers = [writer] if writer.proc.returncode is None else []
         PhaseW._stop(Phase)
         writer._thread.join(15)
