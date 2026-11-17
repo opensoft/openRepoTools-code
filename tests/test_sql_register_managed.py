@@ -414,12 +414,16 @@ def _objects(text: str) -> list:
 def _passwords(text: str) -> dict:
     """Each password-file line, by login. A login printed twice fails, its
     text masked, and the check is a bool: pytest's report of an assertion
-    shows each operand's value, and `found` holds the lines (T224j)."""
+    shows each operand's value, and `found` holds the lines (T224j). The
+    message names no login: a login is a field of a line a writer printed,
+    so it shows how many logins were read before it instead (T258t; lane
+    2's targeted check RV9-39 of P09 at `3c5b68bc`, S6)."""
     found: dict = {}
     for m in PASS_LINE.finditer(text):
         twice = m.group("login") in found
-        assert not twice, (f"{m.group('login')}'s line is printed twice (_passwords is given the "
-                           f"text alone, so no exit):\n{_said_safely(text, stream='stdout')}")
+        assert not twice, (f"a password-file line's login is printed twice, with {len(found)} login(s) "
+                           f"read before it (_passwords is given the text alone, so no exit):\n"
+                           f"{_said_safely(text, stream='stdout')}")
         found[m.group("login")] = m.group(0)
     return found
 
