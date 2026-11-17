@@ -538,7 +538,9 @@ def pytest_configure(config):
     # 2's pre-review RV9-38 of P09, B1): pytest's default `auto` prints a long
     # entry's frame arguments, a helper's raw stream or a statement's password
     # among them, in the terminal and in --junitxml. `short` prints none. An
-    # explicit `--tb` stays as given; it and --showlocals are not secret-safe.
+    # explicit `--tb` other than `auto` stays as given; `--tb=auto` cannot be
+    # told from the default, so it becomes short too. `--tb=long`,
+    # `--fulltrace` (which forces long) and `--showlocals` are not secret-safe.
     if config.getoption("tbstyle", "auto") == "auto":
         config.option.tbstyle = "short"
 
