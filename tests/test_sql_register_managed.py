@@ -2078,19 +2078,18 @@ class W258Writer:
         """The run's end, its reap last (T258f; the coordinator's review of P09
         at `d3a2fd5c`, item 1, #165 6938473998). While it is unreaped, the id
         of the group it leads is still its own: `_signal_unreaped` ends that
-        group, TERM then KILL; its reader is joined within `END_S`; and where
-        the reader has ended, both pipes are closed. Only then is it reaped,
-        `proc.wait(END_S)`, whose `TimeoutExpired` is raised. No signal follows
-        the reap. A reader still alive here is the caller's to raise: a process
-        outside the group holds a pipe, and the reader still owns the pipes.
-        The join and the closes are in a `finally`, so a signal step that
-        raises (`os.waitid`'s `ChildProcessError`, where something else reaped
-        the run) still has the reader joined and the pipes closed before its
-        error goes on, with no reap after it (T258g; Codex's review of P09 at
-        `d3a2fd5c`, SHOULD 3's last point). The reader is not left alive: a
-        pipe still held is cut, by `_cut_reader`, and the reader closes both
-        before it ends, so the reap always comes after the reader's end and
-        its closes (T258h; Codex's review of P09 at `b8f9e35a`, SHOULD 4)."""
+        group, TERM then KILL; then `_cut_reader` ends the reader, which closes
+        both pipes itself: it is joined within `END_S`, and one still reading
+        then, a process outside the group holding a pipe, is cut and joined
+        again, and raised where it outlives its cut (T258h; Codex's review of
+        P09 at `b8f9e35a`, SHOULD 4). This method closes no pipe. Only then is
+        the run reaped, `proc.wait(END_S)`, whose `TimeoutExpired` is raised;
+        no signal follows the reap, and no reap follows a reader that
+        `_cut_reader` raised. `_cut_reader` runs in a `finally`, so a signal
+        step that raises (`os.waitid`'s `ChildProcessError`, where something
+        else reaped the run) still has the reader ended and its pipes closed
+        before its error goes on, with no reap after it (T258g; Codex's review
+        of P09 at `d3a2fd5c`, SHOULD 3's last point; this text T258k)."""
         try:
             _signal_unreaped(self.proc, group=True, wait=END_S)
         finally:
@@ -2577,12 +2576,18 @@ def test_a_phase_w_writers_stop_joins_its_reader_and_closes_its_pipes_when_its_s
     `_signal_unreaped`, made to raise `ChildProcessError` as `os.waitid`
     does where something else reaped the run. That step, the signal seam,
     is reached once: it records the reader alive and both pipes open, then
-    releases the barrier, then raises. The error must reach the caller, and
-    by then the reader must be joined and both pipes closed. Before T258g the
-    error left `stop()` before the join, with the reader still reading and
-    both pipes open. The barrier replaces a 0.5 s sleep from the stand-in's
-    start, which a delayed case could outlive, so the old code passed
-    (T258j; Codex's review of P09 at `b8f9e35a`, SHOULD 6)."""
+    raises. The barrier is released at the reader's first join, by a wrapper
+    set as `writer._thread.join`, and only the clean-up after the seam joins
+    the reader. The error must reach the caller, and by then the reader must
+    be joined and both pipes closed. Before T258g the error left `stop()`
+    before the join, with the reader still reading and both pipes open; with
+    that bug no join runs, so the barrier is never released and the case
+    fails whatever the timing. The barrier replaces a 0.5 s sleep from the
+    stand-in's start, which a delayed case could outlive, so the old code
+    passed (T258j; Codex's review of P09 at `b8f9e35a`, SHOULD 6). T258j
+    released it at the seam, so a stall of 0.3 s or more after the seam
+    could still let the old code pass; it is released at the join instead
+    (T258k; lane 2's pre-review RV9-35, NIT 1)."""
     monkeypatch.setitem(globals(), "END_S", 2.0)
     barrier, seen = tmp_path / "barrier", []
     os.mkfifo(barrier)
@@ -2607,11 +2612,17 @@ def test_a_phase_w_writers_stop_joins_its_reader_and_closes_its_pipes_when_its_s
     def fails(*args, **kwargs):
         seen.append((writer._thread.is_alive(), writer.proc.stdout.closed,
                      writer.proc.stderr.closed))
-        if len(seen) == 1:
-            release()
         raise ChildProcessError("T258g's stand-in: the run was reaped elsewhere")
+
+    def joins(timeout=None):
+        """The reader's join, the barrier released at its first call (T258k)."""
+        if not released:
+            released.append(True)
+            release()
+        return join(timeout)
     writer = _w_stand_in("w-raises", 'read -r _ < "$1"; sleep 0.3; exec >&- 2>&-; sleep 0.5',
                          str(barrier))
+    join, released = writer._thread.join, []
 
     class Phase:
         writers = [writer]
@@ -2619,6 +2630,7 @@ def test_a_phase_w_writers_stop_joins_its_reader_and_closes_its_pipes_when_its_s
         with monkeypatch.context() as patch:
             patch.setitem(globals(), "_end_process", fails)
             patch.setitem(globals(), "_signal_unreaped", fails)
+            patch.setattr(writer._thread, "join", joins)
             with pytest.raises(ChildProcessError, match="reaped elsewhere"):
                 writer.stop()
             state = (writer._thread.is_alive(), writer.proc.stdout.closed,
