@@ -3488,30 +3488,36 @@ class ArmedFault(StartupRelay):
             except OSError:
                 continue
             on = bool(self.armed())
-            upstream = None
             if not (on and self.fault == "F1"):
-                upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                try:
-                    upstream.connect(self.unix_path)
-                except OSError:
-                    conn.close()
-                    upstream.close()
-                    continue
-            with self.lock:                 # registered and started under close()'s lock (T278h)
+                # Tracked before a bounded connect, the pump started under
+                # close()'s lock or not at all: `StartupRelay._relay` (T278i).
+                self._relay(conn, on and self.fault == "F2")
+                continue
+            with self.lock:                 # F1: held under close()'s lock, never spoken to (T278h)
                 if self.done:
                     conn.close()
-                    if upstream is not None:
-                        upstream.close()
                     return
-                if upstream is None:        # F1: held, never spoken to
-                    self.held.append(conn)
-                    self.silenced += 1
-                    continue
-                self.held += [conn, upstream]
-                pump = threading.Thread(target=self._pump,
-                                        args=(conn, upstream, on and self.fault == "F2"), daemon=True)
-                self.pumps.append(pump)
-                pump.start()
+                self.held.append(conn)
+                self.silenced += 1
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="T278i's stand-in for the cluster is in Linux's abstract Unix namespace")
+@pytest.mark.parametrize("fault", ["F1", "F2"])
+def test_an_armed_faults_relayed_connection_is_tracked_before_a_bounded_connect(fault):
+    """T278i (Codex's SHOULD 3 on P09 at `21dd3642`), with no engine:
+    `ArmedFault`, not yet armed, relays each connection whole, in front of
+    a Unix listener of the standard library whose backlog is full, so a
+    connect to it would wait. The relay's connect has a bound, its client's
+    end is closed, and `close()` leaves no thread, for F1 and F2 alike.
+    Before T278i its accept connected with no bound before it tracked
+    either socket, so the connect waited on, out of `close()`'s reach, and
+    the client stayed open. T220p's case, `[full-backlog]`."""
+    stand_in, name = _cluster_stand_in(0)
+    relay = ArmedFault(name, fault, lambda: False)
+    _relay_closed_as_t220p_has_it(
+        "full-backlog", "t278i-stuck-pump",
+        *_relay_case(relay, stand_in, name, "full-backlog", "t278i-stuck-pump"))
 
 
 def _did(call: dict, what: str) -> bool:
