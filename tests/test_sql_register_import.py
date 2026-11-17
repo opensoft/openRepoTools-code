@@ -35,11 +35,13 @@ classify` by argv and stdin, and holds the five fields equal on every line.
 Lane 1's T122 runs it by `sql_register_import and classify_parity`. It fails
 until T122 lands: at `a2073eae` `register classify` is not a subcommand.
 
-THE OTHER ELEVEN are real-engine tests, on `tests/pgcluster.py`'s `pg`: a
+THE OTHER TWELVE are real-engine tests, on `tests/pgcluster.py`'s `pg`: a
 database cloned from the template, which holds the bootstrap's schema once
 lane 2's T227 builds it (L1-A7). Without an engine they skip with T205's
 banner. They fail until L1-A13 (`import --at`, lane 1's T115), L1-A16 (T118's
 kinds) and lane 3's T301 (the scratch render the proof runs) land.
+The `main_slots` case also waits for lane 1's T112, the sidecar case for T113,
+and T211n's open-`HOLD` case for T112 and T116.
 
 - The refusal's code is read from `lanes-index`'s named constant,
   `EXIT_IMPORT_REFUSED`, PC-10's code for `import --at`'s refusal (lane 1's
