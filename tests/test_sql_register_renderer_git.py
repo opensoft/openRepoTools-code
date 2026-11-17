@@ -903,16 +903,22 @@ def kill_above(pid):
     it leads, each through a pidfd pinned by the case's identity (`pin`),
     never by a number or a group's id (lane 3's Codex review of code PR 97
     at `46cac748`, BLOCKING and SHOULDs 1 and 6; the coordinator's points 1
-    and 3, #165 6938182757): the process above is pinned and stopped; then
-    /proc is read for the members of its group, each pinned, recorded and
-    stopped, and each read is made only once every target is seen stopped,
+    and 3, #165 6938182757): the process above is pinned and sent SIGSTOP;
+    then /proc is read for the members of its group, each pinned, recorded
+    and stopped; after a read that finds any new, the next read is made
+    only once every target, the process above among them, is seen stopped,
     until a read finds none new; the leader need not live for its members
-    to be found. Whatever is raised on the way, every target is then
+    to be found. The first read follows the leader's SIGSTOP with no wait,
+    and where it finds no member the leader is killed with its stop
+    unchecked: no error is kept for a stop of its that is never seen, and
+    the read after the kill still runs (lane 2's pre-review RV7-35, N1).
+    Whatever is raised on the way, every target is then
     killed, seen gone and its pidfd closed (`end_all`), and the first error
     is raised. A process without the case's identity is never signalled.
     Where the process above is gone before it is pinned, its group's
     members are still found by the nonce and the group's id; a stop not
-    seen is an error; and the discovery and the end are the shared
+    seen, where one is awaited after a read that found any new, is an
+    error; and the discovery and the end are the shared
     clean-up's one loop (`_Settled`, whose source this script carries; lane
     3's Codex review of code PR 97 at `5a120647`, SHOULD 2): read after
     read (`members`), then each target killed and seen gone, then /proc
@@ -2811,7 +2817,9 @@ DETACHES = SAY_ME + ("if os.fork() == 0:\n"
 #: the close of 4001's pidfd fails (EIO); `pin-raises`, the signal 0 of
 #: 4002's pin is refused (EPERM). Round CX-35's model (lane 3's Codex review
 #: of code PR 97 at `5a120647`, SHOULD 2): `stop-forks`, 4002's stop never
-#: seen, and in that gap it forks 4005, a late member of the group.
+#: seen, and in that gap it forks 4005, a late member of the group, shown
+#: only once 4002 has been sent SIGKILL, so only a read made after the kill
+#: finds it (lane 2's pre-review RV7-35, S1).
 KILL_HARNESS = r'''
 import errno, importlib.util, io, json, sys
 from types import SimpleNamespace
@@ -2829,7 +2837,7 @@ def listdir(path):
     if MODEL == "proc-error":
         raise OSError(errno.EIO, "a read of /proc failed")
     late = (MODEL == "late-stop" and now["reads"].get(4002, 0) >= 1) or (
-        MODEL == "stop-forks" and 4002 in stops)
+        MODEL == "stop-forks" and [4002, "KILL"] in sent)
     return [str(pid) for pid in sorted(GROUP) if pid != 4005 or late] + ["self"]
 
 
@@ -3757,11 +3765,14 @@ def test_a_wrapper_kill_reads_again_once_every_target_is_gone_whatever_a_stop_di
     """SHOULD 2 at `5a120647`: the shared clean-up's one loop (`_Settled`),
     run by `GIT_WRAPPER`'s `kill_above` on a model (`KILL_HARNESS`), with
     no process read or signalled. 4002's stop is never seen, and in that
-    gap it forks 4005, a late member of the group. Every target is still
-    killed and seen gone, and /proc is read again after, so 4005 is found
-    and killed too, and the stop's error is raised (`RuntimeError`), where
-    that error spared the read after the kill and 4005 was left. 4003 and
-    4004 are never signalled, and every pidfd opened is closed."""
+    gap it forks 4005, a late member of the group, which the model shows
+    only once 4002 has been sent SIGKILL: no read before the kill can find
+    it (lane 2's pre-review RV7-35, S1). Every target is still killed and
+    seen gone, and /proc is read again after the kill, so 4005 is found by
+    that read and killed too, and the stop's error is raised
+    (`RuntimeError`), where that error spared the read after the kill and
+    4005 was left. 4003 and 4004 are never signalled, and every pidfd
+    opened is closed."""
     said = _kill_models(tmp_path, "stop-forks")["stop-forks"]
     assert said["raised"] == ["RuntimeError", None], said
     assert _killed(said) == {4000, 4001, 4002, 4005}, said
