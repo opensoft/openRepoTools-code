@@ -5363,3 +5363,115 @@ def test_a_stray_ways_out_commit_call_is_in_doubt_like_a_writers(pg, tmp_path, r
     elapsed = op.exited - start
     assert elapsed < 2 * 35.5, f"{form}: {elapsed:.2f} s against 35.5 s"
     _record(f"stray-{form}", elapsed, 35.5, "timing rule 2, from the commit call's start")
+
+
+# ============================== no tool's or server log's text in pgcluster's failures (T257zza-T257zzf), no engine
+
+def _t257zza_seen(request, failed, planted: str) -> list:
+    """Where `planted` shows in a failure (T257zza; lane 3's ruling
+    6949488277 on lane 2's pre-review RV9-38 of P09, B2): the exception's
+    `str`, `repr`, `args` and formatted traceback, and pytest's own report
+    of it, rendered through the running item as pytest renders a failed
+    test, `request.node.repr_failure(failed)`: its `str()` is what the
+    terminal and JUnit's failure body print, and its `reprcrash.message` is
+    JUnit's message. Each place that holds it is named; none is printed.
+    The report must name the exception's class, or the rendering is not
+    one."""
+    import traceback
+    report = request.node.repr_failure(failed)
+    crash = getattr(report, "reprcrash", None)
+    shown = {"str": str(failed.value), "repr": repr(failed.value), "args": repr(failed.value.args),
+             "traceback": "".join(traceback.format_exception(failed.type, failed.value, failed.tb)),
+             "report": str(report), "reprcrash": "" if crash is None else str(crash.message)}
+    assert failed.type.__name__ in shown["report"], "pytest's report of the failure was not rendered"
+    return sorted(name for name, text in shown.items() if planted in text)
+
+
+def test_a_server_log_holding_a_roles_password_reaches_no_cluster_error_or_its_report(
+        monkeypatch, tmp_path, request):
+    """T257zza (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09, B2; T229l), with no engine and no process: under `log_statement =
+    'all'` the server log holds a role's statement with its password,
+    planted here in `server.log` as `statement: CREATE ROLE ... PASSWORD
+    '<planted>'`. A start whose postmaster exits, a start not ready by the
+    deadline and a stop that outlasts it each raise a `ClusterError` that
+    shows the log's counts, and the planted value is in none of its `str`,
+    `repr`, `args` or formatted traceback, nor in pytest's report of it, as
+    the terminal and JUnit print it (`_t257zza_seen`). Before T229l each
+    held the log's last five lines. A log whose last lines name a bind sets
+    `could_not_bind`, which `TLSCluster.launch` now reads in place of the
+    text: it moves to a new port at a first start, three tries in all, and
+    raises at once on a restart. The planted value is no credential of any
+    login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+    stamp = "2026-11-17 00:00:00.000 UTC [4242]"
+    logged = [f"{stamp} LOG:  statement: CREATE ROLE lanes_w_t LOGIN PASSWORD '{planted}';",
+              f"{stamp} ERROR:  role \"lanes_w_t\" already exists"]
+    bound = [f"{stamp} LOG:  could not bind IPv4 address \"127.0.0.1\": Address already in use",
+             f"{stamp} FATAL:  could not create any TCP/IP sockets"]
+    started = []
+
+    class Postmaster:
+        """A stand-in postmaster: `code` None runs on, else it has exited."""
+        pid = 4242
+
+        def __init__(self, code):
+            self.returncode = code
+
+        def poll(self):
+            return self.returncode
+
+        def send_signal(self, sig):
+            pass
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(["postgres"], timeout)
+
+    def popen(code):
+        def made(argv, **kw):
+            started.append(argv[0])
+            return Postmaster(code)
+        return made
+
+    monkeypatch.setattr(pgcluster, "DIE_WITH_PYTEST", False)
+    monkeypatch.setattr(pgcluster, "_free_port", lambda: 40000 + len(started))
+    cluster = pgcluster.Cluster(tmp_path / "bin")
+    cluster.root = tmp_path
+    (tmp_path / "data").mkdir()
+    for lines, bind in ((logged, False), (logged + bound, True)):
+        (tmp_path / "server.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        for case, code in (("exited", 1), ("not-ready", None)):
+            monkeypatch.setattr(pgcluster.subprocess, "Popen", popen(code))
+            monkeypatch.setattr(pgcluster, "DEADLINE", -1.0 if code is None else 30.0)
+            with pytest.raises(pgcluster.ClusterError) as failed:
+                cluster.launch()
+            assert not _t257zza_seen(request, failed, planted), \
+                f"{case}: the planted value shows in {_t257zza_seen(request, failed, planted)}"
+            assert (f"server.log: {len(lines)} line(s), {1 + bind} of them ERROR, FATAL or PANIC lines"
+                    in str(failed.value)), f"{case}: the error shows no count of the log's lines"
+            assert getattr(failed.value, "could_not_bind", None) is bind, \
+                f"{case}: could_not_bind is not {bind}"
+        cluster.proc = Postmaster(None)
+        with pytest.raises(pgcluster.ClusterError) as failed:
+            cluster.stop()
+        assert not _t257zza_seen(request, failed, planted), \
+            f"stop: the planted value shows in {_t257zza_seen(request, failed, planted)}"
+    # TLSCluster.launch reads the flag: three tries at a first start, one at a restart.
+    monkeypatch.setattr(pgcluster.subprocess, "Popen", popen(1))
+    monkeypatch.setattr(pgcluster, "DEADLINE", 30.0)
+    for restarting, tries in ((False, 3), (True, 1)):
+        tls = pgcluster.TLSCluster(tmp_path / "bin")
+        tls.root, tls.restarting, before = tmp_path, restarting, len(started)
+        with pytest.raises(pgcluster.ClusterError) as failed:
+            tls.launch()
+        assert len(started) - before == tries, \
+            f"restarting={restarting}: {len(started) - before} start(s), not {tries}"
+        assert not _t257zza_seen(request, failed, planted), \
+            f"restarting={restarting}: the planted value shows in {_t257zza_seen(request, failed, planted)}"
+    (tmp_path / "server.log").write_text("\n".join(logged) + "\n", encoding="utf-8")
+    tls = pgcluster.TLSCluster(tmp_path / "bin")
+    tls.root, before = tmp_path, len(started)
+    with pytest.raises(pgcluster.ClusterError):
+        tls.launch()
+    assert len(started) - before == 1, "a start that failed with no bind was tried again"
