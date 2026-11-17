@@ -4018,11 +4018,13 @@ _SINK_CALLS = ("pytest.fail", "pytest.skip", "pytest.xfail", "pytest.exit", "pri
                "warnings.warn", "_raised_nothing")
 _IMPORTED_FROM = ("pytest", "os", "sys", "warnings", "logging", "subprocess", "textwrap")
 #: A terminal reporter's write (T257zzzd; RV9-42, S1): `.write_line`,
-#: `.write_sep`, `.line` or `.write_raw` of any object, and `.write` of a name
-#: of `_REPORTERS`. pgcluster's `pytest_terminal_summary` writes the run's foot
-#: so, to CI's terminal.
-_REPORTER_WRITES = ("write_line", "write_sep", "line", "write_raw")
-_REPORTERS = ("terminalreporter", "tr", "reporter")
+#: `.write_sep`, `.line`, `.write_raw`, `.section` or `.rewrite` of any object,
+#: and `.write` of a name of `_REPORTERS`, of an attribute `_tw`, or of a
+#: call's result `get_terminal_writer()` (T257zzzm; lane 2's targeted check
+#: RV9-44 of P09 at `3faf9453`, N-2). pgcluster's `pytest_terminal_summary`
+#: writes the run's foot so, to CI's terminal.
+_REPORTER_WRITES = ("write_line", "write_sep", "line", "write_raw", "section", "rewrite")
+_REPORTERS = ("terminalreporter", "tr", "reporter", "tw", "_tw")
 #: The one place the check is told not to name, as (file, function, name)
 #: (T257zzzd; RV9-42, S1; lane 2's pre-review RV9-41 of P09 at `4895579`,
 #: N4): in pgcluster's `pytest_terminal_summary`, the module list `_DATACL`,
@@ -4562,7 +4564,10 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
                 dotted(node.func) in _SINK_CALLS or dotted(node.func).endswith(("Error", "Exception"))
                 or (isinstance(node.func, ast.Attribute) and node.func.attr in _REPORTER_WRITES)
                 or (isinstance(node.func, ast.Attribute) and node.func.attr == "write"
-                    and isinstance(node.func.value, ast.Name) and node.func.value.id in _REPORTERS)
+                    and ((isinstance(node.func.value, ast.Name) and node.func.value.id in _REPORTERS)
+                         or (isinstance(node.func.value, ast.Attribute) and node.func.value.attr == "_tw")
+                         or (isinstance(node.func.value, ast.Call)
+                             and ast.unparse(node.func.value.func).endswith("get_terminal_writer"))))
                 or (isinstance(node.func, ast.Attribute) and node.func.attr in _LOG_METHODS
                     and (dotted(node.func.value) == "logging"
                          or (isinstance(node.func.value, ast.Name)
@@ -4717,6 +4722,13 @@ def test_planted(proc, session, failed, ends, said_by, other, held, log):
     notes.write(proc.stderr)  # clean
     stderr.write(proc.stderr)  # planted
     pt.fail(proc.stderr)  # planted
+    config.get_terminal_writer().write(proc.stdout)  # planted
+    terminalreporter._tw.write(proc.stderr)  # planted
+    tw = terminalreporter._tw
+    tw.write(proc.stderr)  # planted
+    terminalreporter.section(proc.stdout)  # planted
+    terminalreporter.rewrite(proc.stdout)  # planted
+    terminalreporter._tw.write(f"{count} fixed words")  # clean
     _HELD.append(proc.stderr.strip())
     summed: str = _said_safely(copied)
     assert not copied, f"{summed}"  # planted
@@ -4835,7 +4847,9 @@ def test_the_static_check_names_each_kind_of_place_it_catches(tmp_path):
     pgcluster.py (`_PLANTED_FOOT`), the same line of `_DATACL` in
     `pytest_terminal_summary` (`_EXEMPT`) is clean while that of another
     list, or of `_DATACL` elsewhere, is a place. A file's `write` and fixed
-    words written to the terminal are clean.
+    words written to the terminal are clean. Since T257zzzm (RV9-44, N-2):
+    `get_terminal_writer().write`, `_tw.write` (of the attribute, or of a
+    name `tw` bound to it), `.section` and `.rewrite`.
 
     Since T257zzze (RV9-42, S2 and N2), for the exit: a helper's text made
     before the message by an annotated `=`, in an f-string held in a name,
