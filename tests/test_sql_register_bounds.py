@@ -2466,7 +2466,10 @@ def _writer(bench: Bench, config: Path, state: str, *,
     bench's lane, T257a's rows' path, which on primary is lane 4's L4-B3
     (T413 to T415). `deadline` is `LANES_REGISTER_DEADLINE_S`; unset, the
     deadline is D7's 30 s, as in AT-4 (c). The lane's own checkout is made
-    first, where the bench has none yet (`Bench.lane_checkout`, T257l)."""
+    first, where the bench has none yet (`Bench.lane_checkout`, T257l). The
+    writer leads a session, and so a process group, of its own, so its end,
+    `_end_writers`, reaches the `python3`, `psql` and `git` it starts
+    (T257t)."""
     bench.lane_checkout()
     env = dict(bench.env, LANES_INDEX_CONFIG=str(config), LANES_LANE="repoA-2")
     env.pop("LANES_REGISTER_DEADLINE_S", None)
@@ -2475,7 +2478,70 @@ def _writer(bench: Bench, config: Path, state: str, *,
     return subprocess.Popen(["bash", str(bench.copy.parent / "lanes-edit.sh"), "set-row-state",
                              "repoA-2", state], stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-                            cwd=str(bench.wip))
+                            cwd=str(bench.wip), start_new_session=True)
+
+
+def _end_writers(procs: list) -> None:
+    """Each writer `_writer` started ended with its process group and
+    reaped, by `_end_process(proc, group=True)` (T257t; Codex's review of P09
+    at `21dd3642`, SHOULD 4), which signals no writer whose `returncode` is
+    set, as `communicate()` leaves one it saw end. Every writer is tried, and
+    the first failure is raised after the last."""
+    failed = []
+    for proc in procs:
+        try:
+            _end_process(proc, group=True)
+        except (subprocess.TimeoutExpired, ChildProcessError) as exc:
+            failed.append(exc)
+    if failed:
+        raise failed[0]
+
+
+def test_each_writer_leads_a_session_of_its_own_and_its_end_reaches_its_descendants(
+        tmp_path, monkeypatch):
+    """`_writer` and `_end_writers` (T257t; Codex's review of P09 at
+    `21dd3642`, SHOULD 4), with no engine: `_writer` runs a stand-in
+    `lanes-edit.sh` of the case's own, which starts a descendant, as the real
+    one starts `python3`, `psql` and `git`, says so on stdout and waits for
+    it; or, with the state `quick`, exits 0 at once. Each running writer must
+    lead a session of its own; `_end_writers` must end its descendant with
+    it, so its stdout reaches its end; and a writer `communicate()` reaped
+    gets no signal (`_signals_kept_to_unreaped`). Before T257t a writer was
+    in the case's own session and the burst's end signalled its `bash`
+    alone, so the descendant outlived the case, holding the pipes."""
+    late = _signals_kept_to_unreaped(monkeypatch)
+    (tmp_path / "lanes-edit.sh").write_text(
+        '[ "$3" = quick ] && exit 0\nsleep 30 &\necho started\nwait\n', encoding="utf-8")
+
+    class Bare:
+        """What `_writer` reads of a `Bench`."""
+        def __init__(self, root: Path):
+            self.copy, self.wip, self.env = root / "lanes-index", root, dict(os.environ)
+
+        def lane_checkout(self) -> Path:
+            return self.wip
+
+    bench = Bare(tmp_path)
+    quick = _writer(bench, tmp_path / "lanes-index.conf", "quick")
+    quick.communicate(timeout=60)
+    slow = []
+    try:
+        for i in range(2):
+            slow.append(_writer(bench, tmp_path / "lanes-index.conf", f"slow {i}"))
+            assert slow[-1].stdout.readline() == "started\n", "the stand-in started no descendant"
+        assert all(os.getsid(proc.pid) == proc.pid for proc in slow), \
+            "a writer runs in the case's own session, not one of its own"
+    finally:
+        _end_writers([quick, *slow])
+    assert late == [], f"a writer was signalled once it was reaped: {late}"
+    assert [proc.returncode for proc in slow] == [-signal.SIGTERM] * 2, \
+        f"the writers' exits: {[proc.returncode for proc in slow]}"
+    for proc in slow:
+        ready, _, _ = select.select([proc.stdout], [], [], 10)
+        assert ready and proc.stdout.read() == "", \
+            f"writer {proc.pid}'s descendant still holds its stdout 10 s after its end"
+        proc.stdout.close()
+        proc.stderr.close()
 
 
 def _activity(pg, appname: str) -> tuple:
@@ -2560,9 +2626,11 @@ def test_an_orphaned_writer_transaction_is_ended_by_the_idle_bound(pg, tmp_path,
         out, err = waiting.communicate(timeout=300)
         assert waiting.returncode == 0, f"the waiting write did not commit: {waiting.returncode}: {err}"
     finally:
-        if waiting is not None and waiting.poll() is None:
-            waiting.kill()
-        _end(orphan)
+        try:
+            if waiting is not None:
+                _end_writers([waiting])     # its process group, reaped (T257t)
+        finally:
+            _end(orphan)
 
 
 #: AT-D9c (a)'s engine half: #160's reads that need no clock, so that two
@@ -2833,9 +2901,9 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
                 _, err = proc.communicate(timeout=300)
                 ends.append((proc.returncode, time.monotonic() - release, err))
         finally:
-            # Whatever ended the collection, no writer it started outlives it (T257q).
-            for proc in procs:
-                _end_process(proc, group=False)
+            # Whatever ended the collection, no writer it started outlives it, nor
+            # anything a writer started (T257q; T257t).
+            _end_writers(procs)
     codes = [code for code, _, _ in ends]
     rows = db.psql(f"SELECT seq, write_id FROM {SCHEMA}.journal WHERE seq > {head} "
                    f"ORDER BY seq;").stdout.split()
