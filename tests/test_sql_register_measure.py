@@ -376,7 +376,7 @@ def _commit_call(db, base: int, body: dict) -> int:
     out = sql(db, f"BEGIN ISOLATION LEVEL SERIALIZABLE;\n"
                   f"SELECT {SCHEMA}.commit_write({base}, '{uuid.uuid4()}'::uuid, {version}, "
                   f"'{gen}'::uuid, '{literal}'::jsonb);\nCOMMIT;", WRITER)
-    return int(out.splitlines()[-1])
+    return _whole(out.splitlines()[-1], "commit_write's seq on psql's last line")
 
 
 def import_to_primary(db, estate: Estate) -> int:
@@ -544,7 +544,7 @@ def fake_write(copy: Path, env: dict, checkout: Path, root: Path, lane: str, ver
     fields = out["fields"] = keys(snap.stdout)
     tree = root / "tree"
     (root / "snapshot").write_text(snap.stdout, encoding="utf-8")
-    done = edit(tree, utc_of(int(fields["clock"])))
+    done = edit(tree, utc_of(_whole(fields["clock"], "the snapshot's clock")))
     out["line"] = done["line"]
     git(tree, "add", "-A", "--", "lanes", env=env)
     changes = []
@@ -1033,7 +1033,7 @@ def test_journal_last_is_explained_per_statement_and_timed_against_t_r(pg_engine
     proc = one_call(db, appends.statements(appends.entry(lane, target, [
         f"NOTED {EM} lane {lane}, session {SID_A1}@{WS}, 2026-11-10T00:00:00Z, lane:{lane} {EM} {key}"])))
     assert proc.returncode == 0, _said_safely(proc.stderr)
-    match, measured = int(proc.stdout.strip()), target
+    match, measured = _whole(proc.stdout.strip(), "the appended entry's seq"), target
     if log == "renamed-log":
         measured = f"lanes/log/{lane}-t226-renamed.md"
         done = fake_write(copy, env, estate.checkout, tmp_path / "rename", lane, "rename-lane",
@@ -1041,7 +1041,7 @@ def test_journal_last_is_explained_per_statement_and_timed_against_t_r(pg_engine
                           f"lanes-edit.sh rename-lane: t226 renames {target}")
         assert done["code"] == 0, (_said_safely(done["snapshot"].stderr),
                                    _said_safely(done["commit"] and done["commit"].stderr))
-        match = int(done["commit"].stdout.split()[1])
+        match = _whole(done["commit"].stdout.split()[1], "the rename commit's seq")
         assert rows(db, f"SELECT count(*) AS n FROM journal_edits WHERE seq = {match} AND op = "
                         f"'rename' AND path = '{target}' AND to_path = '{measured}'")[0]["n"] == 1
     statements = last_statements(measured)
@@ -1310,7 +1310,8 @@ class VerbEstate:
                               stdin=subprocess.DEVNULL, check=False)
 
     def origin_commits(self) -> int:
-        return int(git(self.estate.origin, "rev-list", "--count", "main", env=self.estate.env).strip())
+        return _whole(git(self.estate.origin, "rev-list", "--count", "main", env=self.estate.env).strip(),
+                      "the origin's commit count")
 
 
 def _window(estate: VerbEstate, root: Path, lane: str, session_id: str = None):
@@ -1810,6 +1811,18 @@ def _held(env: dict, psql: str):
     for reader in session.readers:
         reader.start()
     return session
+
+
+def _whole(text, what: str) -> int:
+    """`text` as an int, or an AssertionError that names `what` and quotes
+    none of `text` (T255w; lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`,
+    S5): int()'s own ValueError quotes up to 200 characters of its input,
+    which is a tool's or a writer's output here. `from None` keeps that
+    ValueError out of the traceback too."""
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        raise AssertionError(f"{what} is not a whole number; its text is not shown") from None
 
 
 def _drained(lines: queue.Queue) -> str:
