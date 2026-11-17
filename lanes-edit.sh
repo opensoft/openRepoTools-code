@@ -866,7 +866,7 @@
 #      answer this file can read, so that it cannot say whether the text is
 #      one of the four it refuses (see 2): no `lanes-index` to run or no
 #      place to put the question, an exit other than 0 and 2 (the 64 of a
-#      `lanes-index` that has no `classify`, a crash, a signal, its 2 s
+#      `lanes-index` that has no `classify`, a crash, a signal, its 5 s
 #      timer), or an exit 0 without exactly one line of five tab-separated
 #      fields (contract §2.7, "No other code"; §2.8). It never writes the text
 #      unclassified.
@@ -3143,9 +3143,10 @@ delete_lines() {   # <line numbers, one per line, any order>
 # and stderr go to files, as the mode question's do, so a stand-in that leaves
 # a child behind holds no pipe open here; a signal that stops the call leaves
 # their directory to `cleanup`, which removes it while `alc_dir` holds it. Its
-# timer is the mode question's, `timeout -k 1 2` where `timeout` is installed,
-# and the call runs unbounded where it is not, as that one does (lane 3's
-# ruling, #165 6754806910; contract §2.4's `mode` row).
+# timer is the writers' mode question's, `timeout -k 1 5` where `timeout` is
+# installed, and the call runs unbounded where it is not, as that one does
+# (lane 3's rulings, #165 6754806910 and code#103 6952718559; contract
+# §2.4's `mode` row).
 append_line_primary_refusals() {   # <text>
   alc_why=""; alc_rc=0; alc_out=""; alc_odd=0; alc_said=""; alc_dir=""; alc_timer=bare
   alc_bin="$(lanes_index_bin)"
@@ -3167,7 +3168,7 @@ append_line_primary_refusals() {   # <text>
       # stderr keeps its file.
       if command -v timeout >/dev/null 2>&1; then
         alc_timer=timed
-        ( timeout -k 1 2 "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err"; exit "$?" ) 2>/dev/null || alc_rc=$?
+        ( timeout -k 1 5 "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err"; exit "$?" ) 2>/dev/null || alc_rc=$?
       else
         ( "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err"; exit "$?" ) 2>/dev/null || alc_rc=$?
       fi
@@ -3200,8 +3201,8 @@ append_line_primary_refusals() {   # <text>
   # takes the plain line below, "exited 124 (…)", and a 137 is a signal's
   # (lane 3, #165 6767463594, item 1). Every one exits 69, nothing written.
   case "${alc_rc}:${alc_timer}" in
-    124:timed) append_line_classify_failed "did not answer within 2 s, and was stopped (exit 124)" ;;
-    137:timed) append_line_classify_failed "was killed (exit 137): by its 2 s timer after it ignored the stop, or by a signal" ;;
+    124:timed) append_line_classify_failed "did not answer within its 5 s timer, and was stopped (exit 124)" ;;
+    137:timed) append_line_classify_failed "was killed (exit 137): by its 5 s timer after it ignored the stop, or by a signal" ;;
     137:bare) append_line_classify_failed "was killed by a signal (exit 137)" ;;
   esac
   [ "$alc_rc" = 0 ] || append_line_classify_failed "exited $alc_rc${alc_said:+ ($alc_said)}"
