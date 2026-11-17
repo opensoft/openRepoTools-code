@@ -2523,7 +2523,11 @@ def test_a_phase_w_writer_that_exits_while_its_group_holds_a_pipe_is_reaped_afte
     `wait`'s end, though it sleeps 30 s, the reader is joined, both pipes
     are closed, the exit is the writer's own 0, and the teardown sends no
     signal after. Before T258f `wait` reaped the writer first, so nothing
-    ended its group: the reader, the pipes and the descendant were left."""
+    ended its group: the reader, the pipes and the descendant were left.
+    The descendant's absence counts only where it is seen before those 2 s,
+    by `_gone_by`, so a pause of the case past them never turns its own
+    30 s end into a pass (T258i; Codex's review of P09 at `b8f9e35a`,
+    SHOULD 5: absence was accepted before the deadline was checked)."""
     monkeypatch.setitem(globals(), "END_S", 2.0)
 
     class Phase:
@@ -2543,10 +2547,7 @@ def test_a_phase_w_writer_that_exits_while_its_group_holds_a_pipe_is_reaped_afte
         _t258f_recorded(monkeypatch, writer, events)
         with pytest.raises(AssertionError, match=f"w-{held}'s run ended, but its pipes did not"):
             writer.wait(1.0)
-        end = time.monotonic() + 2
-        while not _gone(int(pid), started) and time.monotonic() < end:
-            time.sleep(0.05)
-        gone = _gone(int(pid), started)
+        gone = _gone_by(int(pid), started, time.monotonic() + 2)     # seen before it (T258i)
         kinds = [event[0] for event in events]
         ordered = kinds.count("reap") == 1 and kinds[-1] == "reap" and "killpg" in kinds
         assert ordered and events[-1][1:] == (False, True, True), (
