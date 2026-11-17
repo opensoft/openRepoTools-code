@@ -806,9 +806,14 @@ def workspace_root() -> str:
                           check=False, env=helper_env(), stdin=subprocess.DEVNULL)
     root = proc.stdout.strip()
     if proc.returncode != 0 or not root:
-        why = (proc.stderr.strip().splitlines() or ["no answer"])[0]
+        # NOT ITS WORDS (lane 1, under B1 of opensoft/openRepoTools-code#89 comment
+        # 6947619546): they name `workspace.yaml`'s `repository:` and the checkout's
+        # `origin` as they stand, either of which may hold a credential, before any key is
+        # made of them; `lanes-edit.sh workspace-root` says them to whoever runs it
         raise StoreUnusable("unread", f"`lanes-edit.sh workspace-root` exited "
-                            f"{proc.returncode}: {why}")
+                            f"{proc.returncode}: the workspace repository could not be found "
+                            f"(its own words are not shown, since they can name a credential; "
+                            f"run it to see them)")
     return root
 
 
@@ -896,10 +901,16 @@ def _is_legacy(name: str) -> bool:
     URL's userinfo that can hold a credential); a key holding `password=`, in any case
     (`inventory:password=` among them); and an `inventory:` or `ledger:` key holding a
     URL with userinfo, which no workstation's name holds. A key of every other form is
-    one this build files, and stays as it is."""
+    one this build files, and stays as it is. ITS EDGES (lane 3's ruling,
+    opensoft/openRepoTools-code#89 comment 6947619546): a key holding a control
+    character (C0, DEL or C1), or `password`, optional spaces and then `=` or `%3D`, in
+    any case, is legacy too; and no source this build makes is (`resolve_source`,
+    `inventory_source`)."""
     if not name.startswith(FILED_PREFIXES):
         return True
-    if _source_key(name) != name or "password=" in name.lower():
+    if _source_key(name) != name or re.search(r"[\x00-\x1f\x7f-\x9f]", name):
+        return True
+    if re.search(r"password *(=|%3d)", name, re.IGNORECASE):
         return True
     return (not name.startswith("register:") and
             re.search(r"[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*@", name) is not None)
@@ -911,10 +922,23 @@ def _is_legacy(name: str) -> bool:
 #: term: no filed prefix; `password=` in any case; `_source_key`'s userinfo in an http(s)
 #: URL, or holding a `:` in any URL; an `inventory:` or `ledger:` key holding URL userinfo.
 PG_LEGACY_SQL = ("(NOT (source LIKE 'register:%' OR source LIKE 'inventory:%' OR source LIKE "
-                 "'ledger:%') OR source ~* 'password=' OR source ~* '^register:https?://[^/?#]*@' "
+                 "'ledger:%') OR source ~ '[\\x01-\\x1f\\x7f-\\x9f]' OR source ~* 'password *(=|%3d)' "
+                 "OR source ~* '^register:https?://[^/?#]*@' "
                  "OR source ~ '^register:[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*:[^/?#]*@' OR (source "
                  "!~ '^register:' AND source ~ '[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*@'))")
 
+
+#: THE REFUSAL OF A SOURCE THIS BUILD WOULD CALL LEGACY (lane 3's ruling, B1 of
+#: opensoft/openRepoTools-code#89 comment 6947619546): exit 2 before anything is printed,
+#: filed or sent, in words that do not echo the value.
+REGISTER_KEY_REFUSED = ("this workstation's register, as `workspace.yaml` or the checkout's "
+                        "`origin` names it, is not a form this build files: it may hold a "
+                        "credential, a `password=` or a control character. Nothing was printed, "
+                        "filed or sent; name the repository without one")
+INVENTORY_KEY_REFUSED = ("this workstation's name, as `LANES_WORKSTATION` or the host gives it, "
+                         "is not a form this build files: it may hold a credential, a "
+                         "`password=` or a control character. Nothing was printed, filed or "
+                         "sent; give the workstation a plain name")
 
 #: THE FIXED WORDS OF A CLEANUP OR AN INDEX psql CALL THAT FAILED (lane 3's ruling,
 #: opensoft/openRepoTools-code#89 comment 6944416906): none of them carries a value read
@@ -928,9 +952,12 @@ STATUS_UNPARSEABLE_WARNING = ("WARNING: the status file is not one this build ca
                               "an empty one")
 SCRUB_UNMARKED = ("the mark that the store's scrub is due cannot be made, so no source an "
                   "earlier build filed was removed")
-SCRUB_UNFINISHED = ("a source an earlier build filed was removed, and the scrub of the "
-                    "store's free space, WAL and journal is not finished; the next write "
-                    "finishes it first")
+SCRUB_UNFINISHED = ("a scrub is pending: a source an earlier build filed was removed, and "
+                    "the store's free space, WAL or journal was not clean after every try; the "
+                    "next write finishes the scrub first")
+#: A scrub's tries in one run, and the pause before each retry, times its number.
+SCRUB_ATTEMPTS = 3
+SCRUB_PAUSE_S = 0.5
 #: The scrub mark's whole text: it holds no key.
 SCRUB_MARK_TEXT = ("lanes-index: a source was removed from this store; its free space, WAL "
                    "and journal are scrubbed before the next write\n")
@@ -941,10 +968,29 @@ PSQL_CAS_LOST = ("the provenance of this workstation's source moved under this s
 #: The SQLSTATEs of a table or schema that does not exist: an index `open_read` calls
 #: `wiped`, and `open_write` fills.
 PSQL_UNDEFINED = ("42P01", "3F000")
-#: psql's line for an error under `VERBOSITY=verbose`: its `psql:<input>:<line>: ` locus,
-#: the severity in the server's language, two blanks, and the SQLSTATE, which no
-#: language changes, then `: `.
-PSQL_DIAGNOSTIC_RE = re.compile(r"^(?:psql:[^\n]*?:[0-9]+: )?[^\s:]+:  ([0-9A-Z]{5}): ", re.M)
+#: psql's ERROR LINE under `VERBOSITY=verbose` (lane 3's ruling, B5 of
+#: opensoft/openRepoTools-code#89 comment 6947619546): a line that BEGINS with psql's
+#: `psql:<input>:<line>: ` locus, then `ERROR:`, `FATAL:` or `PANIC:`, two blanks and the
+#: SQLSTATE. The first such line is the error. THE LOCUS IS REQUIRED (W116's re-check of
+#: commit 15): under `-f -` psql puts it before the first line of each message it reports
+#: (logging.c), never before a DETAIL, HINT, QUERY, CONTEXT or LINE line, nor before a line
+#: of a message's own text, so a quoted value that holds a newline and then `ERROR:  42P01:`
+#: is never the error. psql says an error with no locus only before it reads the script:
+#: a bad option, which carries no SQLSTATE, or a connection that fails, exit 2 (startup.c,
+#: `EXIT_BADCONN`), which `_failure` answers by the exit alone, before it reads a line.
+PSQL_ERROR_RE = re.compile(r"^psql:[^\n]*?:[0-9]+: (?:ERROR|FATAL|PANIC):  ([0-9A-Z]{5}): ",
+                           re.M)
+#: A server whose messages are in another language names the severity in it: then the
+#: error is the last line that carries psql's locus, which no subordinate line carries
+#: and after which ON_ERROR_STOP sends nothing. The locus is there because the index's psql
+#: reads its script as a file, `-f -` (`INDEX_PSQL_ARGS`).
+PSQL_LOCUS_RE = re.compile(r"^psql:[^\n]*?:[0-9]+: [^\s:]+:  ([0-9A-Z]{5}): ", re.M)
+#: THE INDEX'S psql ARGUMENTS (W116's pre-review of commit 15): the script on stdin as the
+#: file `-`, which psql 16 names `<stdin>` (command.c, `process_file`), so its logger puts
+#: `psql:<stdin>:<line>: ` before each message it reports (logging.c); piped with no `-f`,
+#: psql logs tersely, with no locus, and `PSQL_LOCUS_RE` would find none.
+INDEX_PSQL_ARGS = ("--no-psqlrc", "-X", "-q", "-v", "ON_ERROR_STOP=1",
+                   "-v", "VERBOSITY=verbose", "-v", "SHOW_CONTEXT=never", "-f", "-")
 
 
 def branch() -> str:
@@ -1794,24 +1840,30 @@ class SqliteStore:
         return self.path + "-scrub"
 
     def _mark_scrub(self) -> None:
-        """The scrub mark, written and synced, 0600, its text `SCRUB_MARK_TEXT`."""
+        """The scrub mark, written and synced, 0600 (a mark left before is made 0600
+        again), its text `SCRUB_MARK_TEXT`; AND ITS FOLDER SYNCED (B3 of
+        opensoft/openRepoTools-code#89 comment 6947619546), so the mark's entry outlives a
+        crash with the removal. Either failing is `SCRUB_UNMARKED`, and no removal begins."""
         try:
-            fd = os.open(self._scrub_mark(), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            # NEVER THROUGH A LINK, AND A REGULAR FILE ONLY (W116's pre-review of commit 15),
+            # as the status file is read
+            fd = os.open(self._scrub_mark(), os.O_WRONLY | os.O_CREAT | os.O_TRUNC |
+                         getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), 0o600)
             try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise OSError("the scrub mark is not a regular file")
+                os.fchmod(fd, 0o600)
                 os.write(fd, SCRUB_MARK_TEXT.encode("utf-8"))
                 os.fsync(fd)
             finally:
                 os.close(fd)
-        except OSError:
-            raise StoreUnusable("unreachable", SCRUB_UNMARKED) from None
-        try:
             dfd = os.open(os.path.dirname(self.path) or ".", os.O_RDONLY)
             try:
                 os.fsync(dfd)
             finally:
                 os.close(dfd)
         except OSError:
-            pass   # a platform that cannot sync a folder: the file itself is synced
+            raise StoreUnusable("unreachable", SCRUB_UNMARKED) from None
 
     def scrub(self) -> None:
         """THE SCRUB A REMOVAL LEFT DUE, where its mark stands (BLOCKING 4 of
@@ -1822,27 +1874,40 @@ class SqliteStore:
         goes at each commit, so no WAL or journal keeps an old page. Only then does the
         mark go. A step that fails leaves the mark and is a `StoreUnusable` with fixed
         words, and the next writer's cleanup (`_drop_legacy`), which ends with this
-        whether it removed anything or not, runs the scrub again."""
+        whether it removed anything or not, runs the scrub again. A failed step is
+        first tried again, `SCRUB_ATTEMPTS` times in all (lane 3's ruling, B2 of
+        comment 6947619546); only then does the run end, saying a scrub is pending."""
         import sqlite3
         mark = self._scrub_mark()
         if not os.path.exists(mark):
             return
-        try:
-            self.conn.execute("PRAGMA secure_delete = ON")
-            mode = str(self.conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
-            if mode != "wal":
-                mode = str(self.conn.execute("PRAGMA journal_mode = DELETE").fetchone()[0]).lower()
-            self.conn.execute("VACUUM")
-            if mode == "wal":
-                busy = self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
-                wal = self.path + "-wal"
-                if busy or (os.path.exists(wal) and os.path.getsize(wal) != 0):
-                    raise StoreUnusable("unreachable", SCRUB_UNFINISHED)
-            elif mode != "delete" or os.path.exists(self.path + "-journal"):
-                raise StoreUnusable("unreachable", SCRUB_UNFINISHED)
-            os.unlink(mark)
-        except (sqlite3.Error, OSError):
-            raise StoreUnusable("unreachable", SCRUB_UNFINISHED) from None
+        for attempt in range(1, SCRUB_ATTEMPTS + 1):
+            try:
+                if self._scrub_once(mark):
+                    return
+            except (sqlite3.Error, OSError):
+                pass
+            if attempt < SCRUB_ATTEMPTS:
+                time.sleep(SCRUB_PAUSE_S * attempt)
+        raise StoreUnusable("unreachable", SCRUB_UNFINISHED)
+
+    def _scrub_once(self, mark: str) -> bool:
+        """One pass of `scrub`: True once the mark is gone, False where a check finds the
+        WAL or the journal not yet clean; a failed step raises."""
+        self.conn.execute("PRAGMA secure_delete = ON")
+        mode = str(self.conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        if mode != "wal":
+            mode = str(self.conn.execute("PRAGMA journal_mode = DELETE").fetchone()[0]).lower()
+        self.conn.execute("VACUUM")
+        if mode == "wal":
+            busy = self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+            wal = self.path + "-wal"
+            if busy or (os.path.exists(wal) and os.path.getsize(wal) != 0):
+                return False
+        elif mode != "delete" or os.path.exists(self.path + "-journal"):
+            return False
+        os.unlink(mark)
+        return True
 
     def _check_schema(self, writing: bool):
         import sqlite3
@@ -2353,10 +2418,10 @@ class PostgresStore:
         try:
             # `VERBOSITY=verbose` AND `SHOW_CONTEXT=never`, AS EVERY REGISTER CALL HAS THEM
             # (`REGISTER_PSQL_ARGS`): psql's error line carries the SQLSTATE, and no
-            # CONTEXT line follows it. Every psql has `VERBOSITY=verbose`.
+            # CONTEXT line follows it. Every psql has `VERBOSITY=verbose`. The script is the
+            # file `-` (`INDEX_PSQL_ARGS`), so each message psql reports carries its locus.
             proc = subprocess.run(
-                [self.psql, "--no-psqlrc", "-X", "-q", "-v", "ON_ERROR_STOP=1",
-                 "-v", "VERBOSITY=verbose", "-v", "SHOW_CONTEXT=never"],
+                [self.psql, *INDEX_PSQL_ARGS],
                 input=script, capture_output=True, text=True, check=False,
                 env=self._env(register=register), timeout=timer)
         except subprocess.TimeoutExpired:
@@ -2373,9 +2438,10 @@ class PostgresStore:
         ruling, BLOCKING 5 of opensoft/openRepoTools-code#89 comment 6944416906): psql
         can quote the script in a `LINE`, `QUERY` or `CONTEXT` line or a COPY row, so
         nothing of what it says is said or filed. Its stderr is read for the SQLSTATE
-        alone, from psql's own error line (`PSQL_DIAGNOSTIC_RE`; the last such line,
-        since a NOTICE before the error has one too and ON_ERROR_STOP stops at the
-        error), so no message text and no language decides:
+        alone, from psql's own error line, the one with psql's locus (`PSQL_ERROR_RE`'s
+        first line; in a server of another language, `PSQL_LOCUS_RE`'s last), never a
+        DETAIL, HINT, QUERY or CONTEXT line or a line a quoted value carries, so no
+        message text decides:
           - exit 2: psql could not connect, or lost the connection;
           - 42P01 or 3F000: a table or schema the index needs does not exist, which
             `open_read` calls `wiped` (commit 13's caret mend, now by the code);
@@ -2384,8 +2450,9 @@ class PostgresStore:
           - any other SQLSTATE, by its five characters; none, by psql's exit."""
         if code == 2:
             return StoreUnusable("unreachable", PSQL_NO_CONNECTION)
-        found = PSQL_DIAGNOSTIC_RE.findall(stderr)
-        sqlstate = found[-1] if found else ""
+        primary = PSQL_ERROR_RE.findall(stderr)
+        located = PSQL_LOCUS_RE.findall(stderr)
+        sqlstate = primary[0] if primary else (located[-1] if located else "")
         if cas and sqlstate in ("P0001", "23505"):
             return CasLost(PSQL_CAS_LOST)
         if sqlstate in PSQL_UNDEFINED:
@@ -5707,17 +5774,45 @@ def _replace_status(data: dict) -> None:
     """The status file as `data`, in one atomic replace, 0600."""
     os.makedirs(state_dir(), mode=0o700, exist_ok=True)
     tmp = _status_path() + f".{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=1, sort_keys=True)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, _status_path())
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=1, sort_keys=True)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, _status_path())
+    except OSError:
+        # NO COPY LEFT BEHIND (W116's pre-review of commit 15): the file this call made, which
+        # may hold what the replace was to remove, goes with the failure
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+#: SET ONCE THE ONE WARNING IS SAID (W116's pre-review of commit 15): a run that meets a
+#: malformed status file more than once says it once.
+_WARNED = {"any": False}
+
+
+def _warn_unparseable() -> None:
+    if not _WARNED["any"]:
+        _WARNED["any"] = True
+        note(STATUS_UNPARSEABLE_WARNING)
 
 
 def write_status(source: str, **fields) -> None:
     """This workstation's own record of its last attempt, which the store
-    cannot hold for an attempt that could not reach it."""
+    cannot hold for an attempt that could not reach it. READ AS THE CLEANUP READS IT (B4
+    of opensoft/openRepoTools-code#89 comment 6947619546): a status file that cannot be
+    read is left as it is, and one that cannot be parsed is replaced only with the one
+    fixed WARNING line said."""
     try:
-        data = read_status()
+        try:
+            data, parsed = _read_status_strictly()
+        except StoreUnusable:
+            return
+        if not parsed:
+            _warn_unparseable()
         entry = data.get(source, {})
         entry.update(fields)
         data[source] = entry
@@ -5751,12 +5846,24 @@ def _read_status_strictly() -> tuple:
     parsed)`. A missing file holds no entry. A file that cannot be read is a
     `StoreUnusable` with fixed words; one that can be read and not parsed - not UTF-8
     JSON, or not an object of objects - is `({}, False)`, and none of its bytes go
-    anywhere."""
+    anywhere. NOTHING BUT A REGULAR FILE (B4 of opensoft/openRepoTools-code#89 comment
+    6947619546): the path is read with `lstat`, and a symlink, dangling or not, a FIFO or
+    a folder is the same `StoreUnusable`; only a path with nothing at it is absent."""
+    path = _status_path()
     try:
-        with open(_status_path(), "rb") as handle:
-            raw = handle.read()
+        mode = os.lstat(path).st_mode
     except FileNotFoundError:
         return {}, True
+    except OSError:
+        raise StoreUnusable("unreachable", STATUS_UNREADABLE) from None
+    if not stat.S_ISREG(mode):
+        raise StoreUnusable("unreachable", STATUS_UNREADABLE)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise StoreUnusable("unreachable", STATUS_UNREADABLE)
+            raw = handle.read()
     except OSError:
         raise StoreUnusable("unreachable", STATUS_UNREADABLE) from None
     try:
@@ -5778,7 +5885,7 @@ def check_status_file(dry_run: bool) -> None:
     _data, parsed = _read_status_strictly()
     if parsed:
         return
-    note(STATUS_UNPARSEABLE_WARNING)
+    _warn_unparseable()
     if not dry_run:
         drop_legacy_status()
 
@@ -5860,6 +5967,10 @@ def resolve_source(requested: str | None, root: str) -> str:
     # comment 6940341452): the store's key and the status file's, and every
     # label, `why` and line that names this workstation's register, are this one.
     source = _source_key(source_of(root))
+    # A SOURCE THIS BUILD WOULD CALL LEGACY IS REFUSED, BEFORE ANYTHING USES IT (B1 of
+    # opensoft/openRepoTools-code#89 comment 6947619546)
+    if _is_legacy(source):
+        raise Refusal(REGISTER_KEY_REFUSED)
     if requested and requested != source:
         # THE FLAG OR THE SOURCE'S KIND, NEVER THE VALUE (lane 3's ruling,
         # opensoft/openRepoTools#165 6938005990; exit-codes.md:57, register-cli.md
@@ -5946,7 +6057,21 @@ def _drop_legacy(store, mode: str, sources: list) -> None:
     store.drop_sources(legacy)
     if legacy:
         _REMOVED["any"] = True
-    filed = drop_legacy_status()
+    try:
+        filed = drop_legacy_status()
+    except StoreUnusable:
+        # THE SCRUB STILL RUNS, OR ITS MARK STAYS FOR THE NEXT WRITER (B2 of
+        # opensoft/openRepoTools-code#89 comment 6947619546): a status file that cannot
+        # be replaced does not keep the store's bytes
+        if legacy:
+            say(f"{PROG} {mode}: removed {len(legacy)} source(s) from the index that an "
+                f"earlier build filed under a key that may hold a credential")
+        try:
+            store.scrub()
+        except StoreUnusable as exc:
+            # ITS OWN CONSTANT LINE, THAT A SCRUB IS PENDING, BESIDE THE REPLACE'S ERROR
+            note(f"{exc.kind}: {exc.detail}")
+        raise
     if filed:
         _REMOVED["any"] = True
     if legacy or filed:
@@ -5980,8 +6105,10 @@ def run_index(mode: str, requested: str | None, dry_run: bool) -> int:
         prev = old["commit_sha"]
         if not has_commit(root, prev):
             say(f"{PROG} {mode}: the index holds register@{prev[:12]}, which this checkout has "
-                f"not fetched - another workstation is ahead of it; nothing written")
-            write_status(source, last_attempt_utc=utc_now(), last_result="behind (unknown commit)")
+                f"not fetched - another workstation is ahead of it; {_nothing_written()}")
+            if not dry_run:
+                write_status(source, last_attempt_utc=utc_now(),
+                             last_result="behind (unknown commit)")
             return 0
         # NOT WHILE AN OWNER IS `unknown` (Codex on #164): an `unknown` may be a
         # read that failed, and asking again is how it clears - so a sync at
@@ -5999,9 +6126,10 @@ def run_index(mode: str, requested: str | None, dry_run: bool) -> int:
                    "rebuilt by wiping the index and reconciling")
             say(f"{PROG} {mode}: register@{tip[:12]} does not descend from the indexed "
                 f"register@{prev[:12]}: {why}. The provenance only moves forward "
-                f"(Amendment 14(d)); nothing written")
-            write_status(source, last_attempt_utc=utc_now(),
-                         last_result="not a descendant; nothing written")
+                f"(Amendment 14(d)); {_nothing_written()}")
+            if not dry_run:
+                write_status(source, last_attempt_utc=utc_now(),
+                             last_result=f"not a descendant; {_nothing_written()}")
             return 0 if behind else 1
     snap = read_snapshot(root, tip)
     records = build_records(snap)
@@ -6039,7 +6167,7 @@ def run_index(mode: str, requested: str | None, dry_run: bool) -> int:
         if mode == "sync":
             say(f"{PROG} sync: {label} - the index is at the tip; nothing to write")
         else:
-            say("  total: nothing differs; nothing written")
+            say(f"  total: nothing differs; {_nothing_written()}")
         write_status(source, last_attempt_utc=utc_now(), last_sync_utc=utc_now(),
                      last_result="current", last_error="")
         return 0
@@ -6110,6 +6238,10 @@ def inventory_source(requested: str | None) -> str:
                       "any workstation finds again (Amendment 11, R-A11-14). Export "
                       "LANES_WORKSTATION, as the launcher does")
     source = f"{INVENTORY_PREFIX}{name}"
+    # A SOURCE THIS BUILD WOULD CALL LEGACY IS REFUSED, BEFORE ANYTHING USES IT (B1 of
+    # opensoft/openRepoTools-code#89 comment 6947619546)
+    if _is_legacy(source):
+        raise Refusal(INVENTORY_KEY_REFUSED)
     if requested and requested not in ("inventory", source):
         # THE SOURCE'S KIND, NEVER THE VALUE, as `resolve_source` says (lane 3's ruling)
         raise Refusal(f"this workstation's inventory is {source}, not the inventory "
@@ -6496,7 +6628,7 @@ def run_inventory(mode: str, requested: str | None, dry_run: bool) -> int:
         if mode == "sync":
             say(f"{PROG} sync: {label} - the index is current; nothing to write")
         else:
-            say("  total: nothing differs; nothing written")
+            say(f"  total: nothing differs; {_nothing_written()}")
         write_status(source, last_attempt_utc=utc_now(), last_sync_utc=utc_now(),
                      last_result="current", last_error="")
         return 0
@@ -6521,15 +6653,18 @@ def is_inventory(requested: str | None) -> bool:
 
 
 def _sync_once(kind: str, requested: str | None) -> int:
-    if kind == "inventory":
-        # A REFUSAL HERE IS ANSWERED HERE: a register sync that took the
-        # inventory's mark must not lose the marks behind it to an exception.
-        try:
-            return _guarded(lambda: run_inventory("sync", requested, False), requested, kind)
-        except Refusal as exc:
-            note(f"REFUSED: {exc}")
-            return 2
-    return _guarded(lambda: run_index("sync", requested, False), requested, kind)
+    # A REFUSAL HERE IS ANSWERED HERE, FOR EITHER KIND: a sync that took marks off the
+    # disk must not lose the ones behind it to an exception. The register's too (W116's
+    # re-check of commit 15): a plain `sync` whose workspace could not be read before the
+    # lock leaves a register mark, and a holder's later round can take it first; the
+    # holder says the refusal, as `main` would, files nothing, syncs the marks behind it,
+    # and exits 2.
+    act = run_inventory if kind == "inventory" else run_index
+    try:
+        return _guarded(lambda: act("sync", requested, False), requested, kind)
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return 2
 
 
 def cmd_sync(requested: str | None) -> int:
@@ -6548,7 +6683,10 @@ def cmd_sync(requested: str | None) -> int:
     try:
         if kind == "inventory":
             inventory_source(requested)
-        elif requested:
+        else:
+            # THE REGISTER'S OWN KEY, WITH NO `--source` TOO (W116's pre-review of commit
+            # 15): one this build would call legacy is refused here, with 2, before a held
+            # lock answers 0 and before a mark is taken off the disk
             resolve_source(requested, workspace_root())
     except StoreUnusable:
         pass
@@ -6588,7 +6726,7 @@ def cmd_sync(requested: str | None) -> int:
             due.pop(0)
             if result == MOVED:
                 say(f"{PROG} sync: origin/{branch()} kept moving through {rounds} reads; "
-                    f"nothing written - the next write's nudge syncs it")
+                    f"{_nothing_written()} - the next write's nudge syncs it")
                 result = 0
             # A FAILED SOURCE DOES NOT DROP THE OTHERS (Copilot round 1 on #171):
             # their marks were taken off the disk with this one's, so the loop
@@ -6619,12 +6757,13 @@ def cmd_reconcile(requested: str | None, dry_run: bool) -> int:
     try:
         if kind == "inventory":
             return _guarded(lambda: run_inventory("reconcile", requested, dry_run), requested,
-                            kind)
+                            kind, dry_run)
         for _attempt in range(3):
-            rc = _guarded(lambda: run_index("reconcile", requested, dry_run), requested)
+            rc = _guarded(lambda: run_index("reconcile", requested, dry_run), requested,
+                          dry_run=dry_run)
             if rc != MOVED:
                 return rc
-        note(f"origin/{branch()} kept moving through three reads; nothing written")
+        note(f"origin/{branch()} kept moving through three reads; {_nothing_written()}")
         return 1
     finally:
         lock.release()
@@ -6635,7 +6774,9 @@ def cmd_reconcile(requested: str | None, dry_run: bool) -> int:
 MOVED = -1
 
 
-def _guarded(act, requested, kind: str = "register") -> int:
+def _guarded(act, requested, kind: str = "register", dry_run: bool = False) -> int:
+    # A DRY RUN FILES NOTHING, ITS ERRORS INCLUDED (B4 of opensoft/openRepoTools-code#89
+    # comment 6947619546)
     try:
         return act()
     except SourceMoved as exc:
@@ -6644,11 +6785,13 @@ def _guarded(act, requested, kind: str = "register") -> int:
     except CasLost as exc:
         text = str(exc).replace("nothing was written", _nothing_written())
         note(text)
-        _record_error(requested, text, kind)
+        if not dry_run:
+            _record_error(requested, text, kind)
         return 1
     except StoreUnusable as exc:
         note(f"{exc.kind}: {exc.detail} - {_nothing_written()}")
-        _record_error(requested, f"{exc.kind}: {exc.detail}", kind)
+        if not dry_run:
+            _record_error(requested, f"{exc.kind}: {exc.detail}", kind)
         return 1
 
 
@@ -6699,6 +6842,11 @@ def cmd_status() -> int:
     # THIS WORKSTATION'S KEY AS `resolve_source` FILES IT, WITH NO CREDENTIAL
     # (lane 3's ruling, opensoft/openRepoTools-code#89 comment 6940341452)
     source = _source_key(source)
+    if source and _is_legacy(source):
+        # NOT PRINTED (B1 of comment 6947619546): the refusal's words in its place, exit 2
+        say(f"workspace: {REGISTER_KEY_REFUSED}")
+        source = ""
+        rc = 2
     sources = [p["source"] for p in provs]
     if source and source not in sources:
         sources.append(source)
@@ -6707,7 +6855,12 @@ def cmd_status() -> int:
     inv_source = ""
     try:
         inv_source = inventory_source(None)
-    except (StoreUnusable, Refusal):
+    except Refusal as exc:
+        if str(exc) == INVENTORY_KEY_REFUSED:
+            # NOT PRINTED, AS THE REGISTER'S (B1 of comment 6947619546): exit 2
+            say(f"inventory: {INVENTORY_KEY_REFUSED}")
+            rc = 2
+    except StoreUnusable:
         inv_source = ""
     if inv_source and inv_source not in sources:
         sources.append(inv_source)
@@ -6898,8 +7051,10 @@ def _export_worktrees(out_dir: str, cfg: dict, unusable) -> int:
     # review of #289): a sync that wrote nothing - a lane listing that was not
     # whole, among others - leaves the table and its `synced` time as they
     # were, and only `status` said why. It is `status`'s `last error`, so a
-    # refused `reconcile` is in it too, a `--dry-run` included (NIT-1 of review
-    # r2 of #289). A fifth field, which a reader from before it ignores.
+    # refused `reconcile` is in it too, but not a `--dry-run`'s, which files nothing
+    # (lane 3's ruling, B4 of opensoft/openRepoTools-code#89 comment 6947619546, in
+    # place of NIT-1 of review r2 of #289). A fifth field, which a reader from before
+    # it ignores.
     # Another workstation's error is in its own record and not here, so a
     # shared store's other sources never carry one.
     recorded = read_status()
