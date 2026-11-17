@@ -4041,7 +4041,9 @@ _PROCESS_NAMES = ("proc", "process", "result", "completed")
 _PROCESS_CALLS = ("subprocess.run", "subprocess.Popen", "subprocess.CompletedProcess",
                   "CompletedProcess", "Popen")
 #: The words, in a string of the message's own, that say a stream given bare to
-#: the helper has no exit (T257zy). They are taken at their word.
+#: the helper has no exit (T257zy). They are taken at their word. A string
+#: inside a call of `_said_safely`, its `stream=` among them, is the helper's
+#: and not the message's (T257zzze; RV9-42, N2).
 _NO_EXIT = "no exit"
 #: Functions whose returned text is a failure message (T257zy): pgcluster's
 #: `_psql_failed` (T229k), `_counted` (T229m) and `Cluster.log_tail` (T229l).
@@ -4105,21 +4107,28 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
     THE EXIT (T257zn; T257zq; structural since T257zy, RV9-39's S1: before
     it, any `exit`, `returncode` or `.code` anywhere in the message's text,
     identifiers and prose among them, counted). Each call of `_said_safely`
-    in a message, or bound to a name the message formats, that is given a
-    bare stream, must show that stream's exit, or say that it has none. Bare
-    is: an expression holding a stream attribute, a name bound to a stream's
-    text, a name bound to a call of a method of `_STREAM_RESULTS`, a
-    parameter annotated as text (`str`, `bytes`, `bytearray` or `AnyStr`,
-    anywhere in its annotation, `*args` and `**kwargs` included), or a
-    `CompletedProcess` made in the message, or bound to a name, with an exit
-    that is a constant. The stream's object is its base: `proc` of
+    in a message, or in a value bound to a name the message formats, that
+    is given a bare stream, must show that stream's exit, or say that it has
+    none. Such a name is followed through every value its function binds it
+    to by `=`, an annotated `=`, `+=` or `:=`, from name to name, in no
+    order, its rebindings included (T257zzze; lane 2's pre-review RV9-42 of
+    P09 at `857a41d2`, S2), and what those values show is the message's
+    too. Bare is: an expression holding a stream attribute, a name bound to
+    a stream's text, a name bound to a call of a method of
+    `_STREAM_RESULTS`, a parameter annotated as text (`str`, `bytes`,
+    `bytearray` or `AnyStr`, anywhere in its annotation, `*args` and
+    `**kwargs` included), or a `CompletedProcess` made in the message, or
+    bound to a name, with an exit other than `<X>.returncode` (a constant,
+    `-1`, `returncode=-9`; T257zzze). The stream's object is its base: `proc` of
     `proc.stderr` or of `copied = proc.stderr.strip()`, `held` of `said =
     held.send(...)`. Its exit is shown by `exit=` given to the helper, as
     `<base>.returncode` or `<base>.code`, as None (the helper says "no
     exit"), or as a parameter annotated `int` where the stream has no base;
     or, in the message, by `<base>.returncode`, `<base>.code`,
     `<base>.exit_now()` or `_said_safely(<base>)`; or by the words of
-    `_NO_EXIT` in a string of the message's own.
+    `_NO_EXIT` in a string of the message's own, outside any call of
+    `_said_safely` (T257zzze; RV9-42, N2: `stream="no exit"` is the
+    helper's).
 
     What it cannot see (T257zp; T257zy): a name bound to the result of any
     other call (`files = m.passfiles(proc.stdout)`, `with ctx(proc.stdout)
@@ -4334,10 +4343,23 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
                 and re.search(pattern, ast.unparse(a.annotation))}
 
     def made_in(function) -> dict:
-        """Each name its function binds to a call: the call."""
-        return {target.id: node.value for node in ast.walk(function) if isinstance(node, ast.Assign)
-                and isinstance(node.value, ast.Call) for target in node.targets
+        """Each name its function binds to a call: the call (its last)."""
+        return {target.id: node.value for node in ast.walk(function)
+                if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)) and isinstance(node.value, ast.Call)
+                for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
                 if isinstance(target, ast.Name)}
+
+    def told_in(function) -> dict:
+        """Each name its function binds by `=`, an annotated `=`, `+=` or
+        `:=`: every value it is given, in no order."""
+        told_ = {}
+        for node in ast.walk(function):
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)) and \
+                    node.value is not None:
+                for target in (node.targets if isinstance(node, ast.Assign) else [node.target]):
+                    for name in names(target):
+                        told_.setdefault(name, []).append(node.value)
+        return told_
 
     functions = [node for node in ast.walk(tree)
                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
@@ -4370,7 +4392,7 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
                      and node.func.attr in ("append", "extend", "insert")
                      and isinstance(node.func.value, ast.Name) and node.func.value.id in top
                      and any(raw(arg, local, message=False) is not None for arg in node.args)})
-    bound, origins, wholes, texts, ints, made = {}, {}, {}, {}, {}, {}
+    bound, origins, wholes, texts, ints, made, told, helps = {}, {}, {}, {}, {}, {}, {}, {}
 
     def facts(function) -> None:
         if id(function) in bound:
@@ -4387,6 +4409,20 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
         origins[id(function)] = origins_in(function, origins[id(outer)] if outer is not None else {},
                                            bound[id(function)])
         made[id(function)] = {**(made[id(outer)] if outer is not None else {}), **made_in(function)}
+        told[id(function)] = {name: list(values) for name, values in
+                              (told[id(outer)] if outer is not None else {}).items()}
+        for name, values in told_in(function).items():
+            told[id(function)].setdefault(name, []).extend(values)
+        helps[id(function)], changed = set(), True
+        while changed:
+            changed = False
+            for name, values in told[id(function)].items():
+                if name not in helps[id(function)] and any(
+                        (isinstance(n, ast.Call) and dotted(n.func) == "_said_safely")
+                        or (isinstance(n, ast.Name) and n.id in helps[id(function)])
+                        for value in values for n in ast.walk(value)):
+                    helps[id(function)].add(name)
+                    changed = True
         wholes[id(function)] = frozenset(
             set(_PROCESS_NAMES) | annotated(function, r"\b(CompletedProcess|Popen)\b")
             | {name for name, call in made[id(function)].items() if dotted(call.func) in _PROCESS_CALLS}
@@ -4423,11 +4459,19 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
         text_args = texts[id(function)] if function is not None else set()
         int_args = ints[id(function)] if function is not None else set()
         named = made[id(function)] if function is not None else {}
-        nodes = [n for arg in message for n in ast.walk(arg)]
+        values = told[id(function)] if function is not None else {}
+        followed = helps[id(function)] if function is not None else set()
+        parts, seen, nodes = list(message), set(), []
+        while parts:
+            for n in ast.walk(parts.pop()):
+                nodes.append(n)
+                if isinstance(n, ast.Name) and n.id in followed and n.id not in seen:
+                    seen.add(n.id)
+                    parts += values[n.id]
         calls = [n for n in nodes if isinstance(n, ast.Call) and dotted(n.func) == "_said_safely"]
-        calls += [named[n.id] for n in nodes if isinstance(n, ast.Name) and n.id in named
-                  and dotted(named[n.id].func) == "_said_safely"]
-        words = " ".join(n.value for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str))
+        helpers = {id(n) for call in calls for n in ast.walk(call)}
+        words = " ".join(n.value for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                         and id(n) not in helpers)
 
         def closed(expr):
             """The object whose ended process `expr` is: `X` where its
@@ -4438,12 +4482,15 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
             return None
 
         def fabricated(expr) -> bool:
-            call = named.get(expr.id) if isinstance(expr, ast.Name) else expr
-            if not (isinstance(call, ast.Call) and dotted(call.func) in _PROCESS_CALLS[2:]):
-                return False
-            code = call.args[1] if len(call.args) > 1 else next(
-                (k.value for k in call.keywords if k.arg == "returncode"), None)
-            return isinstance(code, ast.Constant)
+            """A `CompletedProcess` made in the message, or in any value
+            bound to the name `expr`, whose exit is not `<X>.returncode`."""
+            for call in values.get(expr.id, []) if isinstance(expr, ast.Name) else [expr]:
+                if isinstance(call, ast.Call) and dotted(call.func).endswith("CompletedProcess"):
+                    code = call.args[1] if len(call.args) > 1 else next(
+                        (k.value for k in call.keywords if k.arg == "returncode"), None)
+                    if not (isinstance(code, ast.Attribute) and code.attr == "returncode"):
+                        return True
+            return False
 
         for call in calls:
             said = call.args[0] if call.args else next((k.value for k in call.keywords if k.arg == "said"), None)
@@ -4650,6 +4697,21 @@ def test_planted(proc, session, failed, ends, said_by, other, held, log):
     stderr.write(proc.stderr)  # planted
     pt.fail(proc.stderr)  # planted
     _HELD.append(proc.stderr.strip())
+    summed: str = _said_safely(copied)
+    assert not copied, f"{summed}"  # planted
+    noted = f"its stderr: {_said_safely(copied)}"
+    assert not copied, noted  # planted
+    joined = _said_safely(copied) + ""
+    assert not copied, joined  # planted
+    rebound = _said_safely(copied)
+    assert not copied, f"{rebound}"  # planted
+    rebound = len(copied)
+    assert not copied, _said_safely(subprocess.CompletedProcess([], -1, copied, ""))  # planted
+    assert not copied, _said_safely(subprocess.CompletedProcess(args=[], returncode=-9, stdout=copied))  # planted
+    assert not copied, _said_safely(copied, stream="no exit")  # planted
+    kept: str = f"exit {proc.returncode}: {_said_safely(proc.stderr)}"
+    assert not copied, kept  # clean
+    assert not copied, _said_safely(subprocess.CompletedProcess([], proc.returncode, proc.stderr, ""))  # clean
 
 
 def _planted_foot(terminalreporter):
@@ -4749,7 +4811,15 @@ def test_the_static_check_names_each_kind_of_place_it_catches(tmp_path):
     pgcluster.py (`_PLANTED_FOOT`), the same line of `_DATACL` in
     `pytest_terminal_summary` (`_EXEMPT`) is clean while that of another
     list, or of `_DATACL` elsewhere, is a place. A file's `write` and fixed
-    words written to the terminal are clean."""
+    words written to the terminal are clean.
+
+    Since T257zzze (RV9-42, S2 and N2), for the exit: a helper's text made
+    before the message by an annotated `=`, in an f-string held in a name,
+    by a concatenation, or in a name later rebound to another call; a
+    `CompletedProcess` made with exit `-1` or `returncode=-9`; and the words
+    "no exit" only in the helper's own `stream=`. A message built in a name
+    that shows its stream's exit, and a `CompletedProcess` made with its
+    process's `returncode`, are clean."""
     (tmp_path / "foot").mkdir()
     for planted, text in ((tmp_path / "test_planted.py", _PLANTED),
                           (tmp_path / "foot" / "pgcluster.py", _PLANTED_FOOT)):
