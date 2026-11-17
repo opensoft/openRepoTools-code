@@ -2967,6 +2967,10 @@ def test_a_teardown_never_signals_a_logged_pid_and_start_token_without_the_case_
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                     start_new_session=True)
         procs.append(stranger)
+        until = time.monotonic() + 5  # their environments are set only once their execs are done
+        while _carried(push.pid) != nonce or not Path(f"/proc/{stranger.pid}/environ").read_bytes():
+            assert time.monotonic() < until, "a child's environment was never set"
+            time.sleep(0.005)
         (bin_ / "git-wrapper.log").write_text("".join(json.dumps(
             {"sub": "push", "pid": proc.pid, "outcome": "held", "start": _stat(proc.pid)["start"]})
             + "\n" for proc in procs), encoding="utf-8")
