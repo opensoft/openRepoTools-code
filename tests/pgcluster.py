@@ -91,6 +91,10 @@ and runs `SELECT 1` in it; `stoppable` starts a cluster, stops it by SIGINT,
 starts it again on the same directories and runs `SELECT 1`. It exits 0 when
 each named smoke passes, 1 when one fails or there is no engine, and 2 for a
 name it does not know.
+
+PYTEST_DONT_REWRITE (T229s): no assert here is rewritten, whatever hook loads
+this plugin, so an assert added later reports its own message and no
+operand's value, a tool's text among them.
 """
 
 from __future__ import annotations
