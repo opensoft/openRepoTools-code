@@ -4047,7 +4047,11 @@ _PROCESS_CALLS = ("subprocess.run", "subprocess.Popen", "subprocess.CompletedPro
 _NO_EXIT = "no exit"
 #: Functions whose returned text is a failure message (T257zy): pgcluster's
 #: `_psql_failed` (T229k), `_counted` (T229m) and `Cluster.log_tail` (T229l).
-#: Their returns are read as messages, and a call of one in a message is not.
+#: Their returns are read as messages. A call of one in a message is read but
+#: for a whole process given to it, whose exit and counts it shows (T257zzzf;
+#: lane 2's pre-review RV9-42 of P09 at `857a41d2`, N1). A maker's own
+#: parameters are no streams to the check, so one that returned its text
+#: parameter's text would pass: that is a limit, named here.
 _MESSAGE_MAKERS = ("_psql_failed", "_counted", "log_tail")
 
 
@@ -4192,7 +4196,10 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
         is not."""
         if isinstance(node, ast.Call) and (dotted(node.func) in _MESSAGE_MAKERS or (
                 isinstance(node.func, ast.Attribute) and node.func.attr in _MESSAGE_MAKERS)):
-            return None
+            if not message:
+                return None
+            shown = [*node.args, *(k.value for k in node.keywords)]
+            return next((hit for part in shown for hit in [raw(part, derived, message)] if hit), None)
         if isinstance(node, ast.Call) and dotted(node.func) in _SAFE_CALLS:
             if not message:
                 return None
@@ -4712,6 +4719,9 @@ def test_planted(proc, session, failed, ends, said_by, other, held, log):
     kept: str = f"exit {proc.returncode}: {_said_safely(proc.stderr)}"
     assert not copied, kept  # clean
     assert not copied, _said_safely(subprocess.CompletedProcess([], proc.returncode, proc.stderr, ""))  # clean
+    raise ClusterError(_psql_failed(proc.stderr, "db", proc))  # planted
+    raise ClusterError(log_tail(proc.stdout))  # planted
+    raise ClusterError(f"{_psql_failed(user, 'db', proc)} {_counted(proc)} {held.log_tail()}")  # clean
 
 
 def _planted_foot(terminalreporter):
@@ -4819,7 +4829,10 @@ def test_the_static_check_names_each_kind_of_place_it_catches(tmp_path):
     `CompletedProcess` made with exit `-1` or `returncode=-9`; and the words
     "no exit" only in the helper's own `stream=`. A message built in a name
     that shows its stream's exit, and a `CompletedProcess` made with its
-    process's `returncode`, are clean."""
+    process's `returncode`, are clean.
+
+    Since T257zzzf (RV9-42, N1): a stream given to a message maker
+    (`_MESSAGE_MAKERS`) is a place; its process given whole is clean."""
     (tmp_path / "foot").mkdir()
     for planted, text in ((tmp_path / "test_planted.py", _PLANTED),
                           (tmp_path / "foot" / "pgcluster.py", _PLANTED_FOOT)):
