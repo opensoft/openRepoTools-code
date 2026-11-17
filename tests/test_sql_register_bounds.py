@@ -6131,3 +6131,67 @@ def test_a_failed_psqls_raising_frame_keeps_no_stream_of_its_run(monkeypatch, re
         tb = tb.tb_next
     assert ours, "no frame of pgcluster's is in the error's traceback"
     assert not held, f"a frame of pgcluster's keeps the planted value in: {held}"
+
+
+@pytest.mark.parametrize("path", ["started", "from-lanes-edit", "from-git"])
+def test_a_chained_pgcluster_failure_shows_no_tool_text_in_pytests_report(
+        monkeypatch, tmp_path, request, path):
+    """T257zzza (lane 2's pre-review RV9-41 of P09 at `4895579`, S1, and its
+    B1; lane 3's ruling 6949488277; the coordinator's 6949514036 asks for
+    chained-exception cases), with no engine and no process: a failing
+    tool's two streams hold a planted value, and the failure reaches
+    pytest's report chained, as the fixtures' real paths chain it.
+    `[started]`: initdb fails in `_started`, which the cluster fixtures
+    call, and whose `pytest.fail(..., pytrace=False)`, raised in its
+    `except`, carries the `ClusterError` as its implicit context, which
+    pytest prints. `[from-lanes-edit]` and `[from-git]`:
+    `ImportedRegister._run_ok`'s and `.git`'s `ClusterError`, wrapped as
+    disaster's and drill's estates wrap it, `raise AssertionError(...)
+    from exc`. The chain is checked to be there, and to be rendered (its
+    error's first words are in the report), and the planted value is
+    in neither the error's `str`, `repr` or `args` nor in pytest's report,
+    rendered by `_reported` under the suite's own style, the JUnit message
+    included. Before T229t, under pytest 8.3.4 with long tracebacks, the
+    cause's last entry printed `_run_ok`'s and `git`'s `proc`. The planted
+    value is no credential of any login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+
+    def run(argv, **kw):
+        lines = (f"{planted} on stdout\n", f"{path}: {planted} on stderr\n")
+        if not kw.get("text"):
+            lines = tuple(part.encode() for part in lines)
+        return subprocess.CompletedProcess(argv, 1, *lines)
+
+    monkeypatch.setattr(pgcluster.subprocess, "run", run)
+    if path == "started":
+        class Found:
+            bindir, how = tmp_path / "bin", "a stand-in"
+        root = tmp_path / "root"
+        root.mkdir()
+        monkeypatch.setattr(pgcluster, "sweep_stale", lambda: [])
+        monkeypatch.setattr(pgcluster.tempfile, "mkdtemp", lambda **kw: str(root))
+        monkeypatch.setattr(pgcluster, "SOCKET_MAX", 1 << 20)
+        with pytest.raises(pytest.fail.Exception) as failed:
+            pgcluster._started(Found(), "")
+        chained = failed.value.__context__
+    else:
+        register = object.__new__(pgcluster.ImportedRegister)
+        register.root, register.wip, register.env = tmp_path, tmp_path, {}
+        with pytest.raises(AssertionError) as failed:
+            try:
+                if path == "from-lanes-edit":
+                    register._run_ok(["bash", "lanes-edit.sh", "log"])
+                else:
+                    register.git("push", "-q", "origin", "main")
+            except pgcluster.ClusterError as exc:
+                raise AssertionError(f"[B] the estate's register was not built: {exc}") from exc
+        chained = failed.value.__cause__
+    assert isinstance(chained, pgcluster.ClusterError), f"{path}: no ClusterError is chained"
+    said = _reported(request, failed)
+    # A pytrace=False failure's chain is rendered as each error's text alone, with no class.
+    assert str(chained).split(":")[0] in said, f"{path}: pytest's report does not render the chained error"
+    shown = [name for name, text in (("str", str(failed.value)), ("repr", repr(failed.value)),
+                                     ("args", repr(failed.value.args)), ("report", said))
+             if planted in text]
+    assert not shown, f"{path}: the planted value shows in {shown}"
