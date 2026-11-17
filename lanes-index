@@ -9445,7 +9445,7 @@ def register_serve_try_lock(fd: int) -> bool:
     raise InterruptedError(errno.EINTR, "flock was interrupted 100 times")
 
 
-def register_serve_sweep(paths: dict) -> None:
+def register_serve_sweep(paths: dict) -> str | None:
     """THE TEMPORARY SOCKETS AN EARLIER START LEFT (lane 1's U5 gate, #165
     6881993079, N5): a starter killed between its bind and its rename leaves
     its socket at its short name, `s.` and four hex digits, and a later
@@ -9493,29 +9493,42 @@ def register_serve_sweep(paths: dict) -> None:
     another uid, which neither `register_serve_dir_check` nor `state_dir()`
     checks, and `run/` is renamed and replaced by a link after the open.
     `O_NOFOLLOW` applies to `run/` itself, and `lstat` and `unlink` act on
-    each final component without following a link. A `run/` that cannot be
-    opened, is not a directory, is not this uid's or is not mode 0700, or
-    whose descriptor cannot be `fstat`ed, is not swept at all, and one line
-    says so, and the start goes on by `run/`'s path as before; so does a
-    platform where `os.stat` or `os.unlink` takes no `dir_fd`, or
-    `os.listdir` takes no descriptor (`os.supports_dir_fd`,
-    `os.supports_fd`; `os.lstat` is `os.stat` with `follow_symlinks=False`
-    and is in neither set, so `os.stat` is the member checked), which
-    fails closed the same way.
+    each final component without following a link.
 
-    THAT ONE LINE GOES TO STANDARD ERROR, NEVER TO `register.log` BY ITS
-    PATH (lane 5's commit 17 report; socket API 2.2 and ERR-28: nothing is
-    opened or made in a directory that fails its check, and, as with
-    `cmd_serve`'s own refusal of the directory, the line goes only to the
-    descriptor `serve` was given): `register_serve_log` opens `register.log`
-    by its path, into the directory that failed, or through a link planted
-    in its place, to its target. Standard error resolves no path: where the
-    launcher started `serve` (`register_serve_launch`), it is the descriptor of
-    `register.log` that the launcher opened before the start, `stderr=log`,
-    and so the line reaches the log file, and a `serve` run by hand writes it
-    to its terminal. The line is written by `note`, without a time, and a
-    standard error that cannot be written to changes nothing: the sweep is
-    skipped all the same.
+    A SECOND CHECK THAT FAILS ENDS THE START AT 2 (lane 3's ruling, #165
+    6935289154; socket API 2.2 and ERR-28). A `run/` that cannot be opened,
+    is not a directory, is not this uid's or is not mode 0700, or whose
+    descriptor cannot be `fstat`ed, is not swept at all, and the sweep
+    returns the reason, in the words of `register_serve_dir_check`. Then
+    `register_serve_run` refuses, as `cmd_serve` does for a directory that
+    fails its check: one line on standard error, the lock's descriptor
+    closed, and `EXIT_REFUSED`, 2. A directory that fails a second check has
+    changed since `serve`'s own, and is not to be trusted with a bind, so the
+    start binds nothing, writes no owner file and no stamp, and writes
+    nothing by path in `run/` after the sweep's check; `register.lock` was
+    opened by its path before it, as `serve`'s first check allowed.
+
+    THE PLATFORM'S CASE IS ANOTHER, AND THE START GOES ON: where `os.stat` or
+    `os.unlink` takes no `dir_fd`, or `os.listdir` takes no descriptor
+    (`os.supports_dir_fd`, `os.supports_fd`; `os.lstat` is `os.stat` with
+    `follow_symlinks=False` and is in neither set, so `os.stat` is the member
+    checked), the directory has failed no check; the platform cannot run the
+    sweep. It fails closed, sweeping nothing, with one line on standard
+    error, and the start goes on by `run/`'s path as before.
+
+    THE REFUSAL'S LINE, AND THE PLATFORM'S, GO TO STANDARD ERROR, NEVER TO
+    `register.log` BY ITS PATH (lane 5's commit 17 report; socket API 2.2 and
+    ERR-28: nothing is opened or made in a directory that fails its check,
+    and, as with `cmd_serve`'s own refusal of the directory, the line goes
+    only to the descriptor `serve` was given): `register_serve_log` opens
+    `register.log` by its path, into the directory that failed, or through a
+    link planted in its place, to its target. Standard error resolves no
+    path: where the launcher started `serve` (`register_serve_launch`), it is
+    the descriptor of `register.log` that the launcher opened before the
+    start, `stderr=log`, and so the line reaches the log file, and a `serve`
+    run by hand writes it to its terminal. Each line is written by `note`,
+    without a time, and a standard error that cannot be written to changes
+    nothing: the exit is 2, or the sweep is skipped, all the same.
 
     The lines after the check has passed, a listing that fails and an entry
     that cannot be read or removed, go through `register_serve_log` as
@@ -9544,9 +9557,9 @@ def register_serve_sweep(paths: dict) -> None:
     sweep attempts each removal and does not promise one. An entry gone
     before it is reached (`ENOENT`, at the `lstat` or at the removal) is
     passed over. Any other failure after the descriptor's check is written
-    to `register.log` (the check's own refusal goes to standard error,
-    above): where `run/` cannot be listed no entry is tried, and where an
-    entry cannot be
+    to `register.log` (the check's own refusal ends the start, on standard
+    error, above): where `run/` cannot be listed no entry is tried, and
+    where an entry cannot be
     `lstat`ed or removed, that leftover stays at its name and the sweep goes
     on to the next entry; a temporary file's line says "temporary file" where
     a socket's says "temporary socket".
@@ -9559,9 +9572,10 @@ def register_serve_sweep(paths: dict) -> None:
     leftover or by any other entry, or by one occupied name drawn again, the
     start still ends at 69."""
     def refuse(why: str) -> None:
-        # THE FAIL-CLOSED LINE, TO STANDARD ERROR (commit 18): never through
-        # `register_serve_log`, which opens `register.log` by its path, in a
-        # directory that has failed its check or through a link in its place.
+        # THE PLATFORM'S LINE, TO STANDARD ERROR (commit 18, kept by commit
+        # 20): never through `register_serve_log`, which opens `register.log`
+        # by its path. A directory that fails its check is not this line's:
+        # the sweep returns the reason and the start refuses (commit 20).
         try:
             note(f"serve: the temporary leftovers were not swept: {why}")
         except (OSError, ValueError, AttributeError):
@@ -9572,30 +9586,31 @@ def register_serve_sweep(paths: dict) -> None:
     if not (os.stat in os.supports_dir_fd and os.unlink in os.supports_dir_fd
             and os.listdir in os.supports_fd):
         refuse("this platform cannot list, stat or unlink relative to a directory descriptor")
-        return
+        return None
     try:
         fd = os.open(paths["run"], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as exc:
-        refuse(f"run/ could not be opened ({errno.errorcode.get(exc.errno, exc.errno)})")
-        return
+        return f"cannot be opened ({exc.strerror or exc})"
     try:
-        # THE CHECK IS OF THE DESCRIPTOR, never of the path again.
+        # THE CHECK IS OF THE DESCRIPTOR, never of the path again; a check that
+        # fails is returned, in `register_serve_dir_check`'s words, for the
+        # start to refuse with (commit 20; lane 3's ruling, #165 6935289154).
         try:
             st = os.fstat(fd)
-            why = ("is not a directory" if not stat.S_ISDIR(st.st_mode)
-                   else "is not this uid's" if st.st_uid != os.getuid()
-                   else "is not mode 0700" if stat.S_IMODE(st.st_mode) != 0o700 else "")
         except OSError as exc:
-            why = f"could not be checked ({errno.errorcode.get(exc.errno, exc.errno)})"
-        if why:
-            refuse(f"run/ {why}")
-            return
+            return f"cannot be read ({exc.strerror or exc})"
+        if not stat.S_ISDIR(st.st_mode):
+            return "is not a directory"
+        if st.st_uid != os.getuid():
+            return f"is owned by uid {st.st_uid}, not this uid, {os.getuid()}"
+        if stat.S_IMODE(st.st_mode) != 0o700:
+            return f"is mode {oct(stat.S_IMODE(st.st_mode))[2:]}, not 700"
         try:
             names = os.listdir(fd)
         except OSError as exc:
             register_serve_log(paths, f"the temporary sockets could not be listed "
                                       f"({errno.errorcode.get(exc.errno, exc.errno)})")
-            return
+            return None
         now = time.time()   # mtime is wall-clock time; one reading for the whole sweep
         for name in names:
             if _REGISTER_SERVE_TEMP_RE.fullmatch(name):
@@ -9641,8 +9656,11 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     and the stamp temporaries over 10 minutes old, an earlier start left,
     each removal attempted (`register_serve_sweep`; N5, and lane 3's ruling
     on question 6), where one that cannot be removed is logged and stays,
-    the bind, under `umask 077`, the owner file, the listen, and the stamp
-    removed (Y:3936-3938). The bind draws a temporary name of `s.` and four hex
+    and where the sweep's own check of `run/` by a descriptor fails, the
+    start ends at 2, as `cmd_serve`'s refusal of the directory does (lane
+    3's ruling, #165 6935289154), binding nothing; the bind, under `umask
+    077`, the owner file, the listen, and the stamp removed (Y:3936-3938).
+    The bind draws a temporary name of `s.` and four hex
     digits, up to `REGISTER_SERVE_BIND_TRIES` (8) times, drawing another
     where a name is taken (`EADDRINUSE`). It ends the start at 69 after the
     eighth taken name, and at once at any other `OSError` from the bind, the
@@ -9721,7 +9739,26 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     # link, a directory, or a socket the sweep left or could not remove,
     # is left as it is, and another name is drawn, up to
     # `REGISTER_SERVE_BIND_TRIES` names in all.
-    register_serve_sweep(paths)
+    # A SECOND CHECK OF `run/` THAT FAILS REFUSES, WITH §2.2'S EXIT 2 (lane
+    # 3's ruling, #165 6935289154): the sweep checks `run/` by a descriptor of
+    # its own, after `cmd_serve`'s first check, and returns why where it fails.
+    # `run/` has then changed since it was checked, and a socket bound there
+    # by path would trust a directory that has just failed its check. So the
+    # start ends here, as `cmd_serve`'s refusal of the directory does: nothing
+    # bound, no owner file, no stamp, and nothing written by path in `run/`
+    # from here on. A platform without the descriptor-relative calls is not
+    # this case: its sweep returns None, skipped, and the start goes on.
+    why = register_serve_sweep(paths)
+    if why:
+        try:
+            note(f"serve: REFUSED: the service's directory {paths['run']} {why}, at the "
+                 f"sweep's check, made after serve's first: a directory that fails its "
+                 f"check is never used and never repaired, and this start binds nothing in "
+                 f"it and writes no owner file and no stamp (socket API §2.2)")
+        except (OSError, ValueError, AttributeError):
+            pass            # the exit is 2 whether or not the line can be written
+        os.close(lock)
+        return EXIT_REFUSED
     for attempt in range(REGISTER_SERVE_BIND_TRIES):
         temp = os.path.join(paths["run"], f"s.{os.urandom(2).hex()}")
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
