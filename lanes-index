@@ -7602,10 +7602,13 @@ def register_serve_too_long(paths: dict) -> int:
 
 def _register_serve_write(path: str, data: bytes, *, dir_fd: int | None = None) -> None:
     """`path` written whole by a temp file beside it and `os.replace`, mode
-    0600. Raises `OSError`. With `dir_fd`, `path` is a name in that
-    directory, and the temporary is created, renamed over it and, on a
-    failure, unlinked, each relative to that descriptor
-    (`register_serve_stamp`, commit 25)."""
+    0600. Raises `OSError`. On a failure the temporary's removal is tried,
+    and an unlink that fails is passed over, so a temporary can stay, for
+    the start's sweep to remove once it is over 600 s old
+    (`register_serve_sweep`; lane 3's ruling, #165 6937934447, SHOULD 2).
+    With `dir_fd`, `path` is a name in that directory, and the temporary is
+    created, renamed over it and, on a failure, its removal tried, each
+    relative to that descriptor (`register_serve_stamp`, commit 25)."""
     temp = f"{path}.tmp-{os.getpid()}-{os.urandom(4).hex()}"
     fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
                  dir_fd=dir_fd)
@@ -7677,9 +7680,11 @@ def register_serve_stamp(paths: dict, cause: str) -> tuple:
     check fails, no stamp is written, and nothing is opened or made in
     `run/`; the caller's exit is as it was. Where it passes, `register.lock`
     is opened relative to that descriptor, and the stamp's temporary is
-    created, renamed over `register.failed` and, on a failure, unlinked, each
-    relative to it (`_register_serve_write` with `dir_fd`), so a `run/`
-    replaced after the check gains neither file. The descriptors are closed
+    created, renamed over `register.failed` and, on a failure, its removal
+    tried, each relative to it (`_register_serve_write` with `dir_fd`), so a
+    `run/` replaced after the check gains neither file; an unlink that fails
+    is passed over, and can leave the temporary in the checked `run/` for the
+    sweep to remove once it is over 600 s old (SHOULD 2). The descriptors are closed
     on every return. WHERE `os.open`, `os.rename` OR `os.unlink` TAKES NO
     `dir_fd` (`os.supports_dir_fd`; `os.replace` calls `renameat` as
     `os.rename` does and is in no set, so `os.rename` is the member checked),
@@ -7705,7 +7710,7 @@ def register_serve_stamp(paths: dict, cause: str) -> tuple:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exc:
-                # A SERVICE HOLDS IT: NO STAMP.
+                # LOCK HELD OR COULD NOT BE LOCKED: NO STAMP.
                 return False, (f"register.lock is held by another process, or could not be "
                                f"locked ({exc.strerror or exc})")
         data = f"{utc_now()} {cause}\n".encode("ascii")
