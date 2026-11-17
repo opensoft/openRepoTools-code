@@ -2222,13 +2222,20 @@ def test_a_register_path_drops_each_inherited_pg_variable_before_psql(tmp_path, 
                 assert key not in pg, f"the inherited {key} reached {record['argv']}: {pg[key]!r}"
 
 
+#: The under-2 refusal's own words on libpq's reading of each value under 2
+#: (P10's T103 follow-up), the one place a bare 1 or 0 may stand in it (T257zb).
+LIBPQ_READING = "libpq reads 1 as 2 and 0 as no limit"
+
+
 def _t257u_refused_with_no_value(said: str, key: str, value: str) -> None:
     """An under-2 refusal's text, the case's `tmp_path` blanked out, as T257s's
     refused ids read theirs (T257u): it names the URL's key, `connect_timeout=`
     and the minimum, and shows no value of the case, neither its
-    `connect_timeout=` with the value nor the URL's own parts. The bare 1 and 0
-    are not looked for, since the refusal's own words give libpq's reading of
-    each."""
+    `connect_timeout=` with the value nor the URL's own parts, nor the value
+    as a token of its own, not part of a word or a dotted number, anywhere
+    outside the refusal's own words on libpq's reading, `LIBPQ_READING`
+    (T257zb; Codex's review of P09 at `b8f9e35a`, SHOULD 11: the bare value
+    was not looked for, so "value 1 is under 2" passed)."""
     case = f"[{key}, connect_timeout={value}]"
     assert f"`{key}=`" in said, f"{case} the key is not named: {said}"
     assert "`connect_timeout=`" in said and "under 2" in said, (
@@ -2236,6 +2243,8 @@ def _t257u_refused_with_no_value(said: str, key: str, value: str) -> None:
     shown = [v for v in (f"connect_timeout={value}", "t257_", "register_db", "127.0.0.1", "55432")
              if v in said]
     assert not shown, f"{case} the refusal shows {shown}: {said}"
+    bare = re.findall(rf"(?<![\w.]){re.escape(value)}(?!\w|\.\d)", said.replace(LIBPQ_READING, ""))
+    assert not bare, f"{case} the refusal shows the value {value} as a token of its own: {said}"
 
 
 def test_a_connect_timeout_under_2_is_refused_at_load_config(tmp_path, monkeypatch):
