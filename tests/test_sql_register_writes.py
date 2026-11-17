@@ -1030,7 +1030,8 @@ def test_a_pending_hand_edit_names_the_file_and_a_recovery_that_works(pg, tmp_pa
     file and one recovery command, the one backticked `git` command in its
     stderr, its argv by `shlex.split` the restore of that file alone; running it,
     with no shell, in `<c>` leaves `<c>`'s `status --porcelain` empty, and
-    the next write exits 0. W's own checkout holds no edit: lane
+    the next write exits 0. Its stderr prints no `lanes-edit.sh commit`
+    (the delta spec's sql-register/spec.md:518). W's own checkout holds no edit: lane
     4's answer (#165 6808439918) puts the edit in `<c>`, and keeps this
     oracle. It fails until lane 4's T415 round that prints that one command,
     `git -C <c> restore --source=HEAD --staged --worktree -- <paths>`, in
@@ -1047,6 +1048,13 @@ def test_a_pending_hand_edit_names_the_file_and_a_recovery_that_works(pg, tmp_pa
     commands = re.findall(r"`(git [^`]+)`", proc.stderr)
     assert len(commands) == 1, f"the refusal names {len(commands)} recovery commands: " \
                                f"{proc.stderr!r}"
+    # The delta spec, sql-register/spec.md:518: "It SHALL NOT print `lanes-edit.sh
+    # commit` as the recovery." Looked for in the whole stderr, backticked or not,
+    # after a `LANES_LANE=<lane>` or a path, and with a quote closing the path.
+    published = re.findall(r"lanes-edit\.sh['\"]?\s+commit\b", proc.stderr)
+    assert published == [], (
+        f"the refusal prints `lanes-edit.sh commit` {len(published)} time(s), the recovery "
+        f"the delta spec forbids (spec.md:518): {proc.stderr!r}")
     restore = shlex.split(commands[0])
     # Its paths as `pw_hand_edit_refuse` lists them: `git diff --name-only HEAD`'s,
     # relative to `<c>`'s top, each through `printf '%q'`. `<c>` is a fresh clone,
