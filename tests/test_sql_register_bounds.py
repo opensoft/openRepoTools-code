@@ -3453,17 +3453,15 @@ def _whole(text, what: str, kind=int):
     raise AssertionError(f"{what} is not a number; its text is not shown")
 
 
-def _reported(request, failed) -> str:
-    """pytest's own report of the failure `failed`, a `pytest.raises`
-    ExceptionInfo, as the running test's item renders a failed test under
-    the suite's own settings (T257zr; lane 3's ruling 6949488277 on lane 2's
-    pre-review RV9-38 of P09 at `3f9fcac4`, B1): the terminal's text, which
-    is also --junitxml's failure body, then --junitxml's failure message.
-    Under an explicit `--tb=long`, `--fulltrace` (which forces long) or
-    `--showlocals`, which print frames' arguments or locals, it fails at
-    once, naming the run's style: an explicit override is not secret-safe,
-    and the suite's protection holds only under its default (T257zzi; lane
-    2's pre-review RV9-40 of P09 at `161c3087`, N3). It never skips."""
+def _short_only(request) -> None:
+    """Under an explicit `--tb=long`, `--fulltrace` (which forces long) or
+    `--showlocals`, which print frames' arguments or locals, fail at once,
+    naming the run's style: an explicit override is not secret-safe, and the
+    suite's protection of a failure's report holds only under its default
+    (T257zzi; lane 2's pre-review RV9-40 of P09 at `161c3087`, N3). Every
+    report regression calls it before it renders a report: `_reported`,
+    `_t257zza_seen` and `_t257zzb_seen` (T257zzzh; lane 2's pre-review
+    RV9-42 of P09 at `857a41d2`, N4). It never skips."""
     style = request.config.getoption("tbstyle", "auto")
     shown = request.config.getoption("showlocals", False)
     full = request.config.getoption("fulltrace", False)
@@ -3471,6 +3469,17 @@ def _reported(request, failed) -> str:
         f"this run's --tb={style}, showlocals={shown}, fulltrace={full} prints frames' arguments or "
         f"locals: an explicit override is not secret-safe, and this suite's protection of a failure's "
         f"report holds only under its default, --tb=short (T205e), so this case cannot pass here")
+
+
+def _reported(request, failed) -> str:
+    """pytest's own report of the failure `failed`, a `pytest.raises`
+    ExceptionInfo, as the running test's item renders a failed test under
+    the suite's own settings (T257zr; lane 3's ruling 6949488277 on lane 2's
+    pre-review RV9-38 of P09 at `3f9fcac4`, B1): the terminal's text, which
+    is also --junitxml's failure body, then --junitxml's failure message.
+    Under an explicit `--tb=long`, `--fulltrace` or `--showlocals` it fails
+    at once (`_short_only`; T257zzi). It never skips."""
+    _short_only(request)
     longrepr = request.node.repr_failure(failed)
     return f"{longrepr}\n{longrepr.reprcrash.message}"
 
@@ -5912,8 +5921,10 @@ def _t257zza_seen(request, failed, planted: str) -> list:
     terminal and JUnit's failure body print, and its `reprcrash.message` is
     JUnit's message. Each place that holds it is named; none is printed.
     The report must name the exception's class, or the rendering is not
-    one."""
+    one. Under an explicit `--tb=long`, `--fulltrace` or `--showlocals` it
+    fails at once (`_short_only`; T257zzzh)."""
     import traceback
+    _short_only(request)
     report = request.node.repr_failure(failed)
     crash = getattr(report, "reprcrash", None)
     shown = {"str": str(failed.value), "repr": repr(failed.value), "args": repr(failed.value.args),
@@ -6020,8 +6031,10 @@ def _t257zzb_seen(request, failed, planted: str) -> list:
     traceback, and `request.node.repr_failure(failed)`'s `str()` (the
     terminal's and JUnit's failure body) and `reprcrash.message` (JUnit's
     message). The `reprcrash` must name the exception's class, or the
-    rendering is not one."""
+    rendering is not one. Under an explicit `--tb=long`, `--fulltrace` or
+    `--showlocals` it fails at once (`_short_only`; T257zzzh)."""
     import traceback
+    _short_only(request)
     report = request.node.repr_failure(failed)
     crash = getattr(report, "reprcrash", None)
     message = "" if crash is None else str(crash.message)
