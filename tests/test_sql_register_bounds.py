@@ -6364,9 +6364,16 @@ def test_a_chained_pgcluster_failure_shows_no_tool_text_in_pytests_report(
     pytest prints. `[from-lanes-edit]` and `[from-git]`:
     `ImportedRegister._run_ok`'s and `.git`'s `ClusterError`, wrapped as
     disaster's and drill's estates wrap it, `raise AssertionError(...)
-    from exc`. The chain is checked to be there, and to be rendered (its
-    error's first words are in the report), and the planted value is
-    in neither the error's `str`, `repr` or `args` nor in pytest's report,
+    from exc`. The chain is checked to be there, and to be rendered: the
+    report holds pytest's block for that very link ("During handling of
+    the above exception" for `__context__`, "The above exception was the
+    direct cause" for `__cause__`), and before it the chained error's own
+    text and, for a cause, the file and line of the last entry of its own
+    traceback, as each style prints it (T257zzzi; lane 2's targeted check RV9-43 of P09 at
+    `94a40564`, NIT A: before, the error's first words were looked for
+    anywhere in the report, where the message's own `{exc}` put them, so a
+    severed chain passed). And the planted value is in neither the
+    error's `str`, `repr` or `args` nor in pytest's report,
     rendered by `_reported` under the suite's own style, the JUnit message
     included. Before T229t, under pytest 8.3.4 with long tracebacks, the
     cause's last entry printed `_run_ok`'s and `git`'s `proc`. The planted
@@ -6406,8 +6413,18 @@ def test_a_chained_pgcluster_failure_shows_no_tool_text_in_pytests_report(
         chained = failed.value.__cause__
     assert isinstance(chained, pgcluster.ClusterError), f"{path}: no ClusterError is chained"
     said = _reported(request, failed)
+    link = ("During handling of the above exception" if path == "started" else
+            "The above exception was the direct cause")
+    assert link in said, f"{path}: pytest's report renders no chained error"
+    before = said.split(link, 1)[0]
     # A pytrace=False failure's chain is rendered as each error's text alone, with no class.
-    assert str(chained).split(":")[0] in said, f"{path}: pytest's report does not render the chained error"
+    assert str(chained).splitlines()[0] in before, f"{path}: the chain rendered is not the chained error's"
+    if path != "started":
+        last = chained.__traceback__
+        while last.tb_next is not None:
+            last = last.tb_next
+        entry = f"{Path(last.tb_frame.f_code.co_filename).name}:{last.tb_lineno}: "
+        assert entry in before, f"{path}: the chain rendered does not end where the chained error was raised"
     shown = [name for name, text in (("str", str(failed.value)), ("repr", repr(failed.value)),
                                      ("args", repr(failed.value.args)), ("report", said))
              if planted in text]
