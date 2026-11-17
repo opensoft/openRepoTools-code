@@ -1308,7 +1308,16 @@ def _verb_args(verb: str) -> list:
 class RollbackEstate:
     """TEST 8'S ESTATE (TP:1592-1636), on test 7's cutover host: see the
     notes above T273b. `prepare()` makes the cutover and the writes; until
-    their tasks land it fails at its own assertion, naming them."""
+    their tasks land it fails at its own assertion, naming them.
+
+    THE ENVIRONMENT WINDOW (lane 3's Codex review of code PR 97 at
+    `5a120647`, SHOULD 3): while `__init__` builds test 7's cutover host,
+    the case's nonce is in this process's `os.environ`. While that window
+    is open, no other thread of this worker may launch a process or change
+    the environment: a process launched then would carry the nonce, and
+    this estate's teardown would end it; a change to `IDENTITY` would be
+    overwritten as the window closes. Pytest runs a worker's tests one at a
+    time, and each xdist worker is a process with its own environment."""
 
     def __init__(self, root: Path, db, *, writes: int = 2):
         imp = _imp()
@@ -1321,7 +1330,10 @@ class RollbackEstate:
         #: environment once, as it is built, so the nonce is in it for the
         #: construction alone, and the value before put back after, whatever
         #: is raised. Where the construction raises, what it started is ended
-        #: by the nonce (`_teardown`) before the error goes on.
+        #: by the nonce (`_teardown`) before the error goes on. While this
+        #: window is open, no other thread of this worker may launch a process
+        #: or change the environment (the class docstring; SHOULD 3 at
+        #: `5a120647`).
         self.nonce = _nonce()
         _script(self.bin / "git", GIT_WRAPPER)
         _script(self.bin / "psql", PSQL_SHIM)
