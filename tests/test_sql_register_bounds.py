@@ -3387,11 +3387,53 @@ def _whole(text, what: str, kind=int):
     `what` and quotes none of `text` (T257zl; lane 2's pre-review RV9-37 of
     P09 at `d9a1f2bf`, S5): int()'s and float()'s own ValueError quotes up
     to 200 characters of its input, which is a tool's or a writer's output
-    here. `from None` keeps that ValueError out of the traceback too."""
+    here. The AssertionError is raised after the `except`, not in it, so
+    its `__cause__` is None and its `__context__` is not that ValueError
+    (None, unless `_whole` is itself called inside an `except`): nothing of
+    `text` is kept on it (T257zr; lane 2's pre-review RV9-38 of P09 at
+    `3f9fcac4`, N3: before T257zr, `from None` only hid the ValueError from
+    display, and `__context__` still held it). `text` is still this frame's
+    argument, which a long traceback prints and a short one does not
+    (T205e)."""
     try:
         return kind(text)
     except (TypeError, ValueError):
-        raise AssertionError(f"{what} is not a number; its text is not shown") from None
+        pass
+    raise AssertionError(f"{what} is not a number; its text is not shown")
+
+
+def _reported(request, failed) -> str:
+    """pytest's own report of the failure `failed`, a `pytest.raises`
+    ExceptionInfo, as the running test's item renders a failed test under
+    the suite's own settings (T257zr; lane 3's ruling 6949488277 on lane 2's
+    pre-review RV9-38 of P09 at `3f9fcac4`, B1): the terminal's text, which
+    is also --junitxml's failure body, then --junitxml's failure message."""
+    longrepr = request.node.repr_failure(failed)
+    return f"{longrepr}\n{longrepr.reprcrash.message}"
+
+
+def test_whole_keeps_no_text_it_could_not_parse_on_its_error_or_in_the_report(request):
+    """T257zr (lane 2's pre-review RV9-38 of P09 at `3f9fcac4`, N3; lane 3's
+    ruling 6949488277, B1), with no engine and no process: `_whole` is given
+    a planted value it cannot parse, as an int and as a float. Its
+    AssertionError has no `__cause__` and no `__context__`, and the planted
+    value is in none of its `str`, `repr`, `args`, formatted traceback or
+    pytest's own report of the failure (`_reported`). Before T257zr its
+    `__context__` was int()'s ValueError, which quotes the value. The
+    planted value is no credential of any login."""
+    import traceback
+    planted = f"fake-{uuid.uuid4().hex}"
+    for kind in (int, float):
+        with pytest.raises(AssertionError) as failed:
+            _whole(f"x {planted} y", "a planted value", kind)
+        error = failed.value
+        assert error.__cause__ is None, f"{kind.__name__}: a cause is kept"
+        assert error.__context__ is None, \
+            f"{kind.__name__}: a {type(error.__context__).__name__} is kept as its context"
+        shown = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+        for where, said in (("str", str(error)), ("repr", repr(error)), ("args", repr(error.args)),
+                            ("formatted traceback", shown), ("pytest's report", _reported(request, failed))):
+            assert planted not in said, f"{kind.__name__}: the planted value is in the error's {where}"
 
 
 def _said_safely(said, stream: str = "output") -> str:
