@@ -167,17 +167,24 @@ def _pin(pid: int, nonce: str | None) -> _Pinned | None:
     the pidfd names held the pid from the open through both reads, so they
     were its own. None, the pidfd closed and nothing signalled, where it has
     ended, is a zombie, or its environment cannot be read, is empty, or does
-    not carry `nonce`: it fails closed."""
+    not carry `nonce`: it fails closed. The pidfd is this call's until it
+    is handed over: whatever a read or the signal 0 raises, it is closed in
+    a `finally` first (lane 3's Codex review of code PR 97 at `f776b435`,
+    SHOULD 3)."""
     fd = _opened(pid)
     if fd is None:
         return None
-    now = _stat(pid)
-    pinned = _Pinned(pid, now["start"] if now else "", fd)
-    if (not nonce or now is None or now["state"] in ("Z", "X") or _carried(pid) != nonce
-            or not pinned.alive()):
-        pinned.close()
-        return None
-    return pinned
+    kept = None
+    try:
+        now = _stat(pid)
+        pinned = _Pinned(pid, now["start"] if now else "", fd)
+        if (nonce and now is not None and now["state"] not in ("Z", "X")
+                and _carried(pid) == nonce and pinned.alive()):
+            kept = pinned
+    finally:
+        if kept is None:
+            os.close(fd)
+    return kept
 
 
 def _pin_child(proc) -> _Pinned | None:
@@ -185,13 +192,18 @@ def _pin_child(proc) -> _Pinned | None:
     (`returncode` None): authoritative, with no nonce asked, since the
     kernel gives its pid again only once this process reaps it (lane 2's
     decision 1 in round CX-33). None where it has been reaped, or no process
-    has its pid."""
+    has its pid. The pidfd is closed where its stat read raises (SHOULD 3
+    at `f776b435`)."""
     if proc is None or proc.returncode is not None:
         return None
     fd = _opened(proc.pid)
     if fd is None:
         return None
-    now = _stat(proc.pid)
+    try:
+        now = _stat(proc.pid)
+    except BaseException:
+        os.close(fd)
+        raise
     return _Pinned(proc.pid, now["start"] if now else "", fd)
 
 
@@ -228,53 +240,154 @@ def _stopped(held: _Pinned) -> bool:
     return now is not None and now["start"] == held.start and now["state"] in ("T", "t")
 
 
-def _owned(table: dict, nonces: set, pinned: dict) -> list:
-    """Each process of `table` not pinned already whose environment carries
-    one of `nonces`, pinned by it (`_pin`): the case's, found by its
-    identity alone, with no leader, parent or record needed (lane 3's Codex
-    review of code PR 97 at `46cac748`, SHOULD 1)."""
+def _seen_stopped(helds, until: float, refused=()) -> str | None:
+    """None where each of `helds` is seen stopped, or gone (`_stopped`), by
+    `until` (`time.monotonic()`); else the error naming each one not seen
+    so: a stop not seen is no stop, so a read made then could miss what it
+    forked (lane 3's Codex review of code PR 97 at `f776b435`, SHOULD 1).
+    One of `refused`, whose SIGSTOP raised, is passed over: that error is
+    kept already (`_send_each`), and is not told twice."""
+    helds = [held for held in helds if held not in refused]
+    if _wait_all(_stopped, helds, until):
+        return None
+    late = sorted(held.pid for held in helds if not _stopped(held))
+    return (f"pids {late} were never seen stopped, so a read made then could miss what they "
+            f"forked") if late else None
+
+
+def _owned(table: dict, nonces: set, pinned: dict, fresh: list | None = None) -> list:
+    """Each process of `table` whose environment carries one of `nonces`,
+    pinned by it (`_pin`): the case's, found by its identity alone, with no
+    leader, parent or record needed (lane 3's Codex review of code PR 97 at
+    `46cac748`, SHOULD 1); returned. One pinned already is passed over only
+    while its pidfd shows it there: where that one has gone, a process with
+    its pid and start token, as one that took the pid within the same tick
+    has, is pinned again by its own identity, never taken for the one that
+    went (SHOULD 1 at `f776b435`). Where `fresh` is given, each pin is
+    registered as it is made (`_keep`), so whatever a later one raises, the
+    caller's `finally` lets every one go (SHOULD 3 at `f776b435`)."""
     found = []
     for pid, row in table.items():
-        nonce = _carried(pid) if (pid, row["start"]) not in pinned else None
-        if nonce in nonces:
-            held = _pin(pid, nonce)
-            if held is not None:
-                found.append(held)
+        kept = pinned.get((pid, row["start"]))
+        if kept is not None and not kept.gone():
+            continue
+        nonce = _carried(pid)
+        held = _pin(pid, nonce) if nonce in nonces else None
+        if held is not None:
+            found.append(held)
+            if fresh is not None:
+                _keep(pinned, fresh, held)
     return found
 
 
 def _keep(pinned: dict, fresh: list, held) -> None:
     """`held`, where there is one, registered in `pinned` by its pid and
-    start token, before any signal, and in `fresh`."""
+    start token, before any signal, and in `fresh`. One pinned before under
+    that key, which has gone, is kept under a key of its own, so its pidfd
+    is still let go (`_release`)."""
     if held is not None:
-        pinned[(held.pid, held.start)] = held
+        key = (held.pid, held.start)
+        if key in pinned:
+            gone = pinned.pop(key)
+            pinned[(held.pid, held.start, gone.fd)] = gone
+        pinned[key] = held
         fresh.append(held)
 
 
-def _send_each(helds, sig: int, raised: list) -> None:
+def _send_each(helds, sig: int, raised: list) -> list:
     """`sig` through each pidfd of `helds`, each in a `try` of its own: what
     one raises is kept in `raised`, and the rest are still signalled (lane
-    3's Codex review of code PR 97 at `46cac748`, SHOULD 6)."""
+    3's Codex review of code PR 97 at `46cac748`, SHOULD 6). Returns each
+    one whose signal raised."""
+    refused = []
     for held in helds:
         try:
             held.send(sig)
         except OSError as exc:  # kept; the rest are still signalled
             raised.append(exc)
+            refused.append(held)
+    return refused
 
 
-def _release(helds, raised: list) -> None:
-    """Each pidfd of `helds` let go, each in a `try` and `finally` of its
-    own: its process killed (SIGKILL) where it is not yet gone, so none is
-    left stopped, then the pidfd closed. What one raises is kept in
-    `raised`, and the rest are still let go (SHOULD 6 at `46cac748`)."""
+def _release(helds, raised: list, seconds: float = 5) -> None:
+    """Each pidfd of `helds` let go: its process killed (SIGKILL) where it
+    is not yet gone, so none is left stopped, each in a `try` of its own;
+    then each one so killed seen gone within one bound, `seconds` on, and
+    each pidfd closed, each in a `try` of its own. What one raises, a close
+    among them, is kept in `raised`, and the rest are still let go; one
+    killed that is still there at the bound is an error too (SHOULD 6 at
+    `46cac748`; lane 3's Codex review of code PR 97 at `f776b435`,
+    SHOULD 3)."""
+    helds, killed = list(helds), []
     for held in helds:
         try:
             if not held.gone():
                 held.send(signal.SIGKILL)
-        except OSError as exc:  # kept; the rest are still let go
+                killed.append(held)
+        except (OSError, ValueError) as exc:  # kept; the rest are still let go
+            raised.append(exc)
+    until = time.monotonic() + seconds
+    for held in helds:
+        try:
+            if held in killed and not held.gone(max(0.0, until - time.monotonic())):
+                raised.append(RuntimeError(f"pid {held.pid} is still there {seconds:g} s after "
+                                           f"its SIGKILL through its pidfd"))
+        except (OSError, ValueError) as exc:  # kept; the rest are still let go
             raised.append(exc)
         finally:
-            held.close()
+            try:
+                held.close()
+            except OSError as exc:  # kept; the rest are still closed
+                raised.append(exc)
+
+
+def _misrecorded(logged, nonces: set, held: set, tail: str = "") -> list:
+    """WHAT A RECORD NAMES BUT A CLEAN-UP CANNOT OWN, each named once, none
+    ever signalled (lane 3's Codex review of code PR 97 at `f776b435`,
+    SHOULD 8): each of `logged`, (pid, start token, what), validated by
+    itself, from its own read of `/proc`, apart from the table of this
+    user's processes a clean-up signals from (`_table`). One with no start
+    token is named; so is one whose pid and start token a live process, not
+    a zombie and not pinned (its pid not in `held`), has where that process
+    is another user's, or its environment cannot be read or does not carry
+    one of `nonces` (`_misowned`). `tail` ends each text that names a live
+    process."""
+    found = []
+    for pid, start, what in logged:
+        if not start:
+            text = f"{what} names pid {pid} with no start token"
+        else:
+            why = _misowned(pid, start, nonces, held)
+            if why is None:
+                continue
+            text = f"{what} names pid {pid} with the start token of a live process {why}{tail}"
+        if text not in found:
+            found.append(text)
+    return found
+
+
+def _misowned(pid, start: str, nonces: set, held: set) -> str | None:
+    """Why the live process a record names, by `pid` and `start`, is not the
+    case's: another user's, its environment unreadable, or without one of
+    `nonces`; None where no live process, but a zombie, has that pair, or
+    it is pinned (in `held`), or it carries one of `nonces`."""
+    def live() -> bool:
+        now = _stat(pid) if isinstance(pid, int) and pid not in held else None
+        return now is not None and now["start"] == start and now["state"] not in ("Z", "X")
+
+    if not live():
+        return None
+    try:
+        if os.stat(f"/proc/{pid}").st_uid != os.getuid():
+            return "that is another user's"
+        environ = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        environ = b""
+    if not environ:  # read again: one that ended meanwhile is no record's live process
+        return "whose environment cannot be read" if live() else None
+    if _carried(pid) not in nonces:
+        return "that does not carry the case's identity"
+    return None
 
 
 def _wait_all(test, helds, until: float, pause: float = 0.01) -> bool:
@@ -499,16 +612,26 @@ class _GapFifo:
 def _reported(proc: subprocess.Popen, what: str, nonce: str, seconds: float = 30) -> _Pinned:
     """The process whose pid `proc`'s tree printed (`SAY_ME`), pinned by the
     case's identity (`_pin`): exactly that process, alive. Its line is read
-    under `select` with an absolute deadline, `seconds` on: where none
-    comes by then, `proc` is ended and reaped (`_reap_all`), and it raises
-    with what `proc` said (lane 3's Codex review of code PR 97 at
-    `46cac748`, SHOULD 2)."""
+    without blocking, in increments, each under `select`, all within one
+    absolute deadline, `seconds` on, until a newline or EOF: where no whole
+    line comes by then, a part of one or nothing, `proc` is ended and
+    reaped (`_reap_all`), and it raises with what came and what `proc`
+    said (lane 3's Codex reviews of code PR 97 at `46cac748` and at
+    `f776b435`, SHOULD 2)."""
     import select
-    if not select.select([proc.stdout], [], [], seconds)[0]:
-        said = _reap_all([proc])
-        raise AssertionError(f"{what}: nothing was printed within {seconds:g} s; its starter "
-                             f"was ended ({proc.returncode}) and said {said}")
-    words = proc.stdout.readline().split()
+    deadline, fd, line = time.monotonic() + seconds, proc.stdout.fileno(), b""
+    while b"\n" not in line:
+        left = deadline - time.monotonic()
+        if left <= 0 or not select.select([fd], [], [], left)[0]:
+            said = _reap_all([proc])
+            raise AssertionError(f"{what}: nothing was printed within {seconds:g} s but "
+                                 f"{line!r}; its starter was ended ({proc.returncode}) and said "
+                                 f"{said}")
+        more = os.read(fd, 4096)
+        if not more:
+            break  # EOF: what came is all there is
+        line += more
+    words = line.split(b"\n", 1)[0].decode("utf-8", "replace").split()
     assert len(words) == 2, f"{what}: no pid and start token were printed"
     held = _pin(int(words[0]), nonce)
     assert held is not None, f"{what}: pid {words[0]} was gone, or not the case's, when pinned"

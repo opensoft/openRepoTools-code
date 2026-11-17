@@ -138,9 +138,10 @@ import pytest
 from conftest import REPO, WINDOWS_SKIP
 from sql_register_cleanup import (IDENTITY, LEADS_A_GROUP, LEAVES_A_MEMBER, LINUX_ONLY, SAY_ME,
                                   SLEEP, _GapFifo, _Pinned, _Pipe, _Undying, _carried, _each,
-                                  _end_pin, _ended, _fifo_reader, _keep, _nonce, _owned, _pidfds,
-                                  _pin_child, _raise_first, _reap_all, _release, _reported,
-                                  _send_each, _stat, _stopped, _table, _wait_all, _with_identity)
+                                  _end_pin, _ended, _fifo_reader, _keep, _misrecorded, _nonce,
+                                  _owned, _pidfds, _pin, _pin_child, _raise_first, _reap_all,
+                                  _release, _reported, _seen_stopped, _send_each, _stat, _table,
+                                  _wait_all, _with_identity)
 from sql_register_helpers import PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_LOG, flipped_copy
 
 pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
@@ -162,8 +163,11 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_clean_up_ends_each_member_of_a_group_whose_leader_is_gone": (),  # T270; the clean-up's own fault path, no task (Codex at 46cac748, SHOULD 1; the coordinator's 6938182757, point 1)
     "test_a_clean_up_ends_what_it_knows_before_it_raises_an_unreadable_log": (),  # T270; the clean-up's own fault path, no task (the coordinator's 6938182757, point 2)
     "test_a_clean_up_kills_and_closes_every_pin_whatever_a_signal_raised": (),  # T270; the clean-up's own fault path, no task (Codex at 46cac748, SHOULD 6)
+    "test_a_clean_up_names_a_logged_live_process_it_cannot_own": (),  # T270; the clean-up's own fault path, no task (Codex at f776b435, SHOULD 8)
     "test_a_clean_up_never_signals_a_logged_pid_and_start_token_without_the_case_s_identity": (),  # T270; the clean-up's own fault path, no task (Codex at 46cac748, BLOCKING)
+    "test_a_clean_up_pins_again_a_pid_whose_pinned_process_is_gone": (),  # T270; the clean-up's own fault path, no task (Codex at f776b435, SHOULD 1)
     "test_a_clean_up_raises_on_a_process_logged_with_no_start_token": (),  # T270; the clean-up's own fault path, no task (Codex at 18529e5a, SHOULD 1)
+    "test_a_clean_up_raises_where_a_stop_is_never_seen": (),  # T270; the clean-up's own fault path, no task (Codex at f776b435, SHOULD 1)
     "test_a_clean_up_signals_through_pidfds_alone_and_spares_a_wrong_start_token": (),  # T270; the clean-up's own fault path, no task (Codex at 18529e5a, BLOCKING)
     "test_a_failed_render_shows_its_lag_and_the_next_render_catches_up": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
     "test_a_fifo_let_go_leaves_no_reader_blocked": (),  # T270; the clean-up's own fault path, no task (Codex at 6d479418, SHOULD 1)
@@ -174,6 +178,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_lost_push_race_never_rebases_a_render": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
     "test_a_non_github_origin_with_render_key_is_refused_with_2": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
     "test_a_pass_renders_at_most_64_seqs": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
+    "test_a_pin_and_a_release_close_every_pidfd_whatever_a_read_or_a_close_raised": (),  # T270; the clean-up's own fault path, no task (Codex at f776b435, SHOULD 3)
     "test_a_pinned_process_s_end_raises_unless_it_is_seen_gone": (),  # T270; the clean-up's own fault path, no task (Codex at 46cac748, SHOULD 3)
     "test_a_register_seq_above_the_head_with_the_switch_at_files_is_no_divergence_and_renders_nothing": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
     "test_a_render_clean_up_ends_a_detached_render_no_log_names": (),  # T270; the clean-up's own fault path, no task (Codex at 18529e5a, SHOULD 1)
@@ -183,7 +188,9 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_renderer_killed_between_commit_and_push_blocks_nothing": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
     "test_a_renderer_killed_by_sigkill_leaves_the_checkout_able_to_render_at_once": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
     "test_a_renderer_killed_inside_read_tree_does_not_block_the_next_render": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
+    "test_a_report_of_a_part_line_ends_its_starter_and_raises": (),  # T270; the clean-up's own fault path, no task (Codex at f776b435, SHOULD 2)
     "test_a_report_that_never_comes_ends_its_starter_and_raises": (),  # T270; the clean-up's own fault path, no task (Codex at 46cac748, SHOULD 2)
+    "test_a_wrapper_kill_ends_a_gone_leader_s_group_and_every_pidfd_whatever_a_stop_or_a_close_did": (),  # T270; the clean-up's own fault path, no task (Codex at f776b435, SHOULDs 1 and 3)
     "test_a_wrapper_kill_ends_every_target_whatever_its_discovery_or_a_kill_raised": (),  # T270; the clean-up's own fault path, no task (Codex at 46cac748, SHOULD 6; the coordinator's 6938182757, point 3)
     "test_a_wrapper_kill_signals_only_the_case_s_own_and_finds_each_member_without_its_leader": (),  # T270; the clean-up's own fault path, no task (Codex at 46cac748, BLOCKING and SHOULD 1; the coordinator's 6938182757, point 1)
     "test_a_write_that_commits_as_the_render_lets_go_is_rendered_with_no_later_write": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
@@ -514,28 +521,23 @@ def _unowned(est, after: int | None, table: dict, nonces: set, books: SimpleName
     token; a live one, not a zombie, whose pid and start token a record
     names but whose environment does not carry the case's identity, as a
     process that took the pid within the same tick would be; and one whose
-    argv or cwd is in `est.root` without it (`_strangers`). Where the logs
-    cannot be read (`_logged` raises: an I/O or JSON error), the first such
-    error is kept in `books.log`, and the rest is still found and ended
-    before it is raised (the coordinator's #165 6938182757, point 2)."""
+    argv or cwd is in `est.root` without it (`_strangers`). Each record is
+    validated by itself, apart from the table of this user's processes, so
+    a live one another user owns, or whose environment cannot be read, is
+    named too (`_misrecorded`; lane 3's Codex review of code PR 97 at
+    `f776b435`, SHOULD 8). Where the logs cannot be read (`_logged` raises:
+    an I/O or JSON error), the first such error is kept in `books.log`, and
+    the rest is still found and ended before it is raised (the
+    coordinator's #165 6938182757, point 2)."""
     try:
         logged = _logged(est, after)
     except Exception as exc:  # kept, and raised once what is known is ended
         books.log = books.log or exc
         logged = []
     held = {key[0] for key in books.pinned}
-    for pid, start, what in logged:
-        row = table.get(pid)
-        if not start:
-            text = f"{what} names pid {pid} with no start token"
-        elif (row is not None and start != "gone" and pid not in held and row["start"] == start
-              and row["state"] not in ("Z", "X") and _carried(pid) not in nonces):
-            text = (f"{what} names pid {pid} with the start token of a live process that does "
-                    f"not carry the case's identity, which was never signalled")
-        else:
-            continue
-        if text not in books.errors:
-            books.errors.append(text)
+    books.errors += [text for text in _misrecorded(logged, nonces, held,
+                                                   ", which was never signalled")
+                     if text not in books.errors]
     books.errors += [text for text in _strangers(est, table, nonces, held)
                      if text not in books.errors]
 
@@ -567,10 +569,9 @@ def _sweep(est, roots, after: int | None, books: SimpleNamespace) -> int:
             if (proc.pid, table[proc.pid]["start"]) not in books.pinned:
                 _keep(books.pinned, fresh, _pin_child(proc))
     nonces.discard(None)
-    for held in _owned(table, nonces, books.pinned):
-        _keep(books.pinned, fresh, held)
+    _owned(table, nonces, books.pinned, fresh)
     _unowned(est, after, table, nonces, books)
-    _send_each(fresh, signal.SIGSTOP, books.raised)
+    books.refused += _send_each(fresh, signal.SIGSTOP, books.raised)
     return len(fresh)
 
 
@@ -578,15 +579,20 @@ def _settle(est, roots, after: int | None, grace: float, books: SimpleNamespace)
     """The rounds of `_quiesce`, each read made once every process pinned
     is seen stopped, until one finds nothing new; then each still there is
     killed and seen gone, and the estate read again; past `grace`, one read
-    more, then no more."""
+    more, then no more. A process pinned that is not seen stopped by the
+    deadline is an error (`_seen_stopped`), and the rounds end only with a
+    read that finds nothing new once every one pinned is seen gone (lane
+    3's Codex review of code PR 97 at `f776b435`, SHOULD 1)."""
     deadline, last = time.monotonic() + grace, False
     while True:
         new = _sweep(est, roots, after, books)
-        _wait_all(_stopped, books.pinned.values(), deadline)
+        late = _seen_stopped(books.pinned.values(), deadline, books.refused)
+        if late is not None and late not in books.errors:
+            books.errors.append(late)
         if new and not last and time.monotonic() < deadline:
             continue
         live = [held for held in books.pinned.values() if not held.gone()]
-        if not live:
+        if not live and not new:
             return
         _send_each(live, signal.SIGKILL, books.raised)
         _wait_all(_Pinned.gone, live, max(deadline, time.monotonic() + 1), 0.02)
@@ -626,7 +632,7 @@ def _quiesce(est, roots=(), after: int | None = None, grace: float = 10) -> None
     (`_raise_first`). Where the case passed, nothing is left, and nothing
     is signalled."""
     _pidfds()
-    books = SimpleNamespace(pinned={}, errors=[], raised=[], log=None)
+    books = SimpleNamespace(pinned={}, errors=[], raised=[], log=None, refused=[])
     try:
         _settle(est, roots, after, grace, books)
     finally:
@@ -797,17 +803,23 @@ def pin(pid, nonce, pgrp=None):
     case's nonce (`carried`), is no zombie, is in the group `pgrp` where
     given, and, by a signal 0 through the pidfd after those reads (`alive`),
     held the pid through them; else None, and it is never signalled. Any
-    failure of the open but ESRCH is raised."""
+    failure of the open but ESRCH is raised; the pidfd is closed first,
+    whatever a read raises, unless it is handed over (lane 3's Codex review
+    of code PR 97 at `f776b435`, SHOULD 3)."""
     try:
         fd = os.pidfd_open(pid)
     except ProcessLookupError:
         return None
-    fields = stat(pid)
-    if (fields and fields[0] not in (b"Z", b"X") and (pgrp is None or int(fields[2]) == pgrp)
-            and carried(pid) == nonce and alive(fd)):
-        return fd
-    os.close(fd)
-    return None
+    kept = None
+    try:
+        fields = stat(pid)
+        if (fields and fields[0] not in (b"Z", b"X") and (pgrp is None or int(fields[2]) == pgrp)
+                and carried(pid) == nonce and alive(fd)):
+            kept = fd
+    finally:
+        if kept is None:
+            os.close(fd)
+    return kept
 
 
 def send(fd, sig):
@@ -836,44 +848,61 @@ def wait_until(test, seconds):
     return True
 
 
-def members(pid, nonce, targets):
-    """ONE READ of /proc for the group `pid` leads: each member not yet in
-    `targets` that carries the case's nonce pinned (`pin`), recorded in
-    `targets` before any signal, then stopped. It needs no live leader: a
-    group's id is no other group's while any member of it lives. Returns
+def members(pid, nonce, targets, ended):
+    """ONE READ of /proc for the group `pid` leads: each member that carries
+    the case's nonce pinned (`pin`), recorded in `targets` before any
+    signal, then stopped. It needs no live leader: a group's id is no other
+    group's while any member of it lives. A pid in `targets` is passed over
+    only while its pidfd shows it there: where it has gone, the process
+    that has the pid now is pinned again by its own identity, and the old
+    pidfd kept in `ended`, to be closed (SHOULD 1 at `f776b435`). Returns
     how many are new."""
     found = 0
     for name in os.listdir("/proc"):
-        if not name.isdigit() or int(name) in targets or int(name) == os.getpid():
+        if not name.isdigit() or int(name) == os.getpid():
+            continue
+        old = targets.get(int(name))
+        if old is not None and not select.select([old], [], [], 0)[0]:
             continue
         fields = stat(int(name))
         if not fields or int(fields[2]) != pid:
             continue
         fd = pin(int(name), nonce, pgrp=pid)
         if fd is not None:
+            if old is not None:
+                ended.append(old)
             targets[int(name)] = fd
             send(fd, signal.SIGSTOP)
             found += 1
     return found
 
 
-def end_all(targets, error):
+def end_all(targets, error, ended=()):
     """SIGKILL through each pidfd of `targets`, each in a try of its own;
-    then each seen gone within 10 s, and each pidfd closed in a finally of
-    its own. Returns `error`, where one was raised before, else the first
-    error met here."""
+    then each seen gone within one bound, 10 s on, and each pidfd closed,
+    with each of `ended` (pidfds of processes already gone), each wait and
+    each close in a try of its own, so a close that raises leaves no other
+    open (SHOULD 3 at `f776b435`). Returns `error`, where one was raised
+    before, else the first error met here."""
     for fd in targets.values():
         try:
             send(fd, signal.SIGKILL)
         except OSError as exc:  # kept; the rest are still killed
             error = error or exc
+    deadline = time.monotonic() + 10
     for pid, fd in targets.items():
         try:
-            if not wait_until(lambda: select.select([fd], [], [], 0)[0], 10):
+            if not wait_until(lambda: select.select([fd], [], [], 0)[0],
+                              max(0, deadline - time.monotonic())):
                 error = error or RuntimeError("pid %d is still there 10 s after its SIGKILL "
                                               "through its pidfd" % pid)
-        finally:
+        except OSError as exc:  # kept; the rest are still seen gone and closed
+            error = error or exc
+    for fd in list(targets.values()) + list(ended):
+        try:
             os.close(fd)
+        except OSError as exc:  # kept; the rest are still closed
+            error = error or exc
     return error
 
 
@@ -888,28 +917,50 @@ def kill_above(pid):
     until a read finds none new; the leader need not live for its members
     to be found. Whatever is raised on the way, every target is then
     killed, seen gone and its pidfd closed (`end_all`), and the first error
-    is raised. A process without the case's identity is never signalled."""
+    is raised. A process without the case's identity is never signalled.
+    Where the process above is gone before it is pinned, its group's
+    members are still found by the nonce and the group's id; a stop not
+    seen by the one deadline of the whole discovery, 10 s on, is an error;
+    and once every target is seen gone, /proc is read once more, and a
+    member found then is ended too and is an error (lane 3's Codex review
+    of code PR 97 at `f776b435`, SHOULD 1)."""
     nonce = os.environ.get(IDENTITY)
     if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal") or not nonce:
         sys.stderr.write("the test's git wrapper kills only through a pidfd pinned by the case's "
                          "identity (%s; Python 3.9 or later, Linux 5.3 or later), and it has "
                          "none\n" % IDENTITY)
         sys.exit(70)
+    targets, ended, error = {}, [], None
     lead = pin(pid, nonce)
-    if lead is None:
-        sys.stderr.write("the process above is gone, or is not the case's: nothing is "
-                         "signalled\n")
+    there = stat(pid) if lead is None else None
+    if lead is not None:
+        targets[pid] = lead
+    elif there and there[0] not in (b"Z", b"X"):
+        sys.stderr.write("the process above is not the case's: nothing is signalled\n")
         return
-    targets, error = {pid: lead}, None
+    deadline = time.monotonic() + 10
     try:
-        send(lead, signal.SIGSTOP)
+        if lead is not None:
+            send(lead, signal.SIGSTOP)
         while True:
-            wait_until(lambda: all(stopped(p, fd) for p, fd in targets.items()), 10)
-            if not members(pid, nonce, targets):
+            if not wait_until(lambda: all(stopped(p, fd) for p, fd in targets.items()),
+                              max(0, deadline - time.monotonic())):
+                raise RuntimeError("pids %s were never seen stopped within 10 s"
+                                   % sorted(p for p, fd in targets.items() if not stopped(p, fd)))
+            if not members(pid, nonce, targets, ended):
                 break
     except BaseException as exc:  # kept; every target is still ended, then it is raised
         error = exc
-    error = end_all(targets, error)
+    error = end_all(targets, error, ended)
+    if error is None:
+        more, ended = {}, []
+        try:
+            if members(pid, nonce, more, ended):
+                error = RuntimeError("pids %s of the group were found once every target was "
+                                     "gone" % sorted(more))
+        except BaseException as exc:  # kept; what was found is still ended, then it is raised
+            error = exc
+        error = end_all(more, error, ended)
     if error is not None:
         raise error
 
@@ -2746,7 +2797,11 @@ DETACHES = SAY_ME + ("if os.fork() == 0:\n"
 #: its group with the case's nonce; 4003 has the nonce in a group of its own;
 #: 4004 is in the renderer's group without the nonce. It prints, as JSON, each
 #: signal sent through a pidfd, by pid, each pidfd opened and closed, and
-#: what `kill_above` raised.
+#: what `kill_above` raised. Round CX-34's models (lane 3's Codex review of
+#: code PR 97 at `f776b435`, SHOULDs 1 and 3): `lead-gone`, the renderer gone
+#: before it is pinned; `stop-never`, 4002's stop never seen; `close-error`,
+#: the close of 4001's pidfd fails (EIO); `pin-raises`, the signal 0 of
+#: 4002's pin is refused (EPERM).
 KILL_HARNESS = r'''
 import errno, importlib.util, io, json, sys
 from types import SimpleNamespace
@@ -2757,7 +2812,7 @@ CARRY = {4000: NONCE, 4001: NONCE, 4002: NONCE, 4003: NONCE, 4005: NONCE}
 if MODEL == "stranger-above":
     del CARRY[4000]  # the pid and start token above, but not the case's identity
 sent, opened, opens, closed, now = [], {}, [], [], {"t": 0.0, "reads": {}}
-gone, stops = set(), set()
+gone, stops = ({4000} if MODEL == "lead-gone" else set()), set()
 
 
 def listdir(path):
@@ -2783,6 +2838,8 @@ def pidfd_send_signal(fd, sig):
         sent.append([pid, sig])
     if pid in gone:
         raise ProcessLookupError(errno.ESRCH, "No such process")
+    if MODEL == "pin-raises" and pid == 4002 and sig == 0:
+        raise PermissionError(errno.EPERM, "Operation not permitted")
     if MODEL == "kill-refused" and pid == 4001 and sig == "KILL":
         raise PermissionError(errno.EPERM, "Operation not permitted")
     if sig == "STOP":
@@ -2797,7 +2854,8 @@ def stat(pid):
     if pid in gone or pid not in GROUP:
         return None
     reads = now["reads"][pid] = now["reads"].get(pid, 0) + (pid in stops)
-    landed = pid in stops and not (MODEL == "late-stop" and pid == 4002 and reads < 2)
+    landed = pid in stops and not (MODEL == "late-stop" and pid == 4002 and reads < 2) and not (
+        MODEL == "stop-never" and pid == 4002)
     return [b"T" if landed else b"S", b"1", str(GROUP[pid]).encode(), b"1"] + [b"0"] * 15 + [b"500"] + [b"0"] * 5
 
 
@@ -2809,11 +2867,17 @@ def sleep(seconds):
     now["t"] += seconds
 
 
+def close(fd):
+    closed.append(fd)
+    if MODEL == "close-error" and opened[fd] == 4001:
+        raise OSError(errno.EIO, "the close failed")
+
+
 spec = importlib.util.spec_from_file_location("git_wrapper", sys.argv[1])
 wrapper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(wrapper)
 wrapper.os = SimpleNamespace(listdir=listdir, pidfd_open=pidfd_open, getpid=lambda: 9999,
-                             close=closed.append, environ={IDENTITY: NONCE})
+                             close=close, environ={IDENTITY: NONCE})
 wrapper.signal = SimpleNamespace(SIGSTOP="STOP", SIGKILL="KILL",
                                  pidfd_send_signal=pidfd_send_signal)
 wrapper.select = SimpleNamespace(select=select_)
@@ -3074,8 +3138,8 @@ def test_a_hold_clean_up_ends_a_call_forked_before_its_first_record(tmp_path):
     fifo, ran = outside / "call.fifo", outside / "ran"
     renderer, pins, fd, nonce = None, [], None, _nonce()
     est = SimpleNamespace(root=estate, bin=estate / "bin", nonce=nonce)
-    os.mkfifo(str(fifo), 0o600)
     try:
+        os.mkfifo(str(fifo), 0o600)
         renderer = subprocess.Popen([sys.executable, "-I", "-c", FORKS_A_CALL, str(fifo),
                                      str(ran)], cwd=str(outside), stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
@@ -3110,8 +3174,8 @@ def test_a_render_clean_up_ends_a_detached_render_no_log_names(tmp_path):
     est = SimpleNamespace(root=estate, bin=estate / "bin", nonce=nonce,
                           rearm=lambda new=(): arms.append(list(new)),
                           render_calls=lambda after=0: [])
-    os.mkfifo(str(fifo), 0o600)
     try:
+        os.mkfifo(str(fifo), 0o600)
         starter = subprocess.Popen([sys.executable, "-I", "-c", DETACHES,
                                     str(estate / "flip" / "lanes-index")],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -3299,11 +3363,15 @@ def test_a_clean_up_ends_what_it_knows_before_it_raises_an_unreadable_log(tmp_pa
     raises `IsADirectoryError`), `_quiesce` still finds and ends what it
     knows: its root, the case's child leading a session of its own, ends
     -9, and the root's group member, found by the case's identity, is gone.
-    Then the log's own error is what it raises."""
+    Then the log's own error is what it raises. Its `finally` first ends
+    every process carrying the case's nonce (`_quiesce`, with no log to
+    read), then each pin and the root (lane 3's Codex review of code PR 97
+    at `f776b435`, SHOULD 5)."""
     estate = tmp_path / "estate"
     (estate / "bin" / "git-wrapper.started").mkdir(parents=True)
     root, pins, nonce = None, [], _nonce()
     est = SimpleNamespace(root=estate, bin=estate / "bin", nonce=nonce)
+    owner = SimpleNamespace(root=estate, bin=tmp_path / "no-log", nonce=nonce)
     try:
         root = subprocess.Popen([sys.executable, "-I", "-c", LEADS_A_GROUP],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -3316,7 +3384,8 @@ def test_a_clean_up_ends_what_it_knows_before_it_raises_an_unreadable_log(tmp_pa
             f"the root was not ended before the log's error was raised: {root.returncode}")
         assert _until(pins[0].gone, 5), "the root's group member is still there"
     finally:
-        _each(lambda: _kill_pinned(pins), lambda: _reap_all([root] if root is not None else []))
+        _each(lambda: _quiesce(owner, roots=[root], grace=5), lambda: _kill_pinned(pins),
+              lambda: _reap_all([root] if root is not None else []))
 
 
 @LINUX_ONLY
@@ -3324,14 +3393,16 @@ def test_a_report_that_never_comes_ends_its_starter_and_raises(tmp_path):
     """SHOULD 2 at `46cac748`: `_reported` reads its stand-in's line under
     `select` with an absolute deadline. A stand-in that prints nothing and
     stays makes it raise within the bound, its starter ended and reaped,
-    where a `readline()` with no bound waited for ever."""
+    where a `readline()` with no bound waited for ever. The bound is 1 s,
+    held to within a cushion of 1.5 s (lane 3's Codex review of code PR 97
+    at `f776b435`, SHOULD 7)."""
     proc = subprocess.Popen([sys.executable, "-I", "-c", SLEEP], stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     start = time.monotonic()
     try:
         with pytest.raises(AssertionError, match="nothing was printed"):
             _reported(proc, "the silent stand-in", _nonce(), seconds=1)
-        assert time.monotonic() - start < 30, "the bound was not kept"
+        assert 0.9 <= time.monotonic() - start < 2.5, "the bound of 1 s was not kept"
         assert proc.returncode == -signal.SIGKILL, f"its starter was not ended: {proc.returncode}"
     finally:
         _reap_all([proc])
@@ -3419,7 +3490,9 @@ def test_wait_renders_exit_waits_for_a_renderer_that_took_a_logged_pid_and_keeps
     token: the older one never hides it, and the wait fails at its deadline.
     Then each read of the log names a renderer more, each already gone (a
     pid above pid_max): the wait still fails at its deadline, where it went
-    on for ever. `CEILING` is 1 s; nothing is started or signalled."""
+    on for ever. `CEILING` is 1 s, held to within a cushion of 1.5 s (lane
+    3's Codex review of code PR 97 at `f776b435`, SHOULD 7); nothing is
+    started or signalled."""
     monkeypatch.setattr(sys.modules[__name__], "CEILING", 1.0)
     me = os.getpid()
     live = [{"renderer": me, "renderer_start": str(int(_stat(me)["start"]) + 1)},
@@ -3436,7 +3509,7 @@ def test_wait_renders_exit_waits_for_a_renderer_that_took_a_logged_pid_and_keeps
     start = time.monotonic()
     with pytest.raises(pytest.fail.Exception, match="within"):
         RenderEstate.wait_renders_exit(SimpleNamespace(render_calls=one_more), 0, "renders")
-    assert time.monotonic() - start < 10, "the deadline was not kept"
+    assert 0.9 <= time.monotonic() - start < 2.5, "the deadline of 1 s was not kept"
 
 
 @LINUX_ONLY
@@ -3482,3 +3555,183 @@ def test_a_wrapper_kill_ends_every_target_whatever_its_discovery_or_a_kill_raise
     assert refused["raised"] == ["PermissionError", "EPERM"], refused
     assert _killed(refused) == {4000, 4001, 4002}, refused
     assert refused["closed"] == refused["opened"], refused
+
+
+#: A stand-in that prints a part of a line, with no newline, and stays.
+PART_LINE = "import os, time; os.write(1, b'4194'); time.sleep(300)"
+
+
+@LINUX_ONLY
+def test_a_report_of_a_part_line_ends_its_starter_and_raises():
+    """SHOULD 2 at `f776b435`: `_reported` reads its stand-in's line without
+    blocking, in increments, under one deadline, to a newline or EOF. A
+    stand-in prints a part of a line, with no newline, and stays; once that
+    part can be read, `_reported` raises within its bound, 1 s, held to
+    within a cushion of 1.5 s, with what came, its starter ended and reaped
+    (-9), where a `readline()` after the first byte waited for ever."""
+    import select
+    proc = subprocess.Popen([sys.executable, "-I", "-c", PART_LINE], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert select.select([proc.stdout], [], [], 30)[0], "the stand-in printed nothing"
+        start = time.monotonic()
+        with pytest.raises(AssertionError, match="nothing was printed within 1 s but b'4194'"):
+            _reported(proc, "the stand-in with a part of a line", _nonce(), seconds=1)
+        assert 0.9 <= time.monotonic() - start < 2.5, "the bound of 1 s was not kept"
+        assert proc.returncode == -signal.SIGKILL, f"its starter was not ended: {proc.returncode}"
+    finally:
+        _reap_all([proc])
+
+
+@LINUX_ONLY
+def test_a_clean_up_raises_where_a_stop_is_never_seen(monkeypatch, tmp_path):
+    """SHOULD 1 at `f776b435`: a stop not seen is no stop. A process carrying
+    the case's nonce is found, but each SIGSTOP sent through a pidfd is
+    dropped (stubbed: every other signal goes to the real
+    `signal.pidfd_send_signal`), so it is never seen stopped. `_end_renders`
+    still kills it (-9), and raises (`RuntimeError`, "never seen stopped"),
+    where it returned as if the estate were quiescent."""
+    estate = tmp_path / "estate"
+    procs, nonce, real, dropped = [], _nonce(), signal.pidfd_send_signal, []
+
+    def stop_dropped(fd, sig, *args):
+        if sig == signal.SIGSTOP:
+            dropped.append(fd)
+            return None
+        return real(fd, sig, *args)
+
+    est = SimpleNamespace(root=estate, bin=estate / "bin", nonce=nonce,
+                          render_calls=lambda after=0: [])
+    try:
+        procs.append(subprocess.Popen([sys.executable, "-I", "-c", SLEEP],
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL, start_new_session=True,
+                                      env=_with_identity(nonce)))
+        with monkeypatch.context() as stubs:
+            stubs.setattr(signal, "pidfd_send_signal", stop_dropped)
+            with pytest.raises(RuntimeError, match="never seen stopped"):
+                _end_renders(est, 0, grace=1)
+        assert dropped, "no SIGSTOP was sent"
+        assert _ended(procs[0]) and procs[0].returncode == -signal.SIGKILL, procs[0].returncode
+    finally:
+        _each(lambda: _quiesce(est, grace=5), lambda: _reap_all(procs))
+
+
+@LINUX_ONLY
+def test_a_clean_up_pins_again_a_pid_whose_pinned_process_is_gone():
+    """SHOULD 1 at `f776b435`: a pid and start token pinned before never
+    hide the process that has them now. The pin held under a live
+    process's pid and start token is one whose pidfd reads as gone, as a
+    process that ended, its pid then taken within the same tick, would
+    leave it. `_owned` pins the live process again, by its own identity,
+    and keeps the gone pin under a key of its own, to be let go."""
+    nonce, proc, fresh, pinned, raised = _nonce(), None, [], {}, []
+    try:
+        proc = subprocess.Popen([sys.executable, "-I", "-c", SLEEP], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True, env=_with_identity(nonce))
+        now = _stat(proc.pid)
+        ended = SimpleNamespace(pid=proc.pid, start=now["start"], fd=-1,
+                                gone=lambda seconds=0: True, close=lambda: None)
+        pinned[(proc.pid, now["start"])] = ended
+        _owned({proc.pid: now}, {nonce}, pinned, fresh)
+        assert [held.pid for held in fresh] == [proc.pid], (
+            "the live process with a gone pin's pid and start token was not pinned again")
+        assert pinned[(proc.pid, now["start"])] is fresh[0] and ended in pinned.values(), pinned
+    finally:
+        _each(lambda: _release(pinned.values(), raised), lambda: _raise_first(raised),
+              lambda: _reap_all([proc] if proc is not None else []))
+    assert proc.returncode == -signal.SIGKILL, f"the pinned one was not ended: {proc.returncode}"
+
+
+@LINUX_ONLY
+def test_a_clean_up_names_a_logged_live_process_it_cannot_own(tmp_path):
+    """SHOULD 8 at `f776b435`: each record is validated by itself, apart
+    from the table of this user's processes a clean-up signals from. A
+    renderer is logged with the pid and start token of pid 1, a live process
+    this case cannot own: another user's, where the case does not run as
+    root, else one without the case's identity. `_end_renders` raises
+    naming it, where it passed it over; it is never signalled, as a
+    clean-up signals only what it pinned from this user's processes, and
+    never pid 1."""
+    init = _stat(1)
+    assert init is not None, "pid 1 cannot be read"
+    logged = [{"renderer": 1, "renderer_start": init["start"]}]
+    est = SimpleNamespace(root=tmp_path / "estate", bin=tmp_path / "estate" / "bin",
+                          nonce=_nonce(), render_calls=lambda after=0: logged)
+    with pytest.raises(RuntimeError, match="names pid 1 with the start token of a live process "
+                                           "(that is another user's|whose environment cannot be "
+                                           "read|that does not carry the case's identity)"):
+        _end_renders(est, 0, grace=1)
+
+
+@LINUX_ONLY
+def test_a_pin_and_a_release_close_every_pidfd_whatever_a_read_or_a_close_raised(monkeypatch):
+    """SHOULD 3 at `f776b435`: each pidfd has an owner from its opening.
+    `_pin`, whose signal 0 is refused (`PermissionError`, stubbed), closes
+    the pidfd it opened before it raises. `_release` lets each handle go
+    whatever one raised: the case's process is killed (-9), seen gone and
+    closed; a pin never seen gone (`_Undying`), whose close raises, is sent
+    SIGKILL, is an error, and its close's error is kept. This process has no
+    more fds open than before. Only the case's own child is signalled."""
+    nonce, real, raised = _nonce(), signal.pidfd_send_signal, []
+    child = subprocess.Popen([sys.executable, "-I", "-c", SLEEP], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True, env=_with_identity(nonce))
+    undying = _Undying()
+
+    def zero_refused(fd, sig, *args):
+        if sig == 0:
+            raise PermissionError("the signal 0 is refused")
+        return real(fd, sig, *args)
+
+    def close_refused():
+        undying.calls.append("close")
+        raise OSError("the close failed")
+
+    try:
+        fds = len(os.listdir("/proc/self/fd"))
+        with monkeypatch.context() as stubs:
+            stubs.setattr(signal, "pidfd_send_signal", zero_refused)
+            with pytest.raises(PermissionError, match="refused"):
+                _pin(child.pid, nonce)
+        assert len(os.listdir("/proc/self/fd")) <= fds, "the pidfd `_pin` opened was left open"
+        held = _pin(child.pid, nonce)
+        assert held is not None, "the case's process could not be pinned"
+        undying.close = close_refused
+        _release([held, undying], raised, seconds=0.5)
+        assert _ended(child) and child.returncode == -signal.SIGKILL, child.returncode
+        assert undying.calls == [signal.SIGKILL, "close"], undying.calls
+        assert [type(exc).__name__ for exc in raised] == ["RuntimeError", "OSError"], raised
+        assert len(os.listdir("/proc/self/fd")) <= fds, "a pidfd was left open"
+    finally:
+        _reap_all([child])
+
+
+@LINUX_ONLY
+def test_a_wrapper_kill_ends_a_gone_leader_s_group_and_every_pidfd_whatever_a_stop_or_a_close_did(
+        tmp_path):
+    """SHOULDs 1 and 3 at `f776b435`: `GIT_WRAPPER`'s `kill_above`, run on
+    models (`KILL_HARNESS`), with no process read or signalled.
+    - The renderer is gone before it is pinned: its group's members with the
+      identity (4001, 4002) are still found by it and the group's id, and
+      killed; 4003 and 4004 are never signalled.
+    - 4002's stop is never seen: every target is still killed, and it
+      raises (`RuntimeError`) by the one deadline.
+    - The close of 4001's pidfd fails (EIO): every other pidfd is still
+      closed, and that error is raised.
+    - The signal 0 of 4002's pin is refused (EPERM): its pidfd is closed,
+      the targets found are killed, and that error is raised.
+    In each, every pidfd opened is closed, or its close tried."""
+    said = _kill_models(tmp_path, "lead-gone", "stop-never", "close-error", "pin-raises")
+    for model, what in said.items():
+        assert what["closed"] == what["opened"], (model, what)
+        assert not {pid for pid, _sig in what["sent"]} & {4003, 4004}, (model, what)
+    assert said["lead-gone"]["raised"] is None, said["lead-gone"]
+    assert _killed(said["lead-gone"]) == {4001, 4002}, said["lead-gone"]
+    assert said["stop-never"]["raised"] == ["RuntimeError", None], said["stop-never"]
+    assert _killed(said["stop-never"]) == {4000, 4001, 4002}, said["stop-never"]
+    assert said["close-error"]["raised"] == ["OSError", "EIO"], said["close-error"]
+    assert _killed(said["close-error"]) == {4000, 4001, 4002}, said["close-error"]
+    assert said["pin-raises"]["raised"] == ["PermissionError", "EPERM"], said["pin-raises"]
+    assert _killed(said["pin-raises"]) == {4000, 4001}, said["pin-raises"]
