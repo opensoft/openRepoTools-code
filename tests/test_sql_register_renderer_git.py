@@ -119,6 +119,7 @@ from __future__ import annotations
 
 import atexit
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -137,11 +138,11 @@ import pytest
 
 from conftest import REPO, WINDOWS_SKIP
 from sql_register_cleanup import (IDENTITY, LEADS_A_GROUP, LEAVES_A_MEMBER, LINUX_ONLY, SAY_ME,
-                                  SLEEP, _GapFifo, _Pinned, _Pipe, _Undying, _carried, _each,
-                                  _end_pin, _ended, _fifo_reader, _keep, _misrecorded, _nonce,
-                                  _owned, _pidfds, _pin, _pin_child, _raise_first, _reap_all,
-                                  _release, _reported, _seen_stopped, _send_each, _stat, _table,
-                                  _wait_all, _with_identity)
+                                  SLEEP, _GapFifo, _Pipe, _Undying, _carried, _each, _end_pin,
+                                  _ended, _fifo_reader, _keep, _misrecorded, _nonce, _owned,
+                                  _pidfds, _pin, _pin_child, _raise_first, _reap_all, _release,
+                                  _reported, _send_each, _settle_pinned, _settled, _stat, _table,
+                                  _with_identity)
 from sql_register_helpers import PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_LOG, flipped_copy
 
 pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
@@ -192,6 +193,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_report_that_never_comes_ends_its_starter_and_raises": (),  # T270; the clean-up's own fault path, no task (Codex at 46cac748, SHOULD 2)
     "test_a_wrapper_kill_ends_a_gone_leader_s_group_and_every_pidfd_whatever_a_stop_or_a_close_did": (),  # T270; the clean-up's own fault path, no task (Codex at f776b435, SHOULDs 1 and 3)
     "test_a_wrapper_kill_ends_every_target_whatever_its_discovery_or_a_kill_raised": (),  # T270; the clean-up's own fault path, no task (Codex at 46cac748, SHOULD 6; the coordinator's 6938182757, point 3)
+    "test_a_wrapper_kill_reads_again_once_every_target_is_gone_whatever_a_stop_did": (),  # T270; the clean-up's own fault path, no task (Codex at 5a120647, SHOULD 2)
     "test_a_wrapper_kill_signals_only_the_case_s_own_and_finds_each_member_without_its_leader": (),  # T270; the clean-up's own fault path, no task (Codex at 46cac748, BLOCKING and SHOULD 1; the coordinator's 6938182757, point 1)
     "test_a_write_that_commits_as_the_render_lets_go_is_rendered_with_no_later_write": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
     "test_an_abort_release_runs_neither_a_held_call_nor_a_launched_command": (),  # T270; the clean-up's own fault path, no task (Codex at 18529e5a, SHOULD 1)
@@ -483,6 +485,8 @@ def _end_hold(proc, fifo: Path, fd: int | None, est) -> None:
 #: `_send_each`, `_release`, `_wait_all` and `_raise_first`), are
 #: `tests/sql_register_cleanup.py`'s, which this module and the rollback
 #: module import (round CX-34): its docstring says how a process is owned.
+#: So is the one loop of stop, kill, confirm and read again (`_settled`,
+#: `_settle_pinned`; round CX-35), which `_settle` and the wrapper run.
 #: The clean-up below, `_quiesce` and the reads it makes, is this module's.
 
 
@@ -576,32 +580,17 @@ def _sweep(est, roots, after: int | None, books: SimpleNamespace) -> int:
 
 
 def _settle(est, roots, after: int | None, grace: float, books: SimpleNamespace) -> None:
-    """The rounds of `_quiesce`, each read made once every process pinned
-    is seen stopped, until one finds nothing new; then each still there is
-    killed and seen gone, and the estate read again; past `grace`, one read
-    more, then no more. A process pinned that is not seen stopped by the
-    deadline is an error (`_seen_stopped`), and the rounds end only with a
-    read that finds nothing new once every one pinned is seen gone (lane
-    3's Codex review of code PR 97 at `f776b435`, SHOULD 1)."""
-    deadline, last = time.monotonic() + grace, False
-    while True:
-        new = _sweep(est, roots, after, books)
-        late = _seen_stopped(books.pinned.values(), deadline, books.refused)
-        if late is not None and late not in books.errors:
-            books.errors.append(late)
-        if new and not last and time.monotonic() < deadline:
-            continue
-        live = [held for held in books.pinned.values() if not held.gone()]
-        if not live and not new:
-            return
-        _send_each(live, signal.SIGKILL, books.raised)
-        _wait_all(_Pinned.gone, live, max(deadline, time.monotonic() + 1), 0.02)
-        if last:
-            left = sorted(held.pid for held in books.pinned.values() if not held.gone())
-            books.errors.append(f"the estate is not quiescent {grace:g} s on: pids {left} are "
-                                f"still there after SIGKILL through their pidfds, or more came")
-            return
-        last = time.monotonic() >= deadline  # past it, one more read, then no more
+    """The rounds of `_quiesce`, the shared clean-up's one loop
+    (`_settle_pinned`; lane 3's Codex review of code PR 97 at `5a120647`,
+    SHOULD 2): read after read (`_sweep`), each made once every process
+    pinned is seen stopped, until one finds nothing new; then each still
+    there is killed and seen gone, and the estate read again, until a read
+    made once every one is seen gone finds nothing new. The deadline,
+    `grace` s on, is checked on every read, whatever was stopped, and is an
+    error; a stop not seen is one too, and an earlier error never spares
+    the read after the kill. Each error is kept in `books.raised`."""
+    _settle_pinned(lambda: _sweep(est, roots, after, books), books, time.monotonic() + grace,
+                   books.raised)
 
 
 def _quiesce(est, roots=(), after: int | None = None, grace: float = 10) -> None:
@@ -620,7 +609,8 @@ def _quiesce(est, roots=(), after: int | None = None, grace: float = 10) -> None
     forks or runs on while the rest are found, and the next read is made
     only once each one found is seen stopped (`_stopped`); then every one
     still there is killed (SIGKILL), and once each is gone the estate is
-    read again, until a read finds nothing new, within `grace` s. Each
+    read again, until a read made then finds nothing new, or the deadline,
+    `grace` s on and checked on every read, is reported (`_settle`). Each
     signal is sent in a `try` of its own, and every pidfd is let go in its
     own `finally` (`_release`), so whatever is raised, none is left stopped
     or open. A process logged with no start token, one that a record names
@@ -906,6 +896,8 @@ def end_all(targets, error, ended=()):
     return error
 
 
+''' + inspect.getsource(_settled) + r'''
+
 def kill_above(pid):
     """SIGKILL to the process above, and to every other member of the group
     it leads, each through a pidfd pinned by the case's identity (`pin`),
@@ -920,17 +912,23 @@ def kill_above(pid):
     is raised. A process without the case's identity is never signalled.
     Where the process above is gone before it is pinned, its group's
     members are still found by the nonce and the group's id; a stop not
-    seen by the one deadline of the whole discovery, 10 s on, is an error;
-    and once every target is seen gone, /proc is read once more, and a
-    member found then is ended too and is an error (lane 3's Codex review
-    of code PR 97 at `f776b435`, SHOULD 1)."""
+    seen is an error; and the discovery and the end are the shared
+    clean-up's one loop (`_settled`, whose source this script carries; lane
+    3's Codex review of code PR 97 at `5a120647`, SHOULD 2): read after
+    read (`members`), then each target killed and seen gone, then /proc
+    read again, until a read made once every target is seen gone finds
+    none new, or the one deadline, 10 s on and checked on every read,
+    whatever was stopped, is reported. An earlier error never spares the
+    read after the kill, so a member forked by one whose stop was never
+    seen is still found and ended; each error is kept, and the first is
+    raised."""
     nonce = os.environ.get(IDENTITY)
     if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal") or not nonce:
         sys.stderr.write("the test's git wrapper kills only through a pidfd pinned by the case's "
                          "identity (%s; Python 3.9 or later, Linux 5.3 or later), and it has "
                          "none\n" % IDENTITY)
         sys.exit(70)
-    targets, ended, error = {}, [], None
+    targets, ended, errors = {}, [], []
     lead = pin(pid, nonce)
     there = stat(pid) if lead is None else None
     if lead is not None:
@@ -938,29 +936,38 @@ def kill_above(pid):
     elif there and there[0] not in (b"Z", b"X"):
         sys.stderr.write("the process above is not the case's: nothing is signalled\n")
         return
-    deadline = time.monotonic() + 10
+    until = time.monotonic() + 10
+
+    def live():
+        return [p for p, fd in targets.items() if not select.select([fd], [], [], 0)[0]]
+
+    def stop(by):
+        if wait_until(lambda: all(stopped(p, fd) for p, fd in targets.items()),
+                      max(0, by - time.monotonic())):
+            return None
+        return "pids %s were never seen stopped" % sorted(
+            p for p, fd in targets.items() if not stopped(p, fd))
+
+    def kill(left):
+        raised = []
+        for p in left:
+            try:
+                send(targets[p], signal.SIGKILL)
+            except OSError as exc:  # kept; the rest are still killed
+                raised.append(exc)
+        wait_until(lambda: not live(), max(0, until - time.monotonic()) + 1)
+        return raised
+
     try:
         if lead is not None:
             send(lead, signal.SIGSTOP)
-        while True:
-            if not wait_until(lambda: all(stopped(p, fd) for p, fd in targets.items()),
-                              max(0, deadline - time.monotonic())):
-                raise RuntimeError("pids %s were never seen stopped within 10 s"
-                                   % sorted(p for p, fd in targets.items() if not stopped(p, fd)))
-            if not members(pid, nonce, targets, ended):
-                break
-    except BaseException as exc:  # kept; every target is still ended, then it is raised
-        error = exc
-    error = end_all(targets, error, ended)
-    if error is None:
-        more, ended = {}, []
-        try:
-            if members(pid, nonce, more, ended):
-                error = RuntimeError("pids %s of the group were found once every target was "
-                                     "gone" % sorted(more))
-        except BaseException as exc:  # kept; what was found is still ended, then it is raised
-            error = exc
-        error = end_all(more, error, ended)
+    except OSError as exc:  # kept; its group is still read, and every target ended
+        errors.append(exc)
+    try:
+        _settled(lambda: members(pid, nonce, targets, ended), stop, kill, live, until, errors)
+    except BaseException as exc:  # kept; every target is still ended, then the first is raised
+        errors.append(exc)
+    error = end_all(targets, errors[0] if errors else None, ended)
     if error is not None:
         raise error
 
@@ -2801,7 +2808,9 @@ DETACHES = SAY_ME + ("if os.fork() == 0:\n"
 #: code PR 97 at `f776b435`, SHOULDs 1 and 3): `lead-gone`, the renderer gone
 #: before it is pinned; `stop-never`, 4002's stop never seen; `close-error`,
 #: the close of 4001's pidfd fails (EIO); `pin-raises`, the signal 0 of
-#: 4002's pin is refused (EPERM).
+#: 4002's pin is refused (EPERM). Round CX-35's model (lane 3's Codex review
+#: of code PR 97 at `5a120647`, SHOULD 2): `stop-forks`, 4002's stop never
+#: seen, and in that gap it forks 4005, a late member of the group.
 KILL_HARNESS = r'''
 import errno, importlib.util, io, json, sys
 from types import SimpleNamespace
@@ -2818,7 +2827,8 @@ gone, stops = ({4000} if MODEL == "lead-gone" else set()), set()
 def listdir(path):
     if MODEL == "proc-error":
         raise OSError(errno.EIO, "a read of /proc failed")
-    late = MODEL == "late-stop" and now["reads"].get(4002, 0) >= 1
+    late = (MODEL == "late-stop" and now["reads"].get(4002, 0) >= 1) or (
+        MODEL == "stop-forks" and 4002 in stops)
     return [str(pid) for pid in sorted(GROUP) if pid != 4005 or late] + ["self"]
 
 
@@ -2855,7 +2865,7 @@ def stat(pid):
         return None
     reads = now["reads"][pid] = now["reads"].get(pid, 0) + (pid in stops)
     landed = pid in stops and not (MODEL == "late-stop" and pid == 4002 and reads < 2) and not (
-        MODEL == "stop-never" and pid == 4002)
+        MODEL in ("stop-never", "stop-forks") and pid == 4002)
     return [b"T" if landed else b"S", b"1", str(GROUP[pid]).encode(), b"1"] + [b"0"] * 15 + [b"500"] + [b"0"] * 5
 
 
@@ -3735,3 +3745,20 @@ def test_a_wrapper_kill_ends_a_gone_leader_s_group_and_every_pidfd_whatever_a_st
     assert _killed(said["close-error"]) == {4000, 4001, 4002}, said["close-error"]
     assert said["pin-raises"]["raised"] == ["PermissionError", "EPERM"], said["pin-raises"]
     assert _killed(said["pin-raises"]) == {4000, 4001}, said["pin-raises"]
+
+
+@LINUX_ONLY
+def test_a_wrapper_kill_reads_again_once_every_target_is_gone_whatever_a_stop_did(tmp_path):
+    """SHOULD 2 at `5a120647`: the shared clean-up's one loop (`_settled`),
+    run by `GIT_WRAPPER`'s `kill_above` on a model (`KILL_HARNESS`), with
+    no process read or signalled. 4002's stop is never seen, and in that
+    gap it forks 4005, a late member of the group. Every target is still
+    killed and seen gone, and /proc is read again after, so 4005 is found
+    and killed too, and the stop's error is raised (`RuntimeError`), where
+    that error spared the read after the kill and 4005 was left. 4003 and
+    4004 are never signalled, and every pidfd opened is closed."""
+    said = _kill_models(tmp_path, "stop-forks")["stop-forks"]
+    assert said["raised"] == ["RuntimeError", None], said
+    assert _killed(said) == {4000, 4001, 4002, 4005}, said
+    assert said["closed"] == said["opened"], said
+    assert not {pid for pid, _sig in said["sent"]} & {4003, 4004}, said

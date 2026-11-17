@@ -38,7 +38,10 @@ reads it makes) and the rollback's teardown (`_teardown` and its steps);
 each module's `GIT_WRAPPER`, `_logged`, `_Stuck`, and its `_let_go` and
 `_open_when_held`, whose docstrings name their own module's owners, with
 `ABORT` beside its `_let_go`; and each module's own data constants and file
-helpers.
+helpers. Their loop of stop, kill, confirm and read again is one, here
+(`_settled`; lane 3's Codex review of code PR 97 at `5a120647`, SHOULD 2):
+both engines run it (`_settle_pinned`), and the renderer's `GIT_WRAPPER`
+carries its source for the wrapper's `kill_above`.
 
 Python 3.9 or later: the standard library, and pytest for `LINUX_ONLY`'s
 mark.
@@ -409,6 +412,82 @@ def _raise_first(errors: list) -> None:
                                                     for exc in errors[1:]))
     if errors:
         raise errors[0]
+
+
+# ------------------------------------------------------------------ the one loop
+def _settled(scan, stop, kill, live, until, errors, pause=0.01):
+    """THE ONE LOOP OF EVERY CLEAN-UP HERE (lane 3's Codex review of code PR
+    97 at `5a120647`, SHOULD 2): renderer_git's `_settle` and rollback's
+    `_stop_owned` and `_see_gone`, each through `_settle_pinned`, and the
+    git wrapper's `kill_above`, whose script carries this source. Pass
+    after pass, the absolute deadline `until` (`time.monotonic()`) checked
+    on each, whatever was stopped:
+    - `live()`, the targets not yet seen gone, is taken first; then one
+      read, `scan()`, registers and stops each target new, and says how
+      many are new;
+    - a read that finds none new, made once every target was seen gone,
+      ends it (True); with no `kill` (rollback's step 1, which only stops),
+      a read that finds none new ends it;
+    - else, past `until`, the deadline is reported, and it ends (False);
+    - a read that found any new: `stop(by)` sees each target stopped, or
+      gone, by `by`, half the time left, so a stop never seen leaves the
+      rest for the kill, the confirmation and the read after them; the
+      error text it gives, where one is not seen, is kept;
+    - a read that found none new, or raised, while a target was there:
+      `kill(left)` kills each one still there and sees it gone, and gives
+      back the errors it met;
+    - a read that raised, with no target there: a pause of `pause` s.
+    What a read raises, and each error met, is kept in `errors`, each once
+    (by its type and text), in order. None ends the loop but the deadline,
+    so an earlier error never spares the read made after the kill."""
+    def keep(exc):
+        if not any(type(old) is type(exc) and str(old) == str(exc) for old in errors):
+            errors.append(exc)
+
+    while True:
+        before = live()
+        try:
+            new = scan()
+        except Exception as exc:  # kept; a read that raised is no read that found none new
+            keep(exc)
+            new = None
+        if new == 0 and (kill is None or not before):
+            return True
+        if time.monotonic() >= until:
+            left = sorted(getattr(held, "pid", held) for held in live())
+            keep(RuntimeError(f"the clean-up's deadline passed before a read found none new "
+                              f"once each process found was {'stopped' if kill is None else 'gone'}"
+                              f" (pids not yet gone: {left})"))
+            return False
+        if new:
+            late = stop(time.monotonic() + (until - time.monotonic()) / 2)
+            if late is not None:
+                keep(RuntimeError(late))
+        elif before and kill is not None:
+            for exc in kill(live()):
+                keep(exc)
+        else:
+            time.sleep(pause)
+
+
+def _settle_pinned(scan, books, until: float, errors: list, kill: bool = True) -> bool:
+    """THE ONE LOOP (`_settled`) on the processes a clean-up pinned here: the
+    targets are `books.pinned`'s; a stop is seen by `_seen_stopped`, which
+    passes over one of `books.refused`, whose SIGSTOP raised; the kill is a
+    SIGKILL through each pidfd, each in a `try` of its own (`_send_each`),
+    then each seen gone by `until` or, past it, 1 s on. With `kill` false
+    it only stops (rollback's step 1). Returns what `_settled` returns."""
+    def live() -> list:
+        return [held for held in books.pinned.values() if not held.gone()]
+
+    def killed(left: list) -> list:
+        raised: list = []
+        _send_each(left, signal.SIGKILL, raised)
+        _wait_all(_Pinned.gone, left, max(until, time.monotonic() + 1), 0.02)
+        return raised
+
+    return _settled(scan, lambda by: _seen_stopped(books.pinned.values(), by, books.refused),
+                    killed if kill else None, live, until, errors)
 
 
 # ------------------------------------------------------------------ stand-ins
