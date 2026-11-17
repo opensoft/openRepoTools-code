@@ -3296,23 +3296,44 @@ _WARNING_TEMPLATES = tuple(
 
 def _template_pattern(template: str):
     """`template` as a pattern its line must match in full: its fixed text
-    as it stands, each variable part in its form (T257zc)."""
+    as it stands, each variable part in its form, the i-th as group `p<i>`
+    (T257zc). Each `{…}` but a template's last part ends where the fixed
+    text after it first occurs, and is never tried at a later place: the
+    lookahead `(?=(?P<p<i>>.*?)<text>)` finds that place, and the
+    backreference `(?P=p<i>)` takes what lies before it (T257zd). So no `{…}`
+    is tried again, and a line costs time in proportion to its length, not
+    to a power of it. A line whose `{…}` holds the fixed text that follows
+    it may therefore match no template; it is then counted, never shown."""
+    parts = list(_WARNING_PART.finditer(template))
     at, pattern = 0, []
-    for part in _WARNING_PART.finditer(template):
-        pattern += [re.escape(template[at:part.start()]), f"({_WARNING_PARTS[part.group()]})"]
+    for i, part in enumerate(parts):
+        pattern.append(re.escape(template[at:part.start()]))
+        form = _WARNING_PARTS[part.group()]
+        if part.group() == "{…}" and i + 1 < len(parts):
+            after = template[part.end():parts[i + 1].start()]
+            assert after, f"a `{{…}}` with no fixed text after it: {template}"
+            pattern.append(f"(?=(?P<p{i}>{form}){re.escape(after)})(?P=p{i})")
+        else:
+            pattern.append(f"(?P<p{i}>{form})")
         at = part.end()
     return re.compile("".join(pattern) + re.escape(template[at:]), re.S)
 
 
 _WARNING_PATTERNS = tuple((template, _template_pattern(template))
                           for template in _WARNING_TEMPLATES)
+#: The longest line `_shown_warning` matches against the templates (T257zd);
+#: a longer one is counted, never shown.
+_WARNING_MAX = 4096
 
 
 def _shown_warning(line: str):
     """`line` as a failure message may show it, or None where it matches no
     WARNING template in full (T257zc): the template's fixed text, each `{n}`,
     `{id}` and `{cmd}` as the line has it, and `[withheld]` for each `{…}`.
-    Nothing of the line but those bounded parts is copied."""
+    Nothing of the line but those bounded parts is copied. A line longer than
+    `_WARNING_MAX` is matched against no template (T257zd)."""
+    if len(line) > _WARNING_MAX:
+        return None
     for template, pattern in _WARNING_PATTERNS:
         matched = pattern.fullmatch(line)
         if not matched:
@@ -3320,7 +3341,7 @@ def _shown_warning(line: str):
         shown, at = [], 0
         for i, part in enumerate(_WARNING_PART.finditer(template)):
             shown += [template[at:part.start()],
-                      "[withheld]" if part.group() == "{…}" else matched.group(i + 1)]
+                      "[withheld]" if part.group() == "{…}" else matched.group(f"p{i}")]
             at = part.end()
         return "".join(shown) + template[at:]
     return None
