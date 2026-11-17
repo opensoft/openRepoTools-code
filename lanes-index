@@ -699,16 +699,20 @@ def load_config(text: str | None = None) -> dict:
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
+            # A REFUSAL OF ONE LINE CARRIES ITS NUMBER (T512RF2, NIT 9, commit 36;
+            # lane 3's ruling 6954760292, SHOULD, commit 37): a launched `serve`
+            # writes the file and this number in fixed words, and no text of the
+            # line (`register_serve_config_words`).
             if "=" not in line:
-                # ITS TEXT IS LEFT OUT WHERE A LOG WOULD KEEP IT (T512RF2, NIT 9;
-                # commit 36): a launched `serve` writes `unquoted` instead.
                 refusal = Refusal(f"{path}:{number} is not `key=value`: {line!r}")
-                refusal.unquoted = f"{path}:{number} is not `key=value` (its text is left out)"
+                refusal.line_number = number
                 raise refusal
             key, value = (part.strip() for part in line.split("=", 1))
             if key not in known:
-                raise Refusal(f"{path}:{number} names `{key}=`, which this indexer does not "
-                              f"know (it reads {', '.join(k + '=' for k in known)})")
+                refusal = Refusal(f"{path}:{number} names `{key}=`, which this indexer does "
+                                  f"not know (it reads {', '.join(k + '=' for k in known)})")
+                refusal.line_number = number
+                raise refusal
             if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
                 value = value[1:-1]
             if value.startswith("~/"):
@@ -8105,6 +8109,25 @@ def register_serve_start_only() -> int:
     return EXIT_OK
 
 
+def register_serve_config_words(exc: Exception) -> str:
+    """A CONFIGURATION REFUSAL IN FIXED WORDS, FOR A LAUNCHED `serve` (lane
+    3's ruling 6954760292, SHOULD; commit 37): past its early handoff, its
+    standard error is `register.log`, which carries no URL (socket API
+    §2.3), and a refused line or value can hold one, its user and password
+    in the userinfo or after a query's `=` included. So every refusal of the
+    configuration step is written as the file, `config_path`'s, and, where
+    `load_config` refused one line (`line_number`), that line's number, and
+    no text of the line or of any value. Q6(c)'s refusal (`PrimaryNotBuilt`)
+    is a fixed text already, and is kept. `lanes-index mode` says the
+    refusal whole, to its caller."""
+    if isinstance(exc, PrimaryNotBuilt):
+        return str(exc)
+    number = getattr(exc, "line_number", None)
+    at = f" at its line {number}" if number else ""
+    return (f"the configuration {config_path()[0]} is refused{at}; the refusal's text is "
+            f"left out of the log, and `{PROG} mode` says it")
+
+
 def cmd_serve(args: list[str]) -> int:
     """`lanes-index serve [--start]` (SVC-3 to SVC-6; socket API §8 and §9).
     With `--start`, the start-only form (`register_serve_start_only`).
@@ -8137,12 +8160,24 @@ def cmd_serve(args: list[str]) -> int:
     then its lines go there. WHAT IT DROPS (T512RF2, SHOULD 1; commit 36):
     a refusal at 2 to 4 whose stamp was not written because the stamp's own
     check of `run/` failed (`register_serve_stamp`'s None) is not written
-    at all, since its standard error may be a log in that `run/`, and no
-    line goes to a log in a `run/` that has failed a check (T237zzz). Every
-    other refusal is written there with its cause, "not stamped" and why
-    among them (a held lock, a stamp that cannot be written). A
-    configuration line `load_config` quotes is left out of it
-    (`unquoted`; NIT 9)."""
+    at all, and every other refusal is written there with its cause, "not
+    stamped" and why among them (a held lock, a stamp that cannot be
+    written).
+
+    THE LIMIT (lane 3's ruling 6954760292, choice 2, verbatim): Past its
+    early handoff, a launched `serve` writes no line where `run/` fails the
+    stamp's own check or its second check, since its standard error may be
+    `register.log` there: §2.2's 'writes nothing in it' governs. Its exit 2
+    is seen by no one, since the starter has already exited 0. `status` and
+    each client's check name the directory. Its other refusals after the
+    handoff reach the log with their cause, or `/dev/null`; refusals before
+    the handoff reach the starter.
+
+    A CONFIGURATION REFUSAL IT WRITES IS IN FIXED WORDS (lane 3's ruling
+    6954760292, SHOULD; commit 37): the file, and the line's number where
+    the refusal is about one line, and no text of the line or of any value
+    (`register_serve_config_words`). A `serve` run by hand writes the
+    refusal whole to its own caller, as before."""
     start_only = False
     for arg in args:
         if arg in ("-h", "--help"):
@@ -8180,7 +8215,7 @@ def cmd_serve(args: list[str]) -> int:
         store = PostgresStore(cfg, "register_reader")
     except Refusal as exc:
         stamped, why = register_serve_stamp(paths, "config-refused")
-        cause = (getattr(exc, "unquoted", None) if launched else None) or exc
+        cause = register_serve_config_words(exc) if launched else exc
         if stamped is not None or not launched:
             register_serve_note(
                 f"serve: REFUSED: {cause}. The register service runs only where the "
@@ -8451,8 +8486,10 @@ def register_serve_launch_file() -> str:
     a fallback. In a working directory longer than `PATH_MAX`, `__file__`
     stays relative (lane 1's U5, #165 6895008151, NIT 2), and the join then
     gives a path the kernel refuses, "File name too long": `Popen` succeeds,
-    and the started `serve` fails, logging to `register.log`. So there the
-    join cannot yield a usable path.) The link stays in `__file__`, and a
+    and the started `serve` fails, Python's line saying so going to the
+    standard error it inherits, the starter's, since commit 27 (lane 3's
+    ruling 6954760292, NIT; commit 37). So there the join cannot yield a
+    usable path.) The link stays in `__file__`, and a
     repoint is seen, only where the launcher was invoked through that link;
     a launcher invoked by its real path, as `lanes-edit.sh` does, has the
     real path (see `register_serve_launch`, and lane 5's correction, #165
@@ -9945,24 +9982,40 @@ def register_serve_start_note(log_fd: int | None, text: str) -> None:
 def register_serve_launched() -> bool:
     """WHETHER THIS `serve` WAS STARTED BY THE LAUNCHER (lane 3's ruling on
     da6e30f4, #364 6944222705, BLOCKING 3; lane 5's choice,
-    BRIEF-T512C35-1117c.md; commit 35): `register_serve_launch` starts
-    `serve` in a session of its own (`start_new_session`) with `/` as its
-    working directory, so a `serve` that leads its own session
-    (`os.getsid`) and runs in `/` is taken as launched. Nothing is added to
-    the launcher's reduced environment or to `serve`'s options. A `serve`
-    run by hand in `/` under `setsid`, or by a service manager or as a
-    container's entrypoint there, is taken as launched too, and hands off
-    early (T512RF2, NIT 4; commit 36): its later lines then go to
-    `register.log`, or to `/dev/null` where no log was opened, not to its
-    standard error; some are dropped, a refusal whose `run/` failed the
-    stamp's own check or the start's second check, and the standard-error
-    copy of a lock that cannot be taken; and where its early handoff fails,
-    it ends with 69 before a refusal with 2 that the hand-run order would
-    meet first."""
+    BRIEF-T512C35-1117c.md; commit 35; narrowed by lane 3's ruling
+    6954760292, choice 1; commit 37): `register_serve_launch` starts `serve`
+    in a session of its own (`start_new_session`), with `/` as its working
+    directory and standard input and output on `/dev/null`, the whole launch
+    socket API §8.2 defines. So a `serve` that leads its own session
+    (`os.getsid`), runs in `/`, and has descriptors 0 and 1 on `/dev/null`,
+    each compared with `os.stat(os.devnull)` by device and inode, is taken
+    as launched; a descriptor that is closed, or whose `fstat` fails, is not
+    on `/dev/null`. Nothing is added to the launcher's reduced environment
+    or to `serve`'s options. What such a start drops past its early handoff
+    is choice 2's limit, in `cmd_serve`'s docstring.
+
+    THE LIMIT (lane 3's ruling 6954760292, choice 1, verbatim): A `serve`
+    that leads its own session, runs in `/` and has standard input and
+    output on `/dev/null` is taken as launched, whatever started it. Run by
+    hand that way, its lines after its early handoff go to `register.log`,
+    or to `/dev/null`, not to its caller, 'could not be bound' among them.
+    Where its early hold or handoff fails, it exits 69 before the 2 or 0 the
+    hand-run order would give. Its checks, stamp, lock, sweep and bind are
+    unchanged."""
     try:
-        return os.getsid(0) == os.getpid() and os.getcwd() == "/"
+        if os.getsid(0) != os.getpid() or os.getcwd() != "/":
+            return False
+        null = os.stat(os.devnull)
     except (AttributeError, OSError):
         return False
+    for fd in (0, 1):
+        try:
+            st = os.fstat(fd)
+        except OSError:
+            return False            # closed, or no `fstat`: not on `/dev/null`
+        if (st.st_dev, st.st_ino) != (null.st_dev, null.st_ino):
+            return False
+    return True
 
 
 def register_serve_hold() -> str | None:
