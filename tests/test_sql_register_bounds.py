@@ -5596,3 +5596,67 @@ def test_a_failed_tools_cluster_error_in_pgcluster_shows_no_line_of_its_output(
     assert not _t257zzb_seen(request, failed, planted), \
         f"{kind}: the planted value shows in {_t257zzb_seen(request, failed, planted)}"
     assert "line(s)" in str(failed.value), f"{kind}: the failure shows no count of lines"
+
+
+@pytest.mark.parametrize("kind", ["select-1", "standby-answer", "standby-failed", "imported-check"])
+def test_a_psql_answer_pgcluster_did_not_expect_is_counted_never_quoted(
+        monkeypatch, tmp_path, request, kind):
+    """T257zzc (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09, B2, `{said!r}` at pgcluster :845 and :1899; T229n), with no engine
+    and no process: psql, run by `Cluster.psql` with subprocess.run a
+    stand-in, answers with a planted value where pgcluster expects a fixed
+    answer: `SELECT 1` in the smokes' `_select_1`; `pg_is_in_recovery()` in
+    `start_again(standby=True)`, once on stdout and once failing with it
+    on stderr, the server log holding a role's statement with the planted
+    password too; and `_imported_check`'s journal|head|switch, raised as
+    `pg_imported` raises `imported_problem`. The planted value is in none
+    of the failure's `str`, `repr`, `args` or formatted traceback, nor in
+    pytest's report of it (`_t257zzb_seen`). Before T229n each quoted the
+    answer. The planted value is no credential of any login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+
+    class Postmaster:
+        pid, returncode = 4242, None
+
+        def poll(self):
+            return None
+
+    def answers(code, said, told=""):
+        return lambda argv, **kw: subprocess.CompletedProcess(argv, code, said, told)
+
+    monkeypatch.setattr(pgcluster, "DIE_WITH_PYTEST", False)
+    cluster = pgcluster.Cluster(tmp_path / "bin")
+    cluster.root = tmp_path
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "postmaster.pid").write_text(
+        "\n".join(["4242", str(tmp_path / "data"), "0", "5432", str(tmp_path), "*", "0", "ready"])
+        + "\n", encoding="utf-8")
+    (tmp_path / "server.log").write_text(
+        f"LOG:  statement: ALTER ROLE lanes_w_t PASSWORD '{planted}';\n", encoding="utf-8")
+    monkeypatch.setattr(pgcluster.subprocess, "Popen", lambda argv, **kw: Postmaster())
+    kinds = pgcluster.ClusterError
+    if kind == "select-1":
+        monkeypatch.setattr(pgcluster.subprocess, "run", answers(0, f"{planted}\n"))
+        call = lambda: pgcluster._select_1(cluster)  # noqa: E731
+    elif kind == "standby-answer":
+        monkeypatch.setattr(pgcluster.subprocess, "run", answers(0, f"{planted}\n"))
+        call = lambda: cluster.start_again(standby=True)  # noqa: E731
+    elif kind == "standby-failed":
+        monkeypatch.setattr(pgcluster.subprocess, "run",
+                            answers(2, "", f"psql: error: {planted}\nLINE 1: {planted}\n"))
+        call = lambda: cluster.start_again(standby=True)  # noqa: E731
+    else:
+        monkeypatch.setattr(pgcluster.subprocess, "run",
+                            answers(0, f"0:import:{planted}|0|files:absent\n"))
+
+        def call():
+            problem = cluster._imported_check("0" * 40)
+            # `pg_imported`'s own words, where the session has no tmpl_imported
+            pytest.fail(f"no {pgcluster.IMPORTED} on the session cluster, so this case cannot "
+                        f"clone it: {problem}", pytrace=False)
+        kinds = pytest.fail.Exception
+    with pytest.raises(kinds) as failed:
+        call()
+    assert not _t257zzb_seen(request, failed, planted), \
+        f"{kind}: the planted value shows in {_t257zzb_seen(request, failed, planted)}"
