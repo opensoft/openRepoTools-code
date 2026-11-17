@@ -1154,7 +1154,7 @@ class Bench:
                               capture_output=True, text=True, env=env, cwd=str(self.wip),
                               timeout=400, stdin=subprocess.DEVNULL)
         assert proc.returncode == 0, \
-            f"the bench's import --at C (lane 1's T115): {proc.returncode}: {proc.stderr}"
+            f"the bench's import --at C (lane 1's T115): {proc.returncode}: {_said_safely(proc.stderr)}"
         tree = subprocess.run(["git", "rev-parse", f"{self.c}:lanes"], cwd=str(self.wip),
                               env=self.env, capture_output=True, text=True,
                               check=True).stdout.strip()
@@ -1618,7 +1618,7 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
         if session is not None:
             _end(session)
     if spec["exit"] is not None:
-        assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
+        assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {_said_safely(proc.stderr)}"
     else:
         assert proc.returncode != 0, f"{case}: the path ended without its read"
     if row == "reader":
@@ -1627,7 +1627,7 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
         # every form (4.18:758-760; B14 tasks:454), so a refused reader's
         # "nothing on stdout" (TP:3603) is its `mode primary` line alone.
         assert proc.stdout == "mode primary\n", \
-            f"a reader's 69 prints its mode line and nothing more: {proc.stdout!r}"
+            f"a reader's 69 prints its mode line and nothing more: {_said_safely(proc.stdout)!r}"
     if row == "mode-query":
         assert proc.stdout == "index\n" and bench.calls() == [], "the query reads no database"
     if row == "status":
@@ -1692,7 +1692,7 @@ def _answer_2_row(pg, tmp_path: Path, request, fault: str) -> None:
         assert made.returncode == 2 and record.get("mode") == "name-drift" \
             and record.get("to") == OFFER_TO, \
             f"{case}: the guard made no offer on a healthy register: {made.returncode}: " \
-            f"{record}: {made.stderr}"
+            f"{record}: {_said_safely(made.stderr)}"
         begun = len(_begin_log(bench))
         mark.append(len(bench.calls()))
         proc, elapsed = bench.run("answer-2", config)
@@ -1700,8 +1700,8 @@ def _answer_2_row(pg, tmp_path: Path, request, fault: str) -> None:
             outcome = _bind_outcome(offer, ANSWER_2_WAIT_S)
     finally:
         relay.close()
-    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
-    assert "BINDING" in proc.stdout + proc.stderr, f"{case}: no BINDING: {proc.stderr}"
+    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {_said_safely(proc.stderr)}"
+    assert "BINDING" in proc.stdout + proc.stderr, f"{case}: no BINDING: {_said_safely(proc.stderr)}"
     assert elapsed < spec["bound"], f"{case}: {elapsed:.2f} s, not under {spec['bound']} s"
     reads = [c for c in bench.calls()[mark[0]:] if c.get("sid") == mine]
     assert len(reads) == 1 and reads[0]["exit"] == 0, \
@@ -1802,7 +1802,7 @@ def _service_57014(bench: Bench, spec: dict, user: str) -> None:
                 break
             time.sleep(0.25)
         assert warm, (f"service: no guard run of {WARM_RUNS} was answered through the "
-                      f"service: {proc.returncode}: {proc.stderr}")
+                      f"service: {proc.returncode}: {_said_safely(proc.stderr)}")
         _slow_statement(bench.pg, spec["table"], spec["group"], 4 * statement_s + 5)
         proc, _ = bench.run("service", config, service=serve)
     finally:
@@ -1812,7 +1812,7 @@ def _service_57014(bench: Bench, spec: dict, user: str) -> None:
     took = held[0]["error"] - held[0]["request"]
     assert statement_s <= took < 2 * statement_s, \
         f"service: the held child's 57014 {took:.3f} s after its request"
-    assert proc.returncode == spec["exit"], f"service: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == spec["exit"], f"service: {proc.returncode}: {_said_safely(proc.stderr)}"
     _record("service-F4", took, statement_s, "timing rules 2 and 3, the held child's request")
 
 
@@ -1857,7 +1857,7 @@ def test_a_slow_statement_meets_57014_before_the_client_timer(pg, tmp_path, requ
     took = ended[0]["end"] - ended[0]["start"]
     assert statement_s <= took < 2 * statement_s, f"{row}: 57014 after {took:.2f} s"
     if spec["exit"] is not None:
-        assert proc.returncode == spec["exit"], f"{row}: {proc.returncode}: {proc.stderr}"
+        assert proc.returncode == spec["exit"], f"{row}: {proc.returncode}: {_said_safely(proc.stderr)}"
     _record(f"{row}-F4", took, statement_s, "timing rules 2 and 3")
 
 
@@ -1909,10 +1909,10 @@ def test_the_outage_declare_probe_ends_inside_its_bound_and_the_declaration_foll
             _end(session)
     declaration = config.parent / "register-outage"
     if form == "word":
-        assert proc.returncode == 0, proc.stderr
+        assert proc.returncode == 0, _said_safely(proc.stderr)
         assert declaration.exists(), "the declaration is written"
     else:
-        assert proc.returncode == 2, proc.stderr
+        assert proc.returncode == 2, _said_safely(proc.stderr)
         assert not declaration.exists(), "no file in the --rollback form"
     assert elapsed < 2 * 8, f"{case}: {elapsed:.2f} s"
     _record(f"outage-probe-{case}", elapsed, 8, "timing rule 2")
@@ -2034,7 +2034,7 @@ def test_a_waiting_migration_gives_up_at_its_own_lock_timeout(pg, tmp_path, requ
         start = time.monotonic()
         proc = pg.psql(_own_migration(number), check=False)
         elapsed = time.monotonic() - start
-        said = f": migration {number} exited {proc.returncode}: {proc.stderr.strip()}"
+        said = f": migration {number} exited {proc.returncode}: {_said_safely(proc.stderr)}"
         assert proc.returncode != 0, "the waiting migration is refused" + said
         assert "55P03" in proc.stderr, "the migration gave up at its lock_timeout, 55P03" + said
         # Y:2342 (design 1.5 step 3): each migration is one transaction that
@@ -2051,7 +2051,7 @@ def test_a_waiting_migration_gives_up_at_its_own_lock_timeout(pg, tmp_path, requ
     proc = pg.psql(_own_migration(number), check=False)
     assert proc.returncode == 0, ("the rerun succeeds once the reader's transaction ends: "
                                   f"migration {number} exited {proc.returncode}: "
-                                  f"{proc.stderr.strip()}")
+                                  f"{_said_safely(proc.stderr.strip())}")
     version = pg.psql(f"SELECT version FROM {SCHEMA}.schema_version WHERE id = 1;").stdout
     assert int(version) == number, f"the rerun left version {version.strip()}, not {number}"
 
@@ -2128,7 +2128,7 @@ def test_import_and_reconcile_set_their_bounds_at_connect(tmp_path):
                               cwd=str(wip), timeout=120, stdin=subprocess.DEVNULL)
         calls = [json.loads(l) for l in log.read_text().splitlines()] if log.exists() else []
         calls = [c for c in calls if c.get("kind") != "version"]
-        assert calls, f"{argv[0]} made no psql call: {proc.returncode}: {proc.stderr[-400:]}"
+        assert calls, f"{argv[0]} made no psql call: {proc.returncode}: {_said_safely(proc.stderr[-400:])}"
         for call in calls:
             assert call["connect_timeout"] == str(C), (argv[0], call["connect_timeout"])
             assert all(o in (call["options"] or "") for o in options), (argv[0], call["options"])
@@ -2237,14 +2237,14 @@ def _t257u_refused_with_no_value(said: str, key: str, value: str) -> None:
     (T257zb; Codex's review of P09 at `b8f9e35a`, SHOULD 11: the bare value
     was not looked for, so "value 1 is under 2" passed)."""
     case = f"[{key}, connect_timeout={value}]"
-    assert f"`{key}=`" in said, f"{case} the key is not named: {said}"
+    assert f"`{key}=`" in said, f"{case} the key is not named: {_said_safely(said)}"
     assert "`connect_timeout=`" in said and "under 2" in said, (
-        f"{case} `connect_timeout=` and its minimum are not named: {said}")
+        f"{case} `connect_timeout=` and its minimum are not named: {_said_safely(said)}")
     shown = [v for v in (f"connect_timeout={value}", "t257_", "register_db", "127.0.0.1", "55432")
              if v in said]
-    assert not shown, f"{case} the refusal shows {shown}: {said}"
+    assert not shown, f"{case} the refusal shows {shown}: {_said_safely(said)}"
     bare = re.findall(rf"(?<![\w.]){re.escape(value)}(?!\w|\.\d)", said.replace(LIBPQ_READING, ""))
-    assert not bare, f"{case} the refusal shows the value {value} as a token of its own: {said}"
+    assert not bare, f"{case} the refusal shows the value {value} as a token of its own: {_said_safely(said)}"
 
 
 def test_a_connect_timeout_under_2_is_refused_at_load_config(tmp_path, monkeypatch):
@@ -2283,7 +2283,7 @@ def test_a_connect_timeout_under_2_is_refused_at_load_config(tmp_path, monkeypat
             streams = (res.stdout + res.stderr).replace(str(tmp_path), "<tmp>")
             assert res.returncode == 2 and res.stdout == "", (
                 f"[{key}, connect_timeout={value}] mode exits {res.returncode}, not 2 with an "
-                f"empty stdout: {streams}")
+                f"empty stdout: {_said_safely(streams)}")
             _t257u_refused_with_no_value(streams, key, value)
     config.write_text("".join(
         line + ("?connect_timeout=2" if line.startswith(("register_url=", "reader_url=")) else "")
@@ -2424,7 +2424,7 @@ def test_each_register_call_is_one_request(tmp_path, monkeypatch, call):
                     [{"match": "find_write", "stdout": FOUND_OUT}])
         calls, _ = _fake_log(log)
         assert len(calls) == 1, \
-            f"one try, one psql call: {len(calls)}; exit {proc.returncode}: {proc.stderr}"
+            f"one try, one psql call: {len(calls)}; exit {proc.returncode}: {_said_safely(proc.stderr)}"
         assert calls[0]["argv"] == REGISTER_ARGV
         write = f"'{WRITE['write_id']}'"
         assert _one_request(calls[0]) == [
@@ -2440,21 +2440,21 @@ def test_each_register_call_is_one_request(tmp_path, monkeypatch, call):
             "ORDER BY x.o, x.p COLLATE \"C\") TO STDOUT",
             "ROLLBACK"]
         assert (proc.returncode, proc.stdout) == (0, FOUND_PRINTED), \
-            f"exit {proc.returncode}: {proc.stdout!r}: {proc.stderr}"
+            f"exit {proc.returncode}: {_said_safely(proc.stdout)!r}: {_said_safely(proc.stderr)}"
         return
     if call == "snapshot-psql-14":
         proc = _cli(SNAPSHOT_ARGV, tmp_path,
                     [{"kind": "version", "stdout": "psql (PostgreSQL) 14.11\n"}])
         calls, probes = _fake_log(log)
-        assert proc.returncode == 69, f"exit {proc.returncode}: {proc.stderr}"
-        assert "14.11" in proc.stderr, f"the 69 names the version: {proc.stderr}"
+        assert proc.returncode == 69, f"exit {proc.returncode}: {_said_safely(proc.stderr)}"
+        assert "14.11" in proc.stderr, f"the 69 names the version: {_said_safely(proc.stderr)}"
         assert len(probes) == 1 and calls == [], \
             f"one --version call and no request: {len(probes)}, {len(calls)}"
         return
     proc = _cli(SNAPSHOT_ARGV, tmp_path)
     calls, _ = _fake_log(log)
     assert len(calls) == 1, \
-        f"one psql call carries the snapshot: {len(calls)}; exit {proc.returncode}: {proc.stderr}"
+        f"one psql call carries the snapshot: {len(calls)}; exit {proc.returncode}: {_said_safely(proc.stderr)}"
     assert calls[0]["argv"] == REGISTER_ARGV
     parts = _one_request(calls[0])
     assert parts[0].startswith("SET search_path TO ") and T257_SCHEMA in parts[0], parts[0]
@@ -2621,8 +2621,8 @@ def test_the_lookups_tries_start_inside_the_window_and_end_in_3(pg, tmp_path, re
             listener.close()
         if session is not None:
             _end(session)
-    assert proc.returncode == 3, f"lookup-{fault}: {proc.returncode}: {proc.stderr}"
-    assert bench.write_id in proc.stderr, f"the 3 names the write's id: {proc.stderr}"
+    assert proc.returncode == 3, f"lookup-{fault}: {proc.returncode}: {_said_safely(proc.stderr)}"
+    assert bench.write_id in proc.stderr, f"the 3 names the write's id: {_said_safely(proc.stderr)}"
     tries = [b["begin"] for b in bench.begins()]
     assert tries, "the lookup made no try"
     for before, after in zip(tries, tries[1:]):
@@ -2956,7 +2956,7 @@ def test_an_orphaned_writer_transaction_is_ended_by_the_idle_bound(pg, tmp_path,
     first = _writer(bench, config, f"PAUSED {DOT} T257's orphan, unsent", deadline="3")
     out, err = first.communicate(timeout=300)
     scripts = [e["stdin"] for e in _shim_calls(where) if "commit_write" in e.get("stdin", "")]
-    assert scripts, f"the first writer sent no commit call: {first.returncode}: {err}"
+    assert scripts, f"the first writer sent no commit call: {first.returncode}: {_said_safely(err)}"
     parts = [part.strip() for part in scripts[0].strip().rstrip(";").split(SEP)]
     assert parts[-1] == "COMMIT", f"the commit call's script ends with COMMIT: {parts}"
     # ITS `not_after` MOVES WITH THE REPLAY (T257m; line BD-18): the entry's
@@ -2992,7 +2992,7 @@ def test_an_orphaned_writer_transaction_is_ended_by_the_idle_bound(pg, tmp_path,
             f"the idle bound ended the orphan {ended:.2f} s after it idled"
         _record("orphaned-writer", ended, IDLE_BOUND_S, "timing rules 2 and 3")
         out, err = waiting.communicate(timeout=300)
-        assert waiting.returncode == 0, f"the waiting write did not commit: {waiting.returncode}: {err}"
+        assert waiting.returncode == 0, f"the waiting write did not commit: {waiting.returncode}: {_said_safely(err)}"
     finally:
         try:
             if waiting is not None:
@@ -3080,9 +3080,9 @@ def test_the_joined_snapshot_logs_one_statement_and_reads_byte_identical_to_the_
     lines.append("COMMIT;")
     one_by_one = subprocess.run([db.psql_bin, *REGISTER_ARGV], input="\n".join(lines) + "\n",
                                 capture_output=True, text=True, env=db.env(FX_WRITER), timeout=60)
-    assert one_by_one.returncode == 0, one_by_one.stderr
+    assert one_by_one.returncode == 0, _said_safely(one_by_one.stderr)
     assert outs[0] == one_by_one.stdout, \
-        f"the joined snapshot read {outs[0]!r}, one by one {one_by_one.stdout!r}"
+        f"the joined snapshot read {outs[0]!r}, one by one {_said_safely(one_by_one.stdout)!r}"
 
 
 #: `C`, the commit's client timer, at `c` = 2 and `N_a` = 1 (D9).
@@ -3117,12 +3117,12 @@ def test_the_lookups_wait_counts_from_the_snapshot_calls_end_and_gets_no_lr011(
     out, err = _communicated(writer)    # its group, its pipes, on a timeout too (T257w)
     scripts, times = _shim_calls(where), bench.calls()
     assert len(times) == len(scripts), \
-        f"a call was cut by its timer: {len(scripts)} sent, {len(times)} ended: {err}"
+        f"a call was cut by its timer: {len(scripts)} sent, {len(times)} ended: {_said_safely(err)}"
     snapshot = next((i for i, e in enumerate(scripts) if "commit_write" not in e["stdin"]
                      and "find_write" not in e["stdin"]), None)
     lookup = next((i for i, e in enumerate(scripts) if "find_write" in e["stdin"]), None)
     assert snapshot is not None and lookup is not None, \
-        f"the writer made no snapshot and lookup: {writer.returncode}: {err}"
+        f"the writer made no snapshot and lookup: {writer.returncode}: {_said_safely(err)}"
     assert "LR011" not in times[lookup]["first"], f"the first try met LR011: {times[lookup]}"
     gap = times[lookup]["start"] - times[snapshot]["end"]
     assert COMMIT_C_S - 1 <= gap < 2 * COMMIT_C_S + 1, \
@@ -3174,7 +3174,7 @@ def test_over_a_delayed_tls_link_no_healthy_call_meets_its_timer(tls_cluster, tm
                               FX_WRITER)
         writer = _writer(bench, config, f"PAUSED {DOT} T257's delayed link")
         _, err = _communicated(writer)  # its group, its pipes, on a timeout too (T257w)
-        assert writer.returncode == 0, f"the healthy write: {writer.returncode}: {err}"
+        assert writer.returncode == 0, f"the healthy write: {writer.returncode}: {_said_safely(err)}"
         kinds = ["commit" if "commit_write" in e["stdin"] else "snapshot"
                  for e in _shim_calls(where)]
         proc, _ = bench.run("lookup", config)
@@ -3363,6 +3363,40 @@ def _warnings_of(err: str) -> tuple:
         else:
             shown.append(told)
     return shown, withheld
+
+
+def _said_safely(said) -> str:
+    """What a failure message may show of a process's output (T257zh; lane
+    3's ruling 6946445277 on lane 2's pre-review RV9-36 of P09 at
+    `2407ea06`, S2: every failure message that showed a writer's or a
+    tool's raw stdout or stderr shows this instead). `said` is a captured
+    stream, text or bytes, or something that ran, with an exit and its two
+    streams: a `CompletedProcess`, or a writer with `code`, `out` and
+    `err`. Shown are its exit, where it has one, and for each stream its
+    count of lines and of WARNING lines, and the WARNING lines that match a
+    template of the product's WARNING sites in full, as `_shown_warning`
+    shows them. No other text of it is shown: no line that no template
+    matches, whole or in part. Text built from a stream, a slice or a
+    `strip()` of it, is a stream here too."""
+    if said is None or isinstance(said, (str, bytes, bytearray)):
+        code, streams = None, [("output", said)]
+    else:
+        code = getattr(said, "returncode", getattr(said, "code", None))
+        streams = [("stdout", getattr(said, "stdout", getattr(said, "out", None))),
+                   ("stderr", getattr(said, "stderr", getattr(said, "err", None)))]
+    parts = [] if code is None else [f"exit {code}"]
+    for name, text in streams:
+        if isinstance(text, (bytes, bytearray)):
+            text = bytes(text).decode("utf-8", "replace")
+        if text is not None and not isinstance(text, str):
+            parts.append(f"{name}: not captured as text")
+            continue
+        shown, withheld = _warnings_of(text or "")
+        parts.append(f"{name}: {len((text or '').splitlines())} line(s), "
+                     f"{len(shown) + withheld} of them WARNING lines, {withheld} of no known "
+                     f"template withheld; no other line is shown")
+        parts.extend(f"  {name}'s WARNING line: {line}" for line in shown)
+    return "\n".join(parts)
 
 
 def _burst_report(logins: str, writers: list, ends: list, rows: list, calls: list) -> str:
@@ -3664,6 +3698,41 @@ def test_the_pending_record_warning_is_shown_with_its_generation_id():
     assert _warnings_of(line + "\n") == ([want], 0), _warnings_of(line + "\n")
 
 
+def test_a_failure_message_shows_no_line_of_a_writers_output_that_no_template_matches():
+    """`_said_safely` (T257zh; lane 3's ruling 6946445277 on lane 2's
+    pre-review RV9-36 of P09 at `2407ea06`, S2), with no engine and no
+    process: a writer that ended 75 with a password-file line, a
+    `PGPASSWORD=` value and a SCRAM verifier on lines of its stderr that no
+    template matches, and the same value on its stdout, fails a
+    representative assert, `_sent_a_snapshot`'s, as a writer that sent no
+    snapshot request does. Its message shows the exit, stderr's counts and
+    the one WARNING line that matches a template, and not the planted
+    value. Before T257zh the message held the writer's whole stderr. The
+    planted value is no credential of any login."""
+    planted = f"fake-{uuid.uuid4().hex}"
+    warning = ("lanes-edit: WARNING: `lanes-index mode` did not answer within 2 s, and was stopped "
+               "(exit 124), so `set-row-state` runs in files mode, as on a workstation with no "
+               "lanes-index configuration (feature 007, D3).")
+    proc = subprocess.CompletedProcess(
+        ["lanes-edit.sh"], 75, f"lanes-edit: {planted}\n",
+        f"127.0.0.1:5432:register:lanes_w_fx:{planted}\nlanes-edit: PGPASSWORD={planted}\n"
+        f"lanes-edit: SCRAM-SHA-256$4096:{planted}=${planted}=:{planted}=\n{warning}\n"
+        "lanes-edit: register busy; nothing was written\n")
+
+    class _SentNothing:
+        def sent(self) -> list:
+            return []
+
+    with pytest.raises(AssertionError) as failed:
+        _sent_a_snapshot(_SentNothing(), "[T257zh]", proc)
+    said = str(failed.value)
+    assert planted not in said, "the planted value is in the failure message"
+    assert f"output's WARNING line: {warning}" in said, f"the template's line, shown:\n{said}"
+    assert "output: 5 line(s), 1 of them WARNING lines, 0 of no known template withheld" in said, \
+        f"stderr's counts:\n{said}"
+    assert "register busy" not in said, f"a line no template matches is shown:\n{said}"
+
+
 # ============================== D9's rollback and cutover rows (T278), real engine
 
 #: The `git` wrapper that fails each push (TP:3633-3634, "a cutover whose push
@@ -3774,11 +3843,11 @@ class Operator:
                                  f"2026-10-01T05:20:00Z: opensoft/repoH main {TIP_A}",
                                  env={"LANES_LANE": OPERATOR})
             assert proc.returncode == 0, (
-                f"the dead HOLD's release, lanes-edit.sh append-line: {proc.stdout}{proc.stderr}")
+                f"the dead HOLD's release, lanes-edit.sh append-line: {_said_safely(proc.stdout)}{_said_safely(proc.stderr)}")
             self.reg.c = self.reg.tip()
         proc = self.reg.import_at(pg, self.reg.c)
         assert proc.returncode == 0, \
-            f"lanes-index import --at C (lane 1's T115): {proc.returncode}: {proc.stderr}"
+            f"lanes-index import --at C (lane 1's T115): {proc.returncode}: {_said_safely(proc.stderr)}"
         self.bin = tmp_path / "bin"
         self.bin.mkdir()
         (self.bin / "psql").write_text(TIMING_PSQL, encoding="utf-8")
@@ -3806,7 +3875,7 @@ class Operator:
                                {"PATH": self.reg.env["PATH"]})
             assert proc.returncode == 0, (
                 f"the estate's cutover --import C (lane 3's T327): {proc.returncode}: "
-                f"{proc.stderr}")
+                f"{_said_safely(proc.stderr)}")
             switch = self.state()[0].split("|")[:2]
             assert switch == ["primary", "present"], f"the estate's cutover left {switch}"
             assert self.origin_tip() != self.reg.c, "the cutover's marker commit is not on origin"
@@ -4141,7 +4210,7 @@ def _operator_row(pg, tmp_path: Path, request, row: str, fault: str) -> None:
     finally:
         listener.close()
     case = f"{row}-{fault}"
-    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {_said_safely(proc.stderr)}"
     if after is not None:
         assert any(_did(c, after) and c["exit"] == 0 for c in op.calls()), \
             f"{case}: the {after} call before the fault never reached the cluster"
@@ -4175,7 +4244,7 @@ def _operator_57014(pg, tmp_path: Path, request, row: str) -> None:
     assert ended, f"{row}: no call ended with 57014: {op.calls()}"
     took = ended[0]["end"] - ended[0]["start"]
     assert statement_s <= took < 2 * statement_s, f"{row}: 57014 after {took:.2f} s"
-    assert proc.returncode == spec["f4_exit"], f"{row}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == spec["f4_exit"], f"{row}: {proc.returncode}: {_said_safely(proc.stderr)}"
     _record(f"{row}-F4", took, statement_s, "timing rules 2 and 3")
 
 
@@ -4221,7 +4290,7 @@ def _snapshot_miss(pg, tmp_path: Path, request, fault: str) -> None:
                              env=op.env, cwd=str(op.reg.wip), timeout=120,
                              stdin=subprocess.DEVNULL)
     assert planted.stdout.strip() == str(head + 5), \
-        f"{case}: the cache's head was not planted at {head + 5}: {planted.stdout}{planted.stderr}"
+        f"{case}: the cache's head was not planted at {head + 5}: {_said_safely(planted.stdout)}{_said_safely(planted.stderr)}"
     relay = StartupRelay(f"{pg.host}/.s.PGSQL.{pg.port}",
                          armed=lambda: any(c.get("snapshot") for c in op.calls()))
     argv = ["register", "snapshot", "--write-id", "new", "--lane", op.lane,
@@ -4231,13 +4300,13 @@ def _snapshot_miss(pg, tmp_path: Path, request, fault: str) -> None:
         proc, _ = op.run(argv, op.config("127.0.0.1", relay.port))
     finally:
         relay.close()
-    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {_said_safely(proc.stderr)}"
     first = [c for c in op.calls() if c.get("snapshot")]
     assert first and first[0]["exit"] == 0, \
         f"{case}: the first request never reached the cluster: {op.calls()}"
     requests = op.begins()
     assert len(requests) == 2, \
-        f"{case}: the miss's second request was not sent: {len(requests)} requests: {proc.stderr}"
+        f"{case}: the miss's second request was not sent: {len(requests)} requests: {_said_safely(proc.stderr)}"
     assert relay.silenced, f"{case}: the second request never met F2"
     elapsed = op.exited - requests[0]["begin"]
     assert elapsed < 2 * spec["bound"], f"{case}: {elapsed:.2f} s against {spec['bound']} s"
@@ -4254,7 +4323,7 @@ def _sent_a_snapshot(op: Operator, case: str, proc) -> None:
     """The writer sent its snapshot request: its SQL path ran (T257j)."""
     assert any(s.get("snapshot") for s in op.sent()), \
         (f"{case}: the writer sent no snapshot request, so {NO_SQL_WRITER}: "
-         f"{proc.returncode}: {proc.stderr}")
+         f"{proc.returncode}: {_said_safely(proc.stderr)}")
 
 
 def _primary_writer_row(pg, tmp_path: Path, request, row: str, fault: str) -> None:
@@ -4292,7 +4361,7 @@ def _primary_writer_row(pg, tmp_path: Path, request, row: str, fault: str) -> No
         if session is not None:
             _end(session)
     _sent_a_snapshot(op, case, proc)
-    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {_said_safely(proc.stderr)}"
     if row == "writer-commit-f2":
         # Every snapshot request sent before the commit's, a miss's second
         # among them, reached the cluster and ended 0, and the commit's
@@ -4348,7 +4417,7 @@ def _primary_writer_57014(pg, tmp_path: Path, request, row: str) -> None:
     assert ended, f"{row}: no call ended with 57014: {op.calls()}"
     took = ended[0]["end"] - ended[0]["start"]
     assert statement_s <= took < 2 * statement_s, f"{row}: 57014 after {took:.2f} s"
-    assert proc.returncode == spec["f4_exit"], f"{row}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == spec["f4_exit"], f"{row}: {proc.returncode}: {_said_safely(proc.stderr)}"
     _record(f"{row}-F4", took, statement_s, "timing rules 2 and 3")
 
 
@@ -4378,7 +4447,7 @@ def test_a_rollback_whose_first_call_expires_rereads_the_switch(pg, tmp_path, re
         proc, _ = op.run(["rollback"], op.config("127.0.0.1", relay.port))
     finally:
         relay.close()
-    assert proc.returncode == 69, f"rollback: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == 69, f"rollback: {proc.returncode}: {_said_safely(proc.stderr)}"
     calls = op.calls()
     assert calls and all(c["exit"] == 0 for c in calls), \
         f"a call of the check before step 1 did not answer: {calls}"
@@ -4421,7 +4490,7 @@ def test_a_rollback_that_keeps_losing_its_turn_exits_75_at_the_deadline_with_not
                                {"LANES_REGISTER_DEADLINE_S": str(ROLLBACK_DEADLINE_S)})
     finally:
         _end(session)
-    assert proc.returncode == 75, f"rollback-F3: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == 75, f"rollback-F3: {proc.returncode}: {_said_safely(proc.stderr)}"
     assert any("55P03" in c["first"] for c in op.calls()), \
         f"no call ended with 55P03: {op.calls()}"
     assert op.state() == before, f"the rollback wrote: {before} -> {op.state()}"
@@ -4474,7 +4543,7 @@ def test_a_cutover_whose_call_expires_leaves_the_switch_unknown_and_its_rerun_re
             listener.close()
         if session is not None:
             _end(session)
-    assert proc.returncode == 69, f"cutover-{fault}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == 69, f"cutover-{fault}: {proc.returncode}: {_said_safely(proc.stderr)}"
     assert op.state() == before, f"cutover-{fault} wrote or pushed: {before} -> {op.state()}"
     calls = op.calls()
     assert calls and calls[0]["exit"] == 0, f"the cutover's read never answered: {calls}"
@@ -4486,7 +4555,7 @@ def test_a_cutover_whose_call_expires_leaves_the_switch_unknown_and_its_rerun_re
         pg.psql(f"DROP TRIGGER t278_slow ON {SCHEMA}.journal;")
     mark = len(op.calls())
     proc, _ = op.run(op.argv("cutover"), op.config())
-    assert proc.returncode == 0, f"the rerun: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == 0, f"the rerun: {proc.returncode}: {_said_safely(proc.stderr)}"
     rerun = op.calls()[mark:]
     assert rerun and "commit_write" not in rerun[0]["calls"], \
         f"the rerun's first call is not a read of the switch: {rerun}"
@@ -4524,7 +4593,7 @@ def test_the_aborts_call_that_expires_is_run_again_or_found_done_by_its_rerun(
     arm = {"mode": "before"} if landed == "not-landed" else {"mode": "timer", "ms": 20000}
     where = _shim(op, [dict(arm, match="switch_to_files")])
     proc, _ = op.run(op.argv("switch-to-files"), op.config())
-    assert proc.returncode == 69, f"abort-{landed}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == 69, f"abort-{landed}: {proc.returncode}: {_said_safely(proc.stderr)}"
     sent = [e for e in _shim_calls(where) if "switch_to_files(" in e["stdin"]]
     assert len(sent) == 1, f"abort-{landed}: one abort call: {len(sent)}"
     mode = op.state()[0].split("|")[:2]
@@ -4537,14 +4606,14 @@ def test_the_aborts_call_that_expires_is_run_again_or_found_done_by_its_rerun(
     aborts = [e for e in rerun if "switch_to_files(" in e["stdin"]]
     if landed == "not-landed":
         assert len(aborts) == 1, f"the rerun runs the abort again, once: {len(aborts)}"
-        assert proc.returncode == 2, f"the rerun's abort: {proc.returncode}: {proc.stderr}"
+        assert proc.returncode == 2, f"the rerun's abort: {proc.returncode}: {_said_safely(proc.stderr)}"
     else:
         writes = [[w[:-1] for w in WRITE_CALLS if w in e["stdin"]] for e in rerun]
         writes = [w for w in writes if w]
         assert writes and writes[0] == ["commit_write"], \
             f"the rerun's first write call is commit_write, never switch_to_files: {writes}"
         assert len(aborts) == 1, f"the rerun aborts its own entry once: {len(aborts)}"
-        assert proc.returncode == 2, f"the rerun's own abort: {proc.returncode}: {proc.stderr}"
+        assert proc.returncode == 2, f"the rerun's own abort: {proc.returncode}: {_said_safely(proc.stderr)}"
         assert op.state()[1] == imported, \
             f"the head is back at the import's seq {imported}: {op.state()}"
     assert op.state()[0].split("|")[:2] == ["files", "absent"], op.state()
@@ -4574,7 +4643,7 @@ def test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusi
     os.mkfifo(fifo)
     where = _shim(op, [{"mode": "hold", "match": "record_marker", "fifo": str(fifo)}])
     proc, elapsed = op.run(op.argv("record-marker"), op.config())
-    assert proc.returncode == 69, f"record-marker: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == 69, f"record-marker: {proc.returncode}: {_said_safely(proc.stderr)}"
     assert any("record_marker(" in e["stdin"] for e in _shim_calls(where)), \
         "the cutover made no record_marker call"
     assert op.origin_tip() != op.reg.c, "the cutover's push stands on origin"
@@ -4588,7 +4657,7 @@ def test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusi
                             capture_output=True, text=True, timeout=300, cwd=str(op.reg.wip),
                             stdin=subprocess.DEVNULL,
                             env=dict(op.env, LANES_INDEX_CONFIG=str(config)))
-    assert writer.returncode == 69, f"the writer's commit: {writer.returncode}: {writer.stderr}"
+    assert writer.returncode == 69, f"the writer's commit: {writer.returncode}: {_said_safely(writer.stderr)}"
     # THE MARKER'S REFUSAL (T278f; line BD17): the write "exits 69 on the switch
     # its snapshot reads, or on LR002" (TP:4221-4222). T415's writer meets
     # the marker at its first snapshot, whose own words name the switch it read,
@@ -4596,12 +4665,12 @@ def test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusi
     # Either is the marker's, never T409's placeholder, which names no marker.
     assert "LR002" in writer.stderr or "marker adding" in writer.stderr, \
         (f"the writer's 69 is the marker's refusal, at its snapshot or LR002, not T409's "
-         f"placeholder: {writer.stderr}")
+         f"placeholder: {_said_safely(writer.stderr)}")
     mark = len(_shim_calls(where))
     proc, _ = op.run(op.argv("record-marker"), op.config())
     recorded = [e for e in _shim_calls(where)[mark:] if "record_marker(" in e["stdin"]]
     assert proc.returncode == 0 and len(recorded) == 1, \
-        f"the rerun records the marker once: {proc.returncode}, {len(recorded)}: {proc.stderr}"
+        f"the rerun records the marker once: {proc.returncode}, {len(recorded)}: {_said_safely(proc.stderr)}"
     assert op.state()[0].split("|")[:2] == ["primary", "present"], op.state()
 
 
@@ -4628,7 +4697,7 @@ def test_a_stray_ways_out_commit_call_is_in_doubt_like_a_writers(pg, tmp_path, r
         proc, _ = op.run(op.argv("stray-commit", form), op.config("127.0.0.1", relay.port))
     finally:
         relay.close()
-    assert proc.returncode == 3, f"{form}: {proc.returncode}: {proc.stderr}"
+    assert proc.returncode == 3, f"{form}: {proc.returncode}: {_said_safely(proc.stderr)}"
     assert any(c.get("snapshot") and c["exit"] == 0 for c in op.calls()), \
         f"{form}: the snapshot never reached the cluster: {op.calls()}"
     assert relay.silenced, f"{form}: no call met F2 after the snapshot"
