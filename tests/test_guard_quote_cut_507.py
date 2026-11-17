@@ -37,17 +37,22 @@ The cases after it are lane 3's Codex review of T507's chain 2 at
 `4801cb83` (#165 6933947760), each held in this module where its fixtures
 reach: the too-late refusal's words (SHOULD 5), run through
 `reg_guard_prefetch` as the file writes it, with a stand-in `lanes-index`
-that ends 2.
+that ends 2; and form C's tip read against a `git` that never answers
+(SHOULD 2), run in `lanes-index` loaded as a module, as the suite's other
+modules load it.
 """
 
 from __future__ import annotations
 
 import functools
+import importlib.util
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
+from importlib.machinery import SourceFileLoader
 
 import pytest
 
@@ -319,3 +324,94 @@ def test_the_guards_too_late_refusal_names_the_declared_outages_floor_and_cap(tm
                       "lanes-index: too late to verify)")
     assert start < floor < cut < said, text
     assert text.endswith("(Amendment 12(d); feature 007, SVC-8)."), text
+
+
+#: A `git` that logs its arguments and then never answers, as a `--repo` on a
+#: stalled mount does: `exec` makes the stall the process `lanes-index`
+#: starts, so its timeout ends it and nothing is left behind.
+STALLED_GIT = ("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STALLED_GIT_LOG\"\n"
+               "exec sleep 30\n")
+
+#: The longest a cut call may take: far below the stall's 30 s, far above the
+#: 1 s each case leaves before its deadline.
+STALL_BOUND_S = 10
+
+#: Form C's tip read, as `tip_of` and `register_guard_tip` give it, at the
+#: end of the stalled `git`'s logged arguments.
+TIP_READ = "rev-parse --verify -q refs/remotes/origin/main^{commit}"
+
+
+def _indexer():
+    """`lanes-index` as a module, fresh, as `test_sql_register_bounds.py`'s
+    `load_indexer` loads it. Called inside a test, never at import."""
+    loader = SourceFileLoader("lanes_index_507_module", str(REPO / "lanes-index"))
+    spec = importlib.util.spec_from_loader("lanes_index_507_module", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def _stall_git(tmp_path, monkeypatch):
+    """Put `STALLED_GIT` first on `PATH`, for the `main` branch, and return
+    the file it logs to."""
+    bin_dir = tmp_path / "stalled-bin"
+    bin_dir.mkdir()
+    git = bin_dir / "git"
+    git.write_text(STALLED_GIT, encoding="utf-8")
+    git.chmod(0o755)
+    log = tmp_path / "git.log"
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("STALLED_GIT_LOG", str(log))
+    monkeypatch.delenv("LANES_BRANCH", raising=False)
+    return log
+
+
+def test_form_cs_tip_read_is_cut_at_the_mirror_paths_start_line(tmp_path, monkeypatch, capsys):
+    """Form C's first git call, the tip read, is cut at the deadline it is
+    given, the mirror path's start line, `T0` + 3.75 s, and never waits on a
+    `--repo` that does not answer (lane 5's Claude pre-review of P19, SHOULD
+    1, `6d8262ec`; lane 3's Codex review of chain 2, SHOULD 2). With 1 s
+    left, `register_guard_tip` makes one `rev-parse`, cuts it, and raises
+    `StoreUnusable` of kind `unread`, saying it ran out of time before the
+    start line; with none left it starts no git at all; and
+    `register_guard_outage`, form C itself, with 1 s left before `T0` + 3.75
+    s, returns inside the bound, notes why, and writes no `.outage` and no
+    temporary beside `--cache`, so the guard refuses with S3's outage text.
+
+    It fails on the tip read through `tip_of`, which has no timeout and waits
+    out the stall's 30 s."""
+    mod = _indexer()
+    log = _stall_git(tmp_path, monkeypatch)
+    repo = tmp_path / "mirror"
+    repo.mkdir()
+    began = time.monotonic()
+    with pytest.raises(mod.StoreUnusable) as cut:
+        mod.register_guard_tip(str(repo), began + 1.0)
+    took = time.monotonic() - began
+    assert took < STALL_BOUND_S, f"the tip read took {took:.1f} s, past its deadline"
+    assert cut.value.kind == "unread", cut.value
+    assert "ran out of time" in cut.value.detail, cut.value.detail
+    assert f"T0 + {mod.REGISTER_GUARD_CUT_S:g} s" in cut.value.detail, cut.value.detail
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1 and calls[0].endswith(TIP_READ), calls
+
+    with pytest.raises(mod.StoreUnusable) as late:
+        mod.register_guard_tip(str(repo), time.monotonic() - 0.01)
+    assert late.value.kind == "unread" and "ran out of time" in late.value.detail, late.value
+    assert log.read_text(encoding="utf-8").splitlines() == calls, "git ran with no time left"
+
+    cache = tmp_path / "cache"
+    opts = {"repo": str(repo), "cache": str(cache),
+            "t0": time.monotonic() - mod.REGISTER_GUARD_CUT_S + 1.0}
+    declared = {"kind": "word", "utc": "2026-11-17T00:00:00Z", "why": "test", "mirror-seq": "1"}
+    capsys.readouterr()
+    began = time.monotonic()
+    mod.register_guard_outage(opts, declared)
+    took = time.monotonic() - began
+    assert took < STALL_BOUND_S, f"form C took {took:.1f} s, past the start line"
+    assert not list(tmp_path.glob("cache*")), sorted(p.name for p in tmp_path.iterdir())
+    err = capsys.readouterr().err
+    assert "form C could not read the mirror's Register-Seq (" in err, err
+    assert "ran out of time" in err and "so no .outage was written" in err, err
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 2 and calls[1].endswith(TIP_READ), calls
