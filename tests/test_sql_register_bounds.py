@@ -3983,7 +3983,6 @@ def test_pytests_own_report_of_a_failure_shows_no_planted_writer_text(request, c
     assert planted not in _reported(request, failed), f"[{case}] the planted value is in pytest's report"
 
 
-
 #: What a failure message may not format but through `_said_safely` (T257zi;
 #: T257zp; T257zy): a captured stream's attribute, a name these modules give a
 #: stream, and the helpers that showed one before T257zh, T255s and T258l.
