@@ -408,7 +408,15 @@ def sweep_stale() -> List[str]:
 
 
 class ClusterError(Exception):
-    pass
+    """A cluster's failure. Its text shows exits and counts, never a line of
+    a tool's output or of the server's log (T229k; T229l). `could_not_bind`
+    is True where a start failed and the server log's last five lines name
+    `bind` (T229l): what `TLSCluster.launch` read in the text before, kept as
+    a flag, not as text."""
+
+    def __init__(self, *args, could_not_bind: bool = False) -> None:
+        super().__init__(*args)
+        self.could_not_bind = could_not_bind
 
 
 class Bootstrap:
@@ -441,6 +449,8 @@ def _tail(proc: subprocess.CompletedProcess, size: int = 800) -> str:
 #: at `VERBOSITY` verbose; at the default, psql prints none).
 _PSQL_ERROR = re.compile(r"^(?:psql:\S*: )?(?:ERROR|FATAL|PANIC):", re.M)
 _SQLSTATE = re.compile(r"^(?:psql:\S*: )?(?:ERROR|FATAL|PANIC):\s+([0-9A-Z]{5}):", re.M)
+#: A line of the server's log at ERROR, FATAL or PANIC, after its prefix (T229l).
+_LOG_SEVERE = re.compile(r"\b(?:ERROR|FATAL|PANIC):")
 
 
 def _psql_failed(user: str, dbname: str, proc: subprocess.CompletedProcess) -> str:
@@ -531,10 +541,36 @@ class Cluster:
         return proc
 
     def log_tail(self) -> str:
+        """What a failure message shows of the server's log (T229l; lane 3's
+        ruling 6949488277 on lane 2's pre-review RV9-38 of P09, B2): its
+        count of lines and of ERROR, FATAL or PANIC lines. No line of it is
+        shown: under `log_statement = 'all'` a role's statement, its
+        password among it, is a line of it."""
         try:
-            return " | ".join((self.root / "server.log").read_text().splitlines()[-5:])
+            lines = (self.root / "server.log").read_text(errors="replace").splitlines()
         except OSError:
-            return "<no log>"
+            return "server.log: not read"
+        severe = sum(1 for line in lines if _LOG_SEVERE.search(line))
+        return (f"server.log: {len(lines)} line(s), {severe} of them ERROR, FATAL or PANIC "
+                f"lines; no line of it is shown")
+
+    def _could_not_bind(self) -> bool:
+        """Whether the server log's last five lines name `bind`, in any case
+        (T229l): what `TLSCluster.launch` looked for in a failed start's text
+        when that text held those lines."""
+        try:
+            last = (self.root / "server.log").read_text(errors="replace").splitlines()[-5:]
+        except OSError:
+            return False
+        return any("bind" in line.lower() for line in last)
+
+    def _start_failed(self, what: str) -> ClusterError:
+        """A failed start's error: `what`, the log's counts, and whether its
+        last lines name a bind, as words and as `could_not_bind` (T229l)."""
+        bind = self._could_not_bind()
+        return ClusterError(f"{what}: {self.log_tail()}"
+                            f"{'; its last 5 lines name a bind' if bind else ''}",
+                            could_not_bind=bind)
 
     def ready(self) -> bool:
         """The postmaster's own `ready` status, line 8 of postmaster.pid: what pg_ctl -w reads."""
@@ -801,9 +837,9 @@ class Cluster:
         end = time.monotonic() + DEADLINE
         while not self.ready():
             if self.proc.poll() is not None:
-                raise ClusterError(f"postgres exited {self.proc.returncode} starting: {self.log_tail()}")
+                raise self._start_failed(f"postgres exited {self.proc.returncode} starting")
             if time.monotonic() > end:
-                raise ClusterError(f"postgres was not ready in {DEADLINE:.0f} s: {self.log_tail()}")
+                raise self._start_failed(f"postgres was not ready in {DEADLINE:.0f} s")
             time.sleep(POLL)
 
     def stop(self) -> None:
@@ -1307,12 +1343,13 @@ class TLSCluster(Cluster):
         one chosen before the postmaster bound it: at the first start only.
         A restart (`start_again`) keeps the port its clients and
         configurations were given, so a bind failure there is raised, never
-        moved past (T229h)."""
+        moved past (T229h). A bind failure is the error's `could_not_bind`,
+        since its text holds no line of the log (T229l)."""
         for attempt in range(3):
             try:
                 return super().launch()
             except ClusterError as exc:
-                if attempt == 2 or self.restarting or "bind" not in str(exc).lower():
+                if attempt == 2 or self.restarting or not exc.could_not_bind:
                     raise
                 self.port = _free_port()
 
