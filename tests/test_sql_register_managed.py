@@ -102,7 +102,7 @@ pytestmark = [WINDOWS_SKIP]
 #: names has landed, and the skip names them. The rows are T224's Order
 #: (tasks:2156), T230's (tasks:2220, with its As built at :2219) and T258's
 #: (tasks:2464), tasks.md at lane 3's commit 17 `204145ae`. No task is common
-#: to all 21 functions, so there is no "*" row.
+#: to all 22 functions, so there is no "*" row.
 SQL_REGISTER_GATE_TABLE = {
     # T224: until L1-A7 (T109), L1-A8 (T110), L1-A17 (T119, T120) and T229.
     # Lane 1's two cases' T109 and T110, and `[in-recovery]`'s T229, are in
@@ -210,6 +210,14 @@ def _said(proc: subprocess.CompletedProcess) -> str:
     """`proc`'s exit, stdout and stderr for a failure's message, each
     password-file line's password hidden (`pgcluster._masked`; T224j)."""
     return f"exit {proc.returncode}\nstdout: {_masked(proc.stdout)}\nstderr: {_masked(proc.stderr)}"
+
+
+def _unverified(roles: dict) -> dict:
+    """`Managed.role`'s dicts by login, for a failure's message, each without
+    its `verifier`: a SCRAM verifier is derived from the login's password, so
+    no message shows one (T224m)."""
+    return {login: {key: value for key, value in role.items() if key != "verifier"}
+            for login, role in roles.items()}
 
 
 def _private(path: Path, text: str) -> Path:
@@ -673,7 +681,8 @@ def test_bootstrap_without_a_superuser_runs_twice_with_one_catalog(tmp_path, req
     proc = m.commit("t224_reg", "lanes_w_e1", files["lanes_w_e1"],
                     m.entry("t224_reg", "import", "lanes/LANES.md", "# Lanes"))
     assert proc.returncode == 0, f"commit_write as lanes_w_e1 did not commit:\n{_said(proc)}"
-    assert m.value(f"SELECT seq FROM {REGISTER}.register_head;", "t224_reg") == "0"
+    head = m.value(f"SELECT seq FROM {REGISTER}.register_head;", "t224_reg")
+    assert head == "0", f"the import as lanes_w_e1 left the register's head at {head!r}, not 0"
 
 
 def test_bootstrap_refuses_a_database_its_admin_does_not_own(tmp_path, request):
@@ -691,8 +700,9 @@ def test_bootstrap_refuses_a_database_its_admin_does_not_own(tmp_path, request):
     warned = m.psql("\\set VERBOSITY verbose\nREVOKE ALL ON DATABASE t224_theirs FROM PUBLIC;\n"
                     f"GRANT CONNECT ON DATABASE t224_theirs TO {ADMIN};\n", user=ADMIN)
     assert "01006" in warned.stderr and "01007" in warned.stderr, _said(warned)
-    assert m.value("SELECT coalesce(datacl, acldefault('d', datdba))::text FROM pg_database "
-                   "WHERE datname = 't224_theirs';", "postgres") == acl
+    kept = m.value("SELECT coalesce(datacl, acldefault('d', datdba))::text FROM pg_database "
+                   "WHERE datname = 't224_theirs';", "postgres")
+    assert kept == acl, f"the warned REVOKE and GRANT changed t224_theirs's datacl: {acl} -> {kept}"
 
 
 # ============================================================ the login step
@@ -711,11 +721,11 @@ def test_login_add_makes_an_engineers_two_logins_with_their_floors_and_prints_th
     files = m.passfiles(proc.stdout)
     for login, half, group in (("lanes_w_e1", "w", WRITER), ("lanes_r_e1", "r", READER)):
         role = m.role(login)
-        assert role["canlogin"] and role["groups"] == [group], (login, role)
+        assert role["canlogin"] and role["groups"] == [group], _unverified({login: role})
         assert sorted(role["config"]) == sorted(ROLCONFIG[half]), (login, role["config"])
         assert role["verifier"].startswith("SCRAM-SHA-256$"), f"{login}'s password is not SCRAM"
-        assert {k: v for k, v in m.shown(login, "t224_reg", files[login]).items()
-                if k in SHOWN[half]} == SHOWN[half]
+        floors = {k: v for k, v in m.shown(login, "t224_reg", files[login]).items() if k in SHOWN[half]}
+        assert floors == SHOWN[half], f"{login} shows the floors {floors}, not {SHOWN[half]}"
     _no_clear_text(m.log(), lines)
     # THE DUMP JOB: `lanes_register_dump`, a member of READER alone, with the
     # reader's floors, and its one line.
@@ -723,7 +733,8 @@ def test_login_add_makes_an_engineers_two_logins_with_their_floors_and_prints_th
     assert dump.returncode == 0, f"login add --dump-job failed:\n{_said(dump)}"
     assert sorted(_passwords(dump.stdout)) == [DUMP], _said(dump)
     role = m.role(DUMP)
-    assert role["groups"] == [READER] and sorted(role["config"]) == sorted(ROLCONFIG["r"]), role
+    assert role["groups"] == [READER] and sorted(role["config"]) == sorted(ROLCONFIG["r"]), (
+        _unverified({DUMP: role}))
     _no_clear_text(m.log(), _passwords(dump.stdout))
 
 
@@ -741,7 +752,9 @@ def test_login_add_run_again_puts_back_a_lost_membership_and_changes_nothing_els
     printed = sorted(_passwords(again.stdout))     # the logins alone, as pytest reports it (T224j)
     assert printed == [], f"the rerun printed a password line:\n{_said(again)}"
     after = {login: m.role(login) for login in ("lanes_w_e1", "lanes_r_e1")}
-    assert after == before, f"the rerun changed more than the membership: {before} -> {after}"
+    assert after == before, (
+        f"the rerun changed more than the membership: {_unverified(before)} -> {_unverified(after)}; "
+        f"verifier changed for {sorted(k for k in before if after[k].get('verifier') != before[k].get('verifier'))}")
 
 
 def test_a_member_made_without_the_login_step_carries_no_floor_and_fails_ready_check_12(
@@ -788,7 +801,7 @@ def test_ready_check_12_passes_the_logins_the_step_made(tmp_path, request):
     failed = sorted(number for number, (said, _why) in checks.items() if said == "FAIL")
     assert proc.returncode == (2 if failed else 0), (
         f"ready's exit does not follow its checks ({failed} failed):\n{_said(proc)}")
-    assert 12 not in failed
+    assert 12 not in failed, f"check 12 is among the checks ready fails: {failed}"
     # Check 11 fails on this case's Unix socket by TP:5382-5384's own oracle
     # (`[unix-socket]`), so the exit's 2 arm is always the one exercised
     # (lane 3's batch 11 (3), its optional assertion).
@@ -808,7 +821,8 @@ def test_login_rotate_keeps_an_open_session_and_refuses_the_old_password(tmp_pat
     assert proc.returncode == 0, f"login rotate e1 failed:\n{_said(proc)}"
     new = m.passfiles(proc.stdout, "passfiles-new")
     assert sorted(new) == ["lanes_r_e1", "lanes_w_e1"], _said(proc)
-    assert "ERROR" not in held.send("SELECT 'after';", "t224-after")
+    answered = held.send("SELECT 'after';", "t224-after")
+    assert "ERROR" not in answered, f"the session open across the rotation got an error:\n{_masked(answered)}"
     ended = held.close()
     assert ended.returncode == 0 and ended.stdout.split() == ["before", "after"], (
         f"the session open across the rotation did not go on:\n{_said(ended)}")
@@ -895,7 +909,8 @@ def test_an_open_session_gets_42501_between_the_revokes_steps_then_57p01(tmp_pat
     m.bootstrapped(service)
     files = m.logins(service, "e1", "e2", dump=False)
     held = m.session("lanes_w_e2", "t224_reg", files["lanes_w_e2"])
-    assert "ERROR" not in held.send("SELECT 1;", "t224-open")
+    opened = held.send("SELECT 1;", "t224-open")
+    assert "ERROR" not in opened, f"e2's session did not open:\n{_masked(opened)}"
     # [steps-by-hand]: the revoke block's steps 1 and 2, by the admin.
     m.psql(f"ALTER ROLE lanes_w_e2 NOLOGIN;\nREVOKE {WRITER} FROM lanes_w_e2;\n", "t224_reg",
            user=ADMIN)
@@ -1062,7 +1077,7 @@ def test_a_restore_from_the_providers_copy_keeps_the_roles_and_takes_new_passwor
         assert proc.returncode == 0, f"login rotate {who} failed:\n{_said(proc)}"
         new.update(copy.passfiles(proc.stdout, "passfiles-new"))
         _no_clear_text(copy.log(), _passwords(proc.stdout))
-    assert sorted(new) == sorted(logins)
+    assert sorted(new) == sorted(logins), f"the rotations printed lines for {sorted(new)}, not {sorted(logins)}"
     for login in logins:
         assert not copy.connects(login, "t224_reg", old[login]), f"{login}'s old file still connects"
         assert copy.connects(login, "t224_reg", new[login]), f"{login}'s new line does not connect"
@@ -1341,7 +1356,8 @@ def test_dump_restore_privileges_hold_after_roles_only_the_restore_and_bootstrap
     ran = [line for line in since.splitlines()
            if re.search(r"statement: (CREATE|GRANT|REVOKE|ALTER|INSERT|UPDATE)\b", line)]
     assert ran == [], f"bootstrap after the restore re-ran statements: {ran}"
-    assert target.value(f"SELECT database_label FROM {REGISTER}.register_switch;", db) == label
+    restored = target.value(f"SELECT database_label FROM {REGISTER}.register_switch;", db)
+    assert restored == label, f"the restored register's label is {restored!r}, not the source's {label!r}"
 
 
 def test_rotate_dump_job_changes_only_the_dump_logins_password(tmp_path, request):
