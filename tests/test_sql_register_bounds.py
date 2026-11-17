@@ -3387,7 +3387,7 @@ def _whole(text, what: str, kind=int):
         raise AssertionError(f"{what} is not a number; its text is not shown") from None
 
 
-def _said_safely(said) -> str:
+def _said_safely(said, stream: str = "output") -> str:
     """What a failure message may show of a process's output (T257zh; lane
     3's ruling 6946445277 on lane 2's pre-review RV9-36 of P09 at
     `2407ea06`, S2: every failure message that showed a writer's or a
@@ -3399,14 +3399,23 @@ def _said_safely(said) -> str:
     template of the product's WARNING sites in full, as `_shown_warning`
     shows them. No other text of it is shown: no line that no template
     matches, whole or in part. Text built from a stream, a slice or a
-    `strip()` of it, is a stream here too."""
+    `strip()` of it, is a stream here too. A bare stream's counts are
+    labelled `stream`, "stderr" or "stdout" where the caller knows which,
+    else "output" (T257zm; lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`,
+    N4). An exit is shown only where it is an int, else as `[withheld]`
+    (T257zm; RV9-37, N3)."""
     if said is None or isinstance(said, (str, bytes, bytearray)):
-        code, streams = None, [("output", said)]
+        code, streams = None, [(stream, said)]
     else:
         code = getattr(said, "returncode", getattr(said, "code", None))
         streams = [("stdout", getattr(said, "stdout", getattr(said, "out", None))),
                    ("stderr", getattr(said, "stderr", getattr(said, "err", None)))]
-    parts = [] if code is None else [f"exit {code}"]
+    if code is None:
+        parts = []
+    elif isinstance(code, int) and not isinstance(code, bool):
+        parts = [f"exit {int(code)}"]
+    else:
+        parts = ["exit [withheld]"]
     for name, text in streams:
         if isinstance(text, (bytes, bytearray)):
             text = bytes(text).decode("utf-8", "replace")
