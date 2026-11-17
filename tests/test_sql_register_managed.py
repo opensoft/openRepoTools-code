@@ -89,10 +89,10 @@ from urllib.parse import quote
 import pytest
 
 from conftest import REPO, WINDOWS_SKIP
-from pgcluster import _masked
 from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_ENDS,
                                   PSQL_SHIM_LOG, REGISTER_FAKE_PSQL, RENDER_SET_PATH, flipped_copy,
                                   guard_strip_env)
+from test_sql_register_bounds import _said_safely  # the one helper for a failure's output (T258l)
 
 pytestmark = [WINDOWS_SKIP]
 
@@ -210,9 +210,14 @@ MARKER_COMMIT = "c0ffee" + "4" * 34
 
 
 def _said(proc: subprocess.CompletedProcess) -> str:
-    """`proc`'s exit, stdout and stderr for a failure's message, each
-    password-file line's password hidden (`pgcluster._masked`; T224j)."""
-    return f"exit {proc.returncode}\nstdout: {_masked(proc.stdout)}\nstderr: {_masked(proc.stderr)}"
+    """`proc` for a failure's message: its exit, each stream's counts and the
+    WARNING lines that match a template, through bounds' one helper,
+    `_said_safely` (T258l; lane 3's ruling 6946445277 on lane 2's pre-review
+    RV9-36 of P09 at `2407ea06`, S2). Before T258l it showed both streams,
+    each password-file line's password hidden (`pgcluster._masked`; T224j),
+    and every other line whole. The failure messages call `_said_safely`
+    themselves; this name stays for T224j's case."""
+    return _said_safely(proc)
 
 
 def _unverified(roles: dict) -> dict:
@@ -411,7 +416,7 @@ def _passwords(text: str) -> dict:
     found: dict = {}
     for m in PASS_LINE.finditer(text):
         twice = m.group("login") in found
-        assert not twice, f"{m.group('login')}'s line is printed twice:\n{_masked(text)}"
+        assert not twice, f"{m.group('login')}'s line is printed twice:\n{_said_safely(text)}"
         found[m.group("login")] = m.group(0)
     return found
 
@@ -448,7 +453,7 @@ class Session:
         end = time.monotonic() + deadline
         while marker.encode() not in self.err[start:]:
             assert time.monotonic() < end, (
-                f"psql gave no {marker!r} within {deadline:.0f} s: {self.err[start:]!r}")
+                f"psql gave no {marker!r} within {deadline:.0f} s: {_said_safely(self.err[start:])!r}")
             ready, _, _ = select.select([fd], [], [], 0.2)
             if ready:
                 chunk = os.read(fd, 65536)
@@ -599,7 +604,7 @@ class Managed:
 
     def bootstrapped(self, service: str) -> None:
         proc = self.bootstrap(service, "--no-passwords")
-        assert proc.returncode == 0, f"the bootstrap failed:\n{_said(proc)}"
+        assert proc.returncode == 0, f"the bootstrap failed:\n{_said_safely(proc)}"
 
     def login(self, action: str, who: str, service: str, *, pty_run: bool = True) -> subprocess.CompletedProcess:
         target = ["--dump-job"] if who == DUMP else [who]
@@ -612,7 +617,7 @@ class Managed:
         files: dict = {}
         for who in [*engineers, *([DUMP] if dump else [])]:
             proc = self.login("add", who, service)
-            assert proc.returncode == 0, f"login add {who} failed:\n{_said(proc)}"
+            assert proc.returncode == 0, f"login add {who} failed:\n{_said_safely(proc)}"
             files.update(self.passfiles(proc.stdout, folder))
         return files
 
@@ -648,7 +653,7 @@ class Managed:
         """`SHOW` of the four floors in a session of `login`."""
         names = sorted(NO_FLOORS)
         proc = self.as_login(login, db, "".join(f"SHOW {name};\n" for name in names), passfile)
-        assert proc.returncode == 0, f"{login} could not log in to SHOW its floors:\n{_said(proc)}"
+        assert proc.returncode == 0, f"{login} could not log in to SHOW its floors:\n{_said_safely(proc)}"
         return dict(zip(names, proc.stdout.split()))
 
     def role(self, login: str) -> dict:
@@ -696,13 +701,13 @@ class Managed:
         for kind, path, text in (("import", "lanes/LANES.md", "# Lanes"),
                                  ("cutover", "lanes/STORE", "primary")):
             proc = self.commit(db, login, passfile, self.entry(db, kind, path, text))
-            assert proc.returncode == 0, f"the {kind} entry did not commit:\n{_said(proc)}"
+            assert proc.returncode == 0, f"the {kind} entry did not commit:\n{_said_safely(proc)}"
         seq = self.value(f"SELECT seq FROM {REGISTER}.register_head;", db)
         client = self.value(f"SELECT version FROM {REGISTER}.schema_version;", db)
         proc = self.as_login(login, db, f"SELECT {REGISTER}.record_marker(:client, :seq, "
                              ":'commit', :'ws');\n", passfile, client=client, seq=seq,
                              commit=MARKER_COMMIT, ws=WS)
-        assert proc.returncode == 0 and proc.stdout.strip() == "present", _said(proc)
+        assert proc.returncode == 0 and proc.stdout.strip() == "present", _said_safely(proc)
 
     def config(self, name: str, register_url: str, register_passfile: Path,
                reader_url: str, reader_passfile: Path) -> Path:
@@ -806,8 +811,9 @@ def test_a_failure_message_keeps_no_password_of_a_password_file_line():
     line = ":".join(("*", "*", "t224_reg", "lanes_w_t224", secret))
     proc = subprocess.CompletedProcess([], 1, f"login lanes_w_t224: created\n{line}\n", f"{line}\n")
     said = _said(proc)
-    kept, hidden = secret in said, said.count("lanes_w_t224:<password>")
-    assert not kept and hidden == 2, f"_said keeps the password, or hides {hidden} of its 2 lines"
+    kept = secret in said
+    counted = "stdout: 2 line(s)" in said and "stderr: 1 line(s)" in said
+    assert not kept and counted, "_said keeps the password, or does not count its streams' lines"
     with pytest.raises(AssertionError) as twice:
         _passwords(f"{line}\n{line}\n")
     kept = secret in str(twice.value)
@@ -1006,20 +1012,20 @@ def test_bootstrap_without_a_superuser_runs_twice_with_one_catalog(tmp_path, req
     m = Managed(request, tmp_path)
     service = m.database("t224_reg")
     first = m.bootstrap(service, "--no-passwords")
-    assert first.returncode == 0, f"the first bootstrap, as {ADMIN}, failed:\n{_said(first)}"
+    assert first.returncode == 0, f"the first bootstrap, as {ADMIN}, failed:\n{_said_safely(first)}"
     assert m.role(ADMIN)["super"] is False, f"{ADMIN} is a superuser: the case proves nothing"
     catalog = m.catalog("t224_reg")
     second = m.bootstrap(service, "--no-passwords")
-    assert second.returncode == 0, f"the second bootstrap failed:\n{_said(second)}"
+    assert second.returncode == 0, f"the second bootstrap failed:\n{_said_safely(second)}"
     states = {state for _what, state in _objects(second.stdout)}
-    assert states == {"unchanged"}, f"the second run changed something:\n{_said(second)}"
+    assert states == {"unchanged"}, f"the second run changed something:\n{_said_safely(second)}"
     assert m.catalog("t224_reg") == catalog, "the second run changed the catalog"
     # A SECURITY DEFINER function owned by a role that cannot log in works:
     # `commit_write`, as a writer login, commits an import entry.
     files = m.logins(service, "e1", dump=False)
     proc = m.commit("t224_reg", "lanes_w_e1", files["lanes_w_e1"],
                     m.entry("t224_reg", "import", "lanes/LANES.md", "# Lanes"))
-    assert proc.returncode == 0, f"commit_write as lanes_w_e1 did not commit:\n{_said(proc)}"
+    assert proc.returncode == 0, f"commit_write as lanes_w_e1 did not commit:\n{_said_safely(proc)}"
     head = m.value(f"SELECT seq FROM {REGISTER}.register_head;", "t224_reg")
     assert head == "0", f"the import as lanes_w_e1 left the register's head at {head!r}, not 0"
 
@@ -1031,14 +1037,14 @@ def test_bootstrap_refuses_a_database_its_admin_does_not_own(tmp_path, request):
     acl = m.value("SELECT coalesce(datacl, acldefault('d', datdba))::text FROM pg_database "
                   "WHERE datname = 't224_theirs';", "postgres")
     proc = m.bootstrap(service, "--no-passwords")
-    assert proc.returncode == 2, f"bootstrap on a database its admin does not own is not 2:\n{_said(proc)}"
+    assert proc.returncode == 2, f"bootstrap on a database its admin does not own is not 2:\n{_said_safely(proc)}"
     assert m.value(f"SELECT count(*) FROM pg_namespace WHERE nspname = '{REGISTER}';",
                    "t224_theirs") == "0", "the refused bootstrap made the register's schema"
     # THE CONTROL: there, as that admin, the database-level REVOKE and GRANT
     # only warn, 01006 and 01007, and `datacl` is unchanged.
     warned = m.psql("\\set VERBOSITY verbose\nREVOKE ALL ON DATABASE t224_theirs FROM PUBLIC;\n"
                     f"GRANT CONNECT ON DATABASE t224_theirs TO {ADMIN};\n", user=ADMIN)
-    assert "01006" in warned.stderr and "01007" in warned.stderr, _said(warned)
+    assert "01006" in warned.stderr and "01007" in warned.stderr, _said_safely(warned)
     kept = m.value("SELECT coalesce(datacl, acldefault('d', datdba))::text FROM pg_database "
                    "WHERE datname = 't224_theirs';", "postgres")
     assert kept == acl, f"the warned REVOKE and GRANT changed t224_theirs's datacl: {acl} -> {kept}"
@@ -1051,9 +1057,9 @@ def test_login_add_makes_an_engineers_two_logins_with_their_floors_and_prints_th
     service = m.database("t224_reg")
     m.bootstrapped(service)
     proc = m.login("add", "e1", service)
-    assert proc.returncode == 0, f"login add e1 failed:\n{_said(proc)}"
+    assert proc.returncode == 0, f"login add e1 failed:\n{_said_safely(proc)}"
     lines = _passwords(proc.stdout)
-    assert sorted(lines) == ["lanes_r_e1", "lanes_w_e1"], _said(proc)
+    assert sorted(lines) == ["lanes_r_e1", "lanes_w_e1"], _said_safely(proc)
     for key, login in (("register_url=", "lanes_w_e1"), ("reader_url=", "lanes_r_e1")):
         urls = [line for line in proc.stdout.splitlines() if line.startswith(key)]
         assert len(urls) == 1 and f"//{login}@" in urls[0], f"no one {key} line for {login}"
@@ -1069,8 +1075,8 @@ def test_login_add_makes_an_engineers_two_logins_with_their_floors_and_prints_th
     # THE DUMP JOB: `lanes_register_dump`, a member of READER alone, with the
     # reader's floors, and its one line.
     dump = m.login("add", DUMP, service)
-    assert dump.returncode == 0, f"login add --dump-job failed:\n{_said(dump)}"
-    assert sorted(_passwords(dump.stdout)) == [DUMP], _said(dump)
+    assert dump.returncode == 0, f"login add --dump-job failed:\n{_said_safely(dump)}"
+    assert sorted(_passwords(dump.stdout)) == [DUMP], _said_safely(dump)
     role = m.role(DUMP)
     assert role["groups"] == [READER] and sorted(role["config"]) == sorted(ROLCONFIG["r"]), (
         _unverified({DUMP: role}))
@@ -1087,9 +1093,9 @@ def test_login_add_run_again_puts_back_a_lost_membership_and_changes_nothing_els
     m.psql(f"REVOKE {WRITER} FROM lanes_w_e1 GRANTED BY {ADMIN};")
     assert m.role("lanes_w_e1")["groups"] == [], "the membership was not revoked by hand"
     again = m.login("add", "e1", service)
-    assert again.returncode == 0, f"login add e1, run again, failed:\n{_said(again)}"
+    assert again.returncode == 0, f"login add e1, run again, failed:\n{_said_safely(again)}"
     printed = sorted(_passwords(again.stdout))     # the logins alone, as pytest reports it (T224j)
-    assert printed == [], f"the rerun printed a password line:\n{_said(again)}"
+    assert printed == [], f"the rerun printed a password line:\n{_said_safely(again)}"
     after = {login: m.role(login) for login in ("lanes_w_e1", "lanes_r_e1")}
     assert after == before, (
         f"the rerun changed more than the membership: {_unverified(before)} -> {_unverified(after)}; "
@@ -1112,10 +1118,10 @@ def test_a_member_made_without_the_login_step_carries_no_floor_and_fails_ready_c
                       m.socket_url("lanes_r_e1", "t224_reg"), files["lanes_r_e1"])
     proc = m.ready(config)
     state, reason = _checks(proc.stdout).get(12, ("", ""))
-    assert proc.returncode == 2 and state == "FAIL", f"check 12 does not fail:\n{_said(proc)}"
-    assert "lanes_w_bare" in reason, f"check 12 does not name the login:\n{_said(proc)}"
+    assert proc.returncode == 2 and state == "FAIL", f"check 12 does not fail:\n{_said_safely(proc)}"
+    assert "lanes_w_bare" in reason, f"check 12 does not name the login:\n{_said_safely(proc)}"
     for floor in ROLCONFIG["w"]:
-        assert floor.split("=", 1)[0] in reason, f"check 12 does not name {floor}:\n{_said(proc)}"
+        assert floor.split("=", 1)[0] in reason, f"check 12 does not name {floor}:\n{_said_safely(proc)}"
 
 
 def test_ready_check_12_passes_the_logins_the_step_made(tmp_path, request):
@@ -1128,25 +1134,25 @@ def test_ready_check_12_passes_the_logins_the_step_made(tmp_path, request):
     proc = m.ready(config)
     checks = _checks(proc.stdout)
     state, _reason = checks.get(12, ("", ""))
-    assert state == "ok", f"check 12 fails the logins the step made:\n{_said(proc)}"
+    assert state == "ok", f"check 12 fails the logins the step made:\n{_said_safely(proc)}"
     # "check 12 passes, `check 12: ok`" (lane 3's batch 7, ruling 1: lane 1's
     # bare line stands, Y-ops:457; tasks:572): the line is bare, with no floor.
     assert re.search(r"^check 12: ok$", proc.stdout, re.M), (
-        f"check 12's line is not the bare `check 12: ok`:\n{_said(proc)}")
+        f"check 12's line is not the bare `check 12: ok`:\n{_said_safely(proc)}")
     # Exit 0 where every check passes. On this socket fixture not every check
     # can (check 11 always fails on a Unix socket, AT-LRMPG's own
     # `[unix-socket]`), so the run's exit follows the other checks: 2, with
     # check 12 not among the failures `ready` names.
     failed = sorted(number for number, (said, _why) in checks.items() if said == "FAIL")
     assert proc.returncode == (2 if failed else 0), (
-        f"ready's exit does not follow its checks ({failed} failed):\n{_said(proc)}")
+        f"ready's exit does not follow its checks ({failed} failed):\n{_said_safely(proc)}")
     assert 12 not in failed, f"check 12 is among the checks ready fails: {failed}"
     # Check 11 fails on this case's Unix socket by TP:5382-5384's own oracle
     # (`[unix-socket]`), so the exit's 2 arm is always the one exercised
     # (lane 3's batch 11 (3), its optional assertion).
     assert 11 in failed, (
         f"check 11 does not fail on this case's Unix socket, so the exit's 2 arm is not "
-        f"exercised:\n{_said(proc)}")
+        f"exercised:\n{_said_safely(proc)}")
 
 
 def test_login_rotate_keeps_an_open_session_and_refuses_the_old_password(tmp_path, request):
@@ -1157,18 +1163,18 @@ def test_login_rotate_keeps_an_open_session_and_refuses_the_old_password(tmp_pat
     held = m.session("lanes_w_e1", "t224_reg", old["lanes_w_e1"])
     assert "ERROR" not in held.send("SELECT 'before';", "t224-before"), "the session did not open"
     proc = m.login("rotate", "e1", service)
-    assert proc.returncode == 0, f"login rotate e1 failed:\n{_said(proc)}"
+    assert proc.returncode == 0, f"login rotate e1 failed:\n{_said_safely(proc)}"
     new = m.passfiles(proc.stdout, "passfiles-new")
-    assert sorted(new) == ["lanes_r_e1", "lanes_w_e1"], _said(proc)
+    assert sorted(new) == ["lanes_r_e1", "lanes_w_e1"], _said_safely(proc)
     answered = held.send("SELECT 'after';", "t224-after")
-    assert "ERROR" not in answered, f"the session open across the rotation got an error:\n{_masked(answered)}"
+    assert "ERROR" not in answered, f"the session open across the rotation got an error:\n{_said_safely(answered)}"
     ended = held.close()
     assert ended.returncode == 0 and ended.stdout.split() == ["before", "after"], (
-        f"the session open across the rotation did not go on:\n{_said(ended)}")
+        f"the session open across the rotation did not go on:\n{_said_safely(ended)}")
     for login in ("lanes_w_e1", "lanes_r_e1"):
         refused = m.as_login(login, "t224_reg", "SELECT 1;\n", old[login])
         assert refused.returncode == 2 and "password authentication failed" in refused.stderr, (
-            f"{login}'s old password file is not refused at login:\n{_said(refused)}")
+            f"{login}'s old password file is not refused at login:\n{_said_safely(refused)}")
         assert m.connects(login, "t224_reg", new[login]), f"{login}'s new line does not connect"
     _no_clear_text(m.log(), _passwords(proc.stdout))
 
@@ -1229,7 +1235,7 @@ def test_login_refuses_a_bad_name_a_connection_string_and_a_pipe(tmp_path, case)
     bench = LoginBench(tmp_path)
     for argv in LOGIN_REFUSALS[case]:
         proc = bench.run(argv, pty_run=(case != "pipe"))
-        assert proc.returncode == 2, f"[{case}] {argv[1:3]} is not refused with 2:\n{_said(proc)}"
+        assert proc.returncode == 2, f"[{case}] {argv[1:3]} is not refused with 2:\n{_said_safely(proc)}"
         assert _making(bench.requests()) == [], f"[{case}] the refused login sent a making statement"
         for value in argv:
             if "=" in value or "://" in value:
@@ -1238,7 +1244,7 @@ def test_login_refuses_a_bad_name_a_connection_string_and_a_pipe(tmp_path, case)
     # reaches the admin service (the fake), so each refusal was the case's.
     control = bench.run(["login", "add", "e1", "--admin-service", "t224_admin"], pty_run=True)
     assert bench.requests(), (
-        f"[{case}] the control, a good name under a terminal, sent nothing:\n{_said(control)}")
+        f"[{case}] the control, a good name under a terminal, sent nothing:\n{_said_safely(control)}")
 
 
 # ============================================================ the revoke
@@ -1249,7 +1255,7 @@ def test_an_open_session_gets_42501_between_the_revokes_steps_then_57p01(tmp_pat
     files = m.logins(service, "e1", "e2", dump=False)
     held = m.session("lanes_w_e2", "t224_reg", files["lanes_w_e2"])
     opened = held.send("SELECT 1;", "t224-open")
-    assert "ERROR" not in opened, f"e2's session did not open:\n{_masked(opened)}"
+    assert "ERROR" not in opened, f"e2's session did not open:\n{_said_safely(opened)}"
     # [steps-by-hand]: the revoke block's steps 1 and 2, by the admin.
     m.psql(f"ALTER ROLE lanes_w_e2 NOLOGIN;\nREVOKE {WRITER} FROM lanes_w_e2;\n", "t224_reg",
            user=ADMIN)
@@ -1258,7 +1264,7 @@ def test_an_open_session_gets_42501_between_the_revokes_steps_then_57p01(tmp_pat
     read = held.send(f"SELECT seq FROM {REGISTER}.register_head;", "t224-read")
     for what, said in (("write", write), ("read", read)):
         assert "42501" in said and f"permission denied for schema {REGISTER}" in said, (
-            f"the open session's {what} between steps 2 and 3 is not 42501: {said}")
+            f"the open session's {what} between steps 2 and 3 is not 42501: {_said_safely(said)}")
     # Step 3 by hand: its sessions ended.
     m.psql("GRANT lanes_w_e2 TO CURRENT_USER WITH INHERIT TRUE, SET FALSE;\n"
            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'lanes_w_e2';\n"
@@ -1267,8 +1273,8 @@ def test_an_open_session_gets_42501_between_the_revokes_steps_then_57p01(tmp_pat
     ended = held.close()
     said = after + ended.stderr
     assert "57P01" in said or "terminating connection due to administrator command" in said or \
-        "server closed the connection" in said, f"the next statement after step 3 was answered: {said}"
-    assert "permission denied" not in after, f"after step 3 a statement got 42501, not 57P01: {after}"
+        "server closed the connection" in said, f"the next statement after step 3 was answered: {_said_safely(said)}"
+    assert "permission denied" not in after, f"after step 3 a statement got 42501, not 57P01: {_said_safely(after)}"
     assert m.connects("lanes_w_e1", "t224_reg", files["lanes_w_e1"]), "e1 can no longer log in"
 
 
@@ -1280,13 +1286,13 @@ def test_the_reader_login_dumps_both_schemas_and_still_cannot_write(tmp_path, re
     files = m.logins(service, "e1")
     proc = m.commit("t224_reg", "lanes_w_e1", files["lanes_w_e1"],
                     m.entry("t224_reg", "import", "lanes/LANES.md", "# Lanes"))
-    assert proc.returncode == 0, _said(proc)
+    assert proc.returncode == 0, _said_safely(proc)
     # The indexer's store, made as the indexer (`lanes-index`'s own #160
     # scripts are not run here: see the report), with a row.
     m.psql(f"SET ROLE {INDEXER};\nCREATE TABLE {INDEX}.t224_rows (id int PRIMARY KEY);\n"
            f"INSERT INTO {INDEX}.t224_rows VALUES (1);\n", "t224_reg")
     dumped, target = m.dump("t224_reg", files[DUMP], "first.dump")
-    assert dumped.returncode == 0, f"the dump job's dump failed:\n{_said(dumped)}"
+    assert dumped.returncode == 0, f"the dump job's dump failed:\n{_said_safely(dumped)}"
     assert stat.S_IMODE(target.stat().st_mode) == 0o600, "the dump file is not 0600"
     listing = subprocess.run([m.cluster.tool("pg_restore"), "--list", str(target)],
                              capture_output=True, text=True, timeout=120, check=False).stdout
@@ -1303,19 +1309,19 @@ def test_the_reader_login_dumps_both_schemas_and_still_cannot_write(tmp_path, re
     # M6: a sequence the indexer makes later is dumped, by the default privilege.
     m.psql(f"SET ROLE {INDEXER};\nCREATE SEQUENCE {INDEX}.t224_seq_ok;\n", "t224_reg")
     again, _ = m.dump("t224_reg", files[DUMP], "second.dump")
-    assert again.returncode == 0, f"a later sequence stopped the dump:\n{_said(again)}"
+    assert again.returncode == 0, f"a later sequence stopped the dump:\n{_said_safely(again)}"
     # THE CONTROLS: the default privilege revoked before a sequence is made,
     # and the reader's SELECT on doc_lines' sequence revoked.
     m.psql(f"ALTER DEFAULT PRIVILEGES FOR ROLE {INDEXER} IN SCHEMA {INDEX} "
            f"REVOKE SELECT ON SEQUENCES FROM {READER};\n", "t224_reg", user=ADMIN)
     m.psql(f"SET ROLE {INDEXER};\nCREATE SEQUENCE {INDEX}.t224_seq_hidden;\n", "t224_reg")
     hidden, _ = m.dump("t224_reg", files[DUMP], "third.dump")
-    assert hidden.returncode != 0 and "t224_seq_hidden" in hidden.stderr, _said(hidden)
+    assert hidden.returncode != 0 and "t224_seq_hidden" in hidden.stderr, _said_safely(hidden)
     m.psql(f"SET ROLE {INDEXER};\nDROP SEQUENCE {INDEX}.t224_seq_hidden;\n", "t224_reg")
     m.psql(f"SET ROLE {OWNER};\nREVOKE SELECT ON {REGISTER}.doc_lines_line_id_seq FROM {READER};\n",
            "t224_reg")
     seq, _ = m.dump("t224_reg", files[DUMP], "fourth.dump")
-    assert seq.returncode != 0 and "doc_lines_line_id_seq" in seq.stderr, _said(seq)
+    assert seq.returncode != 0 and "doc_lines_line_id_seq" in seq.stderr, _said_safely(seq)
     # STILL CANNOT WRITE: each refused inside BEGIN READ WRITE, then ROLLBACK.
     tries = [f"SELECT nextval('{REGISTER}.doc_lines_line_id_seq')",
              f"UPDATE {REGISTER}.register_head SET seq = seq",
@@ -1326,7 +1332,7 @@ def test_the_reader_login_dumps_both_schemas_and_still_cannot_write(tmp_path, re
         tried = m.as_login(DUMP, "t224_reg", f"BEGIN READ WRITE;\n{statement};\nROLLBACK;\n",
                            files[DUMP])
         assert tried.returncode != 0 and "42501" in tried.stderr, (
-            f"the dump login's {statement!r} was not refused with 42501:\n{_said(tried)}")
+            f"the dump login's {statement!r} was not refused with 42501:\n{_said_safely(tried)}")
 
 
 # ============================================================ the restores
@@ -1343,9 +1349,9 @@ def _source(request, root: Path, *, primary: bool):
     else:
         proc = m.commit("t224_reg", "lanes_w_e1", files["lanes_w_e1"],
                         m.entry("t224_reg", "import", "lanes/LANES.md", "# Lanes"))
-        assert proc.returncode == 0, _said(proc)
+        assert proc.returncode == 0, _said_safely(proc)
     dumped, target = m.dump("t224_reg", files[DUMP], "source.dump")
-    assert dumped.returncode == 0, f"the source's dump failed:\n{_said(dumped)}"
+    assert dumped.returncode == 0, f"the source's dump failed:\n{_said_safely(dumped)}"
     return m, files, target
 
 
@@ -1357,17 +1363,17 @@ def _restored(request, root: Path, source_dump: Path):
     target = Managed(request, root, cluster=_another_cluster(request))
     service = target.database("t224_reg")
     roles = target.bootstrap(service, "--roles-only", pty_run=True)
-    assert roles.returncode == 0, f"bootstrap --roles-only failed:\n{_said(roles)}"
+    assert roles.returncode == 0, f"bootstrap --roles-only failed:\n{_said_safely(roles)}"
     files = target.logins(service, "e1", folder="passfiles-new")
     env = {k: v for k, v in target.env.items() if not k.startswith("PG")}
     env["PGSERVICE"] = service
     restore = subprocess.run([target.cluster.tool("pg_restore"), "--exit-on-error", "--no-password",
                               "--dbname=t224_reg", str(source_dump)],
                              capture_output=True, text=True, timeout=300, env=env, check=False)
-    assert restore.returncode == 0, f"pg_restore through the admin service failed:\n{_said(restore)}"
+    assert restore.returncode == 0, f"pg_restore through the admin service failed:\n{_said_safely(restore)}"
     mark = len(target.log())
     after = target.bootstrap(service, pty_run=True)
-    assert after.returncode == 0, f"bootstrap after the restore failed:\n{_said(after)}"
+    assert after.returncode == 0, f"bootstrap after the restore failed:\n{_said_safely(after)}"
     return target, roles, after, files, mark
 
 
@@ -1376,12 +1382,12 @@ def test_a_restore_from_the_dump_equals_its_source_with_new_passwords(tmp_path, 
     target, roles, after, new, _mark = _restored(request, tmp_path / "target", dump)
     # `--roles-only` prints the indexer's line, and `created` for each of the
     # three database-level statements (option (a)).
-    assert sorted(_passwords(roles.stdout)) == [INDEXER], _said(roles)
+    assert sorted(_passwords(roles.stdout)) == [INDEXER], _said_safely(roles)
     objects = dict(_objects(roles.stdout))
     for words in DB_LEVEL:
         assert [state for what, state in objects.items() if words in what] == ["created"], (
-            f"--roles-only does not print `created` for {words}:\n{_said(roles)}")
-    assert {state for _what, state in _objects(after.stdout)} == {"unchanged"}, _said(after)
+            f"--roles-only does not print `created` for {words}:\n{_said_safely(roles)}")
+    assert {state for _what, state in _objects(after.stdout)} == {"unchanged"}, _said_safely(after)
     assert target.catalog("t224_reg") == source.catalog("t224_reg"), "the catalogs differ"
     assert target.rows("t224_reg") == source.rows("t224_reg"), "the rows differ"
     for login in ("lanes_w_e1", "lanes_r_e1", DUMP):
@@ -1406,14 +1412,14 @@ def test_a_restore_from_the_providers_copy_keeps_the_roles_and_takes_new_passwor
         assert copy.connects(login, "t224_reg", old[login]), f"{login}'s old file does not connect"
     service = copy.service("t224_reg")
     roles = copy.bootstrap(service, "--roles-only", pty_run=True)
-    assert roles.returncode == 0, f"bootstrap --roles-only failed:\n{_said(roles)}"
-    assert {state for _what, state in _objects(roles.stdout)} == {"unchanged"}, _said(roles)
+    assert roles.returncode == 0, f"bootstrap --roles-only failed:\n{_said_safely(roles)}"
+    assert {state for _what, state in _objects(roles.stdout)} == {"unchanged"}, _said_safely(roles)
     printed = sorted(_passwords(roles.stdout))     # the logins alone, as pytest reports it (T224j)
-    assert printed == [], f"--roles-only printed a password line:\n{_said(roles)}"
+    assert printed == [], f"--roles-only printed a password line:\n{_said_safely(roles)}"
     new: dict = {}
     for who in ("e1", DUMP):
         proc = copy.login("rotate", who, service)
-        assert proc.returncode == 0, f"login rotate {who} failed:\n{_said(proc)}"
+        assert proc.returncode == 0, f"login rotate {who} failed:\n{_said_safely(proc)}"
         new.update(copy.passfiles(proc.stdout, "passfiles-new"))
         _no_clear_text(copy.log(), _passwords(proc.stdout))
     assert sorted(new) == sorted(logins), f"the rotations printed lines for {sorted(new)}, not {sorted(logins)}"
@@ -1561,15 +1567,15 @@ def test_ready_check_11_needs_tls_and_the_primary(tmp_path, request, case):
     proc = env.ready(make(env))
     state, reason = _checks(proc.stdout).get(11, ("", ""))
     if passes:
-        assert state == "ok", f"[{case}] check 11 does not pass:\n{_said(proc)}"
+        assert state == "ok", f"[{case}] check 11 does not pass:\n{_said_safely(proc)}"
     else:
         assert state == "FAIL" and proc.returncode == 2, (
-            f"[{case}] check 11 does not fail, or ready does not exit 2:\n{_said(proc)}")
-        assert env.login in reason, f"[{case}] check 11 does not name the connection:\n{_said(proc)}"
+            f"[{case}] check 11 does not fail, or ready does not exit 2:\n{_said_safely(proc)}")
+        assert env.login in reason, f"[{case}] check 11 does not name the connection:\n{_said_safely(proc)}"
         fault = CHECK_11_FAULT[case]
         wanted = " and ".join(repr(word) for word in fault.words)
         assert fault(reason), (
-            f"[{case}] check 11 fails, but not for {wanted} (T224l, T224n):\n{_said(proc)}")
+            f"[{case}] check 11 fails, but not for {wanted} (T224l, T224n):\n{_said_safely(proc)}")
 
 
 #: Check 11's reason for each failing case as `ready` would print it, the URL's faults
@@ -1731,7 +1737,7 @@ def test_tls_at_load_refuses_a_url_off_loopback_without_verify_full_and_a_root_f
         proc = bench.run(["journal", "--write-id", str(uuid.uuid4()), "--not-after", "2000000000",
                           "--generation", str(uuid.uuid4()), "--lane", "t230", "--verb", "append-line",
                           "--args-sha256", "0" * 64], pty_run=False)
-        assert proc.returncode == 3, f"[{item}] journal --write-id on a refused file is not 3:\n{_said(proc)}"
+        assert proc.returncode == 3, f"[{item}] journal --write-id on a refused file is not 3:\n{_said_safely(proc)}"
     elif item == "for-guard":
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -1740,16 +1746,16 @@ def test_tls_at_load_refuses_a_url_off_loopback_without_verify_full_and_a_root_f
                               str(tmp_path / "cache"), "--pid", pid, "--repo", str(repo)],
                              pty_run=False)
         assert proc.returncode == 1, (
-            f"[{item}] register read --for guard --prefetch on a refused file is not 1:\n{_said(proc)}")
+            f"[{item}] register read --for guard --prefetch on a refused file is not 1:\n{_said_safely(proc)}")
     else:
         proc = bench.run(["mode"], pty_run=False)
         if expect == "index":
-            assert (proc.returncode, proc.stdout) == (0, "index\n"), f"[{item}] does not load:\n{_said(proc)}"
+            assert (proc.returncode, proc.stdout) == (0, "index\n"), f"[{item}] does not load:\n{_said_safely(proc)}"
         else:
             key, missing = expect
-            assert proc.returncode == 2 and proc.stdout == "", f"[{item}] is not refused with 2:\n{_said(proc)}"
+            assert proc.returncode == 2 and proc.stdout == "", f"[{item}] is not refused with 2:\n{_said_safely(proc)}"
             assert key in proc.stderr and missing in proc.stderr, (
-                f"[{item}] the refusal does not name {key} and {missing}:\n{_said(proc)}")
+                f"[{item}] the refusal does not name {key} and {missing}:\n{_said_safely(proc)}")
     for url in urls:
         if expect != "index" or item in ("journal-write-id", "for-guard"):
             assert url not in proc.stdout + proc.stderr, f"[{item}] the refusal printed a URL"
@@ -1770,7 +1776,7 @@ def test_dump_restore_privileges_hold_after_roles_only_the_restore_and_bootstrap
     target.psql("CREATE ROLE t224_outsider LOGIN PASSWORD 'outside-t224';")
     outsider = _private(target.home / "passfiles" / "t224_outsider", f"*:*:{db}:t224_outsider:outside-t224\n")
     refused = target.as_login("t224_outsider", db, "SELECT 1;\n", outsider)
-    assert refused.returncode == 2 and "permission denied for database" in refused.stderr, _said(refused)
+    assert refused.returncode == 2 and "permission denied for database" in refused.stderr, _said_safely(refused)
     for role in (WRITER, READER, INDEXER):
         assert target.value(f"SELECT has_database_privilege('{role}', '{db}', 'CONNECT');",
                             "postgres") == "t", f"{role} holds no CONNECT on {db}"
@@ -1779,7 +1785,7 @@ def test_dump_restore_privileges_hold_after_roles_only_the_restore_and_bootstrap
     assert target.value(f"SELECT has_function_privilege('t224_outsider', '{REGISTER}.t224_later()', "
                         "'EXECUTE');", db) == "f", "an outsider may execute a later function of the owner's"
     # `bootstrap` after the restore re-ran no statement and wrote no label.
-    assert {state for _what, state in _objects(after.stdout)} == {"unchanged"}, _said(after)
+    assert {state for _what, state in _objects(after.stdout)} == {"unchanged"}, _said_safely(after)
     since = target.log()[mark:end]
     ran = [line for line in since.splitlines()
            if re.search(r"statement: (CREATE|GRANT|REVOKE|ALTER|INSERT|UPDATE)\b", line)]
@@ -1796,24 +1802,24 @@ def test_rotate_dump_job_changes_only_the_dump_logins_password(tmp_path, request
     verifiers = {login: m.role(login)["verifier"] for login in ("lanes_w_e1", "lanes_r_e1", DUMP)}
     # Off a terminal it refuses with 2 and changes nothing.
     piped = m.login("rotate", DUMP, service, pty_run=False)
-    assert piped.returncode == 2, f"rotate --dump-job through a pipe is not 2:\n{_said(piped)}"
+    assert piped.returncode == 2, f"rotate --dump-job through a pipe is not 2:\n{_said_safely(piped)}"
     assert m.role(DUMP)["verifier"] == verifiers[DUMP], "the refused rotation changed the verifier"
     # Neither an engineer nor --dump-job, or both: 64.
     for argv in (["login", "rotate", "--admin-service", service],
                  ["login", "rotate", "e1", "--dump-job", "--admin-service", service]):
         usage = m.lanes(*argv, pty_run=True)
-        assert usage.returncode == 64, f"{argv[1:]} is not usage, 64:\n{_said(usage)}"
+        assert usage.returncode == 64, f"{argv[1:]} is not usage, 64:\n{_said_safely(usage)}"
     proc = m.login("rotate", DUMP, service)
-    assert proc.returncode == 0, f"login rotate --dump-job failed:\n{_said(proc)}"
+    assert proc.returncode == 0, f"login rotate --dump-job failed:\n{_said_safely(proc)}"
     lines = _passwords(proc.stdout)
-    assert sorted(lines) == [DUMP], f"not one line, the dump login's:\n{_said(proc)}"
+    assert sorted(lines) == [DUMP], f"not one line, the dump login's:\n{_said_safely(proc)}"
     new = m.passfiles(proc.stdout, "passfiles-new")
     assert m.role(DUMP)["verifier"] != verifiers[DUMP], "the dump login's verifier did not change"
     for login in ("lanes_w_e1", "lanes_r_e1"):
         assert m.role(login)["verifier"] == verifiers[login], f"{login}'s verifier changed"
     assert not m.connects(DUMP, "t224_reg", old[DUMP]), "the old dump password still logs in"
     dumped, _target = m.dump("t224_reg", new[DUMP], "rotated.dump")
-    assert dumped.returncode == 0, f"the new dump password does not dump:\n{_said(dumped)}"
+    assert dumped.returncode == 0, f"the new dump password does not dump:\n{_said_safely(dumped)}"
     _no_clear_text(m.log(), lines)
 
 
@@ -1930,7 +1936,7 @@ def _w_creates(files: dict) -> tuple:
 def _w_git(cwd: Path, env: dict, *args: str) -> str:
     proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, env=env,
                           timeout=120, check=False)
-    assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {proc.stderr}{proc.stdout}"
+    assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {_said_safely(proc.stderr)}{_said_safely(proc.stdout)}"
     return proc.stdout
 
 
@@ -2140,7 +2146,8 @@ class W258Writer:
         return self.proc.returncode
 
     def said(self) -> str:
-        return f"exit {self.code}\nstdout: {self.out[-800:]}\nstderr: {self.err[-1500:]}"
+        """The writer for a failure's message, through bounds' one helper (T258l)."""
+        return _said_safely(subprocess.CompletedProcess([], self.code, self.out, self.err))
 
     def _jsonl(self, name: str) -> list:
         path = self.psql_dir / name
@@ -2239,7 +2246,7 @@ class PhaseW:
                              "author": AUTHOR, "message": f"{kind} by {OPERATOR} (T258)", **journal},
                  "not_after": clock, "edits": edits, "files": rows}
         proc = self.m.commit(W_DB, "lanes_w_e1", self.files["lanes_w_e1"], entry)
-        assert proc.returncode == 0, f"the {kind} entry did not commit:\n{_said(proc)}"
+        assert proc.returncode == 0, f"the {kind} entry did not commit:\n{_said_safely(proc)}"
         return int(proc.stdout.split()[-1])
 
     def _to_primary(self) -> int:
@@ -2255,7 +2262,7 @@ class PhaseW:
         proc = self.m.as_login("lanes_w_e1", W_DB, f"SELECT {REGISTER}.record_marker(:client, :seq, "
                                ":'commit', :'ws');\n", self.files["lanes_w_e1"], client=client,
                                seq=cut, commit=MARKER_COMMIT, ws=W_WS)
-        assert proc.returncode == 0 and proc.stdout.strip() == "present", _said(proc)
+        assert proc.returncode == 0 and proc.stdout.strip() == "present", _said_safely(proc)
         switch = self.m.value(f"SELECT mode || ' ' || marker_state FROM {REGISTER}.register_switch;",
                               W_DB)
         assert switch == "primary present", f"the register is not at primary with its marker: {switch}"
@@ -2306,7 +2313,7 @@ class PhaseW:
                               env=dict(env, PATH=os.pathsep.join([str(psql_dir), str(self.fakebin),
                                                                   _masked_path()])))
         assert made.returncode == 0 and Path(made.stdout.strip()).is_dir(), (
-            f"lane-checkout {lane} --create did not make {who}'s lane checkout:\n{_said(made)}")
+            f"lane-checkout {lane} --create did not make {who}'s lane checkout:\n{_said_safely(made)}")
         return {"lane": lane, "checkout": checkout, "env": env, "state": where / "state"}
 
     # -------------------------------------------------- running the client
@@ -2373,7 +2380,7 @@ def _hold_point(fifo: Path, writer: W258Writer, timeout: float = 90):
             if error.errno != errno.ENXIO:
                 raise
         assert writer.ended is None, (
-            f"{writer.who}'s run ended before its commit call was held:\n{writer.said()}")
+            f"{writer.who}'s run ended before its commit call was held:\n{_said_safely(writer)}")
         assert time.monotonic() < deadline, f"{writer.who}'s commit call was not held in {timeout} s"
         time.sleep(0.05)
 
@@ -2703,7 +2710,7 @@ def test_two_writer_logins_write_alike_and_the_log_names_each(tmp_path, request)
     writers = []
     for who in ("e1", "e2"):
         writer = w.run(who, w.note(who, f"{who}'s write (T258)"))
-        assert writer.code == 0, f"{who}'s write on primary did not exit 0:\n{writer.said()}"
+        assert writer.code == 0, f"{who}'s write on primary did not exit 0:\n{_said_safely(writer)}"
         writers.append(writer)
         marks.append(len(w.m.log()))
     rows = w.journal_after()
@@ -2752,11 +2759,11 @@ def test_a_revoked_login_is_refused_69_and_writes_nothing(tmp_path, request, cas
     assert "ERROR" not in held.send("SELECT 'open';", "t258-open"), "e2's session did not open"
     if case == "revoke":
         proc = m.login("revoke", "e2", w.service)
-        assert proc.returncode == 0, f"login revoke e2 failed:\n{_said(proc)}"
+        assert proc.returncode == 0, f"login revoke e2 failed:\n{_said_safely(proc)}"
         for login in ("lanes_w_e2", "lanes_r_e2"):
             for step in (1, 2, 3):
                 assert re.search(rf"^login {login}, step {step}, ", proc.stdout, re.M), (
-                    f"login revoke printed no result for {login}'s step {step}:\n{_said(proc)}")
+                    f"login revoke printed no result for {login}'s step {step}:\n{_said_safely(proc)}")
     else:
         m.psql(f"REVOKE {WRITER} FROM lanes_w_e2;\n", W_DB, user=ADMIN)
         role = m.role("lanes_w_e2")
@@ -2766,10 +2773,10 @@ def test_a_revoked_login_is_refused_69_and_writes_nothing(tmp_path, request, cas
     for login, words in REVOKED[case].items():
         refused = m.as_login(login, W_DB, "SELECT 1;\n", w.files[login])
         assert refused.returncode == 2 and words in refused.stderr, (
-            f"[{case}] a new connection by {login} is not refused with {words!r}:\n{_said(refused)}")
+            f"[{case}] a new connection by {login} is not refused with {words!r}:\n{_said_safely(refused)}")
     before = w.state()
     write = w.run("e2", w.note("e2", f"e2's write after [{case}] (T258)"))
-    assert write.code == 69, f"[{case}] e2's write on primary did not exit 69:\n{write.said()}"
+    assert write.code == 69, f"[{case}] e2's write on primary did not exit 69:\n{_said_safely(write)}"
     assert write.commit_calls() == [], (
         f"[{case}] e2's refused write sent a commit call: the snapshot must send nothing that writes")
     assert w.state() == before, f"[{case}] e2's refused write changed the register"
@@ -2777,23 +2784,23 @@ def test_a_revoked_login_is_refused_69_and_writes_nothing(tmp_path, request, cas
         held.close()
         return
     read = w.run("e2", ["binding", W_LANES["e2"]])
-    assert read.code == 69 and read.out == "", f"e2's read on primary did not exit 69:\n{read.said()}"
+    assert read.code == 69 and read.out == "", f"e2's read on primary did not exit 69:\n{_said_safely(read)}"
     said = held.send(f"SELECT {REGISTER}.commit_write(NULL, NULL, NULL, NULL, NULL);", "t258-next")
     ended = held.close()
     said += ended.stderr
     assert ("57P01" in said or "terminating connection due to administrator command" in said
             or "server closed the connection" in said), (
-        f"the open session's next statement after the revoke was not ended: {said}")
+        f"the open session's next statement after the revoke was not ended: {_said_safely(said)}")
     assert "42501" not in said and "permission denied" not in said, (
-        f"the open session's next statement got 42501, so revoke returned between its steps: {said}")
-    assert ended.stdout.split() == ["open"], f"the open session got an answer after the revoke: {ended.stdout!r}"
+        f"the open session's next statement got 42501, so revoke returned between its steps: {_said_safely(said)}")
+    assert ended.stdout.split() == ["open"], f"the open session got an answer after the revoke: {_said_safely(ended.stdout)!r}"
     assert m.value("SELECT count(*) FROM pg_roles WHERE rolname IN ('lanes_w_e2', 'lanes_r_e2');",
                    "postgres") == "2", "a revoked login's role was dropped"
     assert m.role(ADMIN)["super"] is False and m.value(
         f"SELECT pg_has_role('{ADMIN}', 'pg_signal_backend', 'MEMBER');", "postgres") == "f", (
         f"{ADMIN} is a superuser or holds pg_signal_backend: the case proves nothing of the revoke")
     mine = w.run("e1", w.note("e1", "e1 still writes after e2's revoke (T258)"))
-    assert mine.code == 0, f"e1's write after e2's revoke did not exit 0:\n{mine.said()}"
+    assert mine.code == 0, f"e1's write after e2's revoke did not exit 0:\n{_said_safely(mine)}"
     assert [r["lane"] for r in w.journal_after()] == [W_LANES["e1"]], (
         f"e1's write is not the journal's one new row: {w.journal_after()}")
 
@@ -2818,13 +2825,13 @@ def test_a_write_cut_by_a_revoke_mid_commit_is_in_doubt_and_ends_3_with_nothing_
         revoke = w.m.login("revoke", "e2", w.service)
     finally:
         held.close()
-    assert revoke.returncode == 0, f"login revoke e2 failed:\n{_said(revoke)}"
+    assert revoke.returncode == 0, f"login revoke e2 failed:\n{_said_safely(revoke)}"
     writer.wait(timeout=150)
-    assert writer.code == 3, f"e2's write cut mid-commit did not exit 3:\n{writer.said()}"
+    assert writer.code == 3, f"e2's write cut mid-commit did not exit 3:\n{_said_safely(writer)}"
     ids = writer.write_ids()
     assert ids and len(set(ids)) == 1, f"e2's commit calls carried {ids}, not one write id"
     write_id = ids[0]
-    assert write_id in writer.err, f"exit 3 does not name the write id {write_id}:\n{writer.said()}"
+    assert write_id in writer.err, f"exit 3 does not name the write id {write_id}:\n{_said_safely(writer)}"
     ends = writer.ends()
     first = writer.commit_calls()[0]["call"]
     assert ends.get(first, {}).get("exit") == 2, (
@@ -2877,11 +2884,11 @@ def test_reader_url_takes_target_session_attrs_primary_not_read_write(tmp_path, 
     if gets_in:
         assert proc.returncode == 0 and proc.stdout.strip() == head, (
             f"[{case}] {login} with target_session_attrs={attrs} did not read the head {head}:\n"
-            f"{_said(proc)}")
+            f"{_said_safely(proc)}")
     else:
         assert proc.returncode == 2 and "session is read-only" in proc.stderr, (
             f"[{case}] {login} with target_session_attrs={attrs} was not refused with "
-            f"`session is read-only`:\n{_said(proc)}")
+            f"`session is read-only`:\n{_said_safely(proc)}")
 
 
 def test_after_login_rotate_the_old_password_files_write_exits_69_and_the_new_lines_commit_once(
@@ -2894,18 +2901,18 @@ def test_after_login_rotate_the_old_password_files_write_exits_69_and_the_new_li
     once."""
     w = PhaseW(request, tmp_path, engineers=("e1",))
     proc = w.m.login("rotate", "e1", w.service)
-    assert proc.returncode == 0, f"login rotate e1 failed:\n{_said(proc)}"
+    assert proc.returncode == 0, f"login rotate e1 failed:\n{_said_safely(proc)}"
     new = _passwords(proc.stdout)
-    assert sorted(new) == ["lanes_r_e1", "lanes_w_e1"], _said(proc)
+    assert sorted(new) == ["lanes_r_e1", "lanes_w_e1"], _said_safely(proc)
     before = w.state()
     old = w.run("e1", w.note("e1", "e1's write with the old password file (T258)"))
-    assert old.code == 69, f"e1's write with the old password file did not exit 69:\n{old.said()}"
+    assert old.code == 69, f"e1's write with the old password file did not exit 69:\n{_said_safely(old)}"
     assert old.commit_calls() == [], "e1's refused write sent a commit call: the 69 is the snapshot's"
     assert w.state() == before, "e1's refused write changed the register"
     for login, line in new.items():
         _private(w.files[login], line + "\n")
     wrote = w.run("e1", w.note("e1", "e1's write with the new lines (T258)"))
-    assert wrote.code == 0, f"e1's write with the new lines did not exit 0:\n{wrote.said()}"
+    assert wrote.code == 0, f"e1's write with the new lines did not exit 0:\n{_said_safely(wrote)}"
     rows = w.journal_after()
     assert [r["lane"] for r in rows] == [W_LANES["e1"]], f"the journal did not gain one row, e1's: {rows}"
     assert set(wrote.write_ids()) == {rows[0]["write_id"]}, (
