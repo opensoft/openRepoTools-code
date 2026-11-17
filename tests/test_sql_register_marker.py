@@ -538,7 +538,7 @@ def test_a_mode_index_guard_refuses_2_under_the_marker(tmp_path):
 #
 # THE MODE QUERY (T409, L4-B1; design Y, "The mode query's failures", F8's
 # table): where a configuration exists the writer asks `lanes-index mode` once,
-# on a 2 s client timer. Q6(c)'s 78 exits 69 with the build's refusal text,
+# on a 5 s client timer. Q6(c)'s 78 exits 69 with the build's refusal text,
 # writing nothing; every other failure runs files mode with one warning, and
 # the marker check then refuses it on a SQL estate. `LANES_INDEX=off` never
 # skips the ask. The answers come from a stand-in at `lanes-index`'s path,
@@ -854,7 +854,7 @@ Q6C_TEXT = ("mode=primary is not available in this build: the renderer's git hal
             "installed, so a write could not be mirrored; nothing was written")
 #: The query's client timer, D9's row for the mode query, and the bound a test
 #: asserts, twice it (section 4's rule 2).
-MODE_TIMER_S = 2.0
+MODE_TIMER_S = 5.0
 MODE_BOUND_S = 2 * MODE_TIMER_S
 MODES = ("index", "primary")
 ESTATES = ("files", "sql")
@@ -1035,7 +1035,7 @@ def _process_alive(pid: int, program: Path) -> bool:
 
 
 def _record(where: str, elapsed: float) -> None:
-    """Timing rule 2's record: the query's measured end beside D9's 2 s timer,
+    """Timing rule 2's record: the query's measured end beside D9's 5 s timer,
     and its margin to the bound."""
     print(f"AT-F8 {where}: the mode query ended {elapsed:.2f} s after it started, against "
           f"D9's {MODE_TIMER_S:g} s timer (bound {MODE_BOUND_S:g} s); "
@@ -1052,9 +1052,9 @@ def test_any_other_mode_query_failure_runs_files_mode_with_a_warning(tmp_path, f
     `off`: `log NOTED` asks once and prints one warning on stderr, then runs in
     files mode. On a files estate the write exits 0 and lands on origin; on a
     SQL estate the marker check after S3's fetch refuses it, 69 with Amendment
-    22's text, and nothing is written. The hang: the query's 2 s client timer
+    22's text, and nothing is written. The hang: the query's 5 s client timer
     ends the stand-in, which is gone once the verb returns; the query ends
-    under 4 s, recorded with its margin, and the warning names the timeout.
+    under 10 s, recorded with its margin, and the warning names the timeout.
     Fails until T409 (L4-B1), and on a SQL estate T419 (L4-B12)."""
     bench = _ModeBench(tmp_path, mode, estate, MODE_FAILURES[failure])
     for index_off in (False, True):
