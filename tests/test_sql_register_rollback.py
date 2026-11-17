@@ -5,7 +5,10 @@ AT-F1; AT-8; T273; FR-051, FR-052, FR-059; also US6) (opensoft/openRepoTools#165
 T273 writes this module: 21 tests, 20 from AT-8 (11), AT-F1 (7) and section
 4.2 (2), and T304's own (R-F10-34), and T273d a 22nd: AT-F2's rollback rerun
 after a 3 with a files-mode write between (lane 3's #165 6814260122), not yet
-in B15's T273 text. T304's own test,
+in B15's T273 text. Two more, at the end, test no AT case: the fault-path
+regressions of the module's own teardown (lane 3's Codex review of code PR
+97 at `6d479418`, SHOULDs 1 and 2; the coordinator's #165 6934112467),
+whose rows wait for no task. T304's own test,
 `test_rollback_steps_0_and_1_run_only_against_a_scratch_schema` (NOTES
 question 6; B10 tasks:1011-1024; `PLACEMENT.md` section 4), is phase 1's,
 and lane 3's T304 selects it with its word `sql_register_rollback and
@@ -110,6 +113,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_files_mode_claim_after_rollback_leaves_one_holder": ("T121", "T304", "T326"),  # T273; tasks:2512
     "test_a_missed_primary_writer_is_refused_after_rollback": ("T111", "T121", "T304", "T326", "T327", "T415", "T416", "T420"),  # T273; tasks:2512
     "test_a_missed_writer_is_refused_once_the_partitioned_rollback_completes": ("T111", "T121", "T304", "T326", "T327", "T415", "T416", "T420"),  # T273; tasks:2512
+    "test_a_push_fifo_let_go_leaves_no_reader_blocked": (),  # T273; the teardown's own fault path, no task (Codex at 6d479418, SHOULD 1)
     "test_a_reimport_after_a_rollback_continues_the_journal": ("T121", "T304", "T326"),  # T273; tasks:2512
     "test_a_rerun_after_an_unconfirmed_removal_and_a_files_mode_write_ends_0_with_the_marker_absent": ("T121", "T304", "T326"),  # T273; tasks:2512
     "test_a_rollback_entry_over_a_recorded_divergence_is_lr012": ("T107", "T109"),  # T273; tasks:2512
@@ -119,6 +123,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_rollback_rerun_resumes_after_its_own_entry": ("T121", "T304", "T326"),  # T273; tasks:2512
     "test_a_rollback_retries_a_lost_turn_on_a_fresh_k_through_its_check": ("T121", "T304", "T326"),  # T273; tasks:2512
     "test_a_write_that_committed_before_the_rollback_is_found_by_its_rerun_after_it": ("T121", "T304", "T326", "T327", "T415", "T416", "T417"),  # T273; tasks:2512
+    "test_held_at_push_never_returns_with_its_rollback_unreaped": (),  # T273; the teardown's own fault path, no task (Codex at 6d479418, SHOULD 2)
     "test_rollback_exits_2_on_lr012_naming_the_divergence_and_both_ways_out": ("T107", "T109", "T121", "T304"),  # T273; tasks:2512
     "test_rollback_from_a_partitioned_clone_is_refused_and_removes_no_marker": ("T121", "T304", "T326"),  # T273; tasks:2512
     "test_rollback_leaves_files_byte_identical_marker_gone_and_sql_writes_refused": ("T121", "T304", "T326"),  # T273; tasks:2512
@@ -278,6 +283,160 @@ def _open_when_held(fifo: Path, proc: subprocess.Popen, seconds: float = 120):
         except OSError:
             time.sleep(0.05)
     return None
+
+
+def _let_go(fifo: Path, fd: int | None = None) -> None:
+    """A FIFO'S LAST RELEASE, with no moment at which a reader can open it
+    and be left on it (lane 3's Codex review of code PR 97 at `6d479418`,
+    SHOULD 1; lane 2's RV7-30, N1). Where the owner still holds its write
+    end `fd`, the FIFO is unlinked first and `fd` closed after: a reader that
+    holds it open reads EOF, and none can open it once it is unlinked. Where
+    the owner holds none, the FIFO is opened once with `O_RDWR |
+    O_NONBLOCK`, which on Linux neither blocks nor fails for want of a
+    reader, unlinked while that end is held, and the end closed: a reader
+    blocked in its `open()` is let go by that open and reads EOF at the
+    close, and one that comes later finds no FIFO (ENOENT) and exits. A FIFO
+    already gone is left so. Copied from T270's renderer module."""
+    if fd is None:
+        try:
+            fd = os.open(str(fifo), os.O_RDWR | os.O_NONBLOCK)
+        except FileNotFoundError:
+            return
+    try:
+        fifo.unlink(missing_ok=True)
+    finally:
+        os.close(fd)
+
+
+def _exited(pid: int, start: str) -> bool:
+    """Whether `pid`, which started at `start` (`ps -o lstart=`), is gone: a
+    pid whose start time no longer matches is gone. Copied from T270's
+    renderer module."""
+    if hasattr(os, "pidfd_open"):
+        try:
+            fd = os.pidfd_open(pid)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            fd = None
+        if fd is not None:
+            import select
+            try:
+                poller = select.poll()
+                poller.register(fd, select.POLLIN)
+                if poller.poll(0):
+                    return True
+            finally:
+                os.close(fd)
+    else:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass
+    now = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True,
+                         text=True, check=False).stdout
+    return " ".join(now.split()) != start
+
+
+def _held_pushes(estate) -> list:
+    """(pid, start) of each call the wrapper logged as held: a push held at
+    the FIFO, a process of the rollback's own session's making, never this
+    process's child."""
+    return [(g["pid"], g.get("start", "")) for g in _jsonl(estate.bin / "git-wrapper.log")
+            if g.get("outcome") == "held"]
+
+
+def _kill_held(pid: int, start: str) -> None:
+    """SIGKILL to a held push, by the group it leads (T320's `_run_bounded`
+    starts each git call in a session of its own), or to it alone where it
+    leads none; only while it is still the process that started at `start`
+    (`_exited`), so a pid used again is never signalled."""
+    if not start or _exited(pid, start):
+        return
+    try:
+        if os.getpgid(pid) == pid:
+            os.killpg(pid, signal.SIGKILL)
+        else:
+            os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _drain(proc, grace: float):
+    """`proc`'s output, read for at most `grace` s. Where that times out,
+    its pipes are closed and it is waited for once more, at most `grace` s;
+    where that times out too it raises (`RuntimeError`), so it never
+    returns with `proc` unreaped."""
+    try:
+        return proc.communicate(timeout=grace)
+    except subprocess.TimeoutExpired as exc:
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                pipe.close()
+        try:
+            proc.wait(timeout=grace)
+        except subprocess.TimeoutExpired as late:
+            raise RuntimeError(f"pid {proc.pid} is still unreaped {grace:g} s after its SIGKILL "
+                               f"and its pipes were closed") from late
+        return exc.stdout, exc.stderr
+
+
+def _teardown(*procs, estate=None, fifo: Path | None = None, fd: int | None = None,
+              grace: float = 60) -> list:
+    """THE ROLLBACK MODULE'S ONE TEARDOWN, for a case's outer `finally`, from
+    the making of what it ends (lane 3's Codex review of code PR 97 at
+    `6d479418`, SHOULDs 1 and 2). Whatever ended the case, in this order,
+    each step tried whatever an earlier one raised:
+    1. each child in `procs` (a None is skipped) not yet reaped killed by its
+       pid (`Popen.kill`, which signals no child already reaped): the
+       rollback and the `psql` sessions share this process's group, so never
+       `killpg`;
+    2. each push the wrapper held (`_held_pushes`, where `estate` is given)
+       killed by its group, while it is still the process it logged
+       (`_kill_held`): the rollback is killed first, so it never sees its
+       push end, and the push is killed before the FIFO lets it go, so it
+       never runs (the rerun case is that kill); one whose start time was
+       not logged is never signalled, and the let-go ends it;
+    3. `fifo`, where one is given, let go and unlinked (`_let_go`), with the
+       write end `fd` where the case still holds one, so a call held on it,
+       or one that reaches it later, ends;
+    4. each child drained, bounded, its pipes closed on a last timeout, and
+       waited for, bounded (`_drain`), which raises where one stays unreaped;
+    5. each held push waited for, at most `grace` s, until it is gone.
+    Then the first error met is raised, or, where a held push is still
+    there, that is: the teardown never returns with a process it owns left.
+    Returns each child's (stdout, stderr), as far as each came."""
+    errors, said = [], []
+
+    def attempt(step, *args):
+        try:
+            return step(*args)
+        except Exception as exc:  # each step is tried; the first error is raised below
+            errors.append(exc)
+            return None
+
+    for proc in procs:
+        if proc is not None:
+            attempt(proc.kill)
+    held = (attempt(_held_pushes, estate) or []) if estate is not None else []
+    for pid, start in held:
+        attempt(_kill_held, pid, start)
+    if fifo is not None:
+        attempt(_let_go, fifo, fd)
+    for proc in procs:
+        said.append(attempt(_drain, proc, grace) if proc is not None else None)
+    deadline = time.monotonic() + grace
+    while (held and time.monotonic() < deadline
+           and not all(_exited(pid, start) for pid, start in held if start)):
+        time.sleep(0.05)
+    left = [pid for pid, start in held if start and not _exited(pid, start)]
+    if errors:
+        raise errors[0]
+    if left:
+        raise RuntimeError(f"held pushes {left} are still there {grace:g} s after their SIGKILL")
+    return said
 
 
 # ------------------------------------------------------------------ the register
@@ -549,11 +708,11 @@ def _lost_turn_rechecks_step_0(reg: RollbackRegister) -> None:
     before = reg.state()
     fifo = reg.root / "hold.fifo"
     os.mkfifo(str(fifo), 0o600)
-    # The rollback's second read, the second call carrying `diverged_sha`, is held.
-    reg.arm([{"mode": "hold", "fifo": str(fifo), "match": "diverged_sha", "call": 2}])
-    holder = reg.db.session(appname=HOLDER)
-    proc, fd = None, None
-    try:
+    proc = fd = holder = None
+    try:  # owned to the end, the FIFO with them (`_teardown`)
+        # The rollback's second read, the second call carrying `diverged_sha`, is held.
+        reg.arm([{"mode": "hold", "fifo": str(fifo), "match": "diverged_sha", "call": 2}])
+        holder = reg.db.session(appname=HOLDER)
         holder.stdin.write(f"BEGIN;\nSELECT seq FROM {SCRATCH}.register_head WHERE id = 1 "
                            f"FOR UPDATE;\n")
         holder.stdin.flush()
@@ -571,16 +730,11 @@ def _lost_turn_rechecks_step_0(reg: RollbackRegister) -> None:
                    f"'{SHA_MEANWHILE}', NULL);\nCOMMIT;\n"), timeout=60)
         assert holder.returncode == 0, f"the second session could not record the divergence: {err}"
         assert reg.mirror()["diverged_sha"] == SHA_MEANWHILE, reg.mirror()
-        os.close(fd)
-        fd = None
+        end, fd = fd, None
+        _let_go(fifo, end)  # the read released: its FIFO unlinked, then the write end closed
         out, err = proc.communicate(timeout=120)
     finally:
-        if fd is not None:
-            os.close(fd)
-        for p in (proc, holder):
-            if p is not None and p.poll() is None:
-                p.kill()
-                p.wait()
+        _teardown(proc, holder, fifo=fifo, fd=fd)
     ended = f"exit {proc.returncode}\n--- stdout ---\n{out[-3000:]}\n--- stderr ---\n{err[-3000:]}"
     assert proc.returncode == 2, f"the rollback did not end 2 after its lost turn:\n{ended}"
     assert "55P03" in err and "lost its turn" in err, (
@@ -758,7 +912,9 @@ def _requests(log: Path) -> list:
 #: one JSON line of `git-wrapper.log`, its subcommand, its argv, its pid, and
 #: `psql_before`, the number of requests the `psql` log named in the control
 #: file held when it started. `hold`, `{"call": <subcommand>, "fifo": path}`,
-#: blocks that call on the FIFO until the test closes its end.
+#: blocks that call on the FIFO until the test closes its end; its `held`
+#: line also carries `start`, its own start time as `ps -o lstart=` gives it,
+#: by which a teardown knows it is still that process (`_kill_held`).
 GIT_WRAPPER = r'''#!/usr/bin/env -S python3 -I
 import json, os, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -789,6 +945,15 @@ def requests(path):
         return 0
 
 
+def started(pid):
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True,
+                             text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return " ".join(out.split())
+
+
 def log(record):
     with open(LOG, "a", encoding="utf-8") as handle:
         handle.write(json.dumps(record) + "\n")
@@ -803,7 +968,7 @@ def main():
               "psql_before": requests(control.get("psql_log") or "")}
     hold = control.get("hold")
     if hold and hold.get("call") == sub:
-        log(dict(record, outcome="held"))
+        log(dict(record, outcome="held", start=started(os.getpid())))
         with open(hold["fifo"], "rb") as fifo:
             fifo.read()
     rc = subprocess.run([control["git"]] + args).returncode
@@ -1498,9 +1663,9 @@ def test_a_rollback_goes_back_to_its_check_past_a_last_error_and_refuses_a_diver
     estate = _estate(request, tmp_path)
     db, k, sha = estate.db, estate.k, "3" * 40
     before = estate.state()
-    holder = _holder(db, "t273-g-holder")
-    proc = None
-    try:
+    holder = proc = None
+    try:  # both owned to the end (`_teardown`)
+        holder = _holder(db, "t273-g-holder")
         _wait_for(db, _holding(db, "t273-g-holder"), "the held session's lock on the head row")
         proc = estate.popen_rollback()
         _wait_for(db, _locked(db, "lanes-index"), "the rollback's call waiting on the head row")
@@ -1510,10 +1675,7 @@ def test_a_rollback_goes_back_to_its_check_past_a_last_error_and_refuses_a_diver
         holder.communicate(input="ROLLBACK;\n", timeout=60)
         out, err = proc.communicate(timeout=300)
     finally:
-        for p in (proc, holder):
-            if p is not None and p.poll() is None:
-                p.kill()
-                p.wait()
+        _teardown(proc, holder)
     ended = f"exit {proc.returncode}\n--- stdout ---\n{out}\n--- stderr ---\n{err}"
     assert "40001" in err and "lost its turn" in err, f"[{case}] no 40001 sent it back:\n{ended}"
     if case == "recorded":
@@ -1554,8 +1716,9 @@ def test_a_rollback_retries_a_lost_turn_on_a_fresh_k_through_its_check(request, 
     ws2 = MissedWorkstation(estate, "ws2")
     k = estate.k
     estate.arm([{"mode": "window", "match": "commit_write", "call": 1, "ms": 8000}])
-    proc = estate.popen_rollback()
-    try:
+    proc = None
+    try:  # owned to the end (`_teardown`)
+        proc = estate.popen_rollback()
         end = time.monotonic() + 60
         while not any(STEP_1_MARK in c.get("sent", "") for c in estate.calls()):
             assert proc.poll() is None and time.monotonic() < end, (
@@ -1564,9 +1727,7 @@ def test_a_rollback_retries_a_lost_turn_on_a_fresh_k_through_its_check(request, 
         wrote = ws2.edit("log", "NOTED", f"lane:{MISSED_LANE}", "test 8 (h): in the window")
         out, err = proc.communicate(timeout=300)
     finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
+        _teardown(proc)
     ended = f"exit {proc.returncode}\n--- stdout ---\n{out}\n--- stderr ---\n{err}"
     assert wrote.returncode == 0, f"ws2's write in the window:\n{_said(wrote)}"
     assert "LR001" in err, f"the step-1 call did not get LR001:\n{ended}"
@@ -1808,43 +1969,30 @@ def test_rollback_refuses_to_start_while_the_mirror_is_diverged(request, tmp_pat
     assert estate.store_on_origin()
 
 
-def _let_go(fifo: Path) -> None:
-    """A push the wrapper holds on `fifo` let go, its write end opened
-    non-blocking and closed, and `fifo` unlinked, so a wrapper that comes to
-    it later finds none and exits. For a rollback ended on a failure path:
-    it shares this process's group, so its git calls are no group signalled
-    here (lane 3's check v97 of code PR 97, SHOULD 4; lane 2's RV7-30, S2
-    and N1)."""
-    try:
-        os.close(os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK))
-    except OSError:
-        pass
-    fifo.unlink(missing_ok=True)
-
-
 def _held_at_push(estate: RollbackEstate):
     """The rollback from ws1, held by the wrapper at its push: (the process,
-    the FIFO's write end), or a failure where it ends first."""
+    the FIFO's write end), which the caller then owns, with the FIFO, to the
+    end of its outer `finally` (`_teardown`); or a failure where it ends
+    first. Until it returns it owns them itself: on any end before then, or
+    where the push is never held, it tears down all it made (`_teardown`:
+    a push held meanwhile killed, the rollback killed and reaped, the FIFO
+    let go and unlinked) before the failure goes on, and it fails with what
+    the rollback said (lane 3's Codex review of code PR 97 at `6d479418`,
+    SHOULDs 1 and 2; lane 3's check v97, SHOULD 4; lane 2's RV7-30, N6)."""
     fifo = estate.root / "push.fifo"
     if not fifo.exists():
         os.mkfifo(str(fifo), 0o600)
-    estate.arm(hold={"call": "push", "fifo": str(fifo)})
-    proc = estate.popen_rollback()
-    fd = _open_when_held(fifo, proc, 300)
+    proc = fd = None
+    try:
+        estate.arm(hold={"call": "push", "fifo": str(fifo)})
+        proc = estate.popen_rollback()
+        fd = _open_when_held(fifo, proc, 300)
+    except BaseException:
+        _teardown(proc, estate=estate, fifo=fifo, fd=fd)
+        raise
     if fd is None:
-        try:
-            out, err = proc.communicate(timeout=60)
-        except subprocess.TimeoutExpired:
-            # Still running: killed (it shares this process's group, so no
-            # group is signalled), a push parked on the FIFO meanwhile let go,
-            # and reaped, bounded (lane 3's check v97 of code PR 97, SHOULD 4).
-            proc.kill()
-            _let_go(fifo)
-            try:
-                out, err = proc.communicate(timeout=60)
-            except subprocess.TimeoutExpired as exc:  # fails with what came (RV7-30, N6)
-                out, err = exc.stdout, exc.stderr
-        pytest.fail(f"the rollback never reached its push: exit {proc.poll()}\n{out}\n{err}")
+        ((out, err),) = _teardown(proc, estate=estate, fifo=fifo)
+        pytest.fail(f"the rollback never reached its push: exit {proc.returncode}\n{out}\n{err}")
     return proc, fd
 
 
@@ -1870,39 +2018,33 @@ def test_the_marker_removal_entry_is_written_with_the_switch_in_step_1(request, 
     Fails until T326 and T327."""
     estate = _estate(request, tmp_path)
     k = estate.k
+    fifo = estate.root / "push.fifo"
     proc, fd = _held_at_push(estate)
     try:
-        try:
-            seen = estate.rows(
-                "SELECT s.mode, s.marker_state, h.seq AS head, j.kind, j.operator FROM "
-                "register_switch s, register_head h JOIN journal j ON j.seq = h.seq")[0]
-            count = estate.count()
-            entry = json.dumps(_write_entry_now(estate, "AT-F1: a write meanwhile")).replace(
-                "'", "''")
-            gen = estate.switch()["generation"]
-            version = estate.rows("SELECT version FROM schema_version")[0]["version"]
-            tried = estate.db.psql(
-                f"\\set VERBOSITY verbose\nSET search_path TO lanes_register;\n"
-                f"SET ROLE {WRITER};\n"
-                f"BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT commit_write({estate.head()}, "
-                f"'{uuid.uuid4()}'::uuid, {version}, '{gen}'::uuid, '{entry}'::jsonb);\nCOMMIT;\n",
-                check=False)
-            counted = estate.count()
-        finally:
-            os.close(fd)
+        seen = estate.rows(
+            "SELECT s.mode, s.marker_state, h.seq AS head, j.kind, j.operator FROM "
+            "register_switch s, register_head h JOIN journal j ON j.seq = h.seq")[0]
+        count = estate.count()
+        entry = json.dumps(_write_entry_now(estate, "AT-F1: a write meanwhile")).replace(
+            "'", "''")
+        gen = estate.switch()["generation"]
+        version = estate.rows("SELECT version FROM schema_version")[0]["version"]
+        tried = estate.db.psql(
+            f"\\set VERBOSITY verbose\nSET search_path TO lanes_register;\n"
+            f"SET ROLE {WRITER};\n"
+            f"BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT commit_write({estate.head()}, "
+            f"'{uuid.uuid4()}'::uuid, {version}, '{gen}'::uuid, '{entry}'::jsonb);\nCOMMIT;\n",
+            check=False)
+        counted = estate.count()
+        end, fd = fd, None
+        _let_go(fifo, end)  # the push released: its FIFO unlinked, then the write end closed
         out, err = proc.communicate(timeout=300)
     finally:
-        # The rollback owned to the end: where anything above failed it is
-        # killed (it shares this process's group, so never `killpg`), a push
-        # held or parked on the FIFO meanwhile let go, and it is reaped,
-        # bounded (lane 2's RV7-30, S2).
-        if proc.poll() is None:
-            proc.kill()
-            _let_go(estate.root / "push.fifo")
-            try:
-                proc.communicate(timeout=60)
-            except subprocess.TimeoutExpired:
-                pass
+        # The rollback owned to the end (lane 2's RV7-30, S2; lane 3's Codex
+        # review of code PR 97 at `6d479418`, SHOULD 2): where anything above
+        # failed, the held push and the rollback are killed, the FIFO let go
+        # and unlinked, and both reaped or seen gone, bounded (`_teardown`).
+        _teardown(proc, estate=estate, fifo=fifo, fd=fd)
     assert seen == {"mode": "files", "marker_state": "removing", "head": k + 1,
                     "kind": "rollback", "operator": True}, f"one snapshot read {seen}"
     assert tried.returncode != 0 and "LR002" in tried.stderr, (
@@ -1921,14 +2063,14 @@ def test_a_rollback_rerun_resumes_after_its_own_entry(request, tmp_path):
     estate = _estate(request, tmp_path)
     k = estate.k
     proc, fd = _held_at_push(estate)
-    held = [g for g in _jsonl(estate.bin / "git-wrapper.log") if g.get("outcome") == "held"]
-    for pid in [g["pid"] for g in held] + [proc.pid]:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    proc.wait()
-    os.close(fd)
+    # The kill at the push is the teardown itself, with nothing between it
+    # and `_held_at_push`, which owns all until it returns: the held push,
+    # by its group while it is still the process it logged, and the
+    # rollback, by its pid, are killed, so the push never runs; then the
+    # FIFO is let go and unlinked, the rollback reaped and the push seen
+    # gone, every wait bounded (lane 3's Codex review of code PR 97 at
+    # `6d479418`, SHOULD 2).
+    _teardown(proc, estate=estate, fifo=estate.root / "push.fifo", fd=fd)
     switch = estate.switch()
     assert (switch["marker_state"], estate.journal()[-1]) == ("removing", [k + 1, "rollback", True])
     first = estate.outage_file()
@@ -2097,9 +2239,9 @@ def test_a_rollback_entry_over_a_recorded_divergence_is_lr012(rb_register, case)
                          f"(F1, S5)"), proc.stderr
         assert (reg.state(), reg.mirror()) == before, "the refused entry moved something"
     elif case in ("recorder-first", "last-error-only"):
-        recorder = _writer_session(reg.db, "t273-recorder")
-        call = None
-        try:
+        recorder = call = None
+        try:  # both owned to the end (`_teardown`)
+            recorder = _writer_session(reg.db, "t273-recorder")
             recorder.stdin.write("BEGIN;\n" + record)
             recorder.stdin.flush()
             reg.wait_sql(f"SELECT count(*) FROM pg_stat_activity WHERE application_name = "
@@ -2116,10 +2258,7 @@ def test_a_rollback_entry_over_a_recorded_divergence_is_lr012(rb_register, case)
             said.append(err)
             assert "40001" in err, f"the waiting call did not get 40001: {err}"
         finally:
-            for p in (recorder, call):
-                if p is not None and p.poll() is None:
-                    p.kill()
-                    p.wait()
+            _teardown(recorder, call)
         retry = reg.psql(_rollback_call(reg, reg.head()), WRITER)
         said.append(retry.stderr)
         if case == "recorder-first":
@@ -2129,9 +2268,9 @@ def test_a_rollback_entry_over_a_recorded_divergence_is_lr012(rb_register, case)
             assert retry.returncode == 0, retry.stderr
             assert reg.head() == k + 1 and reg.journal()[-1] == [k + 1, "rollback", True]
     else:
-        call = _writer_session(reg.db, "t273-call")
-        recorder = None
-        try:
+        call = recorder = None
+        try:  # both owned to the end (`_teardown`)
+            call = _writer_session(reg.db, "t273-call")
             call.stdin.write(_rollback_call(reg, k, open_=True))
             call.stdin.flush()
             reg.wait_sql(_holding(reg.db, "t273-call"), "the rollback's open call")
@@ -2147,10 +2286,7 @@ def test_a_rollback_entry_over_a_recorded_divergence_is_lr012(rb_register, case)
             said.append(err)
             assert recorder.returncode == 0, err
         finally:
-            for p in (recorder, call):
-                if p is not None and p.poll() is None:
-                    p.kill()
-                    p.wait()
+            _teardown(recorder, call)
         assert reg.journal()[-1] == [k + 1, "rollback", True]
         assert reg.mirror()["diverged_sha"] == sha
     assert not any("40P01" in text for text in said), f"a session got 40P01: {said}"
@@ -2169,27 +2305,24 @@ def test_rollback_exits_2_on_lr012_naming_the_divergence_and_both_ways_out(rb_re
     copy = flipped_copy(LANES_INDEX, reg.root / "false-copy", False)
     fifo = reg.root / "step1.fifo"
     os.mkfifo(str(fifo), 0o600)
-    reg.arm([{"mode": "hold", "fifo": str(fifo), "match": "commit_write", "call": 1}])
-    before = reg.state()
-    proc = subprocess.Popen([sys.executable, str(copy), "rollback"], stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                            env=reg.env(reg.config("conf")), cwd=str(reg.root / "operator"))
-    fd = None
-    try:
+    proc = fd = None
+    try:  # owned to the end, the FIFO with it (`_teardown`)
+        reg.arm([{"mode": "hold", "fifo": str(fifo), "match": "commit_write", "call": 1}])
+        before = reg.state()
+        proc = subprocess.Popen([sys.executable, str(copy), "rollback"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True,
+                                env=reg.env(reg.config("conf")), cwd=str(reg.root / "operator"))
         fd = _open_when_held(fifo, proc)
         assert fd is not None, "the rollback's step-1 call was never held"
         recorded = reg.psql(f"SELECT {SCRATCH}.record_mirror_state('ws-t273-lr012', '{sha}', "
                             f"NULL);", WRITER)
         assert recorded.returncode == 0, recorded.stderr
-        os.close(fd)
-        fd = None
+        end, fd = fd, None
+        _let_go(fifo, end)  # the call released: its FIFO unlinked, then the write end closed
         out, err = proc.communicate(timeout=120)
     finally:
-        if fd is not None:
-            os.close(fd)
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
+        _teardown(proc, fifo=fifo, fd=fd)
     ended = f"exit {proc.returncode}\n--- stdout ---\n{out}\n--- stderr ---\n{err}"
     assert proc.returncode == 2, ended
     assert "LR012" in err and f"diverged at {sha}" in err, ended
@@ -2198,3 +2331,185 @@ def test_rollback_exits_2_on_lr012_naming_the_divergence_and_both_ways_out(rb_re
     assert reg.state() == before, "the refused rollback wrote"
     switch = reg.switch()
     assert (switch["mode"], switch["marker_state"]) == ("primary", "present"), switch
+
+
+# ------------------------------------------------------------------ the teardown's own faults
+#: The fault-path regressions of this module's own teardown (lane 3's Codex
+#: review of code PR 97 at `6d479418`, SHOULDs 1 and 2; the coordinator's
+#: reproductions, #165 6934112467). They need no engine and no task, so their
+#: rows wait for none. Each child they start is theirs, ended and reaped in
+#: their own `finally`; the rollback they hold is a stub, never a process.
+#: `_Pipe`, `_fifo_reader`, `_on_fifo`, `_ended`, `_reap_all` and `_GapFifo`
+#: are copied from T270's renderer module.
+LINUX_ONLY = pytest.mark.skipif(not sys.platform.startswith("linux"),
+                                reason="a FIFO opened O_RDWR, and /proc, are Linux's")
+
+#: A reader of one byte from a FIFO, as a held push or `psql` call reads it.
+READ_ONE = "import os, sys; os.read(os.open(sys.argv[1], os.O_RDONLY), 1)"
+
+
+class _Pipe:
+    """A child's pipe, which only records that it was closed."""
+
+    def __init__(self):
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _Stuck:
+    """A rollback that never ends: `kill()` is recorded and changes nothing,
+    each `communicate()` and `wait()` times out, and nothing ever sets its
+    `returncode`. It is no process, so nothing is signalled."""
+
+    pid = 4194304 + 7  # above Linux's pid_max ceiling, so no process has it
+
+    def __init__(self):
+        self.returncode = None
+        self.stdout, self.stderr = _Pipe(), _Pipe()
+        self.calls: list = []
+
+    def kill(self) -> None:
+        self.calls.append("kill")
+
+    def communicate(self, input=None, timeout=None):
+        self.calls.append("communicate")
+        raise subprocess.TimeoutExpired("stuck", timeout)
+
+    def wait(self, timeout=None):
+        self.calls.append("wait")
+        raise subprocess.TimeoutExpired("stuck", timeout)
+
+    def poll(self):
+        return None
+
+
+def _fifo_reader(path) -> subprocess.Popen:
+    """A child that reads one byte from the FIFO at `path`."""
+    return subprocess.Popen([sys.executable, "-I", "-c", READ_ONE, str(path)],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE, text=True)
+
+
+def _on_fifo(proc: subprocess.Popen, seconds: float = 5) -> bool:
+    """Whether `proc` is seen asleep on a FIFO, in its `open()`
+    (`wait_for_partner`) or its `read()`, within `seconds`: False where it
+    ends first, the time runs out, or its `/proc` cannot be read."""
+    deadline = time.monotonic() + seconds
+    while proc.poll() is None and time.monotonic() < deadline:
+        try:
+            wchan = Path(f"/proc/{proc.pid}/wchan").read_text(encoding="utf-8")
+        except OSError:
+            return False
+        if any(word in wchan for word in ("partner", "pipe", "fifo")):
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def _ended(proc: subprocess.Popen, seconds: float = 5) -> bool:
+    """Whether `proc` ends within `seconds`."""
+    try:
+        proc.wait(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        return False
+    return True
+
+
+def _reap_all(procs: list) -> list:
+    """Each child a case started, killed by its pid where it still runs, and
+    reaped, bounded. Returns what each wrote to its stderr, where it had one."""
+    said = []
+    for proc in procs:
+        if proc.poll() is None:
+            proc.kill()
+        said.append(proc.communicate(timeout=30)[1])
+    return said
+
+
+class _GapFifo:
+    """A FIFO's path whose `unlink()` first starts a reader on it and waits
+    until that reader is on the FIFO: a reader that comes in the gap just
+    before the unlink (the coordinator's `GapPath`, #165 6934112467)."""
+
+    def __init__(self, path: Path, readers: list):
+        self.path, self.readers, self.on = path, readers, False
+
+    def __str__(self) -> str:
+        return str(self.path)
+
+    def unlink(self, missing_ok: bool = False) -> None:
+        self.readers.append(_fifo_reader(self.path))
+        self.on = _on_fifo(self.readers[-1])
+        self.path.unlink(missing_ok=missing_ok)
+
+
+@LINUX_ONLY
+def test_a_push_fifo_let_go_leaves_no_reader_blocked(tmp_path):
+    """SHOULD 1 at `6d479418`: `_let_go`, the release every teardown and
+    every held window here ends with, leaves no reader blocked on its FIFO.
+    With no write end held, a reader that comes in the gap just before the
+    unlink is let go. With the write end held, as a held window holds it,
+    the reader already on the FIFO and one that comes in that gap both read
+    EOF. Either way the FIFO is gone, and a reader that comes after finds
+    none (ENOENT) and ends."""
+    fifo = tmp_path / "push.fifo"
+    readers: list = []
+    try:
+        os.mkfifo(str(fifo), 0o600)
+        first = _GapFifo(fifo, readers)
+        _let_go(first)
+        assert _ended(readers[0]), (
+            "with no write end held, a reader that came in the gap before the unlink is left "
+            "blocked on the unlinked FIFO")
+        os.mkfifo(str(fifo), 0o600)
+        readers.append(_fifo_reader(fifo))
+        fd = _open_when_held(fifo, readers[-1], 10)
+        assert fd is not None, "the reader never came to the FIFO"
+        second = _GapFifo(fifo, readers)
+        _let_go(second, fd)
+        assert not fifo.exists(), "the FIFO is still there after its let-go"
+        readers.append(_fifo_reader(fifo))
+        left = [n for n, proc in enumerate(readers) if not _ended(proc)]
+        assert not left, f"readers {left} of {len(readers)} are left blocked"
+    finally:
+        said = _reap_all(readers)
+    on = [first.on, True, second.on]  # each reader seen on the FIFO before its let-go
+    assert all(proc.returncode == 0 for proc, seen in zip(readers, on) if seen), (
+        [proc.returncode for proc in readers], on, said)
+    assert readers[3].returncode != 0 and "FileNotFoundError" in said[3], (
+        f"a reader that came after the let-go found a FIFO: {said[3]}")
+
+
+@LINUX_ONLY
+def test_held_at_push_never_returns_with_its_rollback_unreaped(monkeypatch, tmp_path):
+    """SHOULD 2 at `6d479418`: where the push is never held, `_held_at_push`
+    tears down all it made (`_teardown`) and never leaves its rollback
+    unreaped: the rollback, whose every `communicate()` and `wait()` times
+    out, is killed by its pid and drained, its pipes are closed, a call
+    parked on the FIFO is let go, the FIFO is gone, and the case fails with
+    the teardown's own error, not with the rollback left running behind a
+    failure. Stubbed: the estate, the rollback (`_Stuck`) and
+    `_open_when_held`, which gives None at once; the parked call is a FIFO
+    reader of this case's."""
+    monkeypatch.setattr(sys.modules[__name__], "_open_when_held",
+                        lambda fifo, proc, seconds=120: None)
+    stuck, parked = _Stuck(), []
+
+    def arm(arms=(), hold=None):
+        if hold:
+            parked.append(_fifo_reader(hold["fifo"]))
+            _on_fifo(parked[-1])
+
+    estate = SimpleNamespace(root=tmp_path, bin=tmp_path / "bin", arm=arm,
+                             popen_rollback=lambda: stuck)
+    try:
+        with pytest.raises(RuntimeError, match="still unreaped"):
+            _held_at_push(estate)
+        assert stuck.calls == ["kill", "communicate", "wait"], stuck.calls
+        assert stuck.stdout.closed and stuck.stderr.closed, "the rollback's pipes were left open"
+        assert not (tmp_path / "push.fifo").exists(), "the push FIFO is still there"
+        assert parked and _ended(parked[0]), "the call parked on the FIFO is left blocked"
+    finally:
+        _reap_all(parked)
