@@ -3864,6 +3864,66 @@ def test_a_failure_message_shows_no_line_of_a_writers_output_that_no_template_ma
     assert "register busy" not in said, f"a line no template matches is shown:\n{said}"
 
 
+#: T257zt's planted writer: it writes the planted value, from its
+#: environment, to its stdout and its stderr, then outlives its timeout.
+T257ZT_WRITER = ("import os, sys, time\n"
+                 "sys.stdout.write('out ' + os.environ['T257ZT_PLANTED'] + '\\n'); sys.stdout.flush()\n"
+                 "sys.stderr.write('lanes-edit: ' + os.environ['T257ZT_PLANTED'] + '\\n'); sys.stderr.flush()\n"
+                 "time.sleep(60)\n")
+
+
+@pytest.mark.parametrize("case", ["sent-a-snapshot", "refused-with-no-value", "json-loads",
+                                  "timed-out-writer"])
+def test_pytests_own_report_of_a_failure_shows_no_planted_writer_text(request, case):
+    """T257zt (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09 at `3f9fcac4`, B1), with no engine: a failure whose raising frames
+    hold a planted value as arguments or locals, rendered as pytest renders
+    a failed test under the suite's own settings (`_reported`: the running
+    item's `repr_failure`, the terminal text that is also --junitxml's
+    failure body, and the JUnit failure message), holds no planted value.
+    Each case first proves the value is there to be shown:
+      - `sent-a-snapshot`: `_sent_a_snapshot`'s argument `proc`, a writer's
+        `CompletedProcess` whose stdout and stderr hold it;
+      - `refused-with-no-value`: `_t257u_refused_with_no_value`'s argument
+        `said`, a refusal's text that holds it;
+      - `json-loads`: `json.loads` of a writer's output that holds it, whose
+        frames in the standard library take the text as `s`;
+      - `timed-out-writer`: a planted writer, run by `subprocess.run` with a
+        timeout it outlives, whose partial stdout and stderr the standard
+        library's frames hold (`stdout_seq`, `stderr_seq`) and its
+        `TimeoutExpired` keeps; its command line holds no planted value.
+    Under pytest's default `--tb=auto` the first three and the last show it
+    as a long entry's arguments; T205e's short style shows none. An
+    explicit `--tb=long` or `--fulltrace` shows them again, and fails this
+    case: those are not secret-safe. The planted value is no credential of
+    any login."""
+    planted = f"fake-{uuid.uuid4().hex}"
+    if case == "sent-a-snapshot":
+        proc = subprocess.CompletedProcess(["lanes-edit.sh"], 75, f"out {planted}\n", f"lanes-edit: {planted}\n")
+
+        class _SentNothing:
+            def sent(self) -> list:
+                return []
+
+        with pytest.raises(AssertionError) as failed:
+            _sent_a_snapshot(_SentNothing(), "[T257zt]", proc)
+    elif case == "refused-with-no-value":
+        with pytest.raises(AssertionError) as failed:
+            _t257u_refused_with_no_value(f"lanes-index: {planted} refused", "register_url", "1", "exit 3")
+    elif case == "json-loads":
+        with pytest.raises(json.JSONDecodeError) as failed:
+            json.loads(f"lanes-index: {planted}")
+        assert planted in failed.value.doc, "the planted output is not json's document, so this proves nothing"
+    else:
+        with pytest.raises(subprocess.TimeoutExpired) as failed:
+            subprocess.run([sys.executable, "-c", T257ZT_WRITER], capture_output=True, timeout=5,
+                           env=dict(os.environ, T257ZT_PLANTED=planted))
+        kept = (failed.value.stdout or b"") + (failed.value.stderr or b"")
+        assert planted.encode() in kept, "the writer's output was not captured, so this proves nothing"
+    assert planted not in _reported(request, failed), f"[{case}] the planted value is in pytest's report"
+
+
+
 #: What a failure message may not format but through `_said_safely` (T257zi;
 #: T257zp): a captured stream's attribute, a name these modules give a stream,
 #: and the helpers that showed one before T257zh, T255s and T258l.
