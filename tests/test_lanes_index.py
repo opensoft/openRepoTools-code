@@ -28,6 +28,11 @@ the Postgres path is a fake `psql` that records what it was asked; every remote
 is a bare repository in a temporary directory and every `$HOME` is temporary.
 The real `~/.local/bin` is taken OFF `PATH` wherever it carries a `lanes-index`,
 so an installed indexer is never what a case runs.
+
+PYTEST_DONT_REWRITE: pytest does not rewrite this module's asserts (lane 2's SHOULD 1 of
+opensoft/openRepoTools-code#89 comment 6955285249, IN by lane 3's 6955397261), so a failing
+assert prints its own message, which each case scrubs of the planted secret, and never its
+operands; the cases that hold a secret take their rows by id.
 """
 
 from __future__ import annotations
@@ -46,6 +51,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import unicodedata
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -2193,94 +2199,52 @@ def _stopped(sqlstate: str) -> str:
 
 
 #: (id, the call that fails - the provenance's `read` or the compare-and-swap's `write` -,
-#: psql's exit, its stderr as psql 16 can say it under VERBOSITY=verbose, the fixed words
-#: the run says): `ERROR:`, SQLSTATE-shaped codes and the secret in quoted lines
+#: psql's exit, its stderr as psql 16 says it under VERBOSITY=sqlstate - each message one
+#: located line, its severity and SQLSTATE alone (lane 3's ruling, question 1 of
+#: opensoft/openRepoTools-code#89 comment 6955397261) -, the fixed words the run says). The
+#: LAST located line decides.
 PSQL_QUOTES = [
-    ("caret-last", "read", 3,
-     'psql:<stdin>:2: NOTICE:  42P07: relation "provenance" already exists, skipping\n'
-     'psql:<stdin>:4: ERROR:  42601: syntax error at or near "x"\n'
-     f"LINE 1: ...ROM provenance WHERE source = 'register:https://u:ERROR:  {CONFIG_SECRET}@h/p'\n"
-     "                                         ^\n", _stopped("42601")),
-    ("context-last", "read", 3,
-     "psql:<stdin>:4: ERROR:  XX000: the server failed\n"
-     f"QUERY:  SELECT 'ERROR:  42P01: {CONFIG_SECRET}'\n"
-     f"CONTEXT:  PL/pgSQL function inline_code_block line 3 at SQL statement 'ERROR: "
-     f"{CONFIG_SECRET}'\n", _stopped("XX000")),
-    # B5 (lane 3's ruling, comment 6947619546): `42P01:` and `P0001:` in DETAIL lines under
-    # a different real error are never its class - not "wiped", not the compare-and-swap's
-    ("detail-42p01", "read", 3,
-     "psql:<stdin>:4: ERROR:  XX000: the server failed\n"
-     f"DETAIL:  42P01: relation \"{CONFIG_SECRET}\" does not exist\n"
-     f"HINT:  42P01: {CONFIG_SECRET}\n", _stopped("XX000")),
-    # the FIRST error line: a message's own line that begins `ERROR:` comes after it
-    ("detail-own-line", "read", 3,
-     "psql:<stdin>:4: ERROR:  XX000: the server failed\n"
-     "DETAIL:  the row it read held a value over two lines:\n"
-     f"ERROR:  42P01: {CONFIG_SECRET}\n", _stopped("XX000")),
-    ("detail-p0001-write", "write", 3,
-     'psql:<stdin>:7: ERROR:  23514: new row violates check constraint "t104"\n'
-     f"DETAIL:  P0001: 42P01: Failing row contains (register:https://u:{CONFIG_SECRET}@h/p).\n"
-     f"CONTEXT:  P0001: {CONFIG_SECRET}\n", _stopped("23514")),
-    # lane 2's SHOULD 6a (comment 6947728883, IN by lane 3's 6947826234): a failed write
-    # whose CONTEXT quotes the COPY row, the key and an `ERROR:` in it
-    ("copy-row-write", "write", 3,
-     "psql:<stdin>:9: ERROR:  22P04: extra data after last expected column\n"
-     f'CONTEXT:  COPY lanes, line 1: "register:https://u:{CONFIG_SECRET}@h/p\tERROR:  42P01: x"\n',
-     _stopped("22P04")),
-    # a server of another language: the last line with psql's locus, never its DETAIL
+    # a localized NOTICE, then a localized error 42601: the last line, not the first
     ("localized", "read", 3,
-     'psql:<stdin>:2: HINWEIS:  42P07: Relation "provenance" existiert bereits\n'
-     'psql:<stdin>:4: FEHLER:  42601: Syntaxfehler bei "x"\n'
-     f"ZEILE 1: ...ROM provenance WHERE source = 'register:https://u:{CONFIG_SECRET}@h/p'\n"
-     f"DETAIL:  42P01: {CONFIG_SECRET}\n", _stopped("42601")),
-    # lane 2's SHOULD 6b: the exit-2 and no-SQLSTATE branches, under quoting
+     "psql:<stdin>:2: HINWEIS:  42P07\npsql:<stdin>:4: FEHLER:  42601\n", _stopped("42601")),
+    # 42P01 read as `wiped`, after a NOTICE
+    ("localized-42p01", "read", 3,
+     "psql:<stdin>:2: HINWEIS:  42P07\npsql:<stdin>:3: FEHLER:  42P01\n",
+     "psql: a table or schema the index needs does not exist (SQLSTATE 42P01)"),
+    # P0001 and 23505 in the compare-and-swap's write: `CasLost`
+    ("localized-cas-write", "write", 3, "psql:<stdin>:5: FEHLER:  P0001\n",
+     "the provenance of this workstation's source moved under this sync; nothing written"),
+    ("cas-23505-write", "write", 3, "psql:<stdin>:5: ERROR:  23505\n",
+     "the provenance of this workstation's source moved under this sync; nothing written"),
+    # any other code by its five characters, on a write
+    ("copy-row-write", "write", 3, "psql:<stdin>:9: ERROR:  22P04\n", _stopped("22P04")),
+    # lane 2's SHOULD 6b: the exit-2 and no-SQLSTATE branches
     ("exit-2", "read", 2,
      'psql: error: connection to server at "db.invalid" (192.0.2.1), port 5432 failed: '
      f'FATAL:  28P01: password authentication failed for user "{CONFIG_SECRET}"\n',
      "psql could not connect to the index's database, or lost its connection (exit 2); "
      "psql's own words are not shown"),
     ("no-sqlstate", "read", 3,
-     f'psql:<stdin>:4: ERROR:  syntax error at or near "{CONFIG_SECRET}"\n'
-     f"LINE 1: ...ERROR:  42P01: {CONFIG_SECRET}\n",
+     f'psql:<stdin>:4: ERROR:  syntax error at or near "{CONFIG_SECRET}"\n',
      "psql exited 3 with no SQLSTATE; psql's own words are not shown, since they can quote "
      "the script"),
-    # a server of another language, its table missing and its compare-and-swap lost (W116's
-    # pre-review of commit 15): the classes commit 14 gave, from psql's locus line alone
-    ("localized-42p01", "read", 3,
-     'psql:<stdin>:2: HINWEIS:  42P07: Relation "provenance" existiert bereits\n'
-     'psql:<stdin>:4: FEHLER:  42P01: Relation "provenance" existiert nicht\n'
-     f"DETAIL:  XX000: {CONFIG_SECRET}\n",
-     "psql: a table or schema the index needs does not exist (SQLSTATE 42P01)"),
-    ("localized-cas-write", "write", 3,
-     "psql:<stdin>:5: FEHLER:  P0001: lanes-index: provenance moved under this sync; nothing "
-     "was written\n"
-     f"DETAIL:  XX000: {CONFIG_SECRET}\n",
-     "the provenance of this workstation's source moved under this sync; nothing written"),
-    # a server of another language whose DETAIL quotes a value over two lines, the second
-    # beginning `ERROR:  42P01:` (W116's re-check of commit 15): the error is psql's own
-    # line, the one with its locus, so a lost compare-and-swap is not read as a table missing
-    ("localized-detail-own-line", "write", 3,
-     'psql:<stdin>:5: FEHLER:  23505: doppelter Schluesselwert verletzt Unique-Constraint '
-     '"provenance_pkey"\n'
-     "DETAIL:  Schluessel (source)=(a value over two lines:\n"
-     f"ERROR:  42P01: {CONFIG_SECRET}) existiert bereits.\n",
-     "the provenance of this workstation's source moved under this sync; nothing written"),
-    # a forged line that carries psql's locus, after psql's own (W116's re-check of commit 15):
-    # a quoted value can hold a newline and a whole `psql:<stdin>:N: ERROR:` line, but only
-    # after the line psql says first, so the FIRST located error line is the error
-    ("forged-locus-line", "write", 3,
-     'psql:<stdin>:5: ERROR:  23505: duplicate key value violates unique constraint '
-     '"provenance_pkey"\n'
-     "DETAIL:  Key (source)=(a value over two lines:\n"
-     f"psql:<stdin>:1: ERROR:  42P01: {CONFIG_SECRET}) already exists.\n",
-     "the provenance of this workstation's source moved under this sync; nothing written"),
+    # a located psql-side error, with no code, after a NOTICE: no SQLSTATE, not the NOTICE's
+    ("psql-error-after-notice", "read", 3,
+     "psql:<stdin>:2: NOTICE:  42P07\npsql:<stdin>:3: error: invalid command \\t104\n",
+     "psql exited 3 with no SQLSTATE; psql's own words are not shown, since they can quote "
+     "the script"),
+    # a line in the verbose form, code then text: no SQLSTATE
+    ("verbose-form", "read", 3,
+     f'psql:<stdin>:4: ERROR:  42P01: relation "{CONFIG_SECRET}" does not exist\n'
+     f'LINE 1: SELECT 1 FROM "{CONFIG_SECRET}"\n',
+     "psql exited 3 with no SQLSTATE; psql's own words are not shown, since they can quote "
+     "the script"),
 ]
+PSQL_QUOTE_ROWS = {row[0]: row[1:] for row in PSQL_QUOTES}
 
 
-@pytest.mark.parametrize("on, code, stderr, words", [
-    pytest.param(on, code, stderr, words, id=ident)
-    for ident, on, code, stderr, words in PSQL_QUOTES])
-def test_no_line_of_psqls_text_is_said_or_filed(estate, on, code, stderr, words):
+@pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in PSQL_QUOTES])
+def test_no_line_of_psqls_text_is_said_or_filed(estate, ident):
     """A FAILED INDEX CALL IS SAID IN FIXED WORDS (BLOCKING 5 of
     opensoft/openRepoTools-code#89 comment 6944416906): psql's stderr puts `ERROR:` and
     the secret in a quoted line after its error line; the sync fails with the SQLSTATE
@@ -2288,7 +2252,10 @@ def test_no_line_of_psqls_text_is_said_or_filed(estate, on, code, stderr, words)
     `last_error`, no file of the state folder and no line `status` prints. THE FIRST
     ERROR LINE (lane 3's ruling, B5 of comment 6947619546): a DETAIL, HINT, QUERY or
     CONTEXT line's code is never the class, on a read or on a write; and the exit-2 and
-    no-SQLSTATE branches say their own fixed words."""
+    no-SQLSTATE branches say their own fixed words. UNDER `VERBOSITY=sqlstate` (lane 3's
+    ruling on comment 6955397261) the last located line decides; the row is taken by its
+    id, so no argument holds the secret (lane 2's SHOULD 1)."""
+    on, code, stderr, words = PSQL_QUOTE_ROWS[ident]
     fake = estate.root / "pgfake"
     fake.mkdir()
     (fake / "psql").write_text(FAKE_PSQL)
@@ -2446,10 +2413,11 @@ def test_the_status_file_is_read_strictly(estate, case):
 
 def _pg_rule(sql: str):
     """`PG_LEGACY_SQL` as Python reads it, for the shapes it holds: `source LIKE 'x%'` as a
-    prefix, `~`, `~*` and `!~` as a regex search, case-blind for `~*` (PostgreSQL's ARE and
-    Python's re agree on these bracket classes and anchors), and NOT, AND and OR."""
-    ops = {"~": "bool(re.search({0!r}, s))", "~*": "bool(re.search({0!r}, s, re.I))",
-           "!~": "(not re.search({0!r}, s))"}
+    prefix, `~` and `!~` as a regex search (PostgreSQL's ARE and Python's re agree on these
+    bracket classes, anchors and backslash-u escapes), and NOT, AND and OR. No `~*` is read:
+    the rule holds none, and one would be a split this reading must not hide (lane 3's
+    ruling on comment 6955397261)."""
+    ops = {"~": "bool(re.search({0!r}, s))", "!~": "(not re.search({0!r}, s))"}
     py = re.sub(r"source LIKE '([^'%]*)%'", lambda m: f"s.startswith({m.group(1)!r})", sql)
     py = re.sub(r"source (!~|~\*|~) '([^']*)'", lambda m: ops[m.group(1)].format(m.group(2)), py)
     py = py.replace("NOT ", "not ").replace(" OR ", " or ").replace(" AND ", " and ")
@@ -2474,7 +2442,47 @@ def _rule_keys() -> list:
              "register:x?password%3E1", "inventory:Eagle-password", "register:h/x#password",
              # C1 control characters (W116's pre-review of commit 15), and a no-break space,
              # which is none
-             "register:h/x\x85y", "inventory:Eagle\x9b", "register:h/x\xa0y"])
+             "register:h/x\x85y", "inventory:Eagle\x9b", "register:h/x\xa0y"] +
+            # question 2 of lane 3's ruling on comment 6955397261, and its table
+            [key for key, _legacy in PASSWORD_RULE_TABLE])
+
+
+#: The characters `str.isspace()` holds that are not control characters: the 19 of the
+#: ruling's 29 that the control-character term does not already refuse.
+NON_CONTROL_SPACES = [c for c in range(sys.maxunicode + 1)
+                      if chr(c).isspace() and not unicodedata.category(chr(c)).startswith("C")]
+#: (key, legacy) - lane 3's ruling, question 2 of opensoft/openRepoTools-code#89 comment
+#: 6955397261, and lane 2's SHOULD 3 of 6955285249: each separator before `=`, `+` and
+#: percent-escapes legacy; the word itself literal, so its near misses stay clean
+PASSWORD_RULE_TABLE = (
+    [(f"register:x?password{chr(c)}=1", True) for c in NON_CONTROL_SPACES] +
+    [("register:x?password+=1", True), ("register:x?password%20=1", True),
+     ("register:x?password%09=1", True), ("register:x?password%2B=1", True),
+     ("register:x?password%20%3d1", True), ("register:x?PASSWORD + %3D1", True),
+     ("register:x?p%61ssword=1", False), ("register:x?pa\u017fsword=1", False)])
+
+
+def test_the_key_rules_password_term_is_the_rulings():
+    """THE KEY RULE'S `password` TERM, BY ITS ANSWERS (lane 3's ruling, question 2 of
+    opensoft/openRepoTools-code#89 comment 6955397261; lane 2's SHOULD 3): each of the 19
+    non-control separators before `=`, `+`, `%20`, `%09`, `%2B`, `%20%3d` and
+    `PASSWORD + %3D` are legacy, and `p%61ssword=` and `pa` U+017F `sword=` are clean. THE
+    CONSTANT: one ASCII raw text with no backslash-x, whose separator bracket holds exactly
+    `+` and the characters `str.isspace()` holds, 29, written as backslash-u escapes."""
+    mod = load_indexer()
+    assert len(NON_CONTROL_SPACES) == 19, NON_CONTROL_SPACES
+    wrong = [key for key, legacy in PASSWORD_RULE_TABLE if mod._is_legacy(key) is not legacy]
+    assert wrong == [], [k.encode("unicode_escape").decode() for k in wrong]
+    text = mod.PASSWORD_RULE
+    assert text.isascii() and "\\x" not in text and "(?i" not in text, text
+    head = "[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd](["
+    assert text.startswith(head) and text.endswith("+]|%[0-9A-Fa-f]{2})*(=|%3[Dd])"), text
+    bracket = text[len(head):text.index("+]|")]
+    assert re.fullmatch(r"(\\u[0-9a-f]{4})+", bracket), bracket
+    chars = {int(bracket[n + 2:n + 6], 16) for n in range(0, len(bracket), 6)}
+    spaces = {c for c in range(sys.maxunicode + 1) if chr(c).isspace()}
+    assert len(bracket) == 6 * 29 and chars == spaces and len(spaces) == 29, sorted(chars ^ spaces)
+    assert f"source ~ '{text}'" in mod.PG_LEGACY_SQL and "~*" not in mod.PG_LEGACY_SQL
 
 
 def test_the_servers_legacy_rule_is_the_indexers():
@@ -2643,8 +2651,12 @@ def _a_scrub_that_fails(estate: Estate, monkeypatch, journal: str, store: _Index
     live.conn = _VacuumFails(live.conn, 1 if journal == "retried" else None)
     _old, sources = live.provenance_and_sources(own[0])
     out, err = io.StringIO(), io.StringIO()
+    # THE PAUSES, RECORDED (lane 2's SHOULD 2 of comment 6955285249)
+    pauses: list = []
+    monkeypatch.setattr(mod.time, "sleep", pauses.append)
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         rc = mod._guarded(lambda: mod._drop_legacy(live, "sync", sources), None)
+    monkeypatch.setattr(mod.time, "sleep", time.sleep)
     tries = live.conn.tries
     live.conn.close()
     said = f"{out.getvalue()}{err.getvalue()}".replace(CONFIG_SECRET, "<the secret>")
@@ -2652,12 +2664,14 @@ def _a_scrub_that_fails(estate: Estate, monkeypatch, journal: str, store: _Index
     if journal == "retried":
         # `_guarded` hands back what the act returns, and `_drop_legacy` returns nothing
         assert rc is None and tries == 2, f"exit {rc}, tries {tries}:\n{said}"
+        assert pauses == [0.5], pauses
         assert "a scrub is pending" not in said and not mark.exists(), said
         assert _held_in(estate.state) == [], said
         return
     assert rc == 1, said
     # WITHIN A BOUND, MORE THAN ONCE, THEN THE FIXED LINE THAT A SCRUB IS PENDING
     assert tries == mod.SCRUB_ATTEMPTS > 1, f"tries {tries}:\n{said}"
+    assert pauses == [0.5, 1.0], pauses
     assert "a scrub is pending" in err.getvalue(), said
     assert "removed 1 source(s) from the index and 1 entry(s)" in out.getvalue(), said
     assert (f"unreachable: {mod.SCRUB_UNFINISHED} - nothing more written; the removal said "
@@ -2674,7 +2688,8 @@ def _a_scrub_that_fails(estate: Estate, monkeypatch, journal: str, store: _Index
     holder = sqlite3.connect(str(estate.sqlite)) if journal == "wal" else None
     try:
         again = estate.index("sync")
-        said += f"\nthe next sync, exit {again.returncode}:\n{again.stdout}{again.stderr}"
+        said += (f"\nthe next sync, exit {again.returncode}:\n{again.stdout}{again.stderr}"
+                 .replace(CONFIG_SECRET, "<the secret>"))
         assert again.returncode == 0, said
         assert not mark.exists(), said
         assert _held_in(estate.state) == [], said
@@ -2794,12 +2809,14 @@ def test_a_status_file_that_cannot_be_replaced_still_scrubs(estate, monkeypatch,
         # THE FIXED LINE THAT A SCRUB IS PENDING, BESIDE THE REPLACE'S ERROR
         assert f"unreachable: {mod.SCRUB_UNFINISHED}" in err, said
     again = estate.index("sync")
-    said += f"\nthe next sync, exit {again.returncode}:\n{again.stdout}{again.stderr}"
+    said += (f"\nthe next sync, exit {again.returncode}:\n{again.stdout}{again.stderr}"
+             .replace(CONFIG_SECRET, "<the secret>"))
     assert again.returncode == 0 and not mark.exists(), said
     assert _held_in(estate.state) == [], said
 
 
-@pytest.mark.parametrize("case", ["folder-sync", "mark-file", "reused", "mark-symlink"])
+@pytest.mark.parametrize("case", ["folder-sync", "mark-sync", "mark-file", "reused",
+                                  "mark-symlink"])
 def test_a_scrub_mark_that_cannot_be_made_removes_nothing(estate, monkeypatch, case):
     """THE MARK AND ITS FOLDER ARE SYNCED BEFORE THE TRANSACTION BEGINS (lane 3's ruling, B3
     of opensoft/openRepoTools-code#89 comment 6947619546; lane 2's SHOULD 4c of comment
@@ -2811,7 +2828,9 @@ def test_a_scrub_mark_that_cannot_be_made_removes_nothing(estate, monkeypatch, c
     run left, 0644 and of other text, is made 0600 again and rewritten, which a VACUUM that
     fails keeps to be seen. [mark-symlink] (W116's pre-review of commit 15): the mark's path
     is a link to another file, which is neither written, truncated nor made 0600: the
-    mark cannot be made, as in [mark-file]."""
+    mark cannot be made, as in [mark-file]. [mark-sync] (lane 2's BLOCKING 1 of comment
+    6955285249, IN as a SHOULD by lane 3's 6955397261): the mark's own fsync fails, which
+    is `SCRUB_UNMARKED` too, the rows held and the entry kept."""
     store, tables, own, filed, held = _a_legacy_source_held(estate)
     mark = Path(str(estate.sqlite) + "-scrub")
     if case == "mark-file":
@@ -2833,6 +2852,14 @@ def test_a_scrub_mark_that_cannot_be_made_removes_nothing(estate, monkeypatch, c
                 raise OSError(5, "t104: the folder's fsync failed")
             return real(fd)
         monkeypatch.setattr(mod.os, "fsync", fsync)
+    if case == "mark-sync":
+        real_sync = os.fsync
+
+        def fsync_file(fd):
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(5, "t104: the mark's fsync failed")
+            return real_sync(fd)
+        monkeypatch.setattr(mod.os, "fsync", fsync_file)
     rc, out, err = _run_drop(mod, estate, own, _VacuumFails if case == "reused" else None)
     said = f"{out}{err}".replace(CONFIG_SECRET, "<the secret>")
     assert rc == 1, said
@@ -2874,10 +2901,8 @@ LEGACY_INPUTS = [
 ]
 
 
-@pytest.mark.parametrize("store_kind, kind, value", [
-    pytest.param(store_kind, kind, value, id=ident)
-    for ident, store_kind, kind, value in LEGACY_INPUTS])
-def test_a_source_this_build_would_call_legacy_is_refused(estate, store_kind, kind, value):
+@pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in LEGACY_INPUTS])
+def test_a_source_this_build_would_call_legacy_is_refused(estate, ident):
     """NOTHING TODAY'S CODE FILES IS LEGACY (lane 3's ruling, B1 of
     opensoft/openRepoTools-code#89 comment 6947619546): a register or a workstation's name
     that `_is_legacy` would call legacy - `password=`, `password` and spaces then `%3D` in
@@ -2886,7 +2911,9 @@ def test_a_source_this_build_would_call_legacy_is_refused(estate, store_kind, ki
     filed or sent, by every act that makes the key: `sync`, `reconcile` and its dry run,
     `export` and `status`. No stream, no file of the state folder and, on PostgreSQL (a
     FAKE psql), no call holds the secret or the key's digest; the writers make no psql
-    call at all, and `status`'s reads name no key."""
+    call at all, and `status`'s reads name no key. The row is taken by its id, so no
+    argument holds the secret (lane 2's SHOULD 1 of comment 6955285249)."""
+    store_kind, kind, value = {row[0]: row[1:] for row in LEGACY_INPUTS}[ident]
     mod = load_indexer()
     env: dict = {}
     if kind == "register":
@@ -3168,6 +3195,25 @@ def test_a_refused_register_mark_leaves_the_marks_behind_it_synced(estate):
         assert CONFIG_SECRET not in shown, said
 
 
+def test_the_index_runs_psql_with_the_rulings_arguments(estate):
+    """THE INDEX'S psql ARGUMENTS, WHOLE (lane 3's ruling, question 1 of
+    opensoft/openRepoTools-code#89 comment 6955397261): every call a sync makes on a
+    PostgreSQL store passes exactly these, `VERBOSITY=sqlstate` among them."""
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    (fake / "psql").write_text(FAKE_PSQL)
+    (fake / "psql").chmod(0o755)
+    log = estate.root / "psql.jsonl"
+    estate.write_config("url=postgresql://lanes_writer@db.invalid/qa\n"
+                        "reader_url=postgresql://lanes_reader@db.invalid/qa\n")
+    res = estate.index("sync", env={"PATH": estate.path_with(fake), "FAKE_PSQL_LOG": str(log)})
+    assert res.returncode == 0, res.stderr.replace(CONFIG_SECRET, "<the secret>")
+    calls = [json.loads(line)["args"] for line in log.read_text().splitlines()]
+    assert calls and all(args == ["--no-psqlrc", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-v",
+                                  "VERBOSITY=sqlstate", "-v", "SHOW_CONTEXT=never", "-f", "-"]
+                         for args in calls), calls
+
+
 def test_a_failed_status_replace_leaves_no_copy_behind(estate, monkeypatch):
     """NO COPY OF THE STATUS FILE IS LEFT (W116's pre-review of commit 15): a replace whose
     rename fails takes the file it made with it, which held what the replace was to write,
@@ -3175,44 +3221,70 @@ def test_a_failed_status_replace_leaves_no_copy_behind(estate, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
     mod = load_indexer()
 
-    def refuse(_src, _dst):
+    reached = []
+
+    def refuse(_src, dst):
+        reached.append(Path(dst).name)
         raise PermissionError(13, "t104: the rename is refused")
     monkeypatch.setattr(mod.os, "replace", refuse)
     with pytest.raises(OSError):
         mod._replace_status({LEGACY_KEY: {"last_error": f"t {LEGACY_KEY} moved"}})
     monkeypatch.undo()
+    # THE REFUSED RENAME WAS REACHED (lane 2's NIT 3 of comment 6955285249)
+    assert reached == ["lanes-index.status.json"], reached
     left = sorted(p.name for p in (estate.state / "openRepoTools").iterdir())
     assert left == [], left
 
 
-@pytest.mark.parametrize("lang", ["english", "german"])
-def test_the_index_reads_psql_16s_own_error_line(t109_engine, lang):
-    """B5 ON psql 16 ITSELF (W116's pre-review of commit 15): the index's own psql arguments
-    (`INDEX_PSQL_ARGS`, the script as `-f -`) on a script whose second line reads a table
-    that does not exist. psql puts its locus, `psql:<stdin>:2: `, before the error's first
-    line, and `_failure` reads 42P01. [german]: the session's `lc_messages` is German, where
-    the cluster has that locale and its messages, so the severity is not `ERROR:` and the
-    class comes from the locus line; where it has not, the case is skipped as not
-    established."""
+#: (id, the script, the SQLSTATE `_failure` reads) on psql 16 itself, with the index's own
+#: arguments (lane 3's ruling, question 1 of opensoft/openRepoTools-code#89 comment
+#: 6955397261)
+PSQL16_CASES = {
+    "english": ("SELECT 1;\nSELECT x FROM t104_no_such_table;\n", "42P01"),
+    "german": ("SELECT 1;\nSELECT x FROM t104_no_such_table;\n", "42P01"),
+    # a NOTICE (42P07), then the error: the last located line, not the first
+    "notice-then-error": ("CREATE TEMP TABLE IF NOT EXISTS t104_n (n integer);\n"
+                          "CREATE TEMP TABLE IF NOT EXISTS t104_n (n integer);\n"
+                          "SELECT x FROM t104_no_such_table;\n", "42P01"),
+    # a value whose text holds a newline and a whole located line, cast to integer
+    "newline-value": ("SELECT (E'1\\npsql:<stdin>:1: ERROR:  42P01')::integer;\n", "22P02"),
+    # a RAISE whose message forges a located line
+    "raise-forged": ("DO $$BEGIN RAISE EXCEPTION E'x\\npsql:<stdin>:1: ERROR:  42P01'; END$$;\n",
+                     "P0001"),
+}
+
+
+@pytest.mark.parametrize("case", list(PSQL16_CASES))
+def test_the_index_reads_psql_16s_own_error_line(t109_engine, case):
+    """THE INDEX'S psql ON psql 16 ITSELF (lane 3's ruling, question 1 of
+    opensoft/openRepoTools-code#89 comment 6955397261): with `INDEX_PSQL_ARGS`
+    (`VERBOSITY=sqlstate`, the script as `-f -`), each message is one located line of
+    severity and SQLSTATE, with no text: [english]'s stderr is exactly
+    `psql:<stdin>:2: ERROR:  42P01`; [notice-then-error] reads the error's code, not the
+    NOTICE's; a value holding a newline and a whole located line reads 22P02, and a RAISE
+    forging one reads P0001. [german] keeps its skip where the cluster takes no German
+    `lc_messages`, and carries no parse of its own."""
     import pgcluster
     cluster, _bootstrap = t109_engine
     mod = load_indexer()
+    script, want = PSQL16_CASES[case]
     env = pgcluster._client_env(cluster.root, pgcluster.SUPERUSER, "t109_db", "pytest",
                                 cluster.bindir)
-    if lang == "german":
+    if case == "german":
         env["PGOPTIONS"] = "-c lc_messages=de_DE.UTF-8"
-    proc = subprocess.run([cluster.tool("psql"), *mod.INDEX_PSQL_ARGS],
-                          input="SELECT 1;\nSELECT x FROM t104_no_such_table;\n",
+    proc = subprocess.run([cluster.tool("psql"), *mod.INDEX_PSQL_ARGS], input=script,
                           capture_output=True, encoding="utf-8", errors="replace", env=env,
                           timeout=120, check=False)
-    if lang == "german" and proc.returncode == 2:
+    if case == "german" and proc.returncode == 2:
         pytest.skip("not established: the cluster takes no German lc_messages")
-    first = (proc.stderr.splitlines() or [""])[0]
-    assert proc.returncode == 3, proc.stderr
-    assert re.match(r"psql:<stdin>:2: [^\s:]+:  42P01: ", first), proc.stderr
-    if lang == "german" and first.startswith("psql:<stdin>:2: ERROR:"):
-        pytest.skip("not established: the cluster has no German messages")
-    assert mod.PostgresStore._failure(proc.returncode, proc.stderr, False).sqlstate == "42P01"
+    assert proc.returncode == 3, proc.returncode
+    if case == "english":
+        assert proc.stderr == "psql:<stdin>:2: ERROR:  42P01\n", proc.stderr
+    if case == "notice-then-error":
+        lines = proc.stderr.splitlines()
+        assert len(lines) == 2 and lines[0].endswith(":  42P07"), proc.stderr
+    assert "t104_no_such_table" not in proc.stderr, proc.stderr
+    assert mod.PostgresStore._failure(proc.returncode, proc.stderr, False).sqlstate == want
 
 
 FAKE_PSQL = r"""#!/usr/bin/env python3
@@ -3226,8 +3298,11 @@ log = os.environ["FAKE_PSQL_LOG"]
 vfile = os.environ.get("FAKE_PSQL_VERSION_FILE", "")
 version = open(vfile).read().strip() if vfile else "1"
 args = sys.argv[1:]
-# psql's error line carries its SQLSTATE only under VERBOSITY=verbose, as a real psql's does
+# psql's error line carries its SQLSTATE only under VERBOSITY=verbose, as a real psql's does;
+# under VERBOSITY=sqlstate it is the severity and the SQLSTATE ALONE, with no text (lane 3's
+# ruling on opensoft/openRepoTools-code#89 comment 6955397261), which the index runs
 verbose = "VERBOSITY=verbose" in args
+sqlstate_only = "VERBOSITY=sqlstate" in args
 # psql's LOCUS, AS psql 16 PRINTS IT (W116's pre-review of commit 15; command.c's
 # process_file and logging.c): a script read through `-f -` is the file `<stdin>`, and each
 # message psql reports begins `psql:<stdin>:<line>: `; a script piped with no `-f` is logged
@@ -3255,7 +3330,8 @@ url = ("postgresql://" + os.environ.get("PGUSER", "") + "@" + os.environ.get("PG
 stdin = sys.stdin.read()
 with open(log, "a") as handle:
     handle.write(json.dumps({"url": url, "passfile": os.environ.get("PGPASSFILE", ""),
-                             "pgpassword": "PGPASSWORD" in os.environ, "stdin": stdin}) + "\n")
+                             "pgpassword": "PGPASSWORD" in os.environ, "stdin": stdin,
+                             "args": args}) + "\n")
 if vfile and "CREATE TABLE IF NOT EXISTS" in stdin:
     with open(vfile, "w") as handle:
         handle.write("1\n")
@@ -3264,6 +3340,9 @@ if vfile and "CREATE TABLE IF NOT EXISTS" in stdin:
 # error's line, the statement's line and a caret under the table's name, exit 3.
 if (os.environ.get("FAKE_PSQL_NO_TABLE") and vfile and not version
         and "COPY (SELECT version" in stdin):
+    if sqlstate_only:
+        sys.stderr.write(said("psql:<stdin>:2: ERROR:  42P01\n"))
+        sys.exit(3)
     sys.stderr.write(said('psql:<stdin>:2: ERROR:  ' + ("42P01: " if verbose else "") +
                      'relation "lanes_index.schema_version" does '
                      'not exist\nLINE 1: COPY (SELECT version FROM '
@@ -3272,6 +3351,9 @@ if (os.environ.get("FAKE_PSQL_NO_TABLE") and vfile and not version
     sys.exit(3)
 # THE COMPARE-AND-SWAP'S RAISE (FAKE_PSQL_CAS_LOST): the write fails as psql 16 says it
 if os.environ.get("FAKE_PSQL_CAS_LOST") and "lanes_index_cas" in stdin:
+    if sqlstate_only:
+        sys.stderr.write(said("psql:<stdin>:5: ERROR:  P0001\n"))
+        sys.exit(3)
     sys.stderr.write(said("psql:<stdin>:5: ERROR:  " + ("P0001: " if verbose else "") +
                           "lanes-index: provenance moved under this sync; nothing was written\n"))
     sys.exit(3)
