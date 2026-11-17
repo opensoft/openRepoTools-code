@@ -421,14 +421,18 @@ class _Settled:
     rollback's `_stop_owned` and `_see_gone`, each through `_settle_pinned`,
     and the git wrapper's `kill_above`, whose script carries this source.
     Pass after pass, the absolute deadline `until` (`time.monotonic()`)
-    checked on each, whatever was stopped:
+    checked on each, right after its read and before it can end, whatever
+    was stopped (lane 3's Codex review of code PR 97 at `bb190f7b`,
+    SHOULD 1):
     - `live()`, the targets not yet seen gone, is taken first; then one
       read, `scan()`, registers and stops each target new, and says how
       many are new;
-    - a read that finds none new, made once every target was seen gone,
-      ends it (True); with no `kill` (rollback's step 1, which only stops),
-      a read that finds none new ends it;
-    - else, past `until`, the deadline is reported, and it ends (False);
+    - past `until`, the deadline is reported, and it ends (False), even
+      where that read found none new: a pass that crossed the deadline,
+      in its read or in the kill's confirmation before it, is no success;
+    - else a read that finds none new, made once every target was seen
+      gone, ends it (True); with no `kill` (rollback's step 1, which only
+      stops), a read that finds none new ends it;
     - a read that found any new: `stop(by)` sees each target stopped, or
       gone, by `by`, half the time left, so a stop never seen leaves the
       rest for the kill, the confirmation and the read after them; the
@@ -464,15 +468,16 @@ class _Settled:
             return None
 
     def run(self) -> bool:
-        """The loop: True on its empty read, False on the deadline."""
+        """The loop: True on its empty read, made by the deadline; False on
+        the deadline, checked after every read, before its end."""
         while True:
             before = self.live()
             new = self.read()
-            if new == 0 and (self.kill is None or not before):
-                return True
             if time.monotonic() >= self.until:
                 self.late()
                 return False
+            if new == 0 and (self.kill is None or not before):
+                return True
             self.step(new, before)
 
     def late(self) -> None:

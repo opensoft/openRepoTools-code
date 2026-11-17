@@ -205,6 +205,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_renderers_make_identical_commits_for_one_seq": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
     "test_six_lost_races_leave_the_last_write_for_the_next_write_or_reconcile": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
     "test_the_last_write_of_a_burst_is_rendered_with_no_later_write": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
+    "test_the_one_loop_reports_its_deadline_where_a_read_past_it_finds_none_new": (),  # T270; the clean-up's own fault path, no task (Codex at bb190f7b, SHOULD 1)
     "test_the_render_push_alone_carries_the_deploy_key": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
     "test_the_renderer_finds_m_by_paging_form_c": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
     "test_two_renderers_racing_push_one_commit_per_seq_in_order": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
@@ -3790,3 +3791,35 @@ def test_a_wrapper_kill_reads_again_once_every_target_is_gone_whatever_a_stop_di
     assert _killed(said) == {4000, 4001, 4002, 4005}, said
     assert said["closed"] == said["opened"], said
     assert not {pid for pid, _sig in said["sent"]} & {4003, 4004}, said
+
+
+@LINUX_ONLY
+def test_the_one_loop_reports_its_deadline_where_a_read_past_it_finds_none_new(monkeypatch):
+    """SHOULD 1 at `bb190f7b`: the shared clean-up's one loop (`_Settled`)
+    checks its absolute deadline right after each read, before it ends on
+    one that found none new. On a modelled clock, with no process read or
+    signalled: the first read finds one target, whose stop is seen; the
+    next finds none new, so the target is killed, and the kill's
+    confirmation ends past the deadline, 10 s on; the read after it finds
+    none new. The loop reports the deadline (`RuntimeError`) and returns
+    False, where that pass crossed the deadline and returned True."""
+    clock, targets, reads, errors = [0.0], [], [], []
+
+    def scan():
+        reads.append(clock[0])
+        if len(reads) == 1:
+            targets.append(4100)
+        return 1 if len(reads) == 1 else 0
+
+    def kill(left):
+        clock[0] = 11.0  # the confirmation ends past the deadline
+        targets.clear()
+        return []
+
+    monkeypatch.setattr(sys.modules[_Settled.__module__], "time",
+                        SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda seconds: None))
+    settled = _Settled(scan, lambda by: None, kill, lambda: list(targets), 10.0, errors)
+    assert settled.run() is False, errors
+    assert reads == [0.0, 0.0, 11.0], reads
+    assert [type(exc) for exc in errors] == [RuntimeError], errors
+    assert "deadline passed" in str(errors[0]), errors
