@@ -89,7 +89,9 @@ LANE 5's CXC12B (chain 2, T507; lane 3's Codex review of it, #165
 
 - T215q, S2: form C's tip read stalled under a silent database, cut at the
   mirror path's start line, the hook inside its budget (`6d8262ec`; no
-  engine).
+  engine);
+- T219l, S3: E1's first cause line, as S3's outage refusal quotes it, names
+  the database as `reader_url=` gives it (`7f226784`; the real engine).
 """
 
 from __future__ import annotations
@@ -151,6 +153,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_the_guard_refuses_a_mirror_older_than_the_declared_seq": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
     "test_the_guard_refuses_a_ref_behind_a_rollbacks_head": ("T304", "T326", "T327", "T504", "T505", "T506", "T507"),  # T215; tasks:2022
     "test_the_guards_outage_refusal_names_the_store_the_cause_and_both_ways_out": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_the_guards_quote_of_e1_names_the_database_as_reader_url_gives_it": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082 (T219l)
     "test_the_register_seq_lookup_finds_the_trailer_at_depths_0_and_199": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
     "test_the_register_seq_lookup_is_timed_bounded_beside_the_unbounded_and_grep_forms": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
     "test_under_a_declaration_a_direct_read_left_under_0_5_s_does_not_start": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
@@ -1467,6 +1470,76 @@ def test_the_guards_outage_refusal_names_the_store_the_cause_and_both_ways_out(t
     assert SECRET not in result["err"], f"stderr carries the password: {result['err'][-600:]}"
     for words in ("lanes-index status", "lanes-index rollback", "CLAUDE_NO_LANE=1"):
         assert words in out, f"the refusal does not carry {words!r}: {out[-600:]}"
+
+
+#: E1's `reader_url=` query (T219l): a parameter SVC-2's mapping takes
+#: (`PG_URL_PARAMS`), which the name in the cause line leaves out, as it
+#: leaves out the user.
+E1_QUERY = "connect_timeout=7"
+
+
+def test_the_guards_quote_of_e1_names_the_database_as_reader_url_gives_it(pg, tmp_path, request):
+    """AT-P3 under a declaration, E1 (T219l; lane 5's CXC12B, S3, the
+    real-engine half of its `test_e1s_cause_line_names_the_database_from_reader_url`;
+    lane 3's Codex review of chain 2, SHOULD 3; register-cli.md :767 and
+    :776; lane 3's E1 ruling, #165 6807694145). Under an unexpired word's
+    declaration, the guard's direct read goes through a silent relay
+    (`StartupRelay`) to the real engine, so the client's timer cuts it at the
+    declared cap, `T0 + 3.65 s`, after `psql` ran: E1. Origin carries no
+    `Register-Seq`, so form C opens nothing, and the guard refuses 2 with S3's
+    outage text, which quotes form 2's first stderr line, its cause. That
+    line names the database as `reader_url=` gives it, `database <name> at
+    127.0.0.1:<port>`, in lane 5's words for E1; nothing the guard printed
+    carries the URL's user, the password in its password file or its query
+    parameter; and the quote says the read ended 69. Each oracle on the
+    output is a bool, and each message quotes the output with the password
+    hidden, so a failure prints none (6931509747).
+
+    It fails on E1's line that named no database (`lanes-index` at
+    `6d8262ec`). Lane 5's `7f226784` names it through
+    `register_guard_store_name` (lane 5's Claude pre-review of P19, NIT 3)."""
+    estate = Estate(tmp_path, [_handoff(i) for i in range(3)])
+    estate.declared(estate.config(), mirror_seq=1)
+    login = f"t219_{uuid.uuid4().hex[:12]}"
+    pg.psql(f"CREATE ROLE {login} LOGIN IN ROLE lanes_register_reader;")
+    request.addfinalizer(lambda: pg.cluster.psql(f"DROP ROLE IF EXISTS {login};", check=False))
+    timed = tmp_path / "timedbin"
+    _script(timed / "psql", TIMING_PSQL)
+    relay = StartupRelay(f"{pg.host}/.s.PGSQL.{pg.port}")
+    try:
+        estate.passfile.write_text(f"127.0.0.1:{relay.port}:{pg.name}:{login}:{SECRET}\n",
+                                   encoding="utf-8")
+        config = estate.config(
+            url=f"postgresql://{login}@127.0.0.1:{relay.port}/{pg.name}?{E1_QUERY}")
+        result = estate.guard(config, T215_REAL_PSQL=pg.psql_bin,
+                              PATH=os.pathsep.join([str(estate.bin), str(timed),
+                                                    os.environ.get("PATH", os.defpath)]))
+    finally:
+        relay.close()
+    # NO PASSWORD IN A FAILURE (6931509747; Codex's SHOULD 7 on P09's
+    # password-absence cases): each oracle on the output is a bool taken from
+    # the raw text, and a message quotes the output only with SECRET hidden;
+    # no assert has the output as an operand, which pytest's rewrite prints.
+    raw = result["out"]
+    out, leaked = raw.replace(SECRET, "<password>"), SECRET in raw
+    assert not result["killed"], "the hook was killed at 5 s, and the prompt passed"
+    log = timed / "psql-timing.log"
+    timing = [json.loads(line) for line in
+              log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+    read = any("start" in t for t in timing)
+    assert read, f"the guard made no direct read: {out[-600:]}"
+    assert result["exit"] == 2, f"the guard exited {result['exit']}: {out[-600:]}"
+    name = f"database {pg.name} at 127.0.0.1:{relay.port}"
+    quoted = (f"`lanes-index register read --for guard --prefetch` exited 69: lanes-index: "
+              f"register read: the register ({name}) did not answer by the declared outage's "
+              f"cap, T0 + {CAP_DECLARED:g} s (")
+    quotes, s3 = quoted in raw, "(Amendment 12(d); feature 007, S3)" in raw
+    assert quotes, f"S3's refusal does not quote E1's first line naming {name!r}: {out[-900:]}"
+    assert s3, f"the guard did not refuse with S3's outage text: {out[-900:]}"
+    assert not leaked, "the guard's output carries the password in the password file"
+    for words in (login, E1_QUERY, "connect_timeout"):
+        carried = words in raw
+        assert not carried, f"the guard's output carries {words!r}: {out[-900:]}"
 
 
 def test_claude_no_lane_lets_a_session_through_before_any_input(tmp_path):
