@@ -828,8 +828,12 @@ class Cluster:
             dbname=IMPORTED).stdout.strip()
         wanted = f"0:import:{commit}|0|files:absent"
         if said != wanted:
-            return (f"`lanes-index import --at {commit}` exited 0, and {IMPORTED} reads "
-                    f"{said!r} (journal|head|switch), not {wanted!r}")
+            got = said.split("|")
+            differ = [part for i, part in enumerate(("journal", "head", "switch"))
+                      if len(got) != 3 or got[i] != wanted.split("|")[i]]
+            return (f"`lanes-index import --at {commit}` exited 0, and {IMPORTED}'s "
+                    f"{', '.join(differ)} differ from {wanted!r} (journal|head|switch); none "
+                    f"of what it reads is shown (T229n)")
         return None
 
     def prepare(self) -> None:
@@ -887,9 +891,11 @@ class Cluster:
         if standby:
             answer = self.psql("SELECT pg_is_in_recovery();", check=False)
             if answer.returncode != 0 or answer.stdout.strip() != "t":
-                said = answer.stdout.strip() or answer.stderr.strip() or "nothing"
+                said = (_psql_failed(SUPERUSER, "postgres", answer) if answer.returncode != 0 else
+                        "f" if answer.stdout.strip() == "f" else
+                        f"neither t nor f: {len(answer.stdout.splitlines())} line(s), none shown")
                 raise ClusterError(f"the start with standby.signal is ready but not in recovery: "
-                                   f"pg_is_in_recovery() answered {said!r}: {self.log_tail()}")
+                                   f"pg_is_in_recovery() answered {said}: {self.log_tail()}")
 
     def new_database(self, template: str = TEMPLATE) -> str:
         """`CREATE DATABASE t_<n> TEMPLATE <template>`, then, where the
@@ -1952,9 +1958,10 @@ def counting_cluster(pg_engine, pg_template_sql):
 
 # ------------------------------------------------------------ the smoke
 def _select_1(cluster: Cluster, dbname: str = "postgres") -> None:
-    said = cluster.psql("SELECT 1;", dbname=dbname).stdout.strip()
-    if said != "1":
-        raise ClusterError(f"SELECT 1 on {dbname} answered {said!r}")
+    answer = cluster.psql("SELECT 1;", dbname=dbname).stdout
+    if answer.strip() != "1":
+        raise ClusterError(f"SELECT 1 on {dbname} did not answer 1: "
+                           f"{len(answer.splitlines())} line(s), none shown")
 
 
 def _smoke_session(found: Probe) -> str:
