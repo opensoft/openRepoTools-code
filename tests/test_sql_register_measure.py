@@ -1719,24 +1719,81 @@ RTTS_MS = (20, 150)
 
 #: How long `_ask` waits for its marker, by the monotonic clock (T255k).
 ASK_S = 60.0
+#: How long a held session's end waits for its reap once it is killed, and
+#: then for its two readers together (T255m).
+REAP_S = 10.0
 
 
 def _lines_of(stream, lines: queue.Queue) -> None:
-    """Each line of `stream` onto `lines`, then None at its end (T255k)."""
-    for line in stream:
-        lines.put(line)
-    lines.put(None)
+    """Each line of `stream` onto `lines`, then None, at its end or where a
+    read fails, so no reader ends without it (T255k; T255m)."""
+    try:
+        for line in stream:
+            lines.put(line)
+    finally:
+        lines.put(None)
 
 
 def _held(env: dict, psql: str):
-    """A held `psql` session, its stdout read line by line by a thread of its
-    own into `session.lines`, so `_ask` can wait with a deadline (T255k)."""
+    """A held `psql` session, its stdout read line by line into
+    `session.lines` and its stderr into `session.errs`, each by a thread of
+    its own, both kept in `session.readers` (T255k; T255m). So `_ask` can
+    wait with a deadline, a full stderr pipe never stalls `psql`, and its end
+    (`_end_held`) can join both."""
     session = subprocess.Popen([psql, "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1"],
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, env=env, bufsize=1)
-    session.lines = queue.Queue()
-    threading.Thread(target=_lines_of, args=(session.stdout, session.lines), daemon=True).start()
+    session.lines, session.errs = queue.Queue(), queue.Queue()
+    session.readers = [threading.Thread(target=_lines_of, args=(stream, into), daemon=True)
+                       for stream, into in ((session.stdout, session.lines),
+                                            (session.stderr, session.errs))]
+    for reader in session.readers:
+        reader.start()
     return session
+
+
+def _drained(lines: queue.Queue) -> str:
+    """What a reader put on `lines`, up to its None or to what is there now
+    (T255m)."""
+    text = []
+    while True:
+        try:
+            line = lines.get_nowait()
+        except queue.Empty:
+            return "".join(text)
+        if line is None:
+            return "".join(text)
+        text.append(line)
+
+
+def _end_held(session, *, kill: bool) -> None:
+    """The held session ended and reaped, and its two readers joined, each
+    wait bounded and each failure raised (T255m; Codex's review of P09 at
+    `21dd3642`, SHOULD 2). Its stdin is closed under `suppress(OSError)`, so
+    a pipe a failed `_ask` broke cannot skip the rest. Without `kill` it has
+    60 s to end once its stdin is closed, and one that outlives them is
+    killed, as T255l did: the case does not fail for that alone. With `kill`,
+    as `_ask` gives up, it is killed at once. The kill is sent only while the
+    session is unreaped, `poll()` first; then one reap, `wait(REAP_S)`, whose
+    `TimeoutExpired` is raised. The readers end at their pipes' EOF, which
+    the reap brings; they have `REAP_S` together, and one still running, as
+    where a process the session started holds a pipe, raises."""
+    with contextlib.suppress(OSError):
+        session.stdin.close()
+    if not kill:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            session.wait(timeout=60)
+    if session.poll() is None:
+        session.kill()
+    session.wait(timeout=REAP_S)
+    end = time.monotonic() + REAP_S
+    for reader in session.readers:
+        reader.join(max(0.0, end - time.monotonic()))
+    running = [reader.name for reader in session.readers if reader.is_alive()]
+    if running:
+        raise AssertionError(f"the held session ended (exit {session.returncode}), but its "
+                             f"reader {', '.join(running)} still ran {REAP_S:g} s later: a "
+                             f"process it started holds its stdout or stderr")
 
 
 def _ask(session, text: str) -> None:
@@ -1744,7 +1801,9 @@ def _ask(session, text: str) -> None:
     at most (T255k; Codex's review of P09 at `f4f0ebce`, SHOULD 5; lane 3's
     ruling 6932114864, by a reader thread): the lines come from
     `session.lines`, with a monotonic deadline. Past it, or where the session
-    ends first, the session is killed and reaped, and the case fails."""
+    ends first, the session is ended, killed, reaped and its readers joined,
+    each bounded and raised where it fails (`_end_held`, T255m), and the case
+    fails with its exit and the stderr its reader read."""
     marker = f"t255-{uuid.uuid4().hex[:8]}"
     session.stdin.write(text + f"\n\\echo {marker}\n")
     session.stdin.flush()
@@ -1755,11 +1814,106 @@ def _ask(session, text: str) -> None:
         except queue.Empty:
             line = None
     if line is None:
-        session.kill()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            session.wait(timeout=10)
-        raise AssertionError(f"the held session gave no {marker} line within {ASK_S:.0f} s, or "
-                             f"ended (exit {session.returncode}): {session.stderr.read()}")
+        _end_held(session, kill=True)
+        raise AssertionError(f"the held session gave no {marker} line within {ASK_S:g} s, or "
+                             f"ended (exit {session.returncode}): {_drained(session.errs)}")
+
+
+#: T255m's stand-ins for `psql`: one that answers each `\echo` line as
+#: `psql` does and ends at its stdin's end, and one that never answers and,
+#: with `T255M_HOLD` set, first starts a process that holds its stdout and
+#: stderr that many seconds.
+T255M_ANSWERS = r"""#!/bin/bash
+echo "t255m stand-in: answers" >&2
+while IFS= read -r line; do
+  case $line in
+    '\echo '*) printf '%s\n' "${line#'\echo '}" ;;
+  esac
+done
+"""
+T255M_SILENT = r"""#!/bin/bash
+echo "t255m stand-in: silent" >&2
+if [ -n "${T255M_HOLD:-}" ]; then sleep "$T255M_HOLD" & fi
+exec sleep 30
+"""
+
+
+@pytest.mark.parametrize("case", ["read-fails", "answers", "never-answers", "reap-times-out",
+                                  "end-reap-times-out", "pipe-held"])
+def test_a_held_sessions_end_is_bounded_joins_its_readers_and_raises_what_it_cannot_end(
+        tmp_path, monkeypatch, case):
+    """The held session's helpers, `_lines_of`, `_held`, `_ask` and
+    `_end_held` (T255m; Codex's review of P09 at `21dd3642`, SHOULD 2), with
+    no engine: `psql` is one of T255m's stand-ins, `ASK_S` is 0.5 s and
+    `REAP_S` 1 s.
+
+    `[read-fails]`: a reader whose read fails still ends its lines with None.
+    `[answers]`: `_ask` returns, and `_end_held` ends the session 0 with both
+    readers joined. `[never-answers]`: `_ask` fails naming its marker and the
+    stderr the reader read, the session killed and reaped and both readers
+    joined. `[reap-times-out]`: the same, with the reap after the kill timing
+    out (the session's `wait` replaced by one that raises): `_ask` raises
+    `TimeoutExpired`. `[end-reap-times-out]`: `_end_held` without `kill`, on a
+    session that does not end at its stdin's end and whose reap after the
+    kill times out, raises `TimeoutExpired`. `[pipe-held]`: the session has
+    started a process that holds its pipes for 5 s; `_ask` fails within
+    `REAP_S` of its kill, naming the reader still running, and the readers end
+    once that process does.
+
+    Before T255m, a failed read ended the reader with no None; the reader
+    was never kept or joined; `_ask`'s reap after the kill and the shapes'
+    `finally`'s were suppressed; and `_ask` then read stderr to its end,
+    which waited as long as any process held the pipe."""
+    monkeypatch.setitem(globals(), "ASK_S", 0.5)
+    monkeypatch.setitem(globals(), "REAP_S", 1.0)
+    if case == "read-fails":
+        class Breaks:
+            def __iter__(self):
+                yield "one\n"
+                raise OSError("the pipe broke")
+        lines = queue.Queue()
+        with pytest.raises(OSError):
+            _lines_of(Breaks(), lines)
+        got = [lines.get_nowait() for _ in range(lines.qsize())]
+        assert got == ["one\n", None], f"a reader whose read fails must end with None: {got}"
+        return
+    psql = tmp_path / "psql"
+    psql.write_text(T255M_ANSWERS if case == "answers" else T255M_SILENT, encoding="utf-8")
+    psql.chmod(0o755)
+    session = _held(dict(os.environ, T255M_HOLD="5" if case == "pipe-held" else ""), str(psql))
+    try:
+        if case == "answers":
+            _ask(session, "SELECT 1;")
+            _end_held(session, kill=False)
+            assert session.returncode == 0, f"the answering stand-in ended {session.returncode}"
+        elif case == "never-answers":
+            with pytest.raises(AssertionError, match="gave no t255-") as failed:
+                _ask(session, "SELECT 1;")
+            assert "t255m stand-in: silent" in str(failed.value), str(failed.value)
+            assert session.returncode == -signal.SIGKILL, f"exit {session.returncode}"
+        elif case in ("reap-times-out", "end-reap-times-out"):
+            def stuck(timeout=None):
+                raise subprocess.TimeoutExpired(session.args, timeout)
+            session.wait = stuck
+            with pytest.raises(subprocess.TimeoutExpired):
+                if case == "reap-times-out":
+                    _ask(session, "SELECT 1;")
+                else:
+                    _end_held(session, kill=False)
+        else:
+            start = time.monotonic()
+            with pytest.raises(AssertionError, match="still ran"):
+                _ask(session, "SELECT 1;")
+            took = time.monotonic() - start
+            assert took < 3.5, f"_ask took {took:.1f} s, waiting on a pipe another process holds"
+            end = time.monotonic() + 30
+            for reader in session.readers:
+                reader.join(max(0.0, end - time.monotonic()))
+    finally:
+        session.__dict__.pop("wait", None)
+        if case != "pipe-held":
+            _end_held(session, kill=True)
+    assert not any(reader.is_alive() for reader in session.readers), "a reader outlived the end"
 
 
 @pytest.mark.parametrize("rtt", RTTS_MS, ids=[str(r) for r in RTTS_MS])
@@ -1796,16 +1950,10 @@ def test_each_shape_on_a_delayed_relay_is_recorded(pg_engine, request, shape, rt
                     ms, _none = timed(lambda: _ask(session, text))
                     times.append(ms)
             finally:
-                # A pipe a failed `_ask` broke cannot skip the reap, and a session
-                # that outlives the bound is killed and reaped too (T255l).
-                with contextlib.suppress(OSError):
-                    session.stdin.close()
-                try:
-                    session.wait(timeout=60)
-                except subprocess.TimeoutExpired:
-                    session.kill()
-                    with contextlib.suppress(subprocess.TimeoutExpired):
-                        session.wait(timeout=10)
+                # Ended, reaped and its readers joined, each wait bounded and each failure
+                # raised; one that outlives 60 s is still killed, and that alone does not
+                # fail the case (T255l; T255m).
+                _end_held(session, kill=False)
         return times[3:]
 
     env = tls.client_env()
