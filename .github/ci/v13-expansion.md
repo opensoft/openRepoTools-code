@@ -25,8 +25,10 @@ must contain the common prerequisite and already be in frozen main. This does
 not permit rebasing, skipped commits or widening an inventory. Consent6928862535
 is conditional; review links remain pending until actual exact-head reviews.
 
-Those old cuts are superseded. Current observed heads5a120647/b8f9e35a are
-NOT READY under exact-head reviews6941178190/6940693024. Both source bindings,
+Those old cuts are superseded. Owner handoff6947653181 supplies P07's completed
+CX-37 cutcab8fcfd, pending fresh exact-head review and all consent conditions.
+Observed P09fb359e64 is NOT READY under review6945142764 and is being fixed.
+Both source bindings,
 histories, review and consent references are therefore empty/null pending the
 next completed owner cuts. Observed hashes are diagnostic context only; they
 cannot generate a preview. The helper `tests/sql_register_cleanup.py` is an
@@ -34,20 +36,21 @@ exact added regular-file inventory entry, per P07 handoff6940832411 and lane3
 agreement6940947493. Its final T270 ownership record still must land in spec80;
 declaring this path does not accept the helper's code or broaden live scopes.
 
-The preparation ceilings are P07 16 commits and P09 24 commits,
-counted from their respective declared anchors. P07's four-plus-nine-plus-three
-chain is owner-confirmed in issue165 comment6935365475; P09 retains its prior
-eight-plus-sixteen ceiling pending its final owner handoff. These are not automatic
+The proposed preparation ceilings are P07 40 commits and P09 24 commits,
+counted from their respective declared anchors. P07's complete40-commit CX-37
+chain is owner-confirmed in code97 comment6947653181; P09 retains its prior
+eight-plus-sixteen ceiling pending its next completed owner handoff. These are not automatic
 bindings of unpublished heads. Exact bundles, complete ordered SHAs, current
 review/consent and validation are still required. Larger or different chains
 need explicit reviewed changes; never truncate history or restack a lane to
 fit. Live policy limits and all fallback behavior remain unchanged.
 
-These held limits do not fit the later26/58-commit observations and are not
-being published as their qualification. Final counts need fresh explicit
-boundary/prefix validation and independent review after the owners finish.
+This private update stages the exact P0740 bound for validation and independent
+review, without binding that head or accepting its product code. P09's24 bound
+does not fit its later moving chains. Any final replacement count still needs
+explicit boundary/prefix validation and independent review, never truncation.
 
-P07's final exported CX-31 tip18529e5a has a complete16-commit chain whose
+Historically, P07's exported CX-31 tip18529e5a had a complete16-commit chain whose
 prefixes and exact inventory were checked independently. The ceiling update
 does not bind that head or satisfy its conditional consent: the genuine
 exact-head review, new33-node hosted verification, fresh full CI and landed

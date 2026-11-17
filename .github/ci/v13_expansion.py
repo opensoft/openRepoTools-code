@@ -25,7 +25,7 @@ SOURCES = {
 }
 # Preparation ceilings only; every exact head and complete ordered chain is
 # still bound separately. Never infer a new source binding from these limits.
-HISTORY_LIMITS = {"P07": 16, "P09": 24}
+HISTORY_LIMITS = {"P07": 40, "P09": 24}
 FILES = {
     "P07": {**{f"tests/test_sql_register_{name}.py": "A" for name in
                ("divergence", "render", "renderer_git", "rollback", "shape", "writes")},

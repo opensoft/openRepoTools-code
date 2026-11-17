@@ -17,7 +17,7 @@
         "head": null,
         "commits": []
       },
-      "observed_head": "5a12064729c727d2c0301dc1861ac1369d144217",
+      "observed_head": "cab8fcfdee749dbeac5fc916d1c9b642e6d6cc4c",
       "owner_consent": null,
       "review": null,
       "tasks": ["T210", "T240", "T241", "T270", "T271", "T273"],
@@ -41,7 +41,7 @@
         "head": null,
         "commits": []
       },
-      "observed_head": "b8f9e35a326a01eb633d5f56730f608224154122",
+      "observed_head": "fb359e644717055a010cfecab0251384fc2ae116",
       "owner_consent": null,
       "review": null,
       "tasks": ["T213", "T214", "T215", "T219", "T220", "T224", "T226", "T229", "T230", "T237", "T253", "T254", "T255", "T257", "T258", "T274", "T276", "T278", "T279"],

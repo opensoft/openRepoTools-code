@@ -69,7 +69,7 @@ def test_ci_v13_expansion_real_manifest_is_disabled_and_separate(expansion, poli
     assert loaded["enabled"] is False
     assert loaded["held_prs"] == [106]
     assert loaded["order"] == ["P07", "P09"]
-    assert expansion.HISTORY_LIMITS == {"P07": 16, "P09": 24}
+    assert expansion.HISTORY_LIMITS == {"P07": 40, "P09": 24}
     for profile in loaded["profiles"].values():
         assert profile["source"]["head"] is None
         assert profile["source"]["commits"] == []
@@ -129,7 +129,7 @@ def test_ci_v13_expansion_preview_preserves_full_and_exposes_foundation(cohort, 
                       git(root, "show-ref"))
 
 
-@pytest.mark.parametrize("name,count", [("P09", 4), ("P09", 12), ("P07", 13), ("P07", 16), ("P09", 24)])
+@pytest.mark.parametrize("name,count", [("P09", 4), ("P09", 12), ("P07", 13), ("P07", 16), ("P07", 40), ("P09", 24)])
 def test_ci_v13_expansion_exact_bounded_fixes_can_be_previewed(cohort, expansion, name, count):
     root, policy = cohort
     (root / expansion.CONFIG).unlink()
@@ -148,7 +148,7 @@ def test_ci_v13_expansion_exact_bounded_fixes_can_be_previewed(cohort, expansion
     assert_full(result, expansion)
 
 
-@pytest.mark.parametrize("name,limit", [("P07", 16), ("P09", 24)])
+@pytest.mark.parametrize("name,limit", [("P07", 40), ("P09", 24)])
 @pytest.mark.parametrize("overflow", [False, True])
 def test_ci_v13_expansion_per_profile_history_ceiling(tmp_path, expansion, policy, name, limit, overflow):
     profile = policy["profiles"][name]
@@ -256,7 +256,7 @@ def test_ci_v13_expansion_bound_source_refusals(cohort, expansion, fault):
     elif fault == "wrong-review-head": profile["review"] = {"head": "a" * 40, "comment": 123}
     elif fault == "boolean-review-comment": profile["review"] = {"head": source["head"], "comment": True}
     elif fault == "overlong-history":
-        source["commits"] = [f"{index + 1:040x}" for index in range(14)]
+        source["commits"] = [f"{index + 1:040x}" for index in range(expansion.HISTORY_LIMITS["P07"] + 1)]
         source["head"] = source["commits"][-1]
     elif fault in ("stale-main", "conflict"):
         git(root, "checkout", "-q", "--detach", policy["base"])
