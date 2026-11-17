@@ -3487,6 +3487,10 @@ def test_a_clean_up_kills_and_closes_every_pin_whatever_a_signal_raised(monkeypa
                                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                           stderr=subprocess.DEVNULL, start_new_session=True,
                                           env=_with_identity(nonce)))
+        until = time.monotonic() + 5  # their environments are set only once their execs are done
+        while any(_carried(proc.pid) != nonce for proc in procs):
+            assert time.monotonic() < until, "a child's environment never carried the nonce"
+            time.sleep(0.005)
         fds = len(os.listdir("/proc/self/fd"))
         with monkeypatch.context() as stubs:
             stubs.setattr(signal, "pidfd_send_signal", first_stop_refused)
@@ -3626,6 +3630,10 @@ def test_a_clean_up_raises_where_a_stop_is_never_seen(monkeypatch, tmp_path):
                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                       stderr=subprocess.DEVNULL, start_new_session=True,
                                       env=_with_identity(nonce)))
+        until = time.monotonic() + 5  # its environment is set only once its exec is done
+        while _carried(procs[0].pid) != nonce:
+            assert time.monotonic() < until, "the child's environment never carried the nonce"
+            time.sleep(0.005)
         with monkeypatch.context() as stubs:
             stubs.setattr(signal, "pidfd_send_signal", stop_dropped)
             with pytest.raises(RuntimeError, match="never seen stopped"):
@@ -3713,6 +3721,10 @@ def test_a_pin_and_a_release_close_every_pidfd_whatever_a_read_or_a_close_raised
         raise OSError("the close failed")
 
     try:
+        until = time.monotonic() + 5  # its environment is set only once its exec is done
+        while _carried(child.pid) != nonce:
+            assert time.monotonic() < until, "the child's environment never carried the nonce"
+            time.sleep(0.005)
         fds = len(os.listdir("/proc/self/fd"))
         with monkeypatch.context() as stubs:
             stubs.setattr(signal, "pidfd_send_signal", zero_refused)
