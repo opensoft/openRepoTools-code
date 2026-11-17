@@ -1487,6 +1487,16 @@ def _source_key(source: str) -> str:
     return source
 
 
+#: WHAT `status` SAYS IN PLACE OF A LEGACY ENTRY'S LAST ERROR (lane 3's ruling,
+#: opensoft/openRepoTools-code#89 comment 6941833120). v1.1.0 and v1.2.0 keyed a
+#: source as `source_of` read it, a credential included, and SQLite's `CasLost` put
+#: that key in the text `_record_error` saved. An entry whose name `_source_key`
+#: changes is such an entry, so its error is never printed; the next `sync` or
+#: `reconcile` removes it (`_drop_legacy`).
+LEGACY_LAST_ERROR = ("not shown: an earlier build filed this entry under a key that held a "
+                     "credential, and the next sync or reconcile removes it")
+
+
 def branch() -> str:
     return os.environ.get("LANES_BRANCH") or "main"
 
@@ -4344,6 +4354,13 @@ def ddl(dialect: str, schema: str) -> list[str]:
     return stmts
 
 
+#: EVERY TABLE THAT KEYS ON A SOURCE, in both stores: the provenance and each of
+#: `TABLE_COLUMNS`'. A legacy source leaves all of them in one transaction.
+SOURCE_TABLES = ("provenance",) + tuple(TABLE_COLUMNS)
+#: Every source any of them keys on, as one SELECT that both stores answer.
+SOURCES_QUERY = " UNION ".join(f"SELECT source FROM {table}" for table in SOURCE_TABLES)
+
+
 class SqliteStore:
     dialect = "sqlite"
 
@@ -4429,6 +4446,44 @@ class SqliteStore:
                          "FROM provenance ORDER BY source")]
         except sqlite3.Error as exc:
             raise StoreUnusable("wiped", f"{self.path}: {exc}")
+
+    def provenance_and_sources(self, source: str) -> tuple:
+        """`provenance(source)`, and every source any table of the store keys on,
+        sorted: a sync's one read before it removes a legacy source."""
+        import sqlite3
+        old = self.provenance(source)
+        try:
+            return old, sorted(r[0] for r in self.conn.execute(SOURCES_QUERY))
+        except sqlite3.Error as exc:
+            raise StoreUnusable("wiped", f"{self.path}: {exc}")
+
+    def drop_sources(self, sources: list) -> None:
+        """Every row of each of `sources`, from every table that keys on a source,
+        in ONE transaction (lane 3's ruling, opensoft/openRepoTools-code#89 comment
+        6941833120). `secure_delete` zeroes what goes, and a VACUUM after the commit
+        rewrites the file, so that no copy of a removed key is left in its free
+        space, a copy an earlier build's own updates left there included."""
+        import sqlite3
+        if not sources:
+            return
+        marks = ", ".join("?" for _ in sources)
+        try:
+            self.conn.execute("PRAGMA secure_delete = ON")
+            self.conn.execute("BEGIN IMMEDIATE")
+            for table in SOURCE_TABLES:
+                self.conn.execute(f"DELETE FROM {table} WHERE source IN ({marks})",
+                                  list(sources))
+            self.conn.execute("COMMIT")
+        except sqlite3.Error as exc:
+            try:
+                self.conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise StoreUnusable("unreachable", f"{self.path}: {exc}")
+        try:
+            self.conn.execute("VACUUM")
+        except sqlite3.Error as exc:
+            raise StoreUnusable("unreachable", f"{self.path}: {exc}")
 
     def rows(self, table: str, source: str, columns: list[str]) -> list:
         # A TABLE THAT CANNOT BE READ IS A STORE THAT CANNOT ANSWER, said as the
@@ -4875,6 +4930,12 @@ class PostgresStore:
                 raise CasLost(err[-1])
             if proc.returncode == 2:
                 raise StoreUnusable("unreachable", err[0])
+            if not err[-1].strip(" ^"):
+                # NOT THE CARET (lane 1's hosted run 44046351293): psql ends an error
+                # that has a position with the statement's line and a line holding only
+                # `^`. The error's own line is said, so `open_read` reads a missing
+                # table in it, and the schema the bootstrap leaves empty is filled.
+                err = [line for line in err if "ERROR:" in line] or err
             raise StoreUnusable("unreachable", err[-1])
         return proc.stdout
 
@@ -5103,6 +5164,28 @@ class PostgresStore:
             "FROM provenance ORDER BY source"])
         return [{"source": r[0], "commit_sha": r[1], "generation": r[2], "indexed_utc": r[3],
                  "schema_version": r[4]} for r in (res[0] if res else [])]
+
+    def provenance_and_sources(self, source: str) -> tuple:
+        """`SqliteStore.provenance_and_sources` in ONE psql call: a sync reads the
+        provenance in any case, so a sync with no legacy source to remove sends no
+        psql call that commit 12's sync did not."""
+        res = self._query_many([self._provenance_query(source), SOURCES_QUERY])
+        if len(res) != 2:
+            raise StoreUnusable("unreachable", f"psql answered {len(res)} of the 2 reads of "
+                                f"the provenance and the sources")
+        return self._provenance_of(res[0]), sorted(r[0] for r in res[1])
+
+    def drop_sources(self, sources: list) -> None:
+        """`SqliteStore.drop_sources`: every row of each of `sources`, from every
+        table that keys on a source, in ONE transaction."""
+        if not sources:
+            return
+        names = ", ".join(_pg_quote(source) for source in sources)
+        lines = ["SET standard_conforming_strings = on;", "BEGIN;",
+                 f"SET LOCAL search_path TO \"{self.schema}\";"]
+        lines += [f"DELETE FROM {table} WHERE source IN ({names});" for table in SOURCE_TABLES]
+        lines.append("COMMIT;")
+        self._run("\n".join(lines) + "\n")
 
     def rows(self, table: str, source: str, columns: list[str]) -> list:
         res = self._query_many([self._rows_query(table, source, columns)])
@@ -16839,22 +16922,44 @@ def read_status() -> dict:
         return {}
 
 
+def _replace_status(data: dict) -> None:
+    """The status file as `data`, in one atomic replace, 0600."""
+    os.makedirs(state_dir(), mode=0o700, exist_ok=True)
+    tmp = _status_path() + f".{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=1, sort_keys=True)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, _status_path())
+
+
 def write_status(source: str, **fields) -> None:
     """This workstation's own record of its last attempt, which the store
     cannot hold for an attempt that could not reach it."""
     try:
-        os.makedirs(state_dir(), mode=0o700, exist_ok=True)
         data = read_status()
         entry = data.get(source, {})
         entry.update(fields)
         data[source] = entry
-        tmp = _status_path() + f".{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=1, sort_keys=True)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, _status_path())
+        _replace_status(data)
     except OSError:
         pass
+
+
+def drop_legacy_status() -> int:
+    """Every status-file entry under a name `_source_key` changes - one an earlier
+    build filed under a key that held a credential - goes, its `last_error` with it
+    and never copied, in one atomic replace (lane 3's ruling,
+    opensoft/openRepoTools-code#89 comment 6941833120). An entry under the clean key
+    stays as it is. Returns how many went."""
+    data = read_status()
+    gone = [name for name in data if _source_key(name) != name]
+    if not gone:
+        return 0
+    try:
+        _replace_status({name: entry for name, entry in data.items() if name not in gone})
+    except OSError:
+        return 0
+    return len(gone)
 
 
 class SyncLock:
@@ -20674,6 +20779,25 @@ def stored_lanes_of(store, source: str) -> dict:
                                                    ["lane", "owner", "row_text"])}
 
 
+def _drop_legacy(store, mode: str, sources: list) -> None:
+    """THE SOURCES AN EARLIER BUILD KEYED WITH A CREDENTIAL GO (lane 3's ruling,
+    opensoft/openRepoTools-code#89 comment 6941833120). v1.1.0 and v1.2.0 keyed a
+    source as `source_of` read it, a credential included, in both stores and in the
+    status file. The first `sync` or `reconcile` that meets one - a source that
+    `_source_key` changes - removes it from every table of the store in one
+    transaction, then from the status file, its `last_error` discarded. A source under
+    the clean key stays, and this run keeps or rebuilds its rows. The line it says
+    names no source. `sources` is every source the store keys on, read with the
+    provenance (`provenance_and_sources`)."""
+    legacy = [source for source in sources if _source_key(source) != source]
+    store.drop_sources(legacy)
+    filed = drop_legacy_status()
+    if legacy or filed:
+        say(f"{PROG} {mode}: removed {len(legacy)} source(s) from the index and {filed} "
+            f"entry(s) from the status file that an earlier build filed under a key that "
+            f"held a credential")
+
+
 def run_index(mode: str, requested: str | None, dry_run: bool) -> int:
     cfg = load_config()
     root = workspace_root()
@@ -20687,9 +20811,11 @@ def run_index(mode: str, requested: str | None, dry_run: bool) -> int:
             if exc.kind not in ("missing", "wiped"):
                 raise
             store = None
+        old = store.provenance(source) if store is not None else None
     else:
         store.open_write()
-    old = store.provenance(source) if store is not None else None
+        old, sources = store.provenance_and_sources(source)
+        _drop_legacy(store, mode, sources)
     label = f"{source} at register@{tip[:12]} ({cfg['store']})"
     if old and old.get("commit_sha"):
         prev = old["commit_sha"]
@@ -21473,6 +21599,10 @@ def cmd_status() -> int:
                 lag = commits_between(root, prov["commit_sha"], tip)
                 say(f"  lag:         {'unknown (the indexed commit is not in this checkout)' if lag is None else f'{lag} commit(s)'}")
         entry = local.get(name, {})
+        if _source_key(name) != name:
+            # A LEGACY ENTRY'S ERROR IS NEVER PRINTED (lane 3's ruling,
+            # opensoft/openRepoTools-code#89 comment 6941833120): it may hold the key.
+            entry = dict(entry, last_error=LEGACY_LAST_ERROR)
         say(f"  last sync:   {entry.get('last_sync_utc') or 'never, from this workstation'}"
             f"{' (' + entry['last_result'] + ')' if entry.get('last_result') else ''}")
         say(f"  last error:  {entry.get('last_error') or 'none'}")
