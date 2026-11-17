@@ -2119,7 +2119,7 @@ class _StandInSession:
         raise subprocess.TimeoutExpired(self.args, timeout)
 
 
-@pytest.mark.parametrize("case", ["kill", "no-kill", "reader-left", "kill-fails"])
+@pytest.mark.parametrize("case", ["kill", "no-kill", "reader-left", "kill-fails", "reader-left-clean"])
 def test_a_held_sessions_end_joins_its_readers_and_closes_its_pipes_where_its_reap_fails(case):
     """`_end_held` where the reap after the kill raises (T255n; Codex's
     review of P09 at `d3a2fd5c`, SHOULD 2), with no engine and no process:
@@ -2146,15 +2146,21 @@ def test_a_held_sessions_end_joins_its_readers_and_closes_its_pipes_where_its_re
     its cause and stdout's `OSError` as the reap's (T255q; Codex's review of
     P09 at `fb359e64`, lane 3's post 6945142764, SHOULD 1). Before T255p
     the kill's error skipped the reap; before T255q the reap's error was
-    dropped, and the `OSError` was the kill's cause."""
-    session = _StandInSession(stays=case == "reader-left", refuses=case == "kill-fails",
+    dropped, and the `OSError` was the kill's cause. `[reader-left-clean]`
+    (T255x; lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`, S8): the stderr
+    reader still runs at the deadline and every close succeeds, as
+    `[reader-left]` was before T255r. The reap's error is raised, with only
+    that reader's error as its cause, and nothing after it."""
+    session = _StandInSession(stays=case in ("reader-left", "reader-left-clean"),
+                              refuses=case == "kill-fails",
                               breaks=case in ("kill-fails", "reader-left"))
     raised = PermissionError if case == "kill-fails" else subprocess.TimeoutExpired
     with pytest.raises(raised) as failed:
         _end_held(session, kill=case != "no-kill")
     want = (["close stdin"] + (["wait 60"] if case == "no-kill" else [])
             + ["kill", f"wait {REAP_S:g}", "join stdout-reader", "join stderr-reader",
-               "close stdin", "close stdout"] + ([] if case == "reader-left" else ["close stderr"]))
+               "close stdin", "close stdout"]
+            + ([] if case in ("reader-left", "reader-left-clean") else ["close stderr"]))
     assert session.events == want, f"_end_held did {session.events}, not {want}"
     cause = failed.value.__cause__
     if case == "reader-left":
@@ -2163,6 +2169,9 @@ def test_a_held_sessions_end_joins_its_readers_and_closes_its_pipes_where_its_re
         assert isinstance(after, OSError) and "close of stdout" in str(after), \
             f"the reader's error has not stdout's close as its cause: {after!r}"
         assert after.__cause__ is None, f"the chain goes on: {after.__cause__!r}"
+    elif case == "reader-left-clean":
+        assert isinstance(cause, AssertionError) and "stderr-reader still ran" in str(cause), repr(cause)
+        assert cause.__cause__ is None, f"a clean close gave the reader's error a cause: {cause.__cause__!r}"
     elif case == "kill-fails":
         chain = [failed.value, cause, getattr(cause, "__cause__", None)]
         assert isinstance(cause, subprocess.TimeoutExpired), \
