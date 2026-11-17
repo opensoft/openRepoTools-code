@@ -75,6 +75,7 @@ import os
 import re
 import select
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -102,9 +103,9 @@ pytestmark = [WINDOWS_SKIP]
 #: names has landed, and the skip names them. The rows are T224's Order
 #: (tasks:2156), T230's (tasks:2220, with its As built at :2219) and T258's
 #: (tasks:2464), tasks.md at lane 3's commit 17 `204145ae`. No task is common
-#: to all 23 functions, so there is no "*" row. T224j's and T224n's cases, which
-#: run on synthetic text and stand-ins with no database, have no row: they run
-#: ungated.
+#: to all 25 functions, so there is no "*" row. T224j's, T224n's and T258e's
+#: cases, which run on synthetic text and stand-ins with no database, have no
+#: row: they run ungated.
 SQL_REGISTER_GATE_TABLE = {
     # T224: until L1-A7 (T109), L1-A8 (T110), L1-A17 (T119, T120) and T229.
     # Lane 1's two cases' T109 and T110, and `[in-recovery]`'s T229, are in
@@ -227,6 +228,41 @@ def _private(path: Path, text: str) -> Path:
     path.write_text(text, encoding="utf-8")
     path.chmod(0o600)
     return path
+
+
+#: Each bounded step of ending a process this module started: `_end_process`'s
+#: wait for its exit after TERM and its reap after KILL, and the join of a phase-W
+#: writer's reader after them (T258e).
+END_S = 10.0
+
+
+def _end_process(proc: subprocess.Popen, *, group: bool, wait: float = 10.0) -> None:
+    """`proc` ended and reaped, and never signalled once its pid may be another
+    process's (T258e; Codex's review of P09 at `21dd3642`, SHOULD 6 in lane 3's
+    numbering, by its BLOCKING's identity-safe form, as the bounds and measure
+    modules' own copies have it). A process already reaped, `returncode` set,
+    gets no signal. Otherwise each signal is sent while it is still unreaped, so
+    its pid, and with `group` the id of the process group `start_new_session=True`
+    made it lead, are still its own: TERM; up to `wait` s for its exit, watched by
+    `os.waitid(..., WNOWAIT)`, which does not reap it; KILL; then one reap,
+    `proc.wait(wait)`, whose `TimeoutExpired` is raised, not suppressed. A reap
+    by anything else meanwhile raises `ChildProcessError` from `os.waitid`,
+    before the KILL. With `group`, TERM and KILL go to the group, so a child it
+    started gets them too."""
+    if proc.returncode is not None:
+        return
+
+    def send(sig: int) -> None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            (os.killpg if group else os.kill)(proc.pid, sig)
+    send(signal.SIGTERM)
+    end = time.monotonic() + wait
+    while time.monotonic() < end:
+        if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+            break
+        time.sleep(0.05)
+    send(signal.SIGKILL)
+    proc.wait(wait)
 
 
 def _run(argv: list, env: dict, cwd: Path, *, pty_run: bool) -> subprocess.CompletedProcess:
@@ -1667,23 +1703,70 @@ def _commit_logins(log: str) -> list:
 
 
 class W258Writer:
-    """One `lanes-edit.sh` run, its shim's directory and its outcome."""
+    """One `lanes-edit.sh` run, its shim's directory and its outcome. `launch`
+    starts it in a session of its own (`start_new_session=True`). Its thread
+    only reads its two pipes; the reap is the main thread's, in `wait`, or in
+    `stop` at the case's teardown (T258e)."""
 
     def __init__(self, who: str, proc: subprocess.Popen, psql_dir: Path, state: Path):
         self.who, self.proc, self.psql_dir, self.state = who, proc, psql_dir, state
         self.ended = None
         self.out = self.err = ""
-        self._thread = threading.Thread(target=self._wait, daemon=True)
+        self._thread = threading.Thread(target=self._read, daemon=True)
         self._thread.start()
 
-    def _wait(self) -> None:
-        self.out, self.err = self.proc.communicate()
+    def _read(self) -> None:
+        """Both pipes read to their ends together, as `communicate()` reads
+        them, and decoded as its text mode decodes them; then closed, and
+        `ended` set. No wait and no reap: those are the main thread's (T258e;
+        Codex's review of P09 at `21dd3642`, SHOULD 6 in lane 3's numbering)."""
+        pipes = (self.proc.stdout, self.proc.stderr)
+        got = {pipe.fileno(): bytearray() for pipe in pipes}
+        live = list(got)
+        while live:
+            ready, _, _ = select.select(live, [], [])
+            for fd in ready:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    chunk = b""
+                if chunk:
+                    got[fd] += chunk
+                else:
+                    live.remove(fd)
+        self.out, self.err = (bytes(data).decode("utf-8", "replace").replace("\r\n", "\n")
+                              .replace("\r", "\n") for data in got.values())
+        for pipe in pipes:
+            pipe.close()
         self.ended = time.monotonic()
 
     def wait(self, timeout: float = 150) -> int:
-        self._thread.join(timeout)
-        assert not self._thread.is_alive(), f"{self.who}'s run did not end in {timeout} s"
+        """The run's exit, reaped here, and its reader's end, both within one
+        `timeout`: a run that does not end in time fails the case, and `stop`
+        ends it at the teardown (T258e)."""
+        end = time.monotonic() + timeout
+        try:
+            self.proc.wait(timeout)
+        except subprocess.TimeoutExpired:
+            raise AssertionError(f"{self.who}'s run did not end in {timeout} s") from None
+        self._thread.join(max(0.0, end - time.monotonic()))
+        assert not self._thread.is_alive(), (
+            f"{self.who}'s run ended, but its pipes did not end in {timeout} s")
         return self.proc.returncode
+
+    def stop(self) -> None:
+        """This run's end at the case's teardown (T258e; Codex's review of P09
+        at `21dd3642`, SHOULD 6 in lane 3's numbering): a run already reaped,
+        `returncode` set, gets no signal. Otherwise `_end_process` ends its
+        group, its own since `launch` started it in a session of its own,
+        signalling it only while its leader is unreaped, and reaps it, raising
+        a reap that times out. Then its reader is joined, bounded too: pipes
+        that a process outside its group still holds are raised, not left."""
+        _end_process(self.proc, group=True, wait=END_S)
+        self._thread.join(END_S)
+        if self._thread.is_alive():
+            raise RuntimeError(f"{self.who}'s run is reaped, but its pipes did not end in {END_S} s: "
+                               f"a process outside its group holds them")
 
     @property
     def code(self) -> int:
@@ -1890,9 +1973,15 @@ class PhaseW:
         return ["log", "NOTED", f"lane:{W_LANES[who]}", text]
 
     def _stop(self) -> None:
+        """Each writer's `stop` (T258e), every one tried; what any of them
+        could not end is raised after."""
+        failed = []
         for writer in self.writers:
-            if writer.ended is None and writer.proc.poll() is None:
-                os.killpg(writer.proc.pid, 9)
+            try:
+                writer.stop()
+            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                failed.append(f"{writer.who}: {type(exc).__name__}: {exc}")
+        assert not failed, "phase W's teardown did not end every writer:\n" + "\n".join(failed)
 
     # -------------------------------------------------- the register, read by the provider
     def journal_after(self) -> list:
@@ -1920,6 +2009,99 @@ def _hold_point(fifo: Path, writer: W258Writer, timeout: float = 90):
             f"{writer.who}'s run ended before its commit call was held:\n{writer.said()}")
         assert time.monotonic() < deadline, f"{writer.who}'s commit call was not held in {timeout} s"
         time.sleep(0.05)
+
+
+def _w_stand_in(who: str, script: str, *args: str) -> W258Writer:
+    """A stand-in for a `lanes-edit.sh` run, `bash -c <script>` with `args`,
+    started as `PhaseW.launch` starts one, in a session of its own, with no
+    database (T258e's regressions)."""
+    proc = subprocess.Popen(["bash", "-c", script, "bash", *args], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8",
+                            errors="replace", start_new_session=True)
+    return W258Writer(who, proc, Path(os.devnull), Path(os.devnull))
+
+
+def test_a_phase_w_writers_thread_only_reads_its_pipes_and_the_main_thread_reaps_it():
+    """T258e (Codex's review of P09 at `21dd3642`, SHOULD 6 in lane 3's
+    numbering), no database: a stand-in writer closes both its pipes, then
+    ends 0.3 s later. Its reader ends at the pipes' end and leaves it
+    unreaped, as `os.waitid(..., WNOWAIT)` sees once it has ended, until the
+    main thread's `wait` reaps it."""
+
+    class Phase:
+        writers = [_w_stand_in("w-closes", "exec >&- 2>&-; sleep 0.3")]
+    writer = Phase.writers[0]
+    try:
+        writer._thread.join(10)
+        assert not writer._thread.is_alive(), "the reader did not end at its pipes' end"
+        end, seen = time.monotonic() + 10, None
+        while seen is None and time.monotonic() < end:
+            try:
+                seen = os.waitid(os.P_PID, writer.proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            except ChildProcessError:
+                seen = "reaped"
+            if seen is None:
+                time.sleep(0.05)
+        assert seen != "reaped", "the reader thread reaped the writer: the reap is the main thread's"
+        assert seen is not None, "the stand-in writer did not end in 10 s"
+        code = writer.wait(10)
+        assert (code, writer.out, writer.err) == (0, "", ""), f"the stand-in ended {code}, not 0"
+    finally:
+        PhaseW._stop(Phase)
+
+
+def test_phase_w_teardown_ends_and_reaps_a_hung_writer_and_reports_a_pipe_held_outside_it(
+        tmp_path, monkeypatch):
+    """T258e (Codex's review of P09 at `21dd3642`, SHOULD 6 in lane 3's
+    numbering), no database, with stand-in writers started as `launch`
+    starts them. A writer whose pipes a process in a session of its own
+    still holds: the teardown ends its group and reaps it, then raises,
+    naming it, within its bounds. A hung writer whose group holds its pipes:
+    `wait` fails at its bound, and the teardown ends the group, reaps the
+    writer and joins its reader. A writer already reaped: the teardown sends
+    no signal."""
+    monkeypatch.setitem(globals(), "END_S", 2.0)
+
+    class Phase:
+        writers: list = []
+    started: list = []
+    try:
+        mark = tmp_path / "held"
+        held = _w_stand_in("w-held", '"$2" -c \'import os, sys, time; os.setsid(); '
+                           'open(sys.argv[1], "w").write("held"); time.sleep(6)\' "$1" & sleep 20',
+                           str(mark), sys.executable)
+        started.append(held)
+        end = time.monotonic() + 10
+        while not (mark.exists() and mark.read_text() == "held"):
+            assert time.monotonic() < end, "the stand-in's holder did not start in 10 s"
+            time.sleep(0.05)
+        Phase.writers = [held]
+        with pytest.raises(AssertionError, match="w-held's run is reaped, but its pipes"):
+            PhaseW._stop(Phase)
+        assert held.proc.returncode is not None, "the teardown did not reap the writer"
+        hung = _w_stand_in("w-hung", "sleep 20 & sleep 20")
+        started.append(hung)
+        with pytest.raises(AssertionError, match="did not end in 0.5 s"):
+            hung.wait(0.5)
+        Phase.writers = [hung]
+        PhaseW._stop(Phase)
+        assert hung.proc.returncode is not None and not hung._thread.is_alive(), (
+            "the teardown did not reap the hung writer and join its reader")
+        done = _w_stand_in("w-done", "exit 0")
+        started.append(done)
+        assert done.wait(10) == 0, "the stand-in that exits 0 did not"
+        sent: list = []
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "killpg", lambda *call: sent.append(("killpg", *call)))
+            patch.setattr(os, "kill", lambda *call: sent.append(("kill", *call)))
+            Phase.writers = [done]
+            PhaseW._stop(Phase)
+        assert sent == [], f"the teardown signalled a writer already reaped: {sent}"
+    finally:
+        Phase.writers = [writer for writer in started if writer.proc.returncode is None]
+        PhaseW._stop(Phase)
+        for writer in started:
+            writer._thread.join(15)
 
 
 def test_two_writer_logins_write_alike_and_the_log_names_each(tmp_path, request):
