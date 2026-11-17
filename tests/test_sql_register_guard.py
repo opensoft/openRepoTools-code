@@ -120,7 +120,10 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: check of the server's uid, is the row of SVC-2's other case,
 #: `test_a_client_of_another_uid_is_closed_by_so_peercred`: tasks:2278 at
 #: lane 3's commit 31 `8f50d105` says it fails until L5-S1, lane 5's T512,
-#: under the same Order (tasks:2302 there). No task is common to every row,
+#: under the same Order (tasks:2302 there). T237zzr's row, and the rows of
+#: the letters after it for T512's chain 3 and its commit 15 (lane 3, #165
+#: 6934144108, 6934055909 and 6934655836), are T237's other service rows,
+#: T512 and T513, the two tasks P23 lands. No task is common to every row,
 #: so there is no "*" row.
 SQL_REGISTER_GATE_TABLE = {
     "test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither": ("T512", "T513"),  # T237; tasks:2302
@@ -203,6 +206,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_the_service_stops_after_its_idle_time_and_unlinks_its_socket": ("T512", "T513"),  # T237; tasks:2302
     "test_the_services_idle_check_replaces_a_dropped_connection_in_the_background": ("T512", "T513"),  # T237; tasks:2302
     "test_the_services_request_timer_follows_register_rtt_ms": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_services_worker_does_not_spin_while_its_child_is_down_or_connecting": ("T512", "T513"),  # T237zzr; P23 (#165 6934144108)
     "test_the_session_start_block_makes_no_register_call_on_primary": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_the_session_start_block_reads_the_mirror_and_only_starts_the_service": ("T512", "T513"),  # T237; tasks:2302
     "test_the_socket_directory_is_a_0700_directory_of_this_uid_and_never_a_symlink": ("T512", "T513"),  # T237; tasks:2302
@@ -7984,3 +7988,138 @@ def test_the_service_stops_after_its_idle_time_and_unlinks_its_socket(estate, ca
     sock = svc.dir / "register.sock"
     assert _until(lambda: svc.proc.poll() is not None, 15), "the service did not stop"
     assert not sock.exists(), "the stopped service left its socket"
+
+
+# ============================================================ T237zzr to T237zzu: T512's chain 3 and commit 15
+#
+# T512's chain 3, `309626c9` on line R's pick223 `9bdd317b` (its commits 12
+# to 14), and its commit 15, `1c7a4aa0`, which P23's real cut takes beside
+# it (lane 3, opensoft/openRepoTools#165 6934055909, point 3). Lane 3's
+# genuine Codex review of chain 3 found that no test exercised commit 12's
+# repaired waits, special files at `register.lock` and `register.log`, or
+# commit 14's early closes, and sent them to lane 2's T237 cases (#165
+# 6934144108); its review of commit 15 lists the sweep's cases (#165
+# 6934655836, `codex-code-L5c3b-1c7a4aa0.md`, SHOULD 3), beside the four
+# lane 5 gave (`T512Q6-REPORT-1117a.md`, "Test cases for lane 2"). Each
+# case's row is T237's other service rows' (T512, T513), the two tasks P23
+# lands. On pick223, before chain 3 and commit 15, each fails by its own
+# assertion.
+
+#: THE WORKER'S WAKES (T237zzr), counted as each thread's voluntary context
+#: switches, the times it slept and was woken (`/proc/<pid>/task/<tid>/status`).
+#: A service whose child is down or connecting is woken for its accept
+#: loop's `select`, every 0.25 s (`RegisterService.serve`), and for its
+#: worker's own bound, `idle_check_s`, here section 10's 1 s floor: about
+#: five times a second in all. A deadline already past, under the old
+#: wait's 0.01 s floor, woke the worker 100 times a second. The case's
+#: bound lies between.
+WAKES_MAX_PER_S = 30
+#: How long the wakes are counted, and how long the case waits before it
+#: counts: past the 1 s idle deadline the old wait kept.
+WAKES_WINDOW_S = 3.0
+WAKES_SETTLE_S = 1.5
+#: `[connecting]`'s hold on the connect's marker (`_StreamPsql`), inside its
+#: bound at `connect_timeout=10`, `N_a`·`c` + 2 s, 12 s (socket API section
+#: 7), and past the count's end, `WAKES_SETTLE_S` + `WAKES_WINDOW_S`.
+CONNECTING_HOLD_MS = 6000
+
+
+def _wakes(pid: int) -> dict:
+    """Each live thread of `pid` with its count of voluntary context
+    switches, from `/proc/<pid>/task/<tid>/status`; {} where it is gone."""
+    found = {}
+    try:
+        tids = os.listdir(f"/proc/{pid}/task")
+    except OSError:
+        return found
+    for tid in tids:
+        try:
+            text = Path(f"/proc/{pid}/task/{tid}/status").read_text(encoding="utf-8",
+                                                                    errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if line.startswith("voluntary_ctxt_switches:"):
+                found[tid] = int(line.split()[1])
+    return found
+
+
+def _log_phrases(est: Estate) -> list:
+    """`register.log`'s phrases, each line's text after its UTC (socket API
+    section 2.3: the UTC and a fixed phrase), or [] where there is none."""
+    path = _run_dir(est) / "register.log"
+    if not path.is_file():
+        return []
+    return [line.split(" ", 1)[1] if " " in line else ""
+            for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+@pytest.mark.parametrize("case", ["down-lazy", "connecting"])
+def test_the_services_worker_does_not_spin_while_its_child_is_down_or_connecting(estate, case):
+    """T512'S COMMIT 12, THE WORKER'S WAITS (T237zzr; lane 3's Codex review
+    of chain 3, #165 6934144108: "no test yet exercises commit 12's repaired
+    waits"; its report, "the ready-state idle-check case ... does not
+    exercise commit 12's repaired down/lazy or connecting waits").
+
+    THE ORACLE. Socket API section 7 sends the idle check's `SELECT 1` "on
+    the held connection", at section 10's interval, whose floor is 1 s, so
+    only a ready child has an idle deadline. As built at `81d42d00`
+    (`RegisterService.work`): the idle check's deadline only where the child
+    is ready, the retry's only where a connect waits for it, and
+    `idle_check_s` as the bound where neither holds, every other change
+    notifying the worker. Before commit 12 the idle deadline was in every
+    wait, so once it had passed with the child not ready its
+    `max(0.01, ...)` woke the worker every 10 ms for as long as that lasted.
+    So at `LANES_REGISTER_SERVE_IDLE_CHECK_S=1` the service's threads
+    together are woken fewer than `WAKES_MAX_PER_S` times a second over
+    `WAKES_WINDOW_S` (`_wakes`), and the service runs on:
+
+    - `[down-lazy]`: the service's held connection is lost with the cluster
+      stopped; its next idle check fails, the connect it starts at once
+      fails (`connect failed` in `register.log`), and the child is down and
+      lazy until a request comes (section 7, "a child lost while serving").
+      None comes. The count starts `WAKES_SETTLE_S` after that line.
+    - `[connecting]`: the connect at listen is held `CONNECTING_HOLD_MS` by
+      the streaming `psql` (`_StreamPsql`), at `connect_timeout=10`, inside
+      the connect's bound. The count starts `WAKES_SETTLE_S` after the
+      socket appears, past the idle deadline 1 s from the listen, and ends
+      before the hold does: the held child read the connect's marker under
+      the hold, and `register.log` shows no connect ended."""
+    est = estate(mode="primary")
+    stream = None
+    if case == "connecting":
+        _db_config(est, f"{est.pg.url()}?connect_timeout=10")
+        stream = _StreamPsql(est)
+        stream.hold(CONNECTING_HOLD_MS)
+    svc = _Service(est, LANES_REGISTER_SERVE_IDLE_CHECK_S="1")
+    stopped = False
+    try:
+        if case == "down-lazy":
+            held = _until(lambda: _service_backends(est.pg), 10, 0.1)
+            assert held, "the service held no connection in 10 s to lose"
+            est.pg.cluster.stop()
+            stopped = True
+            lazy = _until(lambda: "connect failed" in _log_phrases(est), 15, 0.1)
+            assert lazy, (f"no connect failed in 15 s after the cluster stopped, so the child is "
+                          f"not down and lazy: {_log_phrases(est)}")
+        time.sleep(WAKES_SETTLE_S)
+        before = _wakes(svc.proc.pid)
+        time.sleep(WAKES_WINDOW_S)
+        after = _wakes(svc.proc.pid)
+        said = _log_phrases(est)
+        code = svc.proc.poll()
+    finally:
+        if stopped:
+            est.pg.cluster.start_again()
+        svc.stop()
+    assert code is None and after, f"serve exited {code} while its child was {case}"
+    if case == "connecting":
+        assert [c for c in stream.log() if c["held"] and c["hold_ms"] == CONNECTING_HOLD_MS], \
+            f"the connect's marker never reached the held streaming psql: {stream.log()}"
+        assert not [p for p in said if p in ("connected", "connect failed")], \
+            f"the connect ended before the count did, so the child was not connecting: {said}"
+    rate = sum(n - before.get(tid, 0) for tid, n in after.items()) / WAKES_WINDOW_S
+    assert rate < WAKES_MAX_PER_S, (
+        f"the service's threads were woken {rate:.0f} times a second with its child {case} at "
+        f"LANES_REGISTER_SERVE_IDLE_CHECK_S=1, over the {WAKES_MAX_PER_S} its accept loop and "
+        f"its worker's 1 s bound allow: the worker spins on an idle deadline already past")
