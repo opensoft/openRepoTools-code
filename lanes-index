@@ -648,7 +648,11 @@ def load_config(text: str | None = None) -> dict:
     `register_passfile=` or `render_key=` that is not a private regular file;
     and, where `register_url=` is set, R09's TLS refusal of it and of
     `reader_url=`. A file with no `register_url=` is #160's, and loads as it
-    always has.
+    always has. A line that carries a NUL byte is refused by its number,
+    before any of its value is used (lane 3's 6956512573, NIT; commit 39):
+    `os` refuses a NUL in a path with a `ValueError`, not an `OSError`, so a
+    passfile, key or store path holding one would end the command with a
+    traceback, and a URL holding one would reach `psql`'s environment.
 
     While `RENDER_GIT_HALF` is False, `mode=primary` is refused as
     `PrimaryNotBuilt` (Q6(c), FR-003), after the file's own checks and each
@@ -706,6 +710,11 @@ def load_config(text: str | None = None) -> dict:
             # lane 3's ruling 6954760292, SHOULD, commit 37): a launched `serve`
             # writes the file and this number in fixed words, and no text of the
             # line (`register_serve_config_words`).
+            if "\0" in line:
+                refusal = Refusal(f"{path}:{number} carries a NUL byte, which no "
+                                  f"configuration line may hold")
+                refusal.line_number = number
+                raise refusal
             if "=" not in line:
                 refusal = Refusal(f"{path}:{number} is not `key=value`: {line!r}")
                 refusal.line_number = number
@@ -9995,8 +10004,10 @@ def register_serve_launched() -> bool:
     BRIEF-T512C35-1117c.md; commit 35; narrowed by lane 3's ruling
     6954760292, choice 1; commit 37): `register_serve_launch` starts `serve`
     in a session of its own (`start_new_session`), with `/` as its working
-    directory and standard input and output on `/dev/null`, the whole launch
-    socket API §8.2 defines. So a `serve` that leads its own session
+    directory and standard input and output on `/dev/null`, which is the
+    part of §8.2's launch that `serve` can see: its own session, `/`, and
+    standard input and output on `/dev/null` (lane 3's words, narrowed,
+    6956512573; commit 39). So a `serve` that leads its own session
     (`os.getsid`), runs in `/`, and has descriptors 0 and 1 on `/dev/null`,
     each compared with `os.stat(os.devnull)` by device and inode, is taken
     as launched; a descriptor that is closed, or whose `fstat` fails, is not
