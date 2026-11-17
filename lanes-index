@@ -9547,9 +9547,9 @@ def register_serve_sweep(paths: dict, fd: int) -> None:
     `os.unlink` takes no `dir_fd`, or `os.listdir` takes no descriptor
     (`os.supports_dir_fd`, `os.supports_fd`; `os.lstat` is `os.stat` with
     `follow_symlinks=False` and is in neither set, so `os.stat` is the member
-    checked), the directory has failed no check; the platform cannot run the
-    sweep. It fails closed, sweeping nothing, with one line on standard
-    error, and the start goes on by `run/`'s path as before (ruling 3's
+    checked), the directory has failed no check; the sweep is not run. It
+    fails closed, sweeping nothing, with one line on standard error, and the
+    start goes on by `run/`'s path as before (ruling 3's
     reading, #165 6935871785). Where `os.open` takes no `dir_fd`,
     `register_serve_run` opens `register.lock` by its path, after the check.
 
@@ -9729,12 +9729,15 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     # under the lock, lists, reads and removes through it. So, where `os.open`
     # takes `dir_fd`, a `run/` replaced after the check gains no lock file
     # and loses no entry to the sweep. The probe's `connect` and the bind
-    # still go by path, since an
-    # `AF_UNIX` socket cannot be bound relative to a descriptor here; so do the
-    # owner file, the rename over `register.sock`, the stamp's removal and
-    # `register.log`'s lines, and the check claims nothing for them. WHERE
-    # `os.open` TAKES NO `dir_fd` (`os.supports_dir_fd`), `register.lock` is
-    # opened by its path, after the check, as before, and the sweep sweeps
+    # still go by path: `connect` and `bind` take a path, and this start
+    # neither `fchdir`s into `run/` nor binds through `/proc/self/fd`, so
+    # neither is anchored to the descriptor; so do the owner file, the rename
+    # over `register.sock` and the `lstat` after it, the unlink of the
+    # temporary socket where its listen, owner file or rename fails, the
+    # stamp's removal, `register.log`'s lines and the service's later uses of
+    # `register.sock`, and the check claims nothing for them. WHERE `os.open`
+    # TAKES NO `dir_fd` (`os.supports_dir_fd`), `register.lock` is opened by
+    # its path, as before, but now after the check, and the sweep sweeps
     # nothing (ruling 3's reading, #165 6935871785). The descriptor is closed
     # on every return, by the `finally` below, before the bind.
     try:
