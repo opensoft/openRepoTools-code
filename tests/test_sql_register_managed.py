@@ -103,9 +103,9 @@ pytestmark = [WINDOWS_SKIP]
 #: names has landed, and the skip names them. The rows are T224's Order
 #: (tasks:2156), T230's (tasks:2220, with its As built at :2219) and T258's
 #: (tasks:2464), tasks.md at lane 3's commit 17 `204145ae`. No task is common
-#: to all 25 functions, so there is no "*" row. T224j's, T224n's and T258e's
-#: cases, which run on synthetic text and stand-ins with no database, have no
-#: row: they run ungated.
+#: to all 27 functions, so there is no "*" row. T224j's, T224n's, T224o's and
+#: T258e's cases, which run on synthetic text and stand-ins with no database,
+#: have no row: they run ungated.
 SQL_REGISTER_GATE_TABLE = {
     # T224: until L1-A7 (T109), L1-A8 (T110), L1-A17 (T119, T120) and T229.
     # Lane 1's two cases' T109 and T110, and `[in-recovery]`'s T229, are in
@@ -265,36 +265,82 @@ def _end_process(proc: subprocess.Popen, *, group: bool, wait: float = 10.0) -> 
     proc.wait(wait)
 
 
+#: One deadline, in seconds, for all of a `_run`: its terminal or stdout pipe and
+#: its stderr, read together, and then its exit; and one for a held session's
+#: close (T224o).
+RUN_S, CLOSE_S = 300.0, 60.0
+
+
+def _drain(fds: list, deadline: float) -> tuple:
+    """Each of `fds` read to its end, all of them together, until the
+    monotonic `deadline` (T224o; Codex's review of P09 at `21dd3642`, SHOULD 1
+    in lane 3's numbering): no read waits on one while another fills. Returns
+    each fd's bytes, in order, and whether every one reached its end. A
+    terminal's EIO, once no process holds its other side, is its end."""
+    got = {fd: bytearray() for fd in fds}
+    live = list(fds)
+    while live:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        ready, _, _ = select.select(live, [], [], left)
+        for fd in ready:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                chunk = b""
+            if chunk:
+                got[fd] += chunk
+            else:
+                live.remove(fd)
+    return [bytes(got[fd]) for fd in fds], not live
+
+
 def _run(argv: list, env: dict, cwd: Path, *, pty_run: bool) -> subprocess.CompletedProcess:
     """`argv`, its stdout a pipe, or a terminal (`pty.openpty()`) where
-    `pty_run`; its stdin is /dev/null and its stderr a pipe."""
+    `pty_run`; its stdin is /dev/null and its stderr a pipe. All of it runs
+    under one monotonic deadline, `RUN_S` (T224o; Codex's review of P09 at
+    `21dd3642`, SHOULD 1 in lane 3's numbering). Through a pipe that is
+    `subprocess.run`'s `timeout`. Under the terminal, the run has a session
+    of its own, the terminal and stderr are read together (`_drain`), and its
+    exit is reaped before the same deadline. A run that does not end by then
+    raises `TimeoutExpired`, which carries no output, since a login's stdout
+    holds password-file lines. On that and on any other way out unreaped, the
+    run is ended with its group by `_end_process`, signalled only while it is
+    unreaped, and reaped, both bounded."""
     if not pty_run:
         return subprocess.run(argv, capture_output=True, text=True, env=env, cwd=str(cwd),
-                              timeout=300, stdin=subprocess.DEVNULL)
+                              timeout=RUN_S, stdin=subprocess.DEVNULL)
     import pty
+    deadline = time.monotonic() + RUN_S
     primary, secondary = pty.openpty()
     try:
         proc = subprocess.Popen(argv, stdout=secondary, stderr=subprocess.PIPE,
-                                stdin=subprocess.DEVNULL, env=env, cwd=str(cwd))
+                                stdin=subprocess.DEVNULL, env=env, cwd=str(cwd),
+                                start_new_session=True)
         os.close(secondary)
         secondary = -1
-        out = b""
-        while True:
+        try:
+            (out, err), ended = _drain([primary, proc.stderr.fileno()], deadline)
+            if ended:
+                try:
+                    proc.wait(max(0.0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    ended = False
+            if not ended:
+                raise subprocess.TimeoutExpired(argv, RUN_S)
+        finally:
             try:
-                chunk = os.read(primary, 65536)
-            except OSError:
-                break
-            if not chunk:
-                break
-            out += chunk
-        err = proc.stderr.read().decode("utf-8", "replace")
-        proc.wait(timeout=300)
+                _end_process(proc, group=True, wait=END_S)
+            finally:
+                proc.stderr.close()
     finally:
         os.close(primary)
         if secondary >= 0:
             os.close(secondary)
     return subprocess.CompletedProcess(argv, proc.returncode,
-                                       out.decode("utf-8", "replace").replace("\r\n", "\n"), err)
+                                       out.decode("utf-8", "replace").replace("\r\n", "\n"),
+                                       err.decode("utf-8", "replace"))
 
 
 def _objects(text: str) -> list:
@@ -356,14 +402,36 @@ class Session:
         return self.err[start:].decode("utf-8", "replace")
 
     def close(self) -> subprocess.CompletedProcess:
+        """`psql`'s stdin closed; then its stdout and stderr read together to
+        their ends (`_drain`) and its exit reaped, all under one monotonic
+        deadline, `CLOSE_S` (T224o; Codex's review of P09 at `21dd3642`,
+        SHOULD 1 in lane 3's numbering). A `psql` that does not end by then
+        raises `TimeoutExpired`, with no output. On that and on any other way
+        out unreaped, it is ended by `_end_process`, signalled only while it is
+        unreaped, and reaped, both bounded."""
+        deadline = time.monotonic() + CLOSE_S
         try:
             self.proc.stdin.close()
         except BrokenPipeError:
             pass
-        out = self.proc.stdout.read().decode("utf-8", "replace")
-        self.err += self.proc.stderr.read()
-        self.proc.wait(timeout=60)
-        return subprocess.CompletedProcess([], self.proc.returncode, out,
+        try:
+            (out, err), ended = _drain([self.proc.stdout.fileno(), self.proc.stderr.fileno()],
+                                       deadline)
+            self.err += err
+            if ended:
+                try:
+                    self.proc.wait(max(0.0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    ended = False
+            if not ended:
+                raise subprocess.TimeoutExpired(self.proc.args, CLOSE_S)
+        finally:
+            try:
+                _end_process(self.proc, group=False, wait=END_S)
+            finally:
+                self.proc.stdout.close()
+                self.proc.stderr.close()
+        return subprocess.CompletedProcess([], self.proc.returncode, out.decode("utf-8", "replace"),
                                            self.err.decode("utf-8", "replace"))
 
 
@@ -698,6 +766,109 @@ def test_a_failure_message_keeps_no_password_of_a_password_file_line():
         none_printed(found)
     kept = secret in str(failed.value)
     assert not kept, "a failed assertion whose operand holds the line reports its password"
+
+
+# ============================================================ one deadline (T224o)
+#: T224o's stand-in, run by this Python with `-I`, its mode and a mark file
+#: as its arguments. Each mode reads its stdin to the end first. `full-stderr`
+#: fills its stderr pipe, 256 KiB, four times a pipe's 64 KiB, before it writes
+#: one line to stdout and exits 0. `hung` writes one line and waits, and a child
+#: in its group holds its stdout and stderr too; it writes its pid to the mark,
+#: and the child writes its pid and start time (`/proc` stat field 22) to the
+#: mark's `.child`. `hung-alone` writes one line and waits, alone. Every process
+#: of it ends itself by SIGALRM within 8 s, whatever is done to it.
+T224O_STAND_IN = """
+import os, signal, sys, time
+signal.alarm(8)
+mode, mark = sys.argv[1], sys.argv[2]
+sys.stdin.read()
+if mode == "full-stderr":
+    sys.stderr.buffer.write(b"e" * 262144)
+    sys.stderr.buffer.flush()
+    print("done", flush=True)
+    sys.exit(0)
+if mode == "hung" and os.fork() == 0:
+    signal.alarm(8)
+    started = open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19]
+    open(mark + ".child", "w").write(f"{os.getpid()} {started}")
+    time.sleep(8)
+    os._exit(0)
+open(mark, "w").write(str(os.getpid()))
+print("started", flush=True)
+time.sleep(8)
+"""
+
+
+def test_run_reads_its_terminal_and_stderr_together_and_ends_a_run_at_its_one_deadline(
+        tmp_path, monkeypatch):
+    """T224o (Codex's review of P09 at `21dd3642`, SHOULD 1 in lane 3's
+    numbering), no database, on T224O_STAND_IN under `_run`'s terminal. A
+    run that fills its stderr pipe before it writes to its terminal ends 0
+    with all of both, since neither is read only after the other ends. A run
+    that does not end, with a child in its group holding both, is ended at
+    `RUN_S`: `_run` raises `TimeoutExpired` within its bounds, the run is
+    reaped, and its child is gone."""
+    monkeypatch.setitem(globals(), "RUN_S", 3.0)
+    monkeypatch.setitem(globals(), "END_S", 2.0)
+    script = _private(tmp_path / "stand_in.py", T224O_STAND_IN)
+    env = {"PATH": os.environ.get("PATH", os.defpath)}
+    full = _run([sys.executable, "-I", str(script), "full-stderr", str(tmp_path / "full")], env,
+                tmp_path, pty_run=True)
+    said = (full.returncode, full.stdout, len(full.stderr))
+    assert said == (0, "done\n", 262144), (
+        f"a run that filled its stderr pipe ended {said[0]}, with {said[2]} bytes of stderr, "
+        f"not 0 with 262144")
+    mark = tmp_path / "hung"
+    start = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run([sys.executable, "-I", str(script), "hung", str(mark)], env, tmp_path, pty_run=True)
+    took = time.monotonic() - start
+    assert took < 3.0 + 2 * 2.0 + 1.5, f"_run ended a hung run after {took:.1f} s, past its bounds"
+    try:
+        os.waitid(os.P_PID, int(mark.read_text()), os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        reaped = False
+    except ChildProcessError:
+        reaped = True
+    assert reaped, "_run did not reap the hung run it ended"
+
+    def gone(pid: int, started: str) -> bool:
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        except OSError:
+            return True
+        return fields[19] != started or fields[0] in ("Z", "X")
+    pid, started = Path(f"{mark}.child").read_text().split()
+    end = time.monotonic() + 5
+    while not gone(int(pid), started):
+        assert time.monotonic() < end, "the hung run's child, in its group, was not ended"
+        time.sleep(0.05)
+
+
+def test_a_held_sessions_close_reads_both_pipes_together_and_ends_it_at_its_one_deadline(
+        tmp_path, monkeypatch):
+    """T224o (Codex's review of P09 at `21dd3642`, SHOULD 1 in lane 3's
+    numbering), no database, on T224O_STAND_IN as a held session's `psql`.
+    One that fills its stderr pipe before it writes its stdout closes with 0
+    and all of both. One that does not end once its stdin is closed is ended
+    at `CLOSE_S`: `close` raises `TimeoutExpired` within its bounds, and the
+    process is reaped."""
+    monkeypatch.setitem(globals(), "CLOSE_S", 3.0)
+    monkeypatch.setitem(globals(), "END_S", 2.0)
+    script = _private(tmp_path / "stand_in.py", T224O_STAND_IN)
+    env = {"PATH": os.environ.get("PATH", os.defpath)}
+    full = Session([sys.executable, "-I", str(script), "full-stderr", str(tmp_path / "full")],
+                   env).close()
+    said = (full.returncode, full.stdout, len(full.stderr))
+    assert said == (0, "done\n", 262144), (
+        f"a session that filled its stderr pipe closed with {said[0]}, with {said[2]} bytes of "
+        f"stderr, not 0 with 262144")
+    held = Session([sys.executable, "-I", str(script), "hung-alone", str(tmp_path / "hung")], env)
+    start = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        held.close()
+    took = time.monotonic() - start
+    assert took < 3.0 + 2 * 2.0 + 1.5, f"close ended a hung session after {took:.1f} s, past its bounds"
+    assert held.proc.returncode is not None, "close did not reap the hung session it ended"
 
 
 # ============================================================ the bootstrap
