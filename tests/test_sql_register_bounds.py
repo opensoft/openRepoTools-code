@@ -5748,3 +5748,38 @@ def test_a_failed_psqls_sqlstate_is_taken_only_from_its_verbose_form_on_one_line
         f"{form}: the planted word shows in {_t257zzb_seen(request, failed, hidden)}"
     assert str(failed.value).startswith(f"psql as lanes_admin on register exited 3: {state}; "), \
         f"{form}: the error does not say {state}"
+
+
+def test_a_failed_psqls_raising_frame_keeps_no_stream_of_its_run(monkeypatch, request):
+    """T257zzf (lane 2's pre-review RV9-38 of P09, N2; T229q), with no
+    engine and no process: psql, run by `Cluster.psql` with subprocess.run
+    a stand-in, exits 3 with a planted value on both its streams. The
+    `ClusterError`'s traceback keeps each frame it passed through, and
+    pytest prints a frame's locals under `--showlocals`; no local of any
+    frame of pgcluster's in it holds the planted value, nor does its
+    `str`, `repr`, `args`, formatted traceback, or pytest's report of it
+    (`_t257zzb_seen`). Before T229q the raising frame kept psql's run as
+    `proc`, its stdout and stderr with it. `sql`, the frame's argument,
+    is the caller's own, here `SELECT 1`. The planted value is no
+    credential of any login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+    cluster = pgcluster.Cluster(Path("/nonexistent/bin"))
+    cluster.root = Path("/nonexistent")
+    monkeypatch.setattr(pgcluster.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(
+        argv, 3, f"{planted}\n", f"psql:<stdin>:1: ERROR:  42601: x\nLINE 1: {planted}\n"))
+    with pytest.raises(pgcluster.ClusterError) as failed:
+        cluster.psql("SELECT 1", dbname="register", user="lanes_admin")
+    assert not _t257zzb_seen(request, failed, planted), \
+        f"the planted value shows in {_t257zzb_seen(request, failed, planted)}"
+    ours, held = 0, []
+    tb = failed.tb
+    while tb is not None:
+        frame = tb.tb_frame
+        if Path(frame.f_code.co_filename).resolve() == Path(pgcluster.__file__).resolve():
+            ours += 1
+            held += [f"{frame.f_code.co_name}.{name}" for name, value in frame.f_locals.items()
+                     if planted in repr(value)]
+        tb = tb.tb_next
+    assert ours, "no frame of pgcluster's is in the error's traceback"
+    assert not held, f"a frame of pgcluster's keeps the planted value in: {held}"
