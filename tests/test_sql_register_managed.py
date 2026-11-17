@@ -104,8 +104,8 @@ pytestmark = [WINDOWS_SKIP]
 #: (tasks:2156), T230's (tasks:2220, with its As built at :2219) and T258's
 #: (tasks:2464), tasks.md at lane 3's commit 17 `204145ae`. No task is common
 #: to all 27 functions, so there is no "*" row. T224j's, T224n's, T224o's,
-#: T258e's and T258f's cases, which run on synthetic text and stand-ins with no
-#: database, have no row: they run ungated.
+#: T224p's, T258e's and T258f's cases, which run on synthetic text and
+#: stand-ins with no database, have no row: they run ungated.
 SQL_REGISTER_GATE_TABLE = {
     # T224: until L1-A7 (T109), L1-A8 (T110), L1-A17 (T119, T120) and T229.
     # Lane 1's two cases' T109 and T110, and `[in-recovery]`'s T229, are in
@@ -836,6 +836,48 @@ time.sleep(8)
 """
 
 
+#: T224O_STAND_IN's watchdog: each of its processes ends itself by SIGALRM this
+#: many seconds after it starts (T224p).
+T224O_WATCHDOG_S = 8
+
+
+def _t224p_hung_run(script: Path, mark: Path, env: dict) -> tuple:
+    """T224O_STAND_IN's `hung` run, its mark `mark`, under `_run`'s terminal,
+    which must raise `TimeoutExpired`: the monotonic times it started and
+    ended (T224p)."""
+    start = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run([sys.executable, "-I", str(script), "hung", str(mark)], env, mark.parent, pty_run=True)
+    return start, time.monotonic()
+
+
+def _t224p_child_gone_by(mark: Path, start: float) -> bool:
+    """Whether the hung run's child, its pid and start time in `mark`'s
+    `.child`, is gone by `RUN_S + END_S` after the run's `start` (T224p; the
+    coordinator's review of P09 at `d3a2fd5c`, item 2, #165 6938473998).
+    With the case's `RUN_S` of 3 s and `END_S` of 2 s that is 5 s after the
+    start, at least 3 s before the child's own watchdog, `T224O_WATCHDOG_S`,
+    which the child arms after its fork, after `start`: only the run's end
+    can satisfy it, never the watchdog."""
+    pid, started = Path(f"{mark}.child").read_text().split()
+    deadline = start + RUN_S + END_S
+    while not _gone(int(pid), started):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def _t224p_end_child(mark: Path) -> None:
+    """The hung run's child, if it wrote its `.child` mark, ended by pidfd
+    where it is still that process (`_end_if_left`): each case's last
+    clean-up, whatever its oracle found (T224p)."""
+    child = Path(f"{mark}.child")
+    if child.exists():
+        pid, started = child.read_text().split()
+        _end_if_left(int(pid), started)
+
+
 def test_run_reads_its_terminal_and_stderr_together_and_ends_a_run_at_its_one_deadline(
         tmp_path, monkeypatch):
     """T224o (Codex's review of P09 at `21dd3642`, SHOULD 1 in lane 3's
@@ -844,7 +886,10 @@ def test_run_reads_its_terminal_and_stderr_together_and_ends_a_run_at_its_one_de
     with all of both, since neither is read only after the other ends. A run
     that does not end, with a child in its group holding both, is ended at
     `RUN_S`: `_run` raises `TimeoutExpired` within its bounds, the run is
-    reaped, and its child is gone."""
+    reaped, and its child is gone by `RUN_S + END_S`, 5 s, after the run
+    started, at least 3 s before the child's own 8 s watchdog, so the
+    watchdog cannot pass the case (T224p; its negative control is the next
+    case). The child is ended in a finally whatever happened."""
     monkeypatch.setitem(globals(), "RUN_S", 3.0)
     monkeypatch.setitem(globals(), "END_S", 2.0)
     script = _private(tmp_path / "stand_in.py", T224O_STAND_IN)
@@ -856,29 +901,54 @@ def test_run_reads_its_terminal_and_stderr_together_and_ends_a_run_at_its_one_de
         f"a run that filled its stderr pipe ended {said[0]}, with {said[2]} bytes of stderr, "
         f"not 0 with 262144")
     mark = tmp_path / "hung"
-    start = time.monotonic()
-    with pytest.raises(subprocess.TimeoutExpired):
-        _run([sys.executable, "-I", str(script), "hung", str(mark)], env, tmp_path, pty_run=True)
-    took = time.monotonic() - start
-    assert took < 3.0 + 2 * 2.0 + 1.5, f"_run ended a hung run after {took:.1f} s, past its bounds"
     try:
-        os.waitid(os.P_PID, int(mark.read_text()), os.WEXITED | os.WNOHANG | os.WNOWAIT)
-        reaped = False
-    except ChildProcessError:
-        reaped = True
-    assert reaped, "_run did not reap the hung run it ended"
-
-    def gone(pid: int, started: str) -> bool:
+        start, ended = _t224p_hung_run(script, mark, env)
+        took = ended - start
+        assert took < 3.0 + 2 * 2.0 + 1.5, (
+            f"_run ended a hung run after {took:.1f} s, past its bounds")
         try:
-            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-        except OSError:
-            return True
-        return fields[19] != started or fields[0] in ("Z", "X")
-    pid, started = Path(f"{mark}.child").read_text().split()
-    end = time.monotonic() + 5
-    while not gone(int(pid), started):
-        assert time.monotonic() < end, "the hung run's child, in its group, was not ended"
-        time.sleep(0.05)
+            os.waitid(os.P_PID, int(mark.read_text()), os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            reaped = False
+        except ChildProcessError:
+            reaped = True
+        assert reaped, "_run did not reap the hung run it ended"
+        gone = _t224p_child_gone_by(mark, start)
+        assert gone, (f"the hung run's child, in its group, was not gone {RUN_S + END_S:.0f} s "
+                      f"after the run started, {T224O_WATCHDOG_S - RUN_S - END_S:.0f} s before "
+                      f"its own watchdog")
+    finally:
+        _t224p_end_child(mark)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="T224p's oracle reads Linux's /proc and its clean-up pins by a pidfd")
+def test_a_leader_only_end_of_a_hung_run_leaves_its_child_and_the_absence_oracle_fails(
+        tmp_path, monkeypatch):
+    """T224p (the coordinator's review of P09 at `d3a2fd5c`, item 2, #165
+    6938473998), no database: the negative control of the case above. Here
+    `_run`'s clean-up ends the hung run's leader alone, `_end_process` with
+    `group=False`, so its child, in its group, is not ended; the oracle,
+    `_t224p_child_gone_by`, must then find it still there at its deadline,
+    which comes at least 3 s before the child's own watchdog. Were the
+    watchdog able to satisfy the oracle, as the 5 s wait after `_run`'s end
+    before T224p let it, this case would fail. The child is ended in a
+    finally, by pidfd."""
+    monkeypatch.setitem(globals(), "RUN_S", 3.0)
+    monkeypatch.setitem(globals(), "END_S", 2.0)
+    group_end = _end_process
+    monkeypatch.setitem(globals(), "_end_process",
+                        lambda proc, *, group, wait=10.0: group_end(proc, group=False, wait=wait))
+    script = _private(tmp_path / "stand_in.py", T224O_STAND_IN)
+    env = {"PATH": os.environ.get("PATH", os.defpath)}
+    mark = tmp_path / "hung"
+    try:
+        start, _ = _t224p_hung_run(script, mark, env)
+        gone = _t224p_child_gone_by(mark, start)
+        assert not gone, ("with the leader alone ended, the hung run's child was gone by the "
+                          "oracle's deadline: the oracle does not tell a group's end from a "
+                          "leader's")
+    finally:
+        _t224p_end_child(mark)
 
 
 def test_a_held_sessions_close_reads_both_pipes_together_and_ends_it_at_its_one_deadline(
