@@ -2288,7 +2288,7 @@ def test_a_register_path_drops_each_inherited_pg_variable_before_psql(tmp_path, 
 LIBPQ_READING = "libpq reads 1 as 2 and 0 as no limit"
 
 
-def _t257u_refused_with_no_value(said: str, key: str, value: str, its_exit: str) -> None:
+def _t257u_refused_with_no_value(said: str, key: str, value: str, its_exit: int | None) -> None:
     """An under-2 refusal's text, the case's `tmp_path` blanked out, as T257s's
     refused ids read theirs (T257u): it names the URL's key, `connect_timeout=`
     and the minimum, and shows no value of the case, neither its
@@ -2296,19 +2296,21 @@ def _t257u_refused_with_no_value(said: str, key: str, value: str, its_exit: str)
     as a token of its own, not part of a word or a dotted number, anywhere
     outside the refusal's own words on libpq's reading, `LIBPQ_READING`
     (T257zb; Codex's review of P09 at `b8f9e35a`, SHOULD 11: the bare value
-    was not looked for, so "value 1 is under 2" passed). `its_exit` says
-    the exit of what refused, or that it has none (T257zq; lane 2's
-    pre-review RV9-37 of P09 at `d9a1f2bf`, S9)."""
+    was not looked for, so "value 1 is under 2" passed). `its_exit` is the
+    exit of what refused, or None where it has none, and the helper shows
+    it (T257zq; lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`, S9; an int
+    or None since T257zx, lane 2's targeted check RV9-39 of P09 at
+    `3c5b68bc`, S5: as free text it was a channel no rule watched)."""
     case = f"[{key}, connect_timeout={value}]"
-    assert f"`{key}=`" in said, f"{case} ({its_exit}) the key is not named: {_said_safely(said)}"
+    assert f"`{key}=`" in said, f"{case} the key is not named: {_said_safely(said, exit=its_exit)}"
     assert "`connect_timeout=`" in said and "under 2" in said, (
-        f"{case} ({its_exit}) `connect_timeout=` and its minimum are not named: {_said_safely(said)}")
+        f"{case} `connect_timeout=` and its minimum are not named: {_said_safely(said, exit=its_exit)}")
     shown = [v for v in (f"connect_timeout={value}", "t257_", "register_db", "127.0.0.1", "55432")
              if v in said]
-    assert not shown, f"{case} ({its_exit}) the refusal shows {shown}: {_said_safely(said)}"
+    assert not shown, f"{case} the refusal shows {shown}: {_said_safely(said, exit=its_exit)}"
     bare = re.findall(rf"(?<![\w.]){re.escape(value)}(?!\w|\.\d)", said.replace(LIBPQ_READING, ""))
-    assert not bare, (f"{case} ({its_exit}) the refusal shows the value {value} as a token of its own: "
-                      f"{_said_safely(said)}")
+    assert not bare, (f"{case} the refusal shows the value {value} as a token of its own: "
+                      f"{_said_safely(said, exit=its_exit)}")
 
 
 def test_a_connect_timeout_under_2_is_refused_at_load_config(tmp_path, monkeypatch):
@@ -2343,13 +2345,13 @@ def test_a_connect_timeout_under_2_is_refused_at_load_config(tmp_path, monkeypat
             assert isinstance(error, mod.Refusal), \
                 f"{key}=...?connect_timeout={value} loaded: {_error_safely(error)}"
             _t257u_refused_with_no_value(str(error).replace(str(tmp_path), "<tmp>"), key, value,
-                                         "load_config's Refusal, raised in this process, so no exit")
+                                         None)  # load_config's Refusal, raised in this process
             res = _cli(["mode"], tmp_path)
             streams = (res.stdout + res.stderr).replace(str(tmp_path), "<tmp>")
             assert res.returncode == 2 and res.stdout == "", (
                 f"[{key}, connect_timeout={value}] mode exits {res.returncode}, not 2 with an "
                 f"empty stdout: {_said_safely(streams)}")
-            _t257u_refused_with_no_value(streams, key, value, f"`mode` exit {res.returncode}")
+            _t257u_refused_with_no_value(streams, key, value, res.returncode)
     config.write_text("".join(
         line + ("?connect_timeout=2" if line.startswith(("register_url=", "reader_url=")) else "")
         + "\n" for line in text.splitlines()), encoding="utf-8")
@@ -3512,7 +3514,14 @@ def test_whole_keeps_no_text_it_could_not_parse_on_its_error_or_in_the_report(re
             assert planted not in said, f"{kind.__name__}: the planted value is in the error's {where}"
 
 
-def _said_safely(said, stream: str = "output") -> str:
+class _NotGiven:
+    """`_said_safely`'s `exit` where no caller gave one (T257zx)."""
+
+
+_NOT_GIVEN = _NotGiven()
+
+
+def _said_safely(said, stream: str = "output", exit: int | None | _NotGiven = _NOT_GIVEN) -> str:
     """What a failure message may show of a process's output (T257zh; lane
     3's ruling 6946445277 on lane 2's pre-review RV9-36 of P09 at
     `2407ea06`, S2: every failure message that showed a writer's or a
@@ -3528,15 +3537,23 @@ def _said_safely(said, stream: str = "output") -> str:
     labelled `stream`, "stderr" or "stdout" where the caller knows which,
     else "output" (T257zm; lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`,
     N4). An exit is shown only where it is an int, else as `[withheld]`
-    (T257zm; RV9-37, N3)."""
+    (T257zm; RV9-37, N3). A bare stream's `exit` may be given: an int is
+    shown as `exit N`, None as `no exit` (T257zx; lane 2's targeted check
+    RV9-39 of P09 at `3c5b68bc`, S5)."""
     if said is None or isinstance(said, (str, bytes, bytearray)):
         code, streams = None, [(stream, said)]
+        if exit is None:
+            code = "no exit"
+        elif not isinstance(exit, _NotGiven):
+            code = exit
     else:
         code = getattr(said, "returncode", getattr(said, "code", None))
         streams = [("stdout", getattr(said, "stdout", getattr(said, "out", None))),
                    ("stderr", getattr(said, "stderr", getattr(said, "err", None)))]
     if code is None:
         parts = []
+    elif code == "no exit":
+        parts = ["no exit"]
     elif isinstance(code, int) and not isinstance(code, bool):
         parts = [f"exit {int(code)}"]
     else:
@@ -3936,7 +3953,7 @@ def test_pytests_own_report_of_a_failure_shows_no_planted_writer_text(request, c
             _sent_a_snapshot(_SentNothing(), "[T257zt]", proc)
     elif case == "refused-with-no-value":
         with pytest.raises(AssertionError) as failed:
-            _t257u_refused_with_no_value(f"lanes-index: {planted} refused", "register_url", "1", "exit 3")
+            _t257u_refused_with_no_value(f"lanes-index: {planted} refused", "register_url", "1", 3)
     elif case == "json-loads":
         with pytest.raises(json.JSONDecodeError) as failed:
             json.loads(f"lanes-index: {planted}")
