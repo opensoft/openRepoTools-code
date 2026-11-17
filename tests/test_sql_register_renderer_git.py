@@ -193,6 +193,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_report_that_never_comes_ends_its_starter_and_raises": (),  # T270; the clean-up's own fault path, no task (Codex at 46cac748, SHOULD 2)
     "test_a_wrapper_kill_ends_a_gone_leader_s_group_and_every_pidfd_whatever_a_stop_or_a_close_did": (),  # T270; the clean-up's own fault path, no task (Codex at f776b435, SHOULDs 1 and 3)
     "test_a_wrapper_kill_ends_every_target_whatever_its_discovery_or_a_kill_raised": (),  # T270; the clean-up's own fault path, no task (Codex at 46cac748, SHOULD 6; the coordinator's 6938182757, point 3)
+    "test_a_wrapper_kill_raises_its_first_error_with_every_later_one_as_its_cause": (),  # T270; the clean-up's own fault path, no task (Codex at bb190f7b, SHOULD 2)
     "test_a_wrapper_kill_reads_again_once_every_target_is_gone_whatever_a_stop_did": (),  # T270; the clean-up's own fault path, no task (Codex at 5a120647, SHOULD 2)
     "test_a_wrapper_kill_signals_only_the_case_s_own_and_finds_each_member_without_its_leader": (),  # T270; the clean-up's own fault path, no task (Codex at 46cac748, BLOCKING and SHOULD 1; the coordinator's 6938182757, point 1)
     "test_a_write_that_commits_as_the_render_lets_go_is_rendered_with_no_later_write": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; the former "*" row
@@ -868,33 +869,36 @@ def members(pid, nonce, targets, ended):
     return found
 
 
-def end_all(targets, error, ended=()):
+def end_all(targets, errors, ended=()):
     """SIGKILL through each pidfd of `targets`, each in a try of its own;
     then each seen gone within one bound, 10 s on, and each pidfd closed,
     with each of `ended` (pidfds of processes already gone), each wait and
     each close in a try of its own, so a close that raises leaves no other
-    open (SHOULD 3 at `f776b435`). Returns `error`, where one was raised
-    before, else the first error met here."""
+    open (SHOULD 3 at `f776b435`). Each error met here is appended to
+    `errors`, after those met before, so none is lost (lane 3's Codex
+    review of code PR 97 at `bb190f7b`, SHOULD 2)."""
     for fd in targets.values():
         try:
             send(fd, signal.SIGKILL)
         except OSError as exc:  # kept; the rest are still killed
-            error = error or exc
+            errors.append(exc)
     deadline = time.monotonic() + 10
     for pid, fd in targets.items():
         try:
             if not wait_until(lambda: select.select([fd], [], [], 0)[0],
                               max(0, deadline - time.monotonic())):
-                error = error or RuntimeError("pid %d is still there 10 s after its SIGKILL "
-                                              "through its pidfd" % pid)
+                errors.append(RuntimeError("pid %d is still there 10 s after its SIGKILL "
+                                           "through its pidfd" % pid))
         except OSError as exc:  # kept; the rest are still seen gone and closed
-            error = error or exc
+            errors.append(exc)
     for fd in list(targets.values()) + list(ended):
         try:
             os.close(fd)
         except OSError as exc:  # kept; the rest are still closed
-            error = error or exc
-    return error
+            errors.append(exc)
+
+
+''' + inspect.getsource(_raise_first) + r'''
 
 
 ''' + inspect.getsource(_Settled) + r'''
@@ -915,7 +919,10 @@ def kill_above(pid):
     the read after the kill still runs (lane 2's pre-review RV7-35, N1).
     Whatever is raised on the way, every target is then
     killed, seen gone and its pidfd closed (`end_all`), and the first error
-    is raised. A process without the case's identity is never signalled.
+    is raised, each later one named in its cause (`_raise_first`, whose
+    source this script carries; lane 3's Codex review of code PR 97 at
+    `bb190f7b`, SHOULD 2). A process without the case's identity is never
+    signalled.
     Where the process above is gone before it is pinned, its group's
     members are still found by the nonce and the group's id; a stop not
     seen, where one is awaited after a read that found any new, is an
@@ -928,7 +935,7 @@ def kill_above(pid):
     whatever was stopped, is reported. An earlier error never spares the
     read after the kill, so a member forked by one whose stop was never
     seen is still found and ended; each error is kept, and the first is
-    raised."""
+    raised with every later one as its cause."""
     nonce = os.environ.get(IDENTITY)
     if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal") or not nonce:
         sys.stderr.write("the test's git wrapper kills only through a pidfd pinned by the case's "
@@ -975,9 +982,8 @@ def kill_above(pid):
                  errors).run()
     except BaseException as exc:  # kept; every target is still ended, then the first is raised
         errors.append(exc)
-    error = end_all(targets, errors[0] if errors else None, ended)
-    if error is not None:
-        raise error
+    end_all(targets, errors, ended)
+    _raise_first(errors)
 
 
 def log(record):
@@ -2905,14 +2911,15 @@ wrapper.time = SimpleNamespace(monotonic=lambda: now["t"], sleep=sleep)
 wrapper.sys = SimpleNamespace(stderr=io.StringIO(), exit=sys.exit)
 wrapper.stat = stat
 wrapper.carried = CARRY.get
-raised = None
+raised = cause = None
 try:
     wrapper.kill_above(4000)
 except Exception as exc:  # recorded for the case to assert
     raised = [type(exc).__name__, errno.errorcode.get(getattr(exc, "errno", None))]
+    cause = None if exc.__cause__ is None else str(exc.__cause__)
 print(json.dumps({"sent": sent, "opened": sorted(opens),
                   "closed": sorted(opened[fd] for fd in closed), "raised": raised,
-                  "said": wrapper.sys.stderr.getvalue()}))
+                  "cause": cause, "said": wrapper.sys.stderr.getvalue()}))
 '''
 
 
@@ -3792,6 +3799,23 @@ def test_a_wrapper_kill_reads_again_once_every_target_is_gone_whatever_a_stop_di
     assert said["closed"] == said["opened"], said
     assert not {pid for pid, _sig in said["sent"]} & {4003, 4004}, said
 
+
+@LINUX_ONLY
+def test_a_wrapper_kill_raises_its_first_error_with_every_later_one_as_its_cause(tmp_path):
+    """SHOULD 2 at `bb190f7b`: `GIT_WRAPPER`'s `kill_above`, run on a model
+    (`KILL_HARNESS`), with no process read or signalled. The SIGKILL
+    through 4001's pidfd is refused (EPERM), so 4001 is never seen gone:
+    the loop's deadline passes, and `end_all` meets the refusal again and
+    4001 still there 10 s on. The first error, the refusal, is raised, and
+    every later one is named in its cause (`_raise_first`), where
+    `end_all` was given the first alone and the rest were lost. Every
+    pidfd opened is closed, and 4003 and 4004 are never signalled."""
+    said = _kill_models(tmp_path, "kill-refused")["kill-refused"]
+    assert said["raised"] == ["PermissionError", "EPERM"], said
+    assert "the clean-up's deadline passed" in (said["cause"] or ""), said
+    assert "pid 4001 is still there 10 s after its SIGKILL" in (said["cause"] or ""), said
+    assert said["closed"] == said["opened"], said
+    assert not {pid for pid, _sig in said["sent"]} & {4003, 4004}, said
 
 @LINUX_ONLY
 def test_the_one_loop_reports_its_deadline_where_a_read_past_it_finds_none_new(monkeypatch):
