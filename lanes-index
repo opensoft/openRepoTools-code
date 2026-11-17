@@ -472,10 +472,13 @@ def pg_url_env(url: str, what: str = "the URL") -> dict:
             raise Refusal(f"{what} carries a `connect_timeout=` that is not a whole number "
                           f"of seconds")
         if int(raw) < CONNECT_TIMEOUT_MIN:
+            # THE KEY AND THE MINIMUM, NEVER THE VALUE (lane 3's ruling,
+            # opensoft/openRepoTools#165 6938005990; contracts/config.md section 4,
+            # :119 and R14; exit-codes.md:57): a whole number under 2 may be a
+            # misplaced password, so the refusal names `connect_timeout=` alone.
             raise Refusal(
-                f"{what} carries `connect_timeout={int(raw)}`, under "
-                f"{CONNECT_TIMEOUT_MIN}: it is the workstation's `c` (D9), and libpq reads "
-                f"1 as 2 and 0 as no limit")
+                f"{what} carries a `connect_timeout=` under {CONNECT_TIMEOUT_MIN}: it is "
+                f"the workstation's `c` (D9), and libpq reads 1 as 2 and 0 as no limit")
         env["PGCONNECT_TIMEOUT"] = str(int(raw))
     return env
 

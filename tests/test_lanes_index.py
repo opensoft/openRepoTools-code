@@ -1080,6 +1080,10 @@ def test_a_named_configuration_that_is_not_there_and_a_store_in_a_work_tree_refu
 CONFIG_SECRET = "t104-FAKE-not-a-secret"
 CONFIG_HOST = "h.invalid"
 CONFIG_URI = f"postgresql://u:{CONFIG_SECRET}@{CONFIG_HOST}/d"
+#: A negative whole number, which R14 refuses as under 2 and which a misplaced
+#: password could be: its digits are on neither stream (round 4, Codex's BLOCKING 1,
+#: lane 3's ruling, opensoft/openRepoTools#165 6938005990). Not a secret.
+CONFIG_NUMBER = "-900000001"
 
 #: (id, the configuration, the exit, words its refusal holds)
 NO_ECHO_REFUSALS = [
@@ -1104,6 +1108,9 @@ NO_ECHO_REFUSALS = [
     ("R14-connect_timeout",
      f"register_url=postgresql://u@h.invalid/d?connect_timeout={CONFIG_SECRET}\n", 2,
      "`connect_timeout=`"),
+    ("R14-connect_timeout-negative",
+     f"register_url=postgresql://u@h.invalid/d?connect_timeout={CONFIG_NUMBER}\n", 2,
+     "carries a `connect_timeout=` under 2"),
     ("R15-host",
      f"register_url=postgresql://u@{CONFIG_SECRET}.invalid/d\n"
      f"reader_url=postgresql://r@h.invalid/d\n", 2, "not loopback"),
@@ -1134,13 +1141,17 @@ def test_no_configuration_refusal_echoes_a_value(estate, text, code, words):
     """NO REFUSAL ECHOES A VALUE (contracts/config.md section 4, :119): the
     fake secret, in a URL or alone, in each family's value, is refused by
     `lanes-index mode` with the family's code and words, nothing on stdout,
-    and the secret on neither stream."""
+    and the secret on neither stream, nor R14's negative number's digits."""
     estate.write_config(text)
     res = estate.index("mode")
     said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
-            .replace(CONFIG_SECRET, "<the secret>"))
+            .replace(CONFIG_SECRET, "<the secret>")
+            .replace(CONFIG_NUMBER.lstrip("-"), "<the number>"))
     assert res.returncode == code, f"exit {res.returncode}, not {code}:\n{said}"
     assert CONFIG_SECRET not in res.stdout + res.stderr, f"the value was echoed:\n{said}"
+    # R14's number, with or without its sign (round 4, Codex's BLOCKING 1)
+    assert CONFIG_NUMBER.lstrip("-") not in res.stdout + res.stderr, (
+        f"the number was echoed:\n{said}")
     # no URL either (config.md:119): the sentinel URL's host is on neither stream
     # (lane 2's note 2, opensoft/openRepoTools#165 6932953810).
     assert CONFIG_HOST not in res.stdout + res.stderr, f"the URL's host was echoed:\n{said}"
