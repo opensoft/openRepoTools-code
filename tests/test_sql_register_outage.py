@@ -695,8 +695,8 @@ class StartupRelay:
     goes silent, holding both ends open."""
 
     READY = re.compile(rb"Z\x00\x00\x00\x05[ITE]")
-    #: The bound on each upstream connect (T215p). With a timeout set, a Unix
-    #: socket's connect never waits: a full backlog fails it at once.
+    #: The bound on each upstream connect (T215p). A Unix socket's connect can
+    #: wait on a full backlog until it completes or times out: `CONNECT_WAIT` bounds it.
     CONNECT_WAIT = 5.0
     #: `close()`'s one deadline for every join (T215p).
     CLOSE_WAIT = 10.0
