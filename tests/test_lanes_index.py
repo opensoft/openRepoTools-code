@@ -1078,7 +1078,8 @@ def test_a_named_configuration_that_is_not_there_and_a_store_in_a_work_tree_refu
 
 #: The fake secret, as a URL's password and alone. Neither is real.
 CONFIG_SECRET = "t104-FAKE-not-a-secret"
-CONFIG_URI = f"postgresql://u:{CONFIG_SECRET}@h.invalid/d"
+CONFIG_HOST = "h.invalid"
+CONFIG_URI = f"postgresql://u:{CONFIG_SECRET}@{CONFIG_HOST}/d"
 
 #: (id, the configuration, the exit, words its refusal holds)
 NO_ECHO_REFUSALS = [
@@ -1140,7 +1141,82 @@ def test_no_configuration_refusal_echoes_a_value(estate, text, code, words):
             .replace(CONFIG_SECRET, "<the secret>"))
     assert res.returncode == code, f"exit {res.returncode}, not {code}:\n{said}"
     assert CONFIG_SECRET not in res.stdout + res.stderr, f"the value was echoed:\n{said}"
+    # no URL either (config.md:119): the sentinel URL's host is on neither stream
+    # (lane 2's note 2, opensoft/openRepoTools#165 6932953810).
+    assert CONFIG_HOST not in res.stdout + res.stderr, f"the URL's host was echoed:\n{said}"
     assert words in res.stderr, said
+    assert res.stdout == "", said
+
+
+# =========================================== the SQLite store and a key's private file
+#
+# Round 3's commit 8, on lane 3's rulings (opensoft/openRepoTools#165 6933409373 and
+# 6934430226) on lane 2's note 1 (6932953810): the SQLite work-tree refusal (R6,
+# Amendment 14 act 2) printed the store's absolute path, so a URL or a `password=` value
+# typed into `sqlite=` and run inside a git work tree reached stderr whole. It names the
+# file only where `sqlite=`'s value holds no `://`, no `@` and no `=`, and otherwise the
+# key alone. Its rows run with a work-tree cwd. Lane 2's note 3 adds two ids for
+# `_check_private_file`'s other branches, which name the key.
+
+#: (id, `sqlite=`'s value, words the refusal holds, whether the store's file is named)
+SQLITE_IN_A_WORK_TREE = [
+    ("sqlite-uri", CONFIG_URI, "the SQLite store `sqlite=` names would be inside the git "
+     "work tree", False),
+    ("sqlite-eq", f"password={CONFIG_SECRET}", "the SQLite store `sqlite=` names would be "
+     "inside the git work tree", False),
+    ("sqlite-path", "lanes-index.sqlite", "lanes-index.sqlite would be inside the git work "
+     "tree", True),
+]
+
+
+@pytest.mark.parametrize("value, words, named", [
+    pytest.param(value, words, named, id=ident)
+    for ident, value, words, named in SQLITE_IN_A_WORK_TREE])
+def test_the_sqlite_work_tree_refusal_names_no_url(estate, value, words, named):
+    """THE STORE'S FILE, OR ITS KEY (config.md section 4, R6 and :119): run from
+    inside a git work tree, `sqlite=` relative to it is refused with 2. A URL with
+    its password, or a `password=` value, is named by its key alone, with neither
+    the password nor the URL's host on either stream; a plain path is still
+    named."""
+    estate.write_config(f"sqlite={value}\n")
+    child = dict(estate.env, LANES_EDIT=str(LANES_EDIT))
+    res = subprocess.run([sys.executable, str(INDEXER), "mode"], capture_output=True, text=True,
+                         env=child, cwd=str(estate.wip), timeout=120,
+                         stdin=subprocess.DEVNULL)
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert res.returncode == 2, f"exit {res.returncode}, not 2:\n{said}"
+    assert words in res.stderr, said
+    assert ("lanes-index.sqlite" in res.stderr) == named, said
+    assert CONFIG_SECRET not in res.stdout + res.stderr, f"the value was echoed:\n{said}"
+    assert CONFIG_HOST not in res.stdout + res.stderr, f"the URL's host was echoed:\n{said}"
+    assert res.stdout == "", said
+
+
+@pytest.mark.parametrize("kind, words", [
+    pytest.param("mode", "(`register_passfile=`) is mode 644", id="mode"),
+    pytest.param("not-regular", "(`register_passfile=`) is not a regular file",
+                 id="not-regular")])
+def test_a_private_file_refusal_names_the_key_not_the_path(estate, kind, words):
+    """THE KEY, NOT THE PATH (R11; `_check_private_file`'s `shown=False`): a
+    `register_passfile=` whose path holds the fake URL, a file with mode 644 or a
+    directory, is refused with 2, naming the key and what is wrong, with neither
+    the password nor the URL's host on either stream (lane 2's note 3)."""
+    target = estate.root / "postgresql:" / f"u:{CONFIG_SECRET}@{CONFIG_HOST}" / "d"
+    if kind == "mode":
+        target.parent.mkdir(parents=True)
+        target.write_text("*:*:*:*:x\n", encoding="utf-8")
+        target.chmod(0o644)
+    else:
+        target.mkdir(parents=True)
+    estate.write_config(f"register_passfile={target}\n")
+    res = estate.index("mode")
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert res.returncode == 2, f"exit {res.returncode}, not 2:\n{said}"
+    assert words in res.stderr, said
+    assert CONFIG_SECRET not in res.stdout + res.stderr, f"the path was echoed:\n{said}"
+    assert CONFIG_HOST not in res.stdout + res.stderr, f"the path was echoed:\n{said}"
     assert res.stdout == "", said
 
 
