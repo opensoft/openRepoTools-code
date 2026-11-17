@@ -122,6 +122,7 @@ from conftest import REPO, WINDOWS_SKIP
 from pgcluster import Database
 from sql_register_helpers import LANES_INDEX, RENDER_GIT_HALF_LINE, flipped_copy
 from test_sql_register_bounds import _said_safely  # the one helper for a failure's output (T255s)
+from test_sql_register_bounds import _reported  # pytest's own report of a failure (T255z)
 
 pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
@@ -1817,12 +1818,41 @@ def _whole(text, what: str) -> int:
     """`text` as an int, or an AssertionError that names `what` and quotes
     none of `text` (T255w; lane 2's pre-review RV9-37 of P09 at `d9a1f2bf`,
     S5): int()'s own ValueError quotes up to 200 characters of its input,
-    which is a tool's or a writer's output here. `from None` keeps that
-    ValueError out of the traceback too."""
+    which is a tool's or a writer's output here. The AssertionError is
+    raised after the `except`, not in it, so its `__cause__` is None and its
+    `__context__` is not that ValueError (None, unless `_whole` is itself
+    called inside an `except`): nothing of `text` is kept on it (T255z; lane
+    2's pre-review RV9-38 of P09 at `3f9fcac4`, N3: before T255z, `from
+    None` only hid the ValueError from display, and `__context__` still held
+    it). `text` is still this frame's argument, which a long traceback
+    prints and a short one does not (T205e)."""
     try:
         return int(text)
     except (TypeError, ValueError):
-        raise AssertionError(f"{what} is not a whole number; its text is not shown") from None
+        pass
+    raise AssertionError(f"{what} is not a whole number; its text is not shown")
+
+
+def test_measures_whole_keeps_no_text_it_could_not_parse_on_its_error_or_in_the_report(request):
+    """T255z (lane 2's pre-review RV9-38 of P09 at `3f9fcac4`, N3; lane 3's
+    ruling 6949488277, B1), with no engine and no process: measure's
+    `_whole` is given a planted value it cannot parse. Its AssertionError
+    has no `__cause__` and no `__context__`, and the planted value is in
+    none of its `str`, `repr`, `args`, formatted traceback or pytest's own
+    report of the failure (bounds' `_reported`). Before T255z its
+    `__context__` was int()'s ValueError, which quotes the value. The
+    planted value is no credential of any login."""
+    import traceback
+    planted = f"fake-{uuid.uuid4().hex}"
+    with pytest.raises(AssertionError) as failed:
+        _whole(f"x {planted} y", "a planted value")
+    error = failed.value
+    assert error.__cause__ is None, "a cause is kept"
+    assert error.__context__ is None, f"a {type(error.__context__).__name__} is kept as its context"
+    shown = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    for where, said in (("str", str(error)), ("repr", repr(error)), ("args", repr(error.args)),
+                        ("formatted traceback", shown), ("pytest's report", _reported(request, failed))):
+        assert planted not in said, f"the planted value is in the error's {where}"
 
 
 def _drained(lines: queue.Queue) -> str:
