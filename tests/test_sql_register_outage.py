@@ -82,6 +82,14 @@ Every case fails until L5-A3, L5-A5 and L1-A18 land, and the rollback's head
 until lane 3's T304 and, for the write on primary before it, lane 4's T415;
 `test_the_guard_refuses_a_ref_behind_a_rollbacks_head`
 and the silent database are real-engine cases on `tests/pgcluster.py`'s `pg`.
+
+LANE 5's CXC12B (chain 2, T507; lane 3's Codex review of it, #165
+6933947760): the whole-hook halves of lane 5's function-level cases in
+`tests/test_guard_quote_cut_507.py`, each red where its fix is absent:
+
+- T215q, S2: form C's tip read stalled under a silent database, cut at the
+  mirror path's start line, the hook inside its budget (`6d8262ec`; no
+  engine).
 """
 
 from __future__ import annotations
@@ -127,6 +135,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_rollback_rerun_declares_before_it_goes_on": ("T304", "T326", "T424", "T425"),  # T279; tasks:2564
     "test_a_rollbacks_declaration_counts_only_where_the_guards_read_finds_the_switch_at_files": ("T117", "T304", "T326", "T327", "T409", "T507"),  # T219; tasks:2082
     "test_a_rollbacks_start_declares_the_outage": ("T304", "T326", "T424", "T425"),  # T279; tasks:2564
+    "test_a_stalled_mirror_tip_read_is_cut_and_the_guard_refuses_inside_the_budget": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022 (T215q)
     "test_an_expired_or_foreign_declaration_changes_nothing": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
     "test_claude_no_lane_lets_a_session_through_before_any_input": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
     "test_outage_declare_is_refused_where_the_probe_reads_primary": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
@@ -962,6 +971,95 @@ def test_without_a_declaration_the_same_age_still_starts_the_direct_read(tmp_pat
     assert "too late to verify" not in proc.stderr
     assert proc.returncode == 69, f"the client exited {proc.returncode}: {proc.stderr}"
     assert not Path(str(estate.cache) + ".outage").exists()
+
+
+#: THE STALLED TIP READ (T215q; lane 5's CXC12B, S2): a `git` that logs each
+#: call as `GIT_WRAPPER` does, then never answers form C's tip read, `rev-parse
+#: --verify -q refs/remotes/origin/<branch>^{commit}`, as a `--repo` on a
+#: stalled mount does, and hands every other call to the real `git`. `exec`
+#: makes the stall the process `lanes-index` started, so the timer that cuts
+#: it, or the runner's kill of the hook's group, ends it.
+STALLED_TIP_GIT = r'''#!/bin/sh
+{ date +%s.%N | tr -d '\n'; printf '\037%s\037' "$(pwd -P)"; for a in "$@"; do printf '%s\037' "$a"; done; printf '\n'; } >> "$T215_GIT_LOG"
+case " $* " in
+  *" rev-parse --verify -q refs/remotes/origin/"*) exec sleep 30 ;;
+esac
+exec "$T215_REAL_GIT" "$@"
+'''
+
+#: Form C's tip read, the end of its argv, as `tip_of` and lane 5's
+#: `register_guard_tip` both give it (`6d8262ec`: "The argv is `tip_of`'s").
+TIP_READ = ["rev-parse", "--verify", "-q", "refs/remotes/origin/main^{commit}"]
+
+
+def test_a_stalled_mirror_tip_read_is_cut_and_the_guard_refuses_inside_the_budget(
+        tmp_path):
+    """AT-F7, form C's tip read (T215q; lane 5's CXC12B, S2, the whole-hook
+    half of its `test_form_cs_tip_read_is_cut_at_the_mirror_paths_start_line`;
+    lane 3's Codex review of chain 2, SHOULD 2). Under an unexpired word's
+    declaration with a silent database, the fake holding the direct read
+    past any timer as the `room` case does, the client's timer cuts the read
+    at the declared cap, `T0 + 3.65 s`, so form C starts with little time
+    left before the mirror path's start line, `T0 + 3.75 s`; and its tip
+    read in the mirror checkout never answers (`STALLED_TIP_GIT`). The hook
+    still ends inside the 4.5 s budget, never killed, and exits 2 with S3's
+    outage refusal: form 2 exited 69, and the words it quotes say that the
+    tip read ran out of time before the start line and that no `.outage` was
+    written. The refusal names no verdict, so none was read, and the mirror
+    is not read. The stalled read and the time it started are recorded;
+    where a busy runner starts form C past the start line, no tip read is
+    made at all, which is also right, and that is printed.
+
+    It fails where form C reads the tip through `tip_of`, which has no
+    timeout (`lanes-index` at `9bdd317b`): the hook waits on the stall until
+    the runner's kill at 5 s. Lane 5's `6d8262ec` bounds it by the start
+    line (`register_guard_tip`; lane 5's Claude pre-review of P19, SHOULD 1).
+    No engine: T203's fake and the stand-in `git`."""
+    estate = Estate(tmp_path, [_render(1), _render(2), _render(3)])
+    config = estate.config()
+    estate.declared(config, mirror_seq=3)
+    estate.answers.write_text(json.dumps([{"sleep": 30, "exit": 2}]), encoding="utf-8")
+    stalled = _script(tmp_path / "stalledbin" / "git", STALLED_TIP_GIT)
+    result = estate.guard(config, PATH=os.pathsep.join([
+        str(stalled.parent), str(estate.bin), str(estate.fakebin),
+        os.environ.get("PATH", os.defpath)]))
+    out = result["out"]
+    assert not result["killed"], (
+        f"the hook was killed at 5 s, held by form C's stalled tip read: {out[-600:]}")
+    starts = [s for s in estate.psql_starts() if s["start"] >= result["t0"]]
+    assert starts, f"the guard made no direct read: the fake psql has no call: {out[-600:]}"
+    tips = [c for c in estate.mirror_calls()
+            if c["t"] >= result["t0"] and c["args"][-len(TIP_READ):] == TIP_READ]
+    # ONE TIP READ, OR NONE WHERE FORM C STARTED PAST THE START LINE: a busy
+    # runner may take the 0.1 s between the cap and the start line to reap the
+    # cut read, and `register_guard_tip` then starts no `git` at all, which is
+    # right; the words below hold either way. Where the tip was read, it was
+    # read once, after the direct read, and the stall was met.
+    assert len(tips) <= 1, (f"form C's tip read was made {len(tips)} times: "
+                            f"{[c['args'] for c in estate.mirror_calls()]}")
+    for tip in tips:
+        assert tip["t"] >= starts[0]["start"], "form C's tip read came before the direct read"
+        line = tip["t"] - result["t0"]
+        assert line < 2 * START_LINE, f"form C's tip read started {line:.2f} s after T0"
+        _record("the stalled tip read's start after T0", line, START_LINE, "timing rule 2")
+    if not tips:
+        print("T215 form C started past the start line: no tip read was made, so the stall "
+              "was not met in this run")
+    assert result["elapsed"] < BUDGET, f"the hook took {result['elapsed']:.2f} s: {out[-600:]}"
+    _record("hook end to end, form C's tip read stalled", result["elapsed"], BUDGET,
+            "timing rule 1")
+    assert result["exit"] == 2, f"the guard exited {result['exit']}: {out[-600:]}"
+    for words in ("the register's SQL store did not answer the guard's read",
+                  "(Amendment 12(d); feature 007, S3)",
+                  "`lanes-index register read --for guard --prefetch` exited 69: ",
+                  "ran out of time before the mirror path's start line",
+                  "so no .outage was written",
+                  "lanes-index status", "lanes-index rollback", "CLAUDE_NO_LANE=1"):
+        assert words in out, f"the refusal does not carry {words!r}: {out[-900:]}"
+    for words in ("read: mirror", "behind the declared outage's seq",
+                  "carries a Register-Seq trailer", "so it opens nothing"):
+        assert words not in out, f"the guard read a verdict or the mirror ({words!r}): {out[-900:]}"
+    assert not list(tmp_path.rglob("*.outage")), sorted(map(str, tmp_path.rglob("*.outage")))
 
 
 # =================================================================== AT-F11
