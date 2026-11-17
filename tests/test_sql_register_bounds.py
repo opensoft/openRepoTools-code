@@ -2702,17 +2702,52 @@ def _writer(bench: Bench, config: Path, state: str, *,
                             cwd=str(bench.wip), start_new_session=True)
 
 
+#: How long `_end_writers` reads a writer's pipes after its end, before it
+#: closes them (T257w).
+WRITER_DRAIN_S = 5.0
+
+
+def _drained_and_closed(proc: subprocess.Popen) -> None:
+    """`proc`'s stdout and stderr, each still open, as a `communicate()` that
+    timed out or never ran leaves them, read together to their ends for up to
+    `WRITER_DRAIN_S`, what they hold dropped, then closed whatever the read
+    did (T257w). Pipes a `communicate()` read to their ends are closed
+    already. A pipe that did not reach its end in that time is raised, after
+    the closes: a process outside the writer's group holds it."""
+    pipes = [pipe for pipe in (proc.stdout, proc.stderr) if pipe is not None and not pipe.closed]
+    live: list = []
+    try:
+        live = [pipe.fileno() for pipe in pipes]
+        end = time.monotonic() + WRITER_DRAIN_S
+        while live and time.monotonic() < end:
+            ready, _, _ = select.select(live, [], [], max(0.0, end - time.monotonic()))
+            live = [fd for fd in live if fd not in ready or os.read(fd, 65536)]
+    finally:
+        for pipe in pipes:
+            pipe.close()
+    if live:
+        raise RuntimeError(f"writer {proc.pid}'s pipes did not reach their ends {WRITER_DRAIN_S} s "
+                           f"after its end: a process outside its group holds them")
+
+
 def _end_writers(procs: list) -> None:
     """Each writer `_writer` started ended with its process group and
     reaped, by `_end_process(proc, group=True)` (T257t; Codex's review of P09
     at `21dd3642`, SHOULD 4), which signals no writer whose `returncode` is
-    set, as `communicate()` leaves one it saw end. Every writer is tried, and
-    the first failure is raised after the last."""
+    set, as `communicate()` leaves one it saw end; then, whatever that end
+    raised, its pipes drained for up to `WRITER_DRAIN_S` and closed
+    (`_drained_and_closed`; T257w, Codex's review of P09 at `d3a2fd5c`,
+    SHOULD 4). Every writer is tried, and the first failure, of an end or of
+    a drain, is raised after the last."""
     failed = []
     for proc in procs:
         try:
             _end_process(proc, group=True)
-        except (subprocess.TimeoutExpired, ChildProcessError) as exc:
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            failed.append(exc)
+        try:
+            _drained_and_closed(proc)
+        except (OSError, RuntimeError) as exc:
             failed.append(exc)
     if failed:
         raise failed[0]
@@ -2726,7 +2761,8 @@ def test_each_writer_leads_a_session_of_its_own_and_its_end_reaches_its_descenda
     one starts `python3`, `psql` and `git`, says so on stdout and waits for
     it; or, with the state `quick`, exits 0 at once. Each running writer must
     lead a session of its own; `_end_writers` must end its descendant with
-    it, so its stdout reaches its end; and a writer `communicate()` reaped
+    it, so its stdout reaches its end, as `_end_writers` checks while it
+    drains and closes both pipes (T257w); and a writer `communicate()` reaped
     gets no signal (`_signals_kept_to_unreaped`). Before T257t a writer was
     in the case's own session and the burst's end signalled its `bash`
     alone, so the descendant outlived the case, holding the pipes."""
@@ -2757,12 +2793,83 @@ def test_each_writer_leads_a_session_of_its_own_and_its_end_reaches_its_descenda
     assert late == [], f"a writer was signalled once it was reaped: {late}"
     assert [proc.returncode for proc in slow] == [-signal.SIGTERM] * 2, \
         f"the writers' exits: {[proc.returncode for proc in slow]}"
-    for proc in slow:
-        ready, _, _ = select.select([proc.stdout], [], [], 10)
-        assert ready and proc.stdout.read() == "", \
-            f"writer {proc.pid}'s descendant still holds its stdout 10 s after its end"
-        proc.stdout.close()
-        proc.stderr.close()
+    closed = [pipe.closed for proc in slow for pipe in (proc.stdout, proc.stderr)]
+    assert closed == [True] * 4, f"_end_writers left a writer's pipe open: {closed}"
+
+
+def test_a_writer_whose_communicate_times_out_is_ended_with_its_group_and_its_pipes_closed(
+        tmp_path, monkeypatch):
+    """T257w (Codex's review of P09 at `d3a2fd5c`, SHOULD 4: the lookup-wait
+    and delayed-link cases' `communicate(timeout=300)` had no `finally`, and
+    `_end_writers` closed no pipe), with no engine, on a stand-in
+    `lanes-edit.sh` of the case's own that starts a descendant, writes its pid
+    and start time (`/proc` stat field 22) to a mark, and waits. One writer's
+    `communicate()` times out, and the `finally` the two cases now have,
+    `_end_writers([writer])`, must end it with its group, the descendant
+    included, reap it and close both its pipes, signalling nothing once it is
+    reaped. Then two writers, the first one's end made to raise: `_end_writers`
+    must still end the second, close all four pipes within its drain bound,
+    and raise the first one's error. Before T257w both pipes of each writer
+    were left open."""
+    late = _signals_kept_to_unreaped(monkeypatch)
+    monkeypatch.setitem(globals(), "WRITER_DRAIN_S", 1.0)
+    mark = tmp_path / "descendant"
+    (tmp_path / "lanes-edit.sh").write_text(
+        f'sleep 30 &\necho "$! $(cut -d" " -f22 /proc/$!/stat)" > "{mark}.$3"\n'
+        f'echo started\nwait\n', encoding="utf-8")
+
+    class Stand:
+        """What `_writer` reads of a `Bench`, on the case's own folder."""
+        copy, wip, env = tmp_path / "lanes-index", tmp_path, dict(os.environ)
+
+        @staticmethod
+        def lane_checkout() -> Path:
+            return tmp_path
+
+    def gone(state: str) -> bool:
+        pid, started = Path(f"{mark}.{state}").read_text().split()
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        except OSError:
+            return True
+        return fields[19] != started or fields[0] in ("Z", "X")
+    conf = tmp_path / "lanes-index.conf"
+    writer = _writer(Stand, conf, "one")
+    with pytest.raises(subprocess.TimeoutExpired):
+        try:
+            writer.communicate(timeout=1.0)
+        finally:
+            _end_writers([writer])
+    end = time.monotonic() + 5
+    while not gone("one") and time.monotonic() < end:
+        time.sleep(0.05)
+    said = (writer.returncode, writer.stdout.closed, writer.stderr.closed, gone("one"))
+    assert said == (-signal.SIGTERM, True, True, True), (
+        f"after a timeout the writer's exit, stdout closed, stderr closed and descendant gone "
+        f"are {said}, not ({-signal.SIGTERM}, True, True, True)")
+    first, second = _writer(Stand, conf, "two-a"), _writer(Stand, conf, "two-b")
+    real = _end_process
+
+    def first_fails(proc, *, group, wait=10.0):
+        if proc is first:
+            raise ChildProcessError("T257w's stand-in: the first writer was reaped elsewhere")
+        real(proc, group=group, wait=wait)
+    try:
+        while not all(Path(f"{mark}.{state}").exists() for state in ("two-a", "two-b")):
+            time.sleep(0.05)
+        monkeypatch.setitem(globals(), "_end_process", first_fails)
+        start = time.monotonic()
+        with pytest.raises(ChildProcessError, match="the first writer"):
+            _end_writers([first, second])
+        took = time.monotonic() - start
+        pipes = [pipe.closed for proc in (first, second) for pipe in (proc.stdout, proc.stderr)]
+        assert second.returncode == -signal.SIGTERM and pipes == [True] * 4 and took < 1.0 + 5, (
+            f"with the first writer's end raising, the second's exit is {second.returncode}, "
+            f"the pipes closed are {pipes}, after {took:.1f} s")
+    finally:
+        monkeypatch.setitem(globals(), "_end_process", real)
+        _end_process(first, group=True)
+    assert late == [], f"a writer was signalled once it was reaped: {late}"
 
 
 def _activity(pg, appname: str) -> tuple:
@@ -2967,7 +3074,10 @@ def test_the_lookups_wait_counts_from_the_snapshot_calls_end_and_gets_no_lr011(
     where = _shim(bench, [{"mode": "window", "ms": 2500, "call": 1},
                           {"mode": "before", "match": "commit_write", "call": 1}], timed=True)
     writer = _writer(bench, config, f"PAUSED {DOT} T257's lookup wait", deadline="1")
-    out, err = writer.communicate(timeout=300)
+    try:
+        out, err = writer.communicate(timeout=300)
+    finally:
+        _end_writers([writer])      # its group, its pipes, on a timeout too (T257w)
     scripts, times = _shim_calls(where), bench.calls()
     assert len(times) == len(scripts), \
         f"a call was cut by its timer: {len(scripts)} sent, {len(times)} ended: {err}"
@@ -3026,7 +3136,10 @@ def test_over_a_delayed_tls_link_no_healthy_call_meets_its_timer(tls_cluster, tm
         config = _link_config(tmp_path / "conf" / "lanes-index.conf", tls_cluster, relay.port,
                               FX_WRITER)
         writer = _writer(bench, config, f"PAUSED {DOT} T257's delayed link")
-        _, err = writer.communicate(timeout=300)
+        try:
+            _, err = writer.communicate(timeout=300)
+        finally:
+            _end_writers([writer])  # its group, its pipes, on a timeout too (T257w)
         assert writer.returncode == 0, f"the healthy write: {writer.returncode}: {err}"
         kinds = ["commit" if "commit_write" in e["stdin"] else "snapshot"
                  for e in _shim_calls(where)]
