@@ -122,6 +122,13 @@ meets F1 after the hook exits, bounded as AT-F6's fixture bounds its binds
 (`LANES_BIND_BOUND_S`). The wrapper names each call's session
 (`os.getsid`), and the bind runs in a session of its own (`setsid`), so the
 hook's calls are told from the bind's.
+
+NO WRITER'S TEXT IN A FAILURE (T257zj; lane 2's pre-review RV9-37 of P09 at
+`d9a1f2bf`, B1): this module is PYTEST_DONT_REWRITE, as managed and measure
+are, since pytest's assertion rewriting would add each tested operand's value
+to a failure's message, a writer's raw stream or a whole `CompletedProcess`
+with its stderr among them, so an assertion here reports its own message,
+made through `_said_safely`, and nothing else.
 """
 
 from __future__ import annotations
@@ -3750,9 +3757,14 @@ def _raw_streams_in(path: Path) -> list:
     `Exception`, an attribute `.stdout`, `.stderr`, `.err` or `.out`, a name
     `err`, `out`, `streams`, `stdout` or `stderr`, a call to `_said` or
     `_masked`, or a call `.said()`, outside any `_said_safely(...)`. Each is
-    `file:line: the expression`."""
+    `file:line: the expression`. A module whose docstring does not say
+    PYTEST_DONT_REWRITE is a place too (T257zj): pytest's assertion
+    rewriting would add each tested operand, a raw stream among them, to a
+    failure's message."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found = []
+    if "PYTEST_DONT_REWRITE" not in (ast.get_docstring(tree, clean=False) or ""):
+        found.append(f"{path.name}:1: its docstring does not say PYTEST_DONT_REWRITE")
 
     def walk(node, line):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and \
@@ -3790,7 +3802,10 @@ def test_no_failure_message_formats_a_captured_stream_but_through_the_one_helper
     no engine and nothing imported: bounds, measure and managed are parsed,
     and no failure message in them formats a captured stream other than
     through `_said_safely` (`_raw_streams_in`). Each place found is named
-    by file and line.
+    by file and line. Each of the three must also say PYTEST_DONT_REWRITE in
+    its docstring (T257zj; RV9-37, B1), since pytest's assertion rewriting
+    would put each tested operand's value, a raw stream or a whole
+    `CompletedProcess` among them, beside every message the helper made.
 
     It catches the forms these modules use for a stream: `.stdout`,
     `.stderr`, `.err` and `.out`, slices and `strip()`s of them,
@@ -3804,7 +3819,7 @@ def test_no_failure_message_formats_a_captured_stream_but_through_the_one_helper
     found = [place for name in ("test_sql_register_bounds.py", "test_sql_register_measure.py",
                                 "test_sql_register_managed.py")
              for place in _raw_streams_in(here / name)]
-    assert not found, (f"{len(found)} failure message(s) format a captured stream other than "
+    assert not found, (f"{len(found)} place(s) can show a captured stream other than "
                        f"through _said_safely:\n" + "\n".join(found))
 
 
