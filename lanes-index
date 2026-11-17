@@ -7791,7 +7791,7 @@ def register_serve_unstamp(paths: dict) -> None:
         pass
 
 
-def register_serve_note(text: str) -> None:
+def register_serve_note(text: str, fd: int = 2) -> None:
     """ONE LINE OF `serve`'S START ON ITS STANDARD ERROR, BEFORE THE HANDOFF
     (lane 3's ruling, #165 6937934447, BLOCKING 1; commits 27 and 30):
     `note`'s line, with its write errors passed over. Until
@@ -7808,11 +7808,11 @@ def register_serve_note(text: str) -> None:
     `sys.stderr`'s buffer for Python to fail on at its exit, which would end
     the process with 120 and not the start's own exit. No promise of
     non-blocking progress is made: a full pipe that no one reads can hold the
-    write."""
+    write. Given `fd`, the line goes there instead (the handoff's; commit 33)."""
     data = f"{PROG}: {text}\n".encode("utf-8", "backslashreplace")
     try:
         while data:
-            data = data[os.write(2, data):]
+            data = data[os.write(fd, data):]
     except OSError:
         pass
 
@@ -7983,6 +7983,11 @@ def register_serve_launch(paths: dict) -> str | None:
         st = None
     except OSError as exc:
         return f"{paths['log']} could not be read ({exc.strerror or exc})"
+    # STRICTER THAN `serve`'S OWN OPEN, AND HARMLESS (lane 5's re-review of
+    # 636d4495, T512R7, NIT 3; commit 33): this refuses a log of another uid,
+    # where `serve`'s open of `register.log` (`register_serve_log_open`) takes
+    # any regular file it may write; but `serve` checks that `run/` is 0700
+    # and this uid's, and only root can plant another uid's file there.
     if st is not None and not (stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid()):
         return f"{paths['log']} is not a regular file of this uid"
     try:
@@ -9851,20 +9856,35 @@ def register_serve_handoff(log_fd: int | None) -> str | None:
     that inherits descriptor 2, go to `register.log` alone, and the service
     holds no descriptor of the starter's stream; a caller that reads that
     stream through a pipe then reaches its end once the start is done.
-    WHERE NO LOG WAS OPENED (`log_fd` None; commit 32), `/dev/null` is put
-    on descriptor 2 instead, so the starter's stream is released all the
-    same, and the service's lines are dropped, as its log's are. Where
-    Python started with no standard error (`sys.stderr` None), one is made
-    on descriptor 2. Returns None, or why not; no exit depends on it."""
+    WHERE NO LOG WAS OPENED (`log_fd` None; commit 32), or where the log's
+    `dup2` fails (lane 5's re-review of 636d4495, T512R7, NIT 1; commit
+    33), `/dev/null` is put on descriptor 2 instead, so the starter's
+    stream is released all the same, and the service's lines are dropped.
+    Only where `/dev/null` cannot be put there either can descriptor 2 stay
+    the starter's, and then the start goes on all the same. A failure is
+    said in one line, once to the starter, through a duplicate of its
+    stream taken before descriptor 2 is changed and closed after (or, where
+    none is taken, through descriptor 2 as it then is), and once to
+    `register.log` where it is open (`register_serve_note`). Where Python
+    started with no standard error (`sys.stderr` None), one is made on
+    descriptor 2. Returns None, or the line's words; no exit depends on it."""
     if sys.stderr is not None:
         try:
             sys.stderr.flush()
         except (OSError, ValueError):
             pass
-    try:
-        if log_fd is not None:
+    why = starter = None
+    if log_fd is not None:
+        try:
             os.dup2(log_fd, 2)
-        else:
+        except OSError as exc:
+            why = f"standard error could not be handed to register.log ({exc.strerror or exc})"
+            try:
+                starter = os.dup(2)         # the starter's stream, for the line below
+            except OSError:
+                starter = None
+    if log_fd is None or why:
+        try:
             null = os.open(os.devnull, os.O_WRONLY | os.O_CLOEXEC)
             try:
                 if null != 2:
@@ -9874,11 +9894,24 @@ def register_serve_handoff(log_fd: int | None) -> str | None:
                     os.close(null)
                 else:
                     os.set_inheritable(2, True)
-    except OSError as exc:
-        return f"standard error could not be handed over ({exc.strerror or exc})"
+            if why:
+                why += ", so it is /dev/null instead"
+        except OSError as exc:
+            stays = (f"standard error could not be put on /dev/null ({exc.strerror or exc}), "
+                     f"so it stays the starter's")
+            why = f"{why}, and {stays}" if why else stays
+    if why:
+        register_serve_note(f"serve: {why}", 2 if starter is None else starter)
+        if log_fd is not None:
+            register_serve_note(f"serve: {why}", log_fd)
+    if starter is not None:
+        try:
+            os.close(starter)
+        except OSError:
+            pass
     if sys.stderr is None:
         sys.stderr = open(2, "w", buffering=1, errors="backslashreplace", closefd=False)
-    return None
+    return why
 
 
 def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
@@ -10138,15 +10171,14 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
         # which closes each once when `serve()` returns or raises; and its
         # standard error becomes `register.log`, or `/dev/null` where no log
         # is open, so it holds no descriptor of the starter's stream
-        # (`register_serve_handoff`, commits 30 and 32). A handoff that fails
-        # is said, and the service runs all the same: no exit comes from
+        # (`register_serve_handoff`, commits 30, 32 and 33). A handoff that
+        # fails is said by the handoff, once to the starter and once to the
+        # log, and the service runs all the same: no exit comes from
         # descriptor 2's state.
-        why = register_serve_handoff(log_fd)
-        if why:
-            register_serve_start_note(log_fd, f"serve: {why}")
+        register_serve_handoff(log_fd)
         if log_fd is not None:
             try:
-                os.close(log_fd)        # descriptor 2 holds the log from here
+                os.close(log_fd)        # descriptor 2 holds the log, or /dev/null, from here
             except OSError:
                 pass
             log_fd = None
