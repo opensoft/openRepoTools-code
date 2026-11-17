@@ -158,6 +158,7 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: T278's, and T237's service ids. Lane 2's plan GP-24, v2.
 SQL_REGISTER_GATE_TABLE = {
     "test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_with_nothing_written": ("T103", "T104", "T106", "T111", "T112", "T113", "T114", "T413", "T414", "T415", "T417"),  # T257; tasks:2451, :2455
+    "test_a_connect_timeout_or_round_trip_above_r16s_ceiling_is_refused_at_load_config": ("T104", "T111"),  # T257s, for T104's follow-up 2, which P14 carries; tasks:2455
     "test_a_connect_timeout_under_2_is_refused_at_load_config": ("T103", "T104", "T106", "T413", "T414", "T415", "T417"),  # T257; tasks:2455
     "test_a_cutover_whose_call_expires_leaves_the_switch_unknown_and_its_rerun_reads_it_first": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
     "test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusing": ("T116", "T304", "T324", "T326", "T327", "T412", "T415"),  # T278; tasks:2558
@@ -1920,6 +1921,139 @@ def test_a_connect_timeout_under_2_is_refused_at_load_config(tmp_path, monkeypat
         line + ("?connect_timeout=2" if line.startswith(("register_url=", "reader_url=")) else "")
         + "\n" for line in text.splitlines()), encoding="utf-8")
     assert mod.load_config()["register_url"].endswith("?connect_timeout=2")
+    assert not log.exists(), "load_config called psql"
+
+
+#: R16'S CEILING's cases. The bound on `N_a` times `c` is 19, as lane 3 ruled
+#: it in #364 6962911577, which replaces Q7's 30 (#165 6932653746): the seam
+#: cap holds only while `N_a`·`c` is at most 19 (design.md :5066). Lane 3's
+#: ruling on `reader_url=` is #165 6933409373, and lane 1's draft twin gave the
+#: first cases. Each case holds the URLs the configuration names, each with
+#: its `connect_timeout=` (None where it names none), the line the
+#: configuration gains, and the key its refusal names (None where it loads).
+#: `N_a` is `register_addresses=`, and `c` the larger of the two URLs'
+#: timeouts, whichever URL holds it, 2 where a URL names none. A product of at
+#: most 19 loads and one of 20 is refused: at one address (`c` 19 loads and 20
+#: is refused), at two (`c` 9 loads and 10 is refused), with the other URL's
+#: timeout 3, either way round, and with no URL, where `c` is the default 2
+#: (D9) and `N_a` of 9 loads and of 10 is refused. `reader_url=` counts only
+#: beside a `register_url=` (R15), so the reader alone, at 10, leaves `c` at 2
+#: and two addresses load. A `register_url=` needs a `reader_url=` beside it
+#: (R15), so the one-address cases name the reader's URL too, with no timeout.
+#: `register_rtt_ms=` is refused at 5001 and loads at 5000. Every failure
+#: message in the test is fixed words, as P09's `_raw_streams_in` has it: no
+#: stream, no exception text and no value of the case.
+R16_CEILING_CASES = {
+    "c20-one-address": (
+        {"register_url": 20, "reader_url": None}, "register_addresses=1", "register_addresses"),
+    "c19-one-address": (
+        {"register_url": 19, "reader_url": None}, "register_addresses=1", None),
+    "c10-two-addresses": (
+        {"register_url": 10, "reader_url": 10}, "register_addresses=2", "register_addresses"),
+    "c9-two-addresses": (
+        {"register_url": 9, "reader_url": 9}, "register_addresses=2", None),
+    "rtt-5001": ({"register_url": None, "reader_url": None}, "register_rtt_ms=5001",
+                 "register_rtt_ms"),
+    "rtt-5000": ({"register_url": None, "reader_url": None}, "register_rtt_ms=5000", None),
+    "writer-c10-reader-c3-two-addresses": (
+        {"register_url": 10, "reader_url": 3}, "register_addresses=2", "register_addresses"),
+    "writer-c3-reader-c10-two-addresses": (
+        {"register_url": 3, "reader_url": 10}, "register_addresses=2", "register_addresses"),
+    "writer-c9-reader-c3-two-addresses": (
+        {"register_url": 9, "reader_url": 3}, "register_addresses=2", None),
+    "reader-c10-alone-two-addresses": ({"reader_url": 10}, "register_addresses=2", None),
+    "no-urls-ten-addresses": ({}, "register_addresses=10", "register_addresses"),
+    "no-urls-nine-addresses": ({}, "register_addresses=9", None),
+}
+#: The URL each of `_register_fake`'s two URL lines and two password-file lines
+#: belongs to: a URL the case leaves out takes its password file with it.
+R16_URL_OF = {"register_url": "register_url", "register_passfile": "register_url",
+              "reader_url": "reader_url", "reader_passfile": "reader_url"}
+
+
+@pytest.mark.parametrize("case", list(R16_CEILING_CASES))
+def test_a_connect_timeout_or_round_trip_above_r16s_ceiling_is_refused_at_load_config(
+        tmp_path, monkeypatch, case):
+    """R16'S CEILING (lane 3's ruling #364 6962911577, which sets the bound on
+    `N_a`·`c` at 19 and replaces Q7's 30, #165 6932653746, as design.md :5066's
+    seam cap needs; contracts/config.md R16), the twin of
+    `test_a_connect_timeout_under_2_is_refused_at_load_config`: a
+    `register_addresses=` whose product with the larger of the two URLs'
+    `connect_timeout=` is above 19, and a `register_rtt_ms=` above 5000, are
+    refused at `load_config`, as `Refusal` (2), naming the key and never its
+    value, before any `psql` call, and `lanes-index mode` exits 2 with no
+    value on either stream. At one address `[c20-one-address]` is refused and
+    `[c19-one-address]`, 19, loads; at two `[c10-two-addresses]`, 20, is
+    refused and `[c9-two-addresses]`, 18, loads; `[rtt-5001]` is refused and
+    `[rtt-5000]` loads; and the larger of two different URLs'
+    `connect_timeout=` decides, whichever URL holds it, as
+    `[writer-c10-reader-c3-two-addresses]` and
+    `[writer-c3-reader-c10-two-addresses]` are refused and
+    `[writer-c9-reader-c3-two-addresses]` loads. `reader_url=` counts only
+    beside a `register_url=`, as R15 has it (lane 3, #165 6933409373), so
+    `[reader-c10-alone-two-addresses]`, a file with the reader's URL at 10 and
+    no `register_url=`, loads, and with neither URL `c` is the default 2:
+    `[no-urls-ten-addresses]`, 20, is refused and `[no-urls-nine-addresses]`,
+    18, loads. Each value the case wrote, its distinctive numbers bare (for a
+    refused `register_addresses=`, 20 alone at `[c20-one-address]` and 10 and
+    20 at the others; for `register_rtt_ms=`, 5001), and the URLs' own parts
+    are asserted absent from the refusal and from both streams. Every failure
+    message is fixed words, as P09's `_raw_streams_in` has it: the case's id,
+    its own added line, an exit code, an exception's class name and counts,
+    and no stream, no exception text and no value of the case. No engine. It
+    fails until lane 1's commit that holds `REGISTER_CONNECT_MAX_S` at 19
+    lands on P14's form; its gate row waits for T104 and for T111, P14's,
+    which carries it."""
+    urls, added, refused = R16_CEILING_CASES[case]
+    log = _register_fake(tmp_path, monkeypatch, "", (added,))
+    config = Path(os.environ["LANES_INDEX_CONFIG"])
+    lines = []
+    for line in config.read_text(encoding="utf-8").splitlines():
+        key = line.split("=", 1)[0]
+        owner = R16_URL_OF.get(key)
+        if owner is not None and owner not in urls:
+            continue
+        c = urls.get(owner) if key == owner else None
+        lines.append(line + (f"?connect_timeout={c}" if c is not None else ""))
+    config.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Every value this case wrote, its distinctive numbers bare (its `c` and its product,
+    # 20 alone at `[c20-one-address]`, else 10 and 20; or 5001), and the URLs' own parts:
+    # none may be shown.
+    values = [added, *(f"connect_timeout={c}" for c in urls.values() if c is not None),
+              "t257_", "register_db", "127.0.0.1", "55432"]
+    if refused == "register_addresses":
+        values += ["20"] if case == "c20-one-address" else ["10", "20"]
+    elif refused == "register_rtt_ms":
+        values.append("5001")
+    mod = load_indexer()
+    error = None
+    try:
+        mod.load_config()
+    except Exception as exc:  # the refusal under test, or another failure
+        error = exc
+    # Every message below is fixed words (P09's `_raw_streams_in`): no stream, no exception
+    # text and no value of the case, but the case's id and its own added line, an exit code,
+    # an exception's class name and counts.
+    if refused is None:
+        assert error is None, \
+            f"[{case}] {added} was refused, as {type(error).__name__}"
+    else:
+        assert isinstance(error, mod.Refusal), \
+            f"[{case}] {added} was not refused as Refusal, but ended as {type(error).__name__}"
+        # The configuration's own path is named, and its digits are no value of this case.
+        said = str(error).replace(str(tmp_path), "<tmp>")
+        assert f"`{refused}=`" in said, f"[{case}] the refusal does not name its key"
+        assert ("above 19" if refused == "register_addresses" else "above 5000") in said, \
+            f"[{case}] the refusal does not say the rule's number"
+        shown = [v for v in values if v in said]
+        assert not shown, f"[{case}] the refusal shows {len(shown)} value(s) of the case"
+        res = _cli(["mode"], tmp_path)
+        streams = (res.stdout + res.stderr).replace(str(tmp_path), "<tmp>")
+        assert res.returncode == 2, f"[{case}] mode exits {res.returncode}, not 2"
+        assert res.stdout == "", f"[{case}] mode printed to stdout"
+        assert f"`{refused}=`" in res.stderr, f"[{case}] mode's stderr does not name its key"
+        shown = [v for v in values if v in streams]
+        assert not shown, f"[{case}] mode's streams show {len(shown)} value(s) of the case"
     assert not log.exists(), "load_config called psql"
 
 
