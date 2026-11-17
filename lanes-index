@@ -9499,14 +9499,16 @@ def register_serve_sweep(paths: dict) -> str | None:
     6935289154; socket API 2.2 and ERR-28). A `run/` that cannot be opened,
     is not a directory, is not this uid's or is not mode 0700, or whose
     descriptor cannot be `fstat`ed, is not swept at all, and the sweep
-    returns the reason, in the words of `register_serve_dir_check`. Then
-    `register_serve_run` refuses, as `cmd_serve` does for a directory that
-    fails its check: one line on standard error, the lock's descriptor
-    closed, and `EXIT_REFUSED`, 2. A directory that fails a second check has
-    changed since `serve`'s own, and is not to be trusted with a bind, so the
-    start binds nothing, writes no owner file and no stamp, and writes
-    nothing by path in `run/` after the sweep's check; `register.lock` was
-    opened by its path before it, as `serve`'s first check allowed.
+    returns the reason, in the form of `register_serve_dir_check`'s words (an
+    open that fails, a link's among them, reads `cannot be opened
+    (<strerror>)`). Then `register_serve_run` refuses, as `cmd_serve` does for
+    a directory that fails its check: one line on standard error, the lock's
+    descriptor closed, and `EXIT_REFUSED`, 2. A directory that fails a second
+    check has changed since `serve`'s own, or can no longer be opened as one,
+    and is not to be trusted with a bind, so the start binds nothing, writes
+    no owner file and no stamp, and writes nothing by path in `run/` after the
+    sweep's check; `register.lock` was opened by its path before it, as
+    `serve`'s first check allowed.
 
     THE PLATFORM'S CASE IS ANOTHER, AND THE START GOES ON: where `os.stat` or
     `os.unlink` takes no `dir_fd`, or `os.listdir` takes no descriptor
@@ -9593,8 +9595,9 @@ def register_serve_sweep(paths: dict) -> str | None:
         return f"cannot be opened ({exc.strerror or exc})"
     try:
         # THE CHECK IS OF THE DESCRIPTOR, never of the path again; a check that
-        # fails is returned, in `register_serve_dir_check`'s words, for the
-        # start to refuse with (commit 20; lane 3's ruling, #165 6935289154).
+        # fails is returned, in the form of `register_serve_dir_check`'s words,
+        # for the start to refuse with (commit 20; lane 3's ruling, #165
+        # 6935289154).
         try:
             st = os.fstat(fd)
         except OSError as exc:
@@ -9742,12 +9745,13 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     # A SECOND CHECK OF `run/` THAT FAILS REFUSES, WITH §2.2'S EXIT 2 (lane
     # 3's ruling, #165 6935289154): the sweep checks `run/` by a descriptor of
     # its own, after `cmd_serve`'s first check, and returns why where it fails.
-    # `run/` has then changed since it was checked, and a socket bound there
-    # by path would trust a directory that has just failed its check. So the
-    # start ends here, as `cmd_serve`'s refusal of the directory does: nothing
-    # bound, no owner file, no stamp, and nothing written by path in `run/`
-    # from here on. A platform without the descriptor-relative calls is not
-    # this case: its sweep returns None, skipped, and the start goes on.
+    # `run/` has then changed since it was checked, or cannot be opened, and a
+    # socket bound there by path would trust a directory that has just failed
+    # its check. So the start ends here, as `cmd_serve`'s refusal of the
+    # directory does: nothing bound, no owner file, no stamp, and nothing
+    # written by path in `run/` from here on. A platform without the
+    # descriptor-relative calls is not this case: its sweep returns None,
+    # skipped, and the start goes on.
     why = register_serve_sweep(paths)
     if why:
         try:
