@@ -1766,34 +1766,70 @@ def _drained(lines: queue.Queue) -> str:
         text.append(line)
 
 
+def _end_pipes(session):
+    """The held session's two readers joined, `REAP_S` together by one
+    deadline, then its pipes closed: stdin, and the stdout and stderr whose
+    readers have ended (T255n; Codex's review of P09 at `d3a2fd5c`, SHOULD
+    2). A reader still running is blocked in a read of its pipe, and a close
+    of that pipe waits for that read, which a process the session started
+    can hold without end; so that pipe is left to its reader, and the reader
+    is named. Returns the first failure, for `_end_held` to raise: a reader
+    still running, or a close that failed; None where all is ended."""
+    end = time.monotonic() + REAP_S
+    for reader in session.readers:
+        reader.join(max(0.0, end - time.monotonic()))
+    alive = [reader.is_alive() for reader in session.readers]
+    running = [reader.name for reader, on in zip(session.readers, alive) if on]
+    failures = []
+    if running:
+        failures.append(AssertionError(
+            f"the held session's reader {', '.join(running)} still ran {REAP_S:g} s after its "
+            f"reap (exit {session.returncode}, None where the reap failed): a process it "
+            f"started, or the session itself where unreaped, holds its stdout or stderr"))
+    ended = [pipe for pipe, on in zip((session.stdout, session.stderr), alive) if not on]
+    for pipe in [session.stdin, *ended]:
+        try:
+            pipe.close()
+        except OSError as exc:
+            failures.append(exc)
+    return failures[0] if failures else None
+
+
 def _end_held(session, *, kill: bool) -> None:
-    """The held session ended and reaped, and its two readers joined, each
-    wait bounded and each failure raised (T255m; Codex's review of P09 at
-    `21dd3642`, SHOULD 2). Its stdin is closed under `suppress(OSError)`, so
-    a pipe a failed `_ask` broke cannot skip the rest. Without `kill` it has
-    60 s to end once its stdin is closed, and one that outlives them is
-    killed, as T255l did: the case does not fail for that alone. With `kill`,
-    as `_ask` gives up, it is killed at once. The kill is sent only while the
-    session is unreaped, `poll()` first; then one reap, `wait(REAP_S)`, whose
-    `TimeoutExpired` is raised. The readers end at their pipes' EOF, which
-    the reap brings; they have `REAP_S` together, and one still running, as
-    where a process the session started holds a pipe, raises."""
+    """The held session ended and reaped, its two readers joined and its
+    pipes closed, each wait bounded and each failure raised (T255m; T255n;
+    Codex's reviews of P09 at `21dd3642` and at `d3a2fd5c`, SHOULD 2 each).
+    Its stdin is closed under `suppress(OSError)` first, so a pipe a failed
+    `_ask` broke cannot skip the rest. Without `kill` it has 60 s to end once
+    its stdin is closed, and one that outlives them is killed, as T255l did:
+    the case does not fail for that alone. With `kill`, as `_ask` gives up,
+    it is killed at once. The kill is sent only while the session is
+    unreaped, `poll()` first; then one reap, `wait(REAP_S)`.
+
+    Whatever the kill and the reap do, the readers are joined and the pipes
+    closed (`_end_pipes`), in a `finally`. Before T255n a reap that raised
+    skipped both. A failure of the kill or the reap, as the reap's
+    `TimeoutExpired`, is kept and raised once they are done, with the first
+    clean-up failure as its cause; after a clean reap, the first clean-up
+    failure is raised."""
     with contextlib.suppress(OSError):
         session.stdin.close()
     if not kill:
         with contextlib.suppress(subprocess.TimeoutExpired):
             session.wait(timeout=60)
-    if session.poll() is None:
-        session.kill()
-    session.wait(timeout=REAP_S)
-    end = time.monotonic() + REAP_S
-    for reader in session.readers:
-        reader.join(max(0.0, end - time.monotonic()))
-    running = [reader.name for reader in session.readers if reader.is_alive()]
-    if running:
-        raise AssertionError(f"the held session ended (exit {session.returncode}), but its "
-                             f"reader {', '.join(running)} still ran {REAP_S:g} s later: a "
-                             f"process it started holds its stdout or stderr")
+    reaped = None
+    try:
+        if session.poll() is None:
+            session.kill()
+        session.wait(timeout=REAP_S)
+    except Exception as exc:
+        reaped = exc
+    finally:
+        left = _end_pipes(session)
+    if reaped is not None:
+        raise reaped from left
+    if left is not None:
+        raise left
 
 
 def _ask(session, text: str) -> None:
@@ -1914,6 +1950,89 @@ def test_a_held_sessions_end_is_bounded_joins_its_readers_and_raises_what_it_can
         if case != "pipe-held":
             _end_held(session, kill=True)
     assert not any(reader.is_alive() for reader in session.readers), "a reader outlived the end"
+
+
+class _StandInPipe:
+    """One of a held session's pipes, for T255n's case: its close is
+    recorded in `events`."""
+
+    def __init__(self, name: str, events: list):
+        self.name, self.events = name, events
+
+    def close(self) -> None:
+        self.events.append(f"close {self.name}")
+
+
+class _StandInReader:
+    """One of a held session's readers, for T255n's case: its join is
+    recorded in `events`, and it has ended once joined, unless it `stays`."""
+
+    def __init__(self, name: str, events: list, stays: bool):
+        self.name, self.events, self.stays, self.joined = name, events, stays, False
+
+    def join(self, timeout=None) -> None:
+        self.events.append(f"join {self.name}")
+        self.joined = True
+
+    def is_alive(self) -> bool:
+        return self.stays or not self.joined
+
+
+class _StandInSession:
+    """A held session that never ends in the time it is given, for T255n's
+    case, with no process: its kill and each wait are recorded in `events`,
+    with its readers' joins and its pipes' closes, and each wait raises
+    `TimeoutExpired`. Its stderr reader `stays` running where asked."""
+
+    args, returncode = ("psql",), None
+
+    def __init__(self, stays: bool):
+        self.events = []
+        self.stdin, self.stdout, self.stderr = (_StandInPipe(name, self.events)
+                                                for name in ("stdin", "stdout", "stderr"))
+        self.readers = [_StandInReader("stdout-reader", self.events, False),
+                        _StandInReader("stderr-reader", self.events, stays)]
+
+    def poll(self):
+        return None
+
+    def kill(self) -> None:
+        self.events.append("kill")
+
+    def wait(self, timeout=None):
+        self.events.append(f"wait {timeout:g}")
+        raise subprocess.TimeoutExpired(self.args, timeout)
+
+
+@pytest.mark.parametrize("case", ["kill", "no-kill", "reader-left"])
+def test_a_held_sessions_end_joins_its_readers_and_closes_its_pipes_where_its_reap_fails(case):
+    """`_end_held` where the reap after the kill raises (T255n; Codex's
+    review of P09 at `d3a2fd5c`, SHOULD 2), with no engine and no process:
+    the session, its two readers and its three pipes are stand-ins that
+    record, in order, each kill, wait, join and close (`_StandInSession`),
+    and each of the session's waits raises `TimeoutExpired`.
+
+    `[kill]`, as `_ask` gives up, and `[no-kill]`, as a shape's `finally`
+    ends its session: the reap's `TimeoutExpired` is raised, and only once
+    both readers are joined and stdin, stdout and stderr closed. Before
+    T255n it was raised straight from the reap, with no reader joined and
+    neither reader's pipe closed. `[reader-left]`: the stderr reader still
+    runs at the deadline. The reap's error is still the one raised, with
+    that reader named in its cause; stdin and stdout are closed, and stderr
+    is left to its reader, since a close of it would wait on the read the
+    reader is blocked in (`_end_pipes`)."""
+    session = _StandInSession(stays=case == "reader-left")
+    with pytest.raises(subprocess.TimeoutExpired) as failed:
+        _end_held(session, kill=case != "no-kill")
+    want = (["close stdin"] + (["wait 60"] if case == "no-kill" else [])
+            + ["kill", f"wait {REAP_S:g}", "join stdout-reader", "join stderr-reader",
+               "close stdin", "close stdout"] + ([] if case == "reader-left" else ["close stderr"]))
+    assert session.events == want, f"_end_held did {session.events}, not {want}"
+    cause = failed.value.__cause__
+    if case == "reader-left":
+        assert isinstance(cause, AssertionError) and "stderr-reader still ran" in str(cause), repr(cause)
+    else:
+        assert cause is None, f"a clean clean-up gave the reap's error a cause: {cause!r}"
 
 
 @pytest.mark.parametrize("rtt", RTTS_MS, ids=[str(r) for r in RTTS_MS])
