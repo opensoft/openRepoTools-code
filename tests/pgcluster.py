@@ -1209,8 +1209,12 @@ class ImportedRegister:
     def _run_ok(self, argv: List[str], **env: str) -> str:
         proc = self.run(argv, **env)
         if proc.returncode != 0:
-            raise ClusterError(f"{' '.join(argv[:3])} exited {proc.returncode} building test 7's "
-                               f"fixture register: {_counted(proc)}")
+            # T229t (RV9-41, B1): pytest 8.3.4 prints a long entry's locals as
+            # the arguments of a function with **kw, so no run stays here.
+            failed = (f"{' '.join(argv[:3])} exited {proc.returncode} building test 7's "
+                      f"fixture register: {_counted(proc)}")
+            del proc
+            raise ClusterError(failed)
         return proc.stdout.strip()
 
     def git(self, *args: str, data: Optional[bytes] = None) -> str:
@@ -1218,8 +1222,11 @@ class ImportedRegister:
         proc = subprocess.run(["git", *args], cwd=str(self.wip), env=self.env, input=data,
                               capture_output=True, timeout=120, check=False)
         if proc.returncode != 0:
-            raise ClusterError(f"git {' '.join(args[:2])} exited {proc.returncode} building test "
-                               f"7's fixture register: {_counted(proc)}")
+            # T229t (RV9-41, B1): as `_run_ok`, for a function with *args.
+            failed = (f"git {' '.join(args[:2])} exited {proc.returncode} building test "
+                      f"7's fixture register: {_counted(proc)}")
+            del proc
+            raise ClusterError(failed)
         return proc.stdout.decode("utf-8", "replace").strip()
 
     def commit_of(self, ref: str) -> str:
