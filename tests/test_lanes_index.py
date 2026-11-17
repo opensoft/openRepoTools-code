@@ -2002,6 +2002,14 @@ def _an_upgrade(estate: Estate, store: _IndexTables, env: dict, first: str) -> N
         "the dry run changed the store, the status file or the state folder")
     assert dry.returncode == 0 and "source(s) from the index" not in dry.stdout, (
         dry.stdout + dry.stderr).replace(CONFIG_SECRET, "<the secret>")
+    # AND THE INVENTORY'S DRY RUN (lane 2's SHOULD 3 of comment 6947728883, IN by lane 3's
+    # comment 6947826234): no status file replaced, no store row, no legacy key printed
+    dry_inventory = estate.index("reconcile", "--source", "inventory", "--dry-run", env=env)
+    assert store.text(tables) == rows_then and files() == files_then, (
+        "the inventory's dry run changed the store, the status file or the state folder")
+    assert (dry_inventory.returncode == 0 and
+            "source(s) from the index" not in dry_inventory.stdout), (
+        dry_inventory.stdout + dry_inventory.stderr).replace(CONFIG_SECRET, "<the secret>")
     act = {"inventory-sync": ("sync", "--source", "inventory"),
            "inventory-reconcile": ("reconcile", "--source", "inventory")}.get(first, (first,))
     run = estate.index(*act, env=env)
@@ -2044,8 +2052,8 @@ def _an_upgrade(estate: Estate, store: _IndexTables, env: dict, first: str) -> N
     assert store.rows(tables, CONTROL_KEY) == control, f"the control moved:\n{said}"
     assert json.dumps(kept[CONTROL_KEY], sort_keys=True) == control_entry, said
     assert LEGACY_ENTRY_WORDS not in after.stdout, said
-    for shown in (before.stdout, before.stderr, dry.stdout, dry.stderr, run.stdout, run.stderr,
-                  after.stdout, after.stderr):
+    for shown in (before.stdout, before.stderr, dry.stdout, dry.stderr, dry_inventory.stdout,
+                  dry_inventory.stderr, run.stdout, run.stderr, after.stdout, after.stderr):
         assert CONFIG_SECRET not in shown, f"the secret was shown:\n{said}"
     assert CONFIG_SECRET.encode() not in filed.read_bytes(), said
     assert CONFIG_SECRET not in store.text(tables), f"a row keeps the secret:\n{said}"
@@ -2180,30 +2188,107 @@ def test_a_postgres_sync_reads_its_sources_in_the_provenance_call(estate, case):
         assert CONFIG_SECRET not in json.dumps(entry), said
 
 
-#: (id, psql's stderr for a failed read, as psql 16 can say it under VERBOSITY=verbose,
-#: its SQLSTATE): `ERROR:` and the secret in a quoted LINE, QUERY and CONTEXT line
+def _stopped(sqlstate: str) -> str:
+    return f"psql stopped the index's script with SQLSTATE {sqlstate} (exit 3)"
+
+
+#: (id, the call that fails - the provenance's `read` or the compare-and-swap's `write` -,
+#: psql's exit, its stderr as psql 16 can say it under VERBOSITY=verbose, the fixed words
+#: the run says): `ERROR:`, SQLSTATE-shaped codes and the secret in quoted lines
 PSQL_QUOTES = [
-    ("caret-last",
+    ("caret-last", "read", 3,
      'psql:<stdin>:2: NOTICE:  42P07: relation "provenance" already exists, skipping\n'
      'psql:<stdin>:4: ERROR:  42601: syntax error at or near "x"\n'
      f"LINE 1: ...ROM provenance WHERE source = 'register:https://u:ERROR:  {CONFIG_SECRET}@h/p'\n"
-     "                                         ^\n", "42601"),
-    ("context-last",
+     "                                         ^\n", _stopped("42601")),
+    ("context-last", "read", 3,
      "psql:<stdin>:4: ERROR:  XX000: the server failed\n"
      f"QUERY:  SELECT 'ERROR:  42P01: {CONFIG_SECRET}'\n"
      f"CONTEXT:  PL/pgSQL function inline_code_block line 3 at SQL statement 'ERROR: "
-     f"{CONFIG_SECRET}'\n", "XX000"),
+     f"{CONFIG_SECRET}'\n", _stopped("XX000")),
+    # B5 (lane 3's ruling, comment 6947619546): `42P01:` and `P0001:` in DETAIL lines under
+    # a different real error are never its class - not "wiped", not the compare-and-swap's
+    ("detail-42p01", "read", 3,
+     "psql:<stdin>:4: ERROR:  XX000: the server failed\n"
+     f"DETAIL:  42P01: relation \"{CONFIG_SECRET}\" does not exist\n"
+     f"HINT:  42P01: {CONFIG_SECRET}\n", _stopped("XX000")),
+    # the FIRST error line: a message's own line that begins `ERROR:` comes after it
+    ("detail-own-line", "read", 3,
+     "psql:<stdin>:4: ERROR:  XX000: the server failed\n"
+     "DETAIL:  the row it read held a value over two lines:\n"
+     f"ERROR:  42P01: {CONFIG_SECRET}\n", _stopped("XX000")),
+    ("detail-p0001-write", "write", 3,
+     'psql:<stdin>:7: ERROR:  23514: new row violates check constraint "t104"\n'
+     f"DETAIL:  P0001: 42P01: Failing row contains (register:https://u:{CONFIG_SECRET}@h/p).\n"
+     f"CONTEXT:  P0001: {CONFIG_SECRET}\n", _stopped("23514")),
+    # lane 2's SHOULD 6a (comment 6947728883, IN by lane 3's 6947826234): a failed write
+    # whose CONTEXT quotes the COPY row, the key and an `ERROR:` in it
+    ("copy-row-write", "write", 3,
+     "psql:<stdin>:9: ERROR:  22P04: extra data after last expected column\n"
+     f'CONTEXT:  COPY lanes, line 1: "register:https://u:{CONFIG_SECRET}@h/p\tERROR:  42P01: x"\n',
+     _stopped("22P04")),
+    # a server of another language: the last line with psql's locus, never its DETAIL
+    ("localized", "read", 3,
+     'psql:<stdin>:2: HINWEIS:  42P07: Relation "provenance" existiert bereits\n'
+     'psql:<stdin>:4: FEHLER:  42601: Syntaxfehler bei "x"\n'
+     f"ZEILE 1: ...ROM provenance WHERE source = 'register:https://u:{CONFIG_SECRET}@h/p'\n"
+     f"DETAIL:  42P01: {CONFIG_SECRET}\n", _stopped("42601")),
+    # lane 2's SHOULD 6b: the exit-2 and no-SQLSTATE branches, under quoting
+    ("exit-2", "read", 2,
+     'psql: error: connection to server at "db.invalid" (192.0.2.1), port 5432 failed: '
+     f'FATAL:  28P01: password authentication failed for user "{CONFIG_SECRET}"\n',
+     "psql could not connect to the index's database, or lost its connection (exit 2); "
+     "psql's own words are not shown"),
+    ("no-sqlstate", "read", 3,
+     f'psql:<stdin>:4: ERROR:  syntax error at or near "{CONFIG_SECRET}"\n'
+     f"LINE 1: ...ERROR:  42P01: {CONFIG_SECRET}\n",
+     "psql exited 3 with no SQLSTATE; psql's own words are not shown, since they can quote "
+     "the script"),
+    # a server of another language, its table missing and its compare-and-swap lost (W116's
+    # pre-review of commit 15): the classes commit 14 gave, from psql's locus line alone
+    ("localized-42p01", "read", 3,
+     'psql:<stdin>:2: HINWEIS:  42P07: Relation "provenance" existiert bereits\n'
+     'psql:<stdin>:4: FEHLER:  42P01: Relation "provenance" existiert nicht\n'
+     f"DETAIL:  XX000: {CONFIG_SECRET}\n",
+     "psql: a table or schema the index needs does not exist (SQLSTATE 42P01)"),
+    ("localized-cas-write", "write", 3,
+     "psql:<stdin>:5: FEHLER:  P0001: lanes-index: provenance moved under this sync; nothing "
+     "was written\n"
+     f"DETAIL:  XX000: {CONFIG_SECRET}\n",
+     "the provenance of this workstation's source moved under this sync; nothing written"),
+    # a server of another language whose DETAIL quotes a value over two lines, the second
+    # beginning `ERROR:  42P01:` (W116's re-check of commit 15): the error is psql's own
+    # line, the one with its locus, so a lost compare-and-swap is not read as a table missing
+    ("localized-detail-own-line", "write", 3,
+     'psql:<stdin>:5: FEHLER:  23505: doppelter Schluesselwert verletzt Unique-Constraint '
+     '"provenance_pkey"\n'
+     "DETAIL:  Schluessel (source)=(a value over two lines:\n"
+     f"ERROR:  42P01: {CONFIG_SECRET}) existiert bereits.\n",
+     "the provenance of this workstation's source moved under this sync; nothing written"),
+    # a forged line that carries psql's locus, after psql's own (W116's re-check of commit 15):
+    # a quoted value can hold a newline and a whole `psql:<stdin>:N: ERROR:` line, but only
+    # after the line psql says first, so the FIRST located error line is the error
+    ("forged-locus-line", "write", 3,
+     'psql:<stdin>:5: ERROR:  23505: duplicate key value violates unique constraint '
+     '"provenance_pkey"\n'
+     "DETAIL:  Key (source)=(a value over two lines:\n"
+     f"psql:<stdin>:1: ERROR:  42P01: {CONFIG_SECRET}) already exists.\n",
+     "the provenance of this workstation's source moved under this sync; nothing written"),
 ]
 
 
-@pytest.mark.parametrize("stderr, sqlstate", [
-    pytest.param(stderr, sqlstate, id=ident) for ident, stderr, sqlstate in PSQL_QUOTES])
-def test_no_line_of_psqls_text_is_said_or_filed(estate, stderr, sqlstate):
+@pytest.mark.parametrize("on, code, stderr, words", [
+    pytest.param(on, code, stderr, words, id=ident)
+    for ident, on, code, stderr, words in PSQL_QUOTES])
+def test_no_line_of_psqls_text_is_said_or_filed(estate, on, code, stderr, words):
     """A FAILED INDEX CALL IS SAID IN FIXED WORDS (BLOCKING 5 of
     opensoft/openRepoTools-code#89 comment 6944416906): psql's stderr puts `ERROR:` and
     the secret in a quoted line after its error line; the sync fails with the SQLSTATE
     of psql's own error line alone, and the secret is on neither stream, in no
-    `last_error`, no file of the state folder and no line `status` prints."""
+    `last_error`, no file of the state folder and no line `status` prints. THE FIRST
+    ERROR LINE (lane 3's ruling, B5 of comment 6947619546): a DETAIL, HINT, QUERY or
+    CONTEXT line's code is never the class, on a read or on a write; and the exit-2 and
+    no-SQLSTATE branches say their own fixed words."""
     fake = estate.root / "pgfake"
     fake.mkdir()
     (fake / "psql").write_text(FAKE_PSQL)
@@ -2213,26 +2298,30 @@ def test_no_line_of_psqls_text_is_said_or_filed(estate, stderr, sqlstate):
     estate.write_config("url=postgresql://lanes_writer@db.invalid/qa\n"
                         "reader_url=postgresql://lanes_reader@db.invalid/qa\n")
     env = {"PATH": estate.path_with(fake), "FAKE_PSQL_LOG": str(estate.root / "psql.jsonl"),
-           "FAKE_PSQL_STDERR_FILE": str(quoted)}
+           "FAKE_PSQL_STDERR_FILE": str(quoted), "FAKE_PSQL_STDERR_ON": on,
+           "FAKE_PSQL_STDERR_EXIT": str(code)}
     res = estate.index("sync", env=env)
     st = estate.index("status", env=env)
     said = (f"{res.stdout}{res.stderr}\nstatus:\n{st.stdout}{st.stderr}"
             ).replace(CONFIG_SECRET, "<the secret>")
     assert res.returncode == 1, said
-    assert (f"psql stopped the index's script with SQLSTATE {sqlstate} (exit 3)"
-            in res.stderr), said
+    assert words in res.stderr, said
     for shown in (res.stdout, res.stderr, st.stdout, st.stderr):
         assert CONFIG_SECRET not in shown and "ERROR:" not in shown, said
     kept = json.loads((estate.state / "openRepoTools" / "lanes-index.status.json")
                       .read_text(encoding="utf-8"))
-    assert any(f"SQLSTATE {sqlstate}" in e.get("last_error", "") for e in kept.values()), said
+    assert any(words in e.get("last_error", "") for e in kept.values()), said
     for path in sorted(estate.state.rglob("*")):
         if path.is_file():
             assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path}:\n{said}"
 
 
 @pytest.mark.parametrize("case", ["unreadable", "unparseable", "unparseable-dry-run",
-                                  "unparseable-first-write"])
+                                  "unparseable-first-write", "dangling-symlink", "symlink",
+                                  "fifo", "wrong-shape-list", "wrong-shape-entry",
+                                  "unparseable-inventory", "dry-run-then-failure",
+                                  "preflight-failure", "dry-run-then-failure-inventory",
+                                  "unreplaceable"])
 def test_the_status_file_is_read_strictly(estate, case):
     """THE STATUS FILE, STRICTLY (lane 3's ruling on item 3, opensoft/openRepoTools-code#89
     comment 6944673181). [unreadable]: a status file that cannot be read fails the run
@@ -2242,25 +2331,97 @@ def test_the_status_file_is_read_strictly(estate, case):
     dry run says the same line, writes nothing and leaves the file as it is.
     [unparseable-first-write]: the store cannot be opened, so the sync fails at its next
     step; the file is already replaced, and the store's path is as it was. No byte of the
-    file is printed."""
+    file is printed. NOTHING BUT A REGULAR FILE, A DRY RUN THAT FILES NOTHING, AND THE ONE
+    WARNING ON EVERY REPLACE (lane 3's ruling, B4 of comment 6947619546):
+    [dangling-symlink], [symlink] and [fifo]: a path that is not a regular file fails the
+    run as [unreadable] does and is left as it is, the symlink's target, which holds the
+    key, too; a FIFO never holds the run. [wrong-shape-list] and [wrong-shape-entry]
+    (lane 2's SHOULD 5a of comment 6947728883, IN by lane 3's 6947826234): JSON that is
+    not an object of objects is replaced as [unparseable] is. [unparseable-inventory]
+    (5b): the inventory's own sync replaces it so, its own check the first. [dry-run-then-
+    failure]: a dry run that then fails at the store files nothing, its error included:
+    the file's bytes are as they were, and the WARNING is said once. [preflight-failure]:
+    a run that fails before its check (its `origin/<branch>` unread) files its error over
+    the file with the one WARNING, never silently. W116's pre-review of commit 15:
+    [dry-run-then-failure-inventory], the inventory's dry run that fails at the store files
+    nothing either; [unreplaceable], a file the run cannot replace (its folder 0500) fails
+    the run with fixed words, and the WARNING is said once, though both the cleanup and
+    `_record_error` meet the file."""
     mod = load_indexer()
     filed = estate.state / "openRepoTools" / "lanes-index.status.json"
     filed.parent.mkdir(parents=True, exist_ok=True)
     garbage = ('{"' + LEGACY_KEY + '": {"last_error": "' + CONFIG_SECRET + '"').encode("utf-8")
+    target = estate.root / "t104-status-target.json"
+    target_text = json.dumps({LEGACY_KEY: {"last_error": CONFIG_SECRET}})
+    if case == "wrong-shape-list":
+        garbage = json.dumps([LEGACY_KEY, {"last_error": CONFIG_SECRET}]).encode("utf-8")
+    if case == "wrong-shape-entry":
+        garbage = json.dumps({LEGACY_KEY: CONFIG_SECRET, "register:?": {}}).encode("utf-8")
     if case == "unreadable":
         filed.mkdir()
+    elif case == "dangling-symlink":
+        filed.symlink_to(estate.root / "t104-no-such-status.json")
+    elif case == "symlink":
+        target.write_text(target_text, encoding="utf-8")
+        filed.symlink_to(target)
+    elif case == "fifo":
+        os.mkfifo(filed)
     else:
         filed.write_bytes(garbage)
-    if case == "unparseable-first-write":
+    if case in ("unparseable-first-write", "dry-run-then-failure",
+                "dry-run-then-failure-inventory"):
         estate.sqlite.mkdir(parents=True)
-    act = ("reconcile", "--dry-run") if case == "unparseable-dry-run" else ("sync",)
-    res = estate.index(*act)
+    act = {"unparseable-dry-run": ("reconcile", "--dry-run"),
+           "dry-run-then-failure": ("reconcile", "--dry-run"),
+           "dry-run-then-failure-inventory": ("reconcile", "--source", "inventory", "--dry-run"),
+           "unparseable-inventory": ("sync", "--source", "inventory")}.get(case, ("sync",))
+    env = {"LANES_BRANCH": "t104-no-such-branch"} if case == "preflight-failure" else {}
+    if case == "unreplaceable":
+        if os.geteuid() == 0:
+            pytest.skip("root writes into a 0500 folder")
+        (filed.parent / "lanes-index.lock").write_text("", encoding="utf-8")
+        filed.parent.chmod(0o500)
+    try:
+        res = estate.index(*act, env=env, timeout=60)
+    finally:
+        if case == "unreplaceable":
+            filed.parent.chmod(0o700)
     said = (res.stdout + res.stderr).replace(CONFIG_SECRET, "<the secret>")
     assert CONFIG_SECRET not in res.stdout + res.stderr, said
-    if case == "unreadable":
+    if case in ("unreadable", "dangling-symlink", "symlink", "fifo"):
         assert res.returncode == 1, said
         assert f"unreachable: {mod.STATUS_UNREADABLE} - nothing written" in res.stderr, said
         assert not estate.sqlite.exists(), said
+        if case in ("dangling-symlink", "symlink"):
+            assert filed.is_symlink(), said
+        if case == "symlink":
+            assert target.read_text(encoding="utf-8") == target_text, said
+        if case == "fifo":
+            assert stat.S_ISFIFO(os.lstat(filed).st_mode), said
+        return
+    if case == "unreplaceable":
+        # THE ONE WARNING, ONCE; the file as it was, and no copy of it left beside it
+        assert res.returncode == 1 and res.stderr.count(mod.STATUS_UNPARSEABLE_WARNING) == 1, said
+        assert f"unreachable: {mod.STATUS_UNREPLACEABLE} - nothing written" in res.stderr, said
+        assert filed.read_bytes() == garbage, said
+        assert sorted(p.name for p in filed.parent.iterdir()) == [
+            "lanes-index.lock", "lanes-index.status.json"], said
+        return
+    if case.startswith("dry-run-then-failure"):
+        # A DRY RUN FILES NOTHING, ITS ERROR INCLUDED: no `_record_error` over the file
+        assert res.returncode == 1 and res.stderr.count(mod.STATUS_UNPARSEABLE_WARNING) == 1, said
+        assert filed.read_bytes() == garbage, said
+        assert estate.sqlite.is_dir() and list(estate.sqlite.iterdir()) == [], said
+        return
+    if case == "preflight-failure":
+        # REPLACED BY `_record_error`, WITH THE ONE WARNING: only the error's own entry
+        assert res.returncode == 1 and res.stderr.count(mod.STATUS_UNPARSEABLE_WARNING) == 1, said
+        kept = json.loads(filed.read_text(encoding="utf-8"))
+        assert LEGACY_KEY not in kept and len(kept) == 1, said
+        assert all(name.startswith("register:") for name in kept), said
+        for path in sorted(estate.state.rglob("*")):
+            if path.is_file():
+                assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path}:\n{said}"
         return
     if case == "unparseable-first-write":
         # THE RUN'S FIRST WRITE: replaced before the store was opened, which then failed
@@ -2276,6 +2437,8 @@ def test_the_status_file_is_read_strictly(estate, case):
         return
     kept = json.loads(filed.read_text(encoding="utf-8"))
     assert LEGACY_KEY not in kept and len(kept) == 1, said
+    if case == "unparseable-inventory":
+        assert list(kept) == ["inventory:Eagle"], said
     for path in sorted(estate.state.rglob("*")):
         if path.is_file():
             assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path}:\n{said}"
@@ -2294,21 +2457,56 @@ def _pg_rule(sql: str):
     return lambda s: eval(py, {"re": re, "s": s})
 
 
+def _rule_keys() -> list:
+    """Every key the cases here file or seed, legacy and clean, and a few more shapes."""
+    return ([LEGACY_KEY, CLEAN_KEY, CONTROL_KEY] + RAW_KEYS + CLEAN_FORMS +
+            [f"register:{repository}" for _i, repository, _k in REGISTER_KEYS] +
+            [key for _i, key, _k in REGISTER_KEYS] + [key for _i, key, _n in CAS_KEYS] +
+            ["REGISTER:opensoft/x", "register:ssh://u:p@h/x", "register:git+https://t@h/x",
+             "ledger:https://u@h/x", "inventory:Eagle", "ledger:Eagle", "register:x?Password=1",
+             "register:https://h/p@x", "register:ssh://h:22/x", "",
+             # B1'S EDGES (lane 3's ruling, comment 6947619546): a control character, and
+             # `password`, optional spaces, then `=` or `%3D`, in any case; and near misses.
+             # PostgreSQL's text holds no NUL, so the server's class begins at 0x01.
+             "register:h/x\x1by", "inventory:Eagle\x7f", "ledger:a\nb", "register:a\tb",
+             "register:h/x?PassWord  %3Dz", "inventory:password %3d1", "register:x?PASSWORD=1",
+             "inventory:Pass Word=1", "register:x?passwordX=1", "register:x?password-=1",
+             "register:x?password%3E1", "inventory:Eagle-password", "register:h/x#password",
+             # C1 control characters (W116's pre-review of commit 15), and a no-break space,
+             # which is none
+             "register:h/x\x85y", "inventory:Eagle\x9b", "register:h/x\xa0y"])
+
+
 def test_the_servers_legacy_rule_is_the_indexers():
     """THE POSTGRESQL REMOVAL'S RULE IS `_is_legacy` (lane 1's coordinator, on commit 14's
     design): for every key the cases here file or seed, legacy and clean, and a few more
     shapes, `PG_LEGACY_SQL` read term by term answers as `_is_legacy` does."""
     mod = load_indexer()
     rule = _pg_rule(mod.PG_LEGACY_SQL)
-    keys = ([LEGACY_KEY, CLEAN_KEY, CONTROL_KEY] + RAW_KEYS + CLEAN_FORMS +
-            [f"register:{repository}" for _i, repository, _k in REGISTER_KEYS] +
-            [key for _i, key, _k in REGISTER_KEYS] + [key for _i, key, _n in CAS_KEYS] +
-            ["REGISTER:opensoft/x", "register:ssh://u:p@h/x", "register:git+https://t@h/x",
-             "ledger:https://u@h/x", "inventory:Eagle", "ledger:Eagle", "register:x?Password=1",
-             "register:https://h/p@x", "register:ssh://h:22/x", ""])
+    keys = _rule_keys()
     differ = [k for k in keys if rule(k) != mod._is_legacy(k)]
     assert differ == [], [k.replace(CONFIG_SECRET, "<the secret>") for k in differ]
     assert any(mod._is_legacy(k) for k in keys) and not all(mod._is_legacy(k) for k in keys)
+
+
+def test_the_servers_legacy_rule_is_the_indexers_on_postgres(t109_engine):
+    """THE SAME KEYS, CHOSEN BY POSTGRESQL 16 ITSELF (B1's edges, lane 3's ruling on
+    opensoft/openRepoTools-code#89 comment 6947619546): each key a row of a table of its
+    own, `PG_LEGACY_SQL` chooses exactly the rows `_is_legacy` calls legacy, so the server
+    reads the rule's escapes, its classes and `~*` as Python does. Each key reaches the
+    server as hex, so no quoting stands between the two."""
+    cluster, _bootstrap = t109_engine
+    mod = load_indexer()
+    keys = _rule_keys()
+    rows = ",\n".join(f"({n}, convert_from(decode('{key.encode('utf-8').hex()}', 'hex'), "
+                       f"'UTF8'))" for n, key in enumerate(keys))
+    script = ("CREATE TEMP TABLE t104_keys (n integer, source text);\n"
+              f"INSERT INTO t104_keys VALUES\n{rows};\n"
+              f"SELECT n FROM t104_keys WHERE {mod.PG_LEGACY_SQL} ORDER BY n;\n")
+    chosen = [int(line) for line in cluster.psql(script, dbname="t109_db").stdout.split()]
+    expected = [n for n, key in enumerate(keys) if mod._is_legacy(key)]
+    assert chosen == expected, [keys[n].replace(CONFIG_SECRET, "<the secret>")
+                                for n in sorted(set(chosen) ^ set(expected))]
 
 
 def test_a_status_file_that_cannot_be_replaced_fails_the_cleanup(estate, monkeypatch):
@@ -2338,14 +2536,17 @@ def test_a_status_file_that_cannot_be_replaced_fails_the_cleanup(estate, monkeyp
 
 class _VacuumFails:
     """A store connection whose VACUUM fails, as a full disk or a reader's lock fails it,
-    after the removal's COMMIT."""
+    after the removal's COMMIT: every time, or only the first `times` tries; `tries`
+    counts them."""
 
-    def __init__(self, conn):
-        self.conn = conn
+    def __init__(self, conn, times=None):
+        self.conn, self.times, self.tries = conn, times, 0
 
     def execute(self, sql, *args):
         if sql.strip().upper() == "VACUUM":
-            raise sqlite3.OperationalError("t104: the VACUUM failed")
+            self.tries += 1
+            if self.times is None or self.tries <= self.times:
+                raise sqlite3.OperationalError("t104: the VACUUM failed")
         return self.conn.execute(sql, *args)
 
     def __getattr__(self, name):
@@ -2357,7 +2558,7 @@ def _held_in(root: Path) -> list:
             if p.is_file() and CONFIG_SECRET.encode() in p.read_bytes()]
 
 
-@pytest.mark.parametrize("journal", ["delete", "wal", "persist"])
+@pytest.mark.parametrize("journal", ["delete", "wal", "persist", "wal-frames", "retried"])
 def test_a_scrub_that_fails_after_the_commit_is_finished_by_the_next_write(estate, monkeypatch,
                                                                            journal):
     """BLOCKING 4 of opensoft/openRepoTools-code#89 comment 6944416906: a removal whose
@@ -2368,14 +2569,52 @@ def test_a_scrub_that_fails_after_the_commit_is_finished_by_the_next_write(estat
     [delete]: the default journal. [wal]: the store set to WAL explicitly, and a
     reader's idle connection open through the next sync, so that only the scrub's TRUNCATE
     checkpoint empties the WAL. [persist]: the seed's last write made in the PERSIST
-    journal, which keeps the old pages in the journal file."""
+    journal, which keeps the old pages in the journal file; THE CASE SHOWS THE END STATE
+    (lane 2's SHOULD 4b of comment 6947728883, IN by lane 3's 6947826234): a PERSIST
+    journal does not outlive its connection, since a new connection reads `delete` and
+    its first commit removes the stale journal, so the scrub's journal step is not what
+    clears it here. [wal-frames] (lane 2's SHOULD 4a): a reader that has read, in a process
+    of its own, holds the WAL from before the seed through the next sync, so no
+    connection's close checkpoints it: the key is in the WAL's frames at the scrub, and
+    only the scrub's TRUNCATE checkpoint takes it out. THE BOUNDED RETRY (lane 3's ruling,
+    B2 of comment 6947619546): the failing run tries the VACUUM `SCRUB_ATTEMPTS` times,
+    more than once, and only then exits 1 saying a scrub is pending; [retried]: a VACUUM
+    that fails once is tried again in the same run, which ends 0 with the mark gone and no
+    file holding the key."""
     assert estate.index("sync").returncode == 0
     store = _IndexTables(estate)
     tables = store.tables()
     own = store.sql("SELECT source FROM provenance")
     assert len(own) == 1, own
-    if journal == "wal":
+    if journal in ("wal", "wal-frames"):
         assert store.sql("PRAGMA journal_mode = WAL") == ["wal"]
+    holder = None
+    if journal == "wal-frames":
+        # A READER IN A PROCESS OF ITS OWN, WHICH HAS READ: POSIX drops a process's locks on a
+        # file at any close of it, and this case reads the store's files, so a reader in this
+        # process would stop holding the WAL at the first `_held_in`
+        holder = subprocess.Popen([sys.executable, "-I", "-c", _WAL_HOLDER, str(estate.sqlite)],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        assert holder.stdout.readline() == "ready\n"
+    try:
+        _a_scrub_that_fails(estate, monkeypatch, journal, store, tables, own)
+    finally:
+        if holder is not None:
+            holder.stdin.close()
+            holder.wait(timeout=60)
+
+
+#: A reader that opens the store, reads it once, says so, and holds it open until its stdin ends.
+_WAL_HOLDER = ("import sqlite3, sys\n"
+               "conn = sqlite3.connect(sys.argv[1])\n"
+               "conn.execute('SELECT count(*) FROM sqlite_master').fetchall()\n"
+               "print('ready', flush=True)\n"
+               "sys.stdin.read()\n"
+               "conn.close()\n")
+
+
+def _a_scrub_that_fails(estate: Estate, monkeypatch, journal: str, store: _IndexTables,
+                        tables: list, own: list) -> None:
     store.copy(tables, own[0], LEGACY_KEY)
     store.seed_every(tables, LEGACY_KEY)
     store.leave_in_free_space(LEGACY_KEY)
@@ -2401,24 +2640,37 @@ def test_a_scrub_that_fails_after_the_commit_is_finished_by_the_next_write(estat
     monkeypatch.setattr(mod, "_record_error", lambda *args, **kwargs: None)
     live = mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"})
     live.open_write()
-    live.conn = _VacuumFails(live.conn)
+    live.conn = _VacuumFails(live.conn, 1 if journal == "retried" else None)
     _old, sources = live.provenance_and_sources(own[0])
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         rc = mod._guarded(lambda: mod._drop_legacy(live, "sync", sources), None)
+    tries = live.conn.tries
     live.conn.close()
     said = f"{out.getvalue()}{err.getvalue()}".replace(CONFIG_SECRET, "<the secret>")
+    mark = Path(str(estate.sqlite) + "-scrub")
+    if journal == "retried":
+        # `_guarded` hands back what the act returns, and `_drop_legacy` returns nothing
+        assert rc is None and tries == 2, f"exit {rc}, tries {tries}:\n{said}"
+        assert "a scrub is pending" not in said and not mark.exists(), said
+        assert _held_in(estate.state) == [], said
+        return
     assert rc == 1, said
+    # WITHIN A BOUND, MORE THAN ONCE, THEN THE FIXED LINE THAT A SCRUB IS PENDING
+    assert tries == mod.SCRUB_ATTEMPTS > 1, f"tries {tries}:\n{said}"
+    assert "a scrub is pending" in err.getvalue(), said
     assert "removed 1 source(s) from the index and 1 entry(s)" in out.getvalue(), said
     assert (f"unreachable: {mod.SCRUB_UNFINISHED} - nothing more written; the removal said "
             f"above stands") in err.getvalue(), said
     assert "nothing written" not in err.getvalue(), said
-    mark = Path(str(estate.sqlite) + "-scrub")
     assert mark.read_text(encoding="utf-8") == mod.SCRUB_MARK_TEXT, said
     assert LEGACY_KEY not in json.loads(filed.read_text(encoding="utf-8")), said
     assert all(rows == [] for _t, rows in store.rows(tables, LEGACY_KEY)), said
     # the free space still holds the key: the scrub is due, and the case is not vacuous
     assert _held_in(estate.state), said
+    if journal == "wal-frames":
+        # IN THE WAL'S FRAMES, AT THE SCRUB
+        assert any(p.endswith("-wal") for p in _held_in(estate.state)), said
     holder = sqlite3.connect(str(estate.sqlite)) if journal == "wal" else None
     try:
         again = estate.index("sync")
@@ -2464,10 +2716,509 @@ def test_a_removal_that_fails_takes_nothing(estate):
     assert CONFIG_SECRET not in res.stdout + res.stderr, said
 
 
+def _a_legacy_source_held(estate: Estate) -> tuple:
+    """A store whose own source is copied, row for row, under `LEGACY_KEY`, with a row of it
+    in every table, its copies in the file's free space, and a status entry under it: (the
+    store's tables, its own source, the status file, the legacy key's rows)."""
+    assert estate.index("sync").returncode == 0
+    store = _IndexTables(estate)
+    tables = store.tables()
+    own = store.sql("SELECT source FROM provenance")
+    assert len(own) == 1, own
+    store.copy(tables, own[0], LEGACY_KEY)
+    store.seed_every(tables, LEGACY_KEY)
+    store.leave_in_free_space(LEGACY_KEY)
+    store.touch(tables, LEGACY_KEY)
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    status = json.loads(filed.read_text(encoding="utf-8"))
+    status[LEGACY_KEY] = {"last_error": f"2026-11-01T00:00:00Z the provenance of {LEGACY_KEY} moved"}
+    filed.write_text(json.dumps(status), encoding="utf-8")
+    return store, tables, own[0], filed, store.rows(tables, LEGACY_KEY)
+
+
+def _loaded_for_a_drop(estate: Estate, monkeypatch):
+    """The indexer, loaded in this process with the estate's state folder, its
+    `_record_error` a no-op, for `_run_drop`."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
+    mod = load_indexer()
+    monkeypatch.setattr(mod, "_record_error", lambda *args, **kwargs: None)
+    return mod
+
+
+def _run_drop(mod, estate: Estate, own: str, wrap=None) -> tuple:
+    """`_drop_legacy` as a `sync` runs it, in this process, on SQLite, its connection
+    wrapped by `wrap`: (its `_guarded` exit, stdout, stderr)."""
+    live = mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"})
+    live.open_write()
+    if wrap is not None:
+        live.conn = wrap(live.conn)
+    _old, sources = live.provenance_and_sources(own)
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = mod._guarded(lambda: mod._drop_legacy(live, "sync", sources), None)
+    live.conn.close()
+    return rc, out.getvalue(), err.getvalue()
+
+
+@pytest.mark.parametrize("scrub", ["scrubbed", "mark-kept"])
+def test_a_status_file_that_cannot_be_replaced_still_scrubs(estate, monkeypatch, scrub):
+    """THE STATUS FILE DOES NOT HOLD THE SCRUB BACK (lane 3's ruling, B2 of
+    opensoft/openRepoTools-code#89 comment 6947619546, its second part): the store's
+    removal commits, the status file's replace then fails, and the run still takes the
+    scrub's steps before it exits 1 with the replace's fixed words. [scrubbed]: no file
+    of the store holds the key, and the mark is gone. [mark-kept]: a VACUUM that fails at
+    every try leaves the mark, the run also says the constant line that a scrub is
+    pending, and the next writer finishes the scrub. The status file, never replaced,
+    keeps its legacy entry until that next writer removes it."""
+    store, tables, own, filed, _held = _a_legacy_source_held(estate)
+    mod = _loaded_for_a_drop(estate, monkeypatch)
+
+    def refuse(_data):
+        raise PermissionError(13, "t104: the state folder refuses the replace")
+    monkeypatch.setattr(mod, "_replace_status", refuse)
+    rc, out, err = _run_drop(mod, estate, own, _VacuumFails if scrub == "mark-kept" else None)
+    said = f"{out}{err}".replace(CONFIG_SECRET, "<the secret>")
+    assert rc == 1, said
+    assert "removed 1 source(s) from the index" in out, said
+    assert (f"unreachable: {mod.STATUS_UNREPLACEABLE} - nothing more written; the removal "
+            f"said above stands") in err, said
+    assert LEGACY_KEY in json.loads(filed.read_text(encoding="utf-8")), said
+    assert all(rows == [] for _t, rows in store.rows(tables, LEGACY_KEY)), said
+    mark = Path(str(estate.sqlite) + "-scrub")
+    in_store = [p for p in _held_in(estate.state) if p != str(filed)]
+    if scrub == "scrubbed":
+        assert not mark.exists() and in_store == [], said
+        assert "a scrub is pending" not in err, said
+    else:
+        assert mark.read_text(encoding="utf-8") == mod.SCRUB_MARK_TEXT and in_store, said
+        # THE FIXED LINE THAT A SCRUB IS PENDING, BESIDE THE REPLACE'S ERROR
+        assert f"unreachable: {mod.SCRUB_UNFINISHED}" in err, said
+    again = estate.index("sync")
+    said += f"\nthe next sync, exit {again.returncode}:\n{again.stdout}{again.stderr}"
+    assert again.returncode == 0 and not mark.exists(), said
+    assert _held_in(estate.state) == [], said
+
+
+@pytest.mark.parametrize("case", ["folder-sync", "mark-file", "reused", "mark-symlink"])
+def test_a_scrub_mark_that_cannot_be_made_removes_nothing(estate, monkeypatch, case):
+    """THE MARK AND ITS FOLDER ARE SYNCED BEFORE THE TRANSACTION BEGINS (lane 3's ruling, B3
+    of opensoft/openRepoTools-code#89 comment 6947619546; lane 2's SHOULD 4c of comment
+    6947728883, IN by lane 3's 6947826234). [folder-sync]: the folder's fsync fails;
+    [mark-file]: the mark's path is a folder, so no mark can be written. Either is the
+    fixed `SCRUB_UNMARKED`, the run exits 1 saying "nothing written", truthfully, and NO
+    REMOVAL BEGAN: every row of the legacy key is there, and the status file keeps its
+    entry. A mark that was written is 0600 and holds no key. [reused]: a mark an earlier
+    run left, 0644 and of other text, is made 0600 again and rewritten, which a VACUUM that
+    fails keeps to be seen. [mark-symlink] (W116's pre-review of commit 15): the mark's path
+    is a link to another file, which is neither written, truncated nor made 0600: the
+    mark cannot be made, as in [mark-file]."""
+    store, tables, own, filed, held = _a_legacy_source_held(estate)
+    mark = Path(str(estate.sqlite) + "-scrub")
+    if case == "mark-file":
+        mark.mkdir()
+    if case == "reused":
+        mark.write_text("t104: an earlier run's mark\n", encoding="utf-8")
+        mark.chmod(0o644)
+    target = estate.root / "t104-mark-target"
+    if case == "mark-symlink":
+        target.write_text("t104: not the mark\n", encoding="utf-8")
+        target.chmod(0o644)
+        mark.symlink_to(target)
+    mod = _loaded_for_a_drop(estate, monkeypatch)
+    if case == "folder-sync":
+        real = os.fsync
+
+        def fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(5, "t104: the folder's fsync failed")
+            return real(fd)
+        monkeypatch.setattr(mod.os, "fsync", fsync)
+    rc, out, err = _run_drop(mod, estate, own, _VacuumFails if case == "reused" else None)
+    said = f"{out}{err}".replace(CONFIG_SECRET, "<the secret>")
+    assert rc == 1, said
+    if case == "reused":
+        assert stat.S_IMODE(mark.stat().st_mode) == 0o600, said
+        assert mark.read_text(encoding="utf-8") == mod.SCRUB_MARK_TEXT, said
+        assert all(rows == [] for _t, rows in store.rows(tables, LEGACY_KEY)), said
+        return
+    assert f"unreachable: {mod.SCRUB_UNMARKED} - nothing written" in err, said
+    assert "source(s) from the index" not in out, said
+    assert store.rows(tables, LEGACY_KEY) == held, said
+    assert LEGACY_KEY in json.loads(filed.read_text(encoding="utf-8")), said
+    if case == "folder-sync":
+        assert stat.S_IMODE(mark.stat().st_mode) == 0o600, said
+        assert mark.read_text(encoding="utf-8") == mod.SCRUB_MARK_TEXT, said
+    if case == "mark-symlink":
+        assert mark.is_symlink(), said
+        assert target.read_text(encoding="utf-8") == "t104: not the mark\n", said
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644, said
+
+
+#: (id, the store, the source's kind, the value given): B1's refused forms (lane 3's ruling,
+#: opensoft/openRepoTools-code#89 comment 6947619546), a register as `workspace.yaml`'s
+#: `repository:` names it and a workstation's name as `LANES_WORKSTATION` gives it to
+#: `lanes-edit.sh workstation`, which answers it as it stands
+LEGACY_INPUTS = [
+    ("register-password", "postgres", "register", f"password={CONFIG_SECRET}"),
+    ("register-spaced-encoded", "sqlite", "register",
+     f"https://{REGISTER_HOST}/{REGISTER_PATH}/r?PassWord  %3D{CONFIG_SECRET}"),
+    ("register-control", "postgres", "register",
+     f"https://{REGISTER_HOST}/{REGISTER_PATH}/r\x1b{CONFIG_SECRET}"),
+    ("inventory-password", "sqlite", "inventory", f"password={CONFIG_SECRET}"),
+    ("inventory-userinfo", "postgres", "inventory", f"https://{CONFIG_SECRET}@{REGISTER_HOST}/x"),
+    ("inventory-control", "sqlite", "inventory", f"Eagle\x7f{CONFIG_SECRET}"),
+    # C1 control characters (W116's pre-review of commit 15)
+    ("register-c1", "sqlite", "register",
+     f"https://{REGISTER_HOST}/{REGISTER_PATH}/r\x85{CONFIG_SECRET}"),
+    ("inventory-c1", "postgres", "inventory", f"Eagle\x9b{CONFIG_SECRET}"),
+]
+
+
+@pytest.mark.parametrize("store_kind, kind, value", [
+    pytest.param(store_kind, kind, value, id=ident)
+    for ident, store_kind, kind, value in LEGACY_INPUTS])
+def test_a_source_this_build_would_call_legacy_is_refused(estate, store_kind, kind, value):
+    """NOTHING TODAY'S CODE FILES IS LEGACY (lane 3's ruling, B1 of
+    opensoft/openRepoTools-code#89 comment 6947619546): a register or a workstation's name
+    that `_is_legacy` would call legacy - `password=`, `password` and spaces then `%3D` in
+    another case, a control character, an inventory name holding URL userinfo - is
+    refused with exit 2 and fixed words that do not echo it, BEFORE anything is printed,
+    filed or sent, by every act that makes the key: `sync`, `reconcile` and its dry run,
+    `export` and `status`. No stream, no file of the state folder and, on PostgreSQL (a
+    FAKE psql), no call holds the secret or the key's digest; the writers make no psql
+    call at all, and `status`'s reads name no key."""
+    mod = load_indexer()
+    env: dict = {}
+    if kind == "register":
+        # the helper finds the workspace by `LANES_WORKSPACE_ROOT`, as `_an_upgrade`'s does,
+        # so that `workspace.yaml`'s `repository:` is read by `source_of` alone
+        (estate.agents / "workspace.yaml").write_text(
+            f"repository: {value}\npath: {estate.ws}\n", encoding="utf-8")
+        env.update(LANES_WORKSPACE_ROOT=str(estate.ws))
+        words = mod.REGISTER_KEY_REFUSED
+        acts = [("sync",), ("reconcile", "--dry-run"), ("reconcile",), ("export", "--out")]
+    else:
+        env.update(LANES_WORKSTATION=value)
+        words = mod.INVENTORY_KEY_REFUSED
+        acts = [("sync", "--source", "inventory"),
+                ("reconcile", "--source", "inventory", "--dry-run"),
+                ("reconcile", "--source", "inventory")]
+    log = estate.root / "psql.jsonl"
+    if store_kind == "postgres":
+        fake = estate.root / "pgfake"
+        fake.mkdir()
+        (fake / "psql").write_text(FAKE_PSQL)
+        (fake / "psql").chmod(0o755)
+        estate.write_config("url=postgresql://lanes_writer@db.invalid/qa\n"
+                            "reader_url=postgresql://lanes_reader@db.invalid/qa\n")
+        env.update(PATH=estate.path_with(fake), FAKE_PSQL_LOG=str(log))
+    out = estate.root / "t104-out"
+    out.mkdir()
+    said = ""
+    for act in acts + [("status",)]:
+        args = act + ((out,) if act[0] == "export" else ())
+        res = estate.index(*args, env=env)
+        shown = res.stdout + res.stderr
+        said += f"\n{' '.join(act)}, exit {res.returncode}:\n{shown}".replace(
+            CONFIG_SECRET, "<the secret>")
+        assert res.returncode == 2, said
+        assert CONFIG_SECRET not in shown, said
+        if act[0] == "export":
+            assert (out / "why").read_text(encoding="utf-8") == f"refused: {words}\n", said
+        else:
+            assert words in shown, said
+        if act[0] != "status":
+            # NOTHING SENT: no psql call at all, before `status`'s own reads
+            assert not log.exists(), said
+    keys = [f"{kind}:{value}", f"register:{value}", f"inventory:{value}"]
+    digests = [hashlib.sha256(key.encode("utf-8")).hexdigest() for key in keys]
+    calls = log.read_text(encoding="utf-8") if log.exists() else ""
+    for mark in [CONFIG_SECRET] + digests:
+        assert mark not in calls, f"a psql call holds the key:\n{said}"
+    for path in sorted(estate.state.rglob("*")) + sorted(out.rglob("*")):
+        if path.is_file():
+            assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path}:\n{said}"
+    assert not estate.sqlite.exists(), said
+
+
+def test_the_workspace_helpers_words_are_not_relayed(estate):
+    """NO CREDENTIAL THROUGH THE HELPER'S WORDS (lane 1, under B1 of
+    opensoft/openRepoTools-code#89 comment 6947619546): where `workspace.yaml`'s
+    `repository:` is not the checkout's, `lanes-edit.sh workspace-root` names both as they
+    stand, and its first line went to the run's streams and, through `_record_error`, the
+    status file, before any key was made. `workspace.yaml` names a URL with a token that
+    is not this checkout's: `sync`, `status` and `export` say fixed words, and no stream,
+    no file of the state folder and no file `export` writes holds the token."""
+    (estate.agents / "workspace.yaml").write_text(
+        f"repository: https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r"
+        f".git\npath: {estate.ws}\n", encoding="utf-8")
+    out = estate.root / "t104-out"
+    out.mkdir()
+    words = "`lanes-edit.sh workspace-root` exited 1: the workspace repository could not be found"
+    said = ""
+    for act in (("sync",), ("status",), ("export", "--out", out)):
+        res = estate.index(*act)
+        shown = res.stdout + res.stderr
+        said += f"\n{act[0]}, exit {res.returncode}:\n{shown}".replace(CONFIG_SECRET, "<the secret>")
+        assert res.returncode == (3 if act[0] == "export" else 1), said
+        assert CONFIG_SECRET not in shown, said
+        assert words in (shown if act[0] != "export" else
+                         (out / "why").read_text(encoding="utf-8")), said
+    for path in sorted(estate.state.rglob("*")) + sorted(out.rglob("*")):
+        if path.is_file():
+            assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path}:\n{said}"
+
+
+def test_export_reads_no_legacy_inventory_source(estate):
+    """`export --worktrees` READS NO LEGACY INVENTORY SOURCE (lane 3's ruling, S6 of
+    opensoft/openRepoTools-code#89 comment 6947619546): the store holds, beside a clean
+    `inventory:Heron`, an `inventory:password=` source and an inventory key holding URL
+    userinfo, each with a provenance row and a worktree whose path holds the secret. The
+    export writes the clean source's tree and names it, and no file it writes holds the
+    secret or the legacy sources' lane."""
+    assert estate.index("sync").returncode == 0
+    legacy = [f"inventory:password={CONFIG_SECRET}",
+              f"inventory:https://{CONFIG_SECRET}@{REGISTER_HOST}/x"]
+    conn = sqlite3.connect(str(estate.sqlite))
+    for source in legacy + ["inventory:Heron"]:
+        lane = "t104-clean" if source == "inventory:Heron" else "t104-legacy"
+        path = f"/w/{lane}" if source == "inventory:Heron" else f"/w/{lane}/{CONFIG_SECRET}"
+        conn.execute("INSERT INTO provenance (source, commit_sha, generation, indexed_utc, "
+                     "schema_version) VALUES (?, ?, 1, '2026-11-01T00:00:00Z', 1)",
+                     (source, "a" * 64))
+        conn.execute("INSERT INTO worktrees (source, record_id, workstation, lane, path, branch, "
+                     "digest, indexed_utc, schema_version) VALUES (?, ?, 'Heron', ?, ?, ?, 'd', "
+                     "'2026-11-01T00:00:00Z', 1)", (source, f"{lane}-tree", lane, path, f"lane/{lane}"))
+    conn.commit()
+    conn.close()
+    out = estate.root / "t104-exp"
+    out.mkdir()
+    exp = estate.index("export", "--out", out, "--worktrees")
+    written = {p.name: p.read_text(encoding="utf-8") for p in sorted(out.iterdir())}
+    said = f"exit {exp.returncode}:\n{exp.stdout}{exp.stderr}\n{written}".replace(
+        CONFIG_SECRET, "<the secret>")
+    assert exp.returncode == 0, said
+    text = "".join(written.values())
+    assert "t104-clean" in text and "inventory:Heron" in text, said
+    assert "t104-legacy" not in text and CONFIG_SECRET not in text, said
+    assert CONFIG_SECRET not in exp.stdout + exp.stderr, said
+
+
+@pytest.mark.parametrize("ending", ["no-change", "unknown-prior", "not-a-descendant",
+                                    "inventory-no-change"])
+def test_no_line_says_nothing_written_after_a_removal(estate, ending):
+    """NO "nothing written" AFTER A REMOVAL, ON A NORMAL EXIT EITHER (lane 3's ruling, S7 of
+    opensoft/openRepoTools-code#89 comment 6947619546): a legacy source is held, the run
+    removes it, and then ends by a path that writes nothing of its own: [no-change], a
+    `reconcile` that finds nothing differs; [unknown-prior], a `sync` whose provenance
+    names a commit this checkout lacks; [not-a-descendant], a `sync` whose provenance
+    names a commit off the branch's line, which exits 1; [inventory-no-change], the
+    inventory's `reconcile` that finds nothing differs. Each says the removal, then
+    "nothing more written; the removal said above stands", and never "nothing written",
+    on its streams or in the status file."""
+    inventory = ending.startswith("inventory")
+    first = ("sync", "--source", "inventory") if inventory else ("sync",)
+    assert estate.index(*first).returncode == 0
+    store = _IndexTables(estate)
+    tables = store.tables()
+    own = store.sql("SELECT source FROM provenance")
+    assert len(own) == 1, own
+    store.copy(tables, own[0], LEGACY_KEY)
+    store.seed_every(tables, LEGACY_KEY)
+    if ending == "unknown-prior":
+        store.sql(f"UPDATE provenance SET commit_sha = '{'f' * 40}' WHERE source = '{own[0]}'")
+    if ending == "not-a-descendant":
+        tree = estate._git("rev-parse", "HEAD^{tree}").strip()
+        orphan = estate._git("commit-tree", tree, "-m", "t104: off the branch's line").strip()
+        store.sql(f"UPDATE provenance SET commit_sha = '{orphan}' WHERE source = '{own[0]}'")
+    act = {"no-change": ("reconcile",),
+           "inventory-no-change": ("reconcile", "--source", "inventory")}.get(ending, ("sync",))
+    res = estate.index(*act)
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    kept = filed.read_text(encoding="utf-8")
+    said = f"exit {res.returncode}:\n{res.stdout}{res.stderr}\nstatus file: {kept}".replace(
+        CONFIG_SECRET, "<the secret>")
+    assert res.returncode == (1 if ending == "not-a-descendant" else 0), said
+    assert "removed 1 source(s) from the index" in res.stdout, said
+    assert "nothing more written; the removal said above stands" in res.stdout, said
+    assert "nothing written" not in res.stdout + res.stderr, said
+    assert "nothing written" not in kept and LEGACY_KEY not in json.loads(kept), said
+    assert all(rows == [] for _t, rows in store.rows(tables, LEGACY_KEY)), said
+
+
+@pytest.mark.parametrize("act", ["sync", "reconcile"])
+def test_origin_moving_after_a_removal_says_nothing_more_written(estate, monkeypatch, act):
+    """S7'S CLASS WHERE origin KEEPS MOVING (W116's pre-review of commit 15): a run that
+    removed a legacy source and then reads origin moving under it at every round ends
+    saying "nothing more written; the removal said above stands", and never "nothing
+    written": [sync] after its five rounds, [reconcile] after its three reads. The run's
+    act is replaced by one that removes and then reads origin moving."""
+    helper = estate.root / "t104-helper"
+    helper.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    helper.chmod(0o755)
+    monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
+    monkeypatch.setenv("LANES_EDIT", str(helper))
+    monkeypatch.delenv("LANES_INDEX", raising=False)
+    mod = load_indexer()
+
+    def removed_then_moved(mode, requested, dry_run):
+        mod._REMOVED["any"] = True
+        raise mod.SourceMoved(f"origin/main moved from {'a' * 12} while the owners were read; "
+                              f"nothing was written from that read")
+    monkeypatch.setattr(mod, "run_index", removed_then_moved)
+    monkeypatch.setattr(mod, "_record_error", lambda *args, **kwargs: None)
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = mod.cmd_sync(None) if act == "sync" else mod.cmd_reconcile(None, False)
+    said = out.getvalue() + err.getvalue()
+    assert rc == (0 if act == "sync" else 1), said
+    assert "kept moving through" in said, said
+    assert "nothing more written; the removal said above stands" in said, said
+    assert "nothing written" not in said, said
+
+
+@pytest.mark.parametrize("case", ["lock-held", "mark-pending"])
+def test_a_legacy_register_is_refused_before_the_lock(estate, case):
+    """A PLAIN `sync` REFUSES A LEGACY REGISTER BEFORE THE LOCK (W116's pre-review of commit
+    15, under B1 of opensoft/openRepoTools-code#89 comment 6947619546): `workspace.yaml`
+    names a `password=` register, and `sync` has no `--source`. [lock-held]: another
+    process holds the lock, and the sync exits 2 with the refusal, not 0 with a mark of its
+    own left. [mark-pending]: an inventory sync's mark is on the disk, and the sync exits 2
+    with that mark where it was, for the inventory's next sync."""
+    import fcntl
+    (estate.agents / "workspace.yaml").write_text(
+        f"repository: password={CONFIG_SECRET}\npath: {estate.ws}\n", encoding="utf-8")
+    folder = estate.state / "openRepoTools"
+    folder.mkdir(parents=True, exist_ok=True)
+    mark = folder / "lanes-index.rerun-inventory"
+    holder = None
+    if case == "lock-held":
+        holder = open(folder / "lanes-index.lock", "a+")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    else:
+        mark.write_text("2026-11-17T00:00:00Z\n", encoding="utf-8")
+    try:
+        res = estate.index("sync", env={"LANES_WORKSPACE_ROOT": str(estate.ws)})
+    finally:
+        if holder is not None:
+            holder.close()
+    said = (res.stdout + res.stderr).replace(CONFIG_SECRET, "<the secret>")
+    assert res.returncode == 2 and load_indexer().REGISTER_KEY_REFUSED in res.stderr, said
+    assert "another sync holds" not in said, said
+    assert CONFIG_SECRET not in res.stdout + res.stderr, said
+    assert not (folder / "lanes-index.rerun").exists(), said
+    if case == "mark-pending":
+        assert mark.read_text(encoding="utf-8") == "2026-11-17T00:00:00Z\n", said
+
+
+def test_a_refused_register_mark_leaves_the_marks_behind_it_synced(estate):
+    """A HOLDER THAT TAKES A REFUSED REGISTER'S MARK STILL SYNCS THE MARKS BEHIND IT
+    (W116's re-check of commit 15, its exp/lock3, through the real path): `workspace.yaml`
+    names a `password=` register. An inventory sync holds the lock; while it lists the
+    worktrees, a plain `sync` whose `lanes-edit.sh workspace-root` cannot answer gets past
+    the check before the lock and leaves a register mark, and an inventory sync leaves an
+    inventory mark, each exiting 0. The holder's next round takes both, the register's
+    first: it says the refusal and exits 2, and it syncs the inventory for the mark it
+    took, so the helper lists the worktrees a second time. No mark is left, and the key is
+    on no stream."""
+    (estate.agents / "workspace.yaml").write_text(
+        f"repository: password={CONFIG_SECRET}\npath: {estate.ws}\n", encoding="utf-8")
+    log = estate.root / "helper.log"
+    spawned = estate.root / "spawned"
+    plain, inventory = estate.root / "plain.out", estate.root / "inventory.out"
+    run = f"{shlex.quote(sys.executable)} -I -B {shlex.quote(str(INDEXER))}"
+    stub = estate.root / "lock-helper" / "lanes-edit.sh"
+    stub.parent.mkdir()
+    stub.write_text(
+        "#!/bin/sh\n"
+        f'echo "$*" >> {shlex.quote(str(log))}\n'
+        'case "$1" in\n'
+        "  workspace-root)\n"
+        f'    if [ -n "${{T104_WS_OK:-}}" ]; then echo {shlex.quote(str(estate.ws))}; exit 0; fi\n'
+        "    echo 'the workspace repository could not be found' >&2; exit 1 ;;\n"
+        "  workstation) printf 'Eagle\\tseam\\n'; exit 0 ;;\n"
+        "  worktrees)\n"
+        f"    if [ ! -e {shlex.quote(str(spawned))} ]; then\n"
+        f"      : > {shlex.quote(str(spawned))}\n"
+        f"      env -u T104_WS_OK -u LANES_INDEX {run} sync > {shlex.quote(str(plain))} 2>&1\n"
+        f'      echo "exit $?" >> {shlex.quote(str(plain))}\n'
+        f"      env -u LANES_INDEX {run} sync --source inventory > "
+        f"{shlex.quote(str(inventory))} 2>&1\n"
+        f'      echo "exit $?" >> {shlex.quote(str(inventory))}\n'
+        "    fi\n"
+        "    exit 8 ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac\n", encoding="utf-8")
+    stub.chmod(0o755)
+    res = estate.index("sync", "--source", "inventory",
+                       env={"LANES_EDIT": str(stub), "T104_WS_OK": "1"})
+    later = {path.name: path.read_text(encoding="utf-8") if path.exists() else ""
+             for path in (plain, inventory)}
+    asked = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    said = (f"holder exit {res.returncode}:\n{res.stdout}{res.stderr}\n"
+            + "".join(f"{name}:\n{text}\n" for name, text in later.items())
+            + "helper:\n" + "\n".join(asked)).replace(CONFIG_SECRET, "<the secret>")
+    for text in later.values():
+        assert "another sync holds" in text and text.endswith("exit 0\n"), said
+    assert res.returncode == 2 and load_indexer().REGISTER_KEY_REFUSED in res.stderr, said
+    assert asked.count("worktrees --all") == 2, said
+    folder = estate.state / "openRepoTools"
+    assert sorted(path.name for path in folder.glob("lanes-index.rerun*")) == [], said
+    for shown in (res.stdout, res.stderr, *later.values()):
+        assert CONFIG_SECRET not in shown, said
+
+
+def test_a_failed_status_replace_leaves_no_copy_behind(estate, monkeypatch):
+    """NO COPY OF THE STATUS FILE IS LEFT (W116's pre-review of commit 15): a replace whose
+    rename fails takes the file it made with it, which held what the replace was to write,
+    a legacy key among it."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
+    mod = load_indexer()
+
+    def refuse(_src, _dst):
+        raise PermissionError(13, "t104: the rename is refused")
+    monkeypatch.setattr(mod.os, "replace", refuse)
+    with pytest.raises(OSError):
+        mod._replace_status({LEGACY_KEY: {"last_error": f"t {LEGACY_KEY} moved"}})
+    monkeypatch.undo()
+    left = sorted(p.name for p in (estate.state / "openRepoTools").iterdir())
+    assert left == [], left
+
+
+@pytest.mark.parametrize("lang", ["english", "german"])
+def test_the_index_reads_psql_16s_own_error_line(t109_engine, lang):
+    """B5 ON psql 16 ITSELF (W116's pre-review of commit 15): the index's own psql arguments
+    (`INDEX_PSQL_ARGS`, the script as `-f -`) on a script whose second line reads a table
+    that does not exist. psql puts its locus, `psql:<stdin>:2: `, before the error's first
+    line, and `_failure` reads 42P01. [german]: the session's `lc_messages` is German, where
+    the cluster has that locale and its messages, so the severity is not `ERROR:` and the
+    class comes from the locus line; where it has not, the case is skipped as not
+    established."""
+    import pgcluster
+    cluster, _bootstrap = t109_engine
+    mod = load_indexer()
+    env = pgcluster._client_env(cluster.root, pgcluster.SUPERUSER, "t109_db", "pytest",
+                                cluster.bindir)
+    if lang == "german":
+        env["PGOPTIONS"] = "-c lc_messages=de_DE.UTF-8"
+    proc = subprocess.run([cluster.tool("psql"), *mod.INDEX_PSQL_ARGS],
+                          input="SELECT 1;\nSELECT x FROM t104_no_such_table;\n",
+                          capture_output=True, encoding="utf-8", errors="replace", env=env,
+                          timeout=120, check=False)
+    if lang == "german" and proc.returncode == 2:
+        pytest.skip("not established: the cluster takes no German lc_messages")
+    first = (proc.stderr.splitlines() or [""])[0]
+    assert proc.returncode == 3, proc.stderr
+    assert re.match(r"psql:<stdin>:2: [^\s:]+:  42P01: ", first), proc.stderr
+    if lang == "german" and first.startswith("psql:<stdin>:2: ERROR:"):
+        pytest.skip("not established: the cluster has no German messages")
+    assert mod.PostgresStore._failure(proc.returncode, proc.stderr, False).sqlstate == "42P01"
+
+
 FAKE_PSQL = r"""#!/usr/bin/env python3
 # A FAKE psql: it records what it was asked and answers the few queries
 # lanes-index makes as an EMPTY schema-1 store would. No database exists.
-import json, os, sys
+import json, os, re, sys
 # The schema version it answers is "1" unless FAKE_PSQL_VERSION_FILE names a
 # file holding another (empty: no row, a wiped store); the bootstrap DDL
 # writes "1" into that file, as a real one would create the row.
@@ -2477,6 +3228,17 @@ version = open(vfile).read().strip() if vfile else "1"
 args = sys.argv[1:]
 # psql's error line carries its SQLSTATE only under VERBOSITY=verbose, as a real psql's does
 verbose = "VERBOSITY=verbose" in args
+# psql's LOCUS, AS psql 16 PRINTS IT (W116's pre-review of commit 15; command.c's
+# process_file and logging.c): a script read through `-f -` is the file `<stdin>`, and each
+# message psql reports begins `psql:<stdin>:<line>: `; a script piped with no `-f` is logged
+# tersely, with no locus. Every stderr this fake writes is said through `said`.
+as_file = any(a == "-f" and b == "-" for a, b in zip(args, args[1:]))
+
+
+def said(text):
+    return text if as_file else re.sub(r"^psql:<stdin>:[0-9]+: ", "", text, flags=re.M)
+
+
 # THE CONNECTION IN `PG*` VARIABLES ALONE (Question 11; L2-0c): an argument
 # that is `-d` or `--dbname`, or that carries a URL, is refused with psql's own
 # fatal-error 1 before anything is recorded, since `/proc` shows a process's
@@ -2502,21 +3264,25 @@ if vfile and "CREATE TABLE IF NOT EXISTS" in stdin:
 # error's line, the statement's line and a caret under the table's name, exit 3.
 if (os.environ.get("FAKE_PSQL_NO_TABLE") and vfile and not version
         and "COPY (SELECT version" in stdin):
-    sys.stderr.write('psql:<stdin>:2: ERROR:  ' + ("42P01: " if verbose else "") +
+    sys.stderr.write(said('psql:<stdin>:2: ERROR:  ' + ("42P01: " if verbose else "") +
                      'relation "lanes_index.schema_version" does '
                      'not exist\nLINE 1: COPY (SELECT version FROM '
                      '"lanes_index".schema_version) TO S...\n' + " " * 34 + "^\n" +
-                     ("LOCATION:  parserOpenTable, parse_relation.c:1449\n" if verbose else ""))
+                     ("LOCATION:  parserOpenTable, parse_relation.c:1449\n" if verbose else "")))
     sys.exit(3)
 # THE COMPARE-AND-SWAP'S RAISE (FAKE_PSQL_CAS_LOST): the write fails as psql 16 says it
 if os.environ.get("FAKE_PSQL_CAS_LOST") and "lanes_index_cas" in stdin:
-    sys.stderr.write("psql:<stdin>:5: ERROR:  " + ("P0001: " if verbose else "") +
-                     "lanes-index: provenance moved under this sync; nothing was written\n")
+    sys.stderr.write(said("psql:<stdin>:5: ERROR:  " + ("P0001: " if verbose else "") +
+                          "lanes-index: provenance moved under this sync; nothing was written\n"))
     sys.exit(3)
-# FAKE_PSQL_STDERR_FILE: the provenance's read fails with that file's text on stderr
-if os.environ.get("FAKE_PSQL_STDERR_FILE") and "UNION SELECT source FROM" in stdin:
-    sys.stderr.write(open(os.environ["FAKE_PSQL_STDERR_FILE"]).read())
-    sys.exit(3)
+# FAKE_PSQL_STDERR_FILE: the provenance's read, or with FAKE_PSQL_STDERR_ON=write the
+# compare-and-swap's write, fails with that file's text on stderr, exit
+# FAKE_PSQL_STDERR_EXIT (3 where it is unset)
+failing = ("lanes_index_cas" if os.environ.get("FAKE_PSQL_STDERR_ON") == "write"
+           else "UNION SELECT source FROM")
+if os.environ.get("FAKE_PSQL_STDERR_FILE") and failing in stdin:
+    sys.stderr.write(said(open(os.environ["FAKE_PSQL_STDERR_FILE"]).read()))
+    sys.exit(int(os.environ.get("FAKE_PSQL_STDERR_EXIT") or 3))
 
 
 def echo(text):
@@ -4538,8 +5304,9 @@ def test_the_index_read_says_its_last_sync_failed(inv):
     said only that time: a table no later sync could write read as a current
     one. The read's line now carries this workstation's last error beside its
     source, as `status` does and under the name `status` gives it - a refused
-    `reconcile --dry-run` records one too (review r2's NIT-1) - until a sync
-    succeeds again."""
+    `reconcile` records one too, and a `--dry-run` none (lane 3's ruling, B4 of
+    opensoft/openRepoTools-code#89 comment 6947619546, in place of review r2's
+    NIT-1) - until a sync succeeds again."""
     _sidecar(inv.lsr, "repoZ-1", HEADS["repoZ-1"])
     assert inv.sync().returncode == 0
     with _unreadable(inv.e, "origin/main:lanes/archive/LANES-retired.md"):
