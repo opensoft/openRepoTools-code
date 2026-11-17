@@ -6410,7 +6410,7 @@ reg_mode_query() {   # [mirror]
     # one warning, as F8 runs every failure but 78 (Y:5712–5713; FR-002;
     # contract §3.1; lane 3, #165 6755641373, point 1).
     124:timed)
-      reg_mode_files "did not answer within its $rmq_s s timer, and was stopped (exit 124)" ;;
+      reg_mode_files "did not answer within 2 s, and was stopped (exit 124)" ;;
     137:timed)
       reg_mode_files "was killed (exit 137): by its $rmq_s s timer after it ignored the stop, or by a signal" ;;
     137:bare)
