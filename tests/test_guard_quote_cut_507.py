@@ -220,7 +220,10 @@ def test_the_guards_outage_refusal_names_waiting_for_the_database_first(tmp_path
     out, wait for the database first (the register-service spec's SHALL, "The
     guard fails closed during a database outage"): wait, and send the prompt
     again once `lanes-index status` says the database is reached; or, on
-    Brett's word, `lanes-index rollback`; each command from a shell or a
+    Brett's word, `lanes-index rollback`, which needs the database, so with
+    the database lost for good the second way out is the disaster procedure
+    in the manual's runbook, "The database lost for good" (lane 3's ruling
+    on Q2, #165 6932653746); each command from a shell or a
     `CLAUDE_NO_LANE=1` session. The store's clause, the cause and the
     commands are as they were.
 
@@ -250,7 +253,8 @@ def test_the_guards_outage_refusal_names_waiting_for_the_database_first(tmp_path
                       "the files")
     where = ways.index("from a shell or a `CLAUDE_NO_LANE=1` session")
     assert wait < again < status < word < where, ways
+    needs = ways.index("which takes the estate back to the files and needs the database, so ")
     lost = ways.index("with the database lost for good the second way out is instead the disaster "
                       "procedure in the manual's runbook, \"The database lost for good\"")
-    assert word < lost < where, ways
+    assert word < needs < lost < where, ways
     assert ways.endswith(f"session. {S3_BYPASS}"), ways
