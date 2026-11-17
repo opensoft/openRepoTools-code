@@ -816,11 +816,15 @@ SELECT json_agg(x ORDER BY x) FROM (
 
 def _no_clear_text(log: str, lines: dict) -> None:
     """The server's log holds each printed password only as a SCRAM
-    verifier, never as clear text (O6)."""
-    for login, line in lines.items():
+    verifier, never as clear text (O6). The message names no login, a
+    field of a line a writer printed, only its place among `lines` (T258v;
+    lane 2's pre-review RV9-40 of P09 at `161c3087`, S3, as T258t for
+    `_passwords`)."""
+    for n, line in enumerate(lines.values(), 1):
         secret = line.rsplit(":", 1)[1]
         leaked = secret in log      # a bool, so pytest's report never shows the secret (T224j)
-        assert not leaked, f"the server's log holds {login}'s password in clear text"
+        assert not leaked, (f"the server's log holds a printed password in clear text (login {n} "
+                            f"of {len(lines)})")
 
 
 # ============================================================ a failure's message (T224j)
