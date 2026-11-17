@@ -5507,8 +5507,12 @@ def resolve_source(requested: str | None, root: str) -> str:
             raise Refusal("`--source` names the managed ledger's half, which T058 of the 001 "
                           "feature writes (Amendment 14(g) act 4); this indexer writes the "
                           "register half only")
-        raise Refusal(f"this workstation's register is {source}, not the source `--source` "
-                      f"names")
+        # ITS OWN REGISTER BY THE REMOTE'S NAME, NO URL IN ANY FORM (lane 3's rulings,
+        # opensoft/openRepoTools-code#89 comments 6939379549 and 6939850492;
+        # exit-codes.md:57, register-cli.md:327): `source` is read from `workspace.yaml`
+        # or the checkout's `origin`, whose URL may carry a user, a password or a token.
+        raise Refusal("this workstation's register is the one `workspace.yaml` or the "
+                      "checkout's `origin` names, not the source `--source` names")
     return source
 
 
@@ -6236,17 +6240,21 @@ def _guarded(act, requested, kind: str = "register") -> int:
 
 
 def _record_error(requested, message: str, kind: str = "register") -> None:
+    # A SOURCE THAT COULD NOT BE RESOLVED IS FILED AS `register:?` OR `inventory:?`,
+    # NEVER AS THE VALUE GIVEN (lane 3's ruling, opensoft/openRepoTools-code#89
+    # comment 6939379549): `--source` may hold a misplaced URL or `password=` value,
+    # and `status` prints every source this file names.
     if kind == "inventory":
         try:
             source = inventory_source(requested)
         except (StoreUnusable, Refusal):
-            source = requested if requested and requested != "inventory" else "inventory:?"
+            source = "inventory:?"
         write_status(source, last_attempt_utc=utc_now(), last_error=f"{utc_now()} {message}")
         return
     try:
-        source = requested or source_of(workspace_root())
-    except StoreUnusable:
-        source = requested or "register:?"
+        source = resolve_source(requested, workspace_root())
+    except (StoreUnusable, Refusal):
+        source = "register:?"
     write_status(source, last_attempt_utc=utc_now(), last_error=f"{utc_now()} {message}")
 
 
