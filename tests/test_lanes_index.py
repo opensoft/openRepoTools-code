@@ -1194,6 +1194,113 @@ def test_mode_and_register_classify_echo_no_argument(estate, argv, usage):
     assert not ran.exists(), f"psql was run:\n{said}"
 
 
+# ======================================== an unknown word, and the bootstrap's schema
+#
+# Round 3's commit 7, on lane 3's ruling (opensoft/openRepoTools#165 6932662633): the
+# three echoes left after Codex's exact-head review of P10 at 079a34d8, under its rule
+# for every subcommand (exit-codes.md:57, nothing secret on stderr). An unknown
+# subcommand (T105) or argument (Amendment 14 act 2) is named in exit-codes.md section
+# 3.3's form (lane 3's ruling 6894208108): quoted only where all of it matches
+# `--?[A-Za-z][A-Za-z-]{0,30}`, else as not one of the tool's subcommands or flags. A
+# subcommand is also quoted where all of it matches `[a-z][a-z-]{0,30}`, so `sycn` is
+# named back, and an argument is not (lane 3's ruling 6933409373).
+# The bootstrap's own refusal of a reserved `register_schema=` (T109) names the key
+# alone, as `load_config`'s R12 now does.
+
+#: (id, the arguments after `lanes-index`, the usage line, whole)
+NO_ECHO_WORDS = [
+    ("subcommand-uri", (CONFIG_URI,),
+     "lanes-index: unknown subcommand that is not one of its subcommands: this build does "
+     "not have it - see lanes-index --help\n"),
+    ("subcommand-key-value", (f"password={CONFIG_SECRET}",),
+     "lanes-index: unknown subcommand that is not one of its subcommands: this build does "
+     "not have it - see lanes-index --help\n"),
+    ("subcommand-bare-word", ("sycn",),
+     "lanes-index: unknown subcommand 'sycn': this build does not have it - see "
+     "lanes-index --help\n"),
+    ("subcommand-word", ("--frob",),
+     "lanes-index: unknown subcommand '--frob': this build does not have it - see "
+     "lanes-index --help\n"),
+    ("argument-uri", ("status", CONFIG_URI),
+     "lanes-index: unknown argument that is not one of its flags for status - see "
+     "lanes-index --help\n"),
+    ("argument-key-value", ("status", f"password={CONFIG_SECRET}"),
+     "lanes-index: unknown argument that is not one of its flags for status - see "
+     "lanes-index --help\n"),
+    ("argument-word", ("status", "--frob"),
+     "lanes-index: unknown argument '--frob' for status - see lanes-index --help\n"),
+    ("argument-bare-word", ("status", "sycn"),
+     "lanes-index: unknown argument that is not one of its flags for status - see "
+     "lanes-index --help\n"),
+]
+
+
+@pytest.mark.parametrize("argv, usage", [
+    pytest.param(argv, usage, id=ident) for ident, argv, usage in NO_ECHO_WORDS])
+def test_an_unknown_subcommand_or_argument_is_named_in_readys_form(estate, argv, usage):
+    """READY'S FORM FOR AN UNKNOWN WORD (exit-codes.md section 3.3): a URL or a
+    `password=` value as the subcommand, or as an unknown argument of `status`,
+    is usage (64), with the usage line whole and the value on neither stream; a
+    word that matches the pattern, `--frob`, is still quoted, and so is a bare
+    subcommand, `sycn`, while a bare argument is not. Nothing is read: no `psql`
+    runs."""
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    ran = estate.root / "psql-ran.txt"
+    (fake / "psql").write_text(f"#!/bin/sh\necho ran >> {shlex.quote(str(ran))}\nexit 1\n")
+    (fake / "psql").chmod(0o755)
+    res = estate.index(*argv, env={"PATH": estate.path_with(fake)})
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert res.returncode == 64, f"exit {res.returncode}, not 64:\n{said}"
+    assert CONFIG_SECRET not in res.stdout + res.stderr, f"the word was echoed:\n{said}"
+    assert res.stderr == usage, said
+    assert res.stdout == "", said
+    assert not ran.exists(), f"psql was run:\n{said}"
+
+
+#: A reserved schema name that the bootstrap's own check refuses: a plain identifier,
+#: which `load_config`'s R12 lets through, standing in for a value the refusal must
+#: not show.
+SCHEMA_SENTINEL = "pg_t109_fake_not_a_secret"
+
+#: (id, the `register_schema=` value, words the refusal holds)
+NO_ECHO_SCHEMAS = [
+    ("schema-uri", CONFIG_URI, "`register_schema=` in"),
+    ("schema-key-value", f"password={CONFIG_SECRET}", "`register_schema=` in"),
+    ("schema-reserved", SCHEMA_SENTINEL,
+     "bootstrap: register_schema= is the index half's schema or a name PostgreSQL reserves"),
+]
+
+
+@pytest.mark.parametrize("value, words", [
+    pytest.param(value, words, id=ident) for ident, value, words in NO_ECHO_SCHEMAS])
+def test_the_bootstrap_names_a_refused_register_schema_by_its_key(estate, value, words):
+    """THE SCHEMA'S KEY, NOT ITS VALUE: with every flag in order, a
+    `register_schema=` that is a URL or a `password=` value is refused with 2 by
+    `load_config`'s R12, and a reserved name, `pg_...`, by the bootstrap's own
+    check; each names `register_schema=` and shows no value, prints nothing on
+    stdout, and runs no `psql`."""
+    estate.write_config(f"register_schema={value}\n")
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    ran = estate.root / "psql-ran.txt"
+    (fake / "psql").write_text(f"#!/bin/sh\necho ran >> {shlex.quote(str(ran))}\nexit 1\n")
+    (fake / "psql").chmod(0o755)
+    res = estate.index("bootstrap", "--admin-service", "t109admin", "--label", "t109-label",
+                       "--repository", "opensoft/t109-workspace", "--lane", "t109-operator",
+                       "--no-passwords", env={"PATH": estate.path_with(fake)})
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+            .replace(CONFIG_SECRET, "<the secret>").replace(SCHEMA_SENTINEL, "<the name>"))
+    assert res.returncode == 2, f"exit {res.returncode}, not 2:\n{said}"
+    shown = res.stdout + res.stderr
+    assert CONFIG_SECRET not in shown and SCHEMA_SENTINEL not in shown, (
+        f"the value was echoed:\n{said}")
+    assert words in res.stderr, said
+    assert res.stdout == "", said
+    assert not ran.exists(), f"psql was run:\n{said}"
+
+
 FAKE_PSQL = r"""#!/usr/bin/env python3
 # A FAKE psql: it records what it was asked and answers the few queries
 # lanes-index makes as an EMPTY schema-1 store would. No database exists.
