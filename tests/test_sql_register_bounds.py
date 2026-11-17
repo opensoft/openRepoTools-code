@@ -3256,7 +3256,7 @@ _WARNING_TEMPLATES = tuple(
         "the GitHub comment could not be posted. The log line IS the claim and it has landed; "
         "post the comment by hand so that a reader outside this estate can see it.",
         "the pending record of this command, write {id} made at {…} against register generation "
-        "{n}, was last updated at {…}, more than {n} s ago, so this run does not reuse its id: "
+        "{id}, was last updated at {…}, more than {n} s ago, so this run does not reuse its id: "
         "it writes anew, as write {id}, and replaces that record. {…}",
         "register write {id} is in the register at seq {n}; {…}.",
         "register write {id} is in the register at seq {n}, {…}.",
@@ -3630,6 +3630,27 @@ def test_the_burst_report_shows_no_digit_of_a_value_after_at_seq():
         line = f"{lead}42{joiner}its after-COMMIT steps ran at 2026-11-17T10:00:00Z in pid 4242."
         assert _shown_warning(line) == f"{lead}42{joiner}[withheld].", \
             f"the product's line, joined by {joiner!r}, is not shown: {_shown_warning(line)!r}"
+
+
+def test_the_pending_record_warning_is_shown_with_its_generation_id():
+    """`_shown_warning` (T257zf; lane 2's pre-review RV9-36 of P09 at
+    `2407ea06`, S1), with no engine: the WARNING `lanes-edit.sh` prints where
+    a pending record is too old to reuse (line R's :8650) names the
+    record's register generation, `$WR_REC_GENERATION`, a lower-case UUID
+    (`generation=`, :9145-9146), not a number. Its template took `{n}`
+    there, so the real line matched none and was only counted; with `{id}`
+    it is shown, the write ids, the generation and the age as the line has
+    them, and the times and the lookup text `[withheld]`."""
+    ids = ("0f1e2d3c-4b5a-4968-8776-655443322110", "5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9",
+           "11112222-3333-4444-8555-666677778888")
+    said = ("lanes-edit: WARNING: the pending record of this command, write {0} made at {3} against "
+            "register generation {1}, was last updated at {4}, more than 900 s ago, so this run does "
+            "not reuse its id: it writes anew, as write {2}, and replaces that record. {5}")
+    line = said.format(*ids, "2026-11-17T09:00:00Z", "2026-11-17T09:05:00Z",
+                       "Its lookup's last call may still run until 2026-11-17T09:06:00Z.")
+    want = said.format(*ids, "[withheld]", "[withheld]", "[withheld]")
+    assert _shown_warning(line) == want, f"the pending record's line is not shown: {line}"
+    assert _warnings_of(line + "\n") == ([want], 0), _warnings_of(line + "\n")
 
 
 # ============================== D9's rollback and cutover rows (T278), real engine
