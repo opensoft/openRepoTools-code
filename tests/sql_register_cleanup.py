@@ -481,11 +481,16 @@ class _Settled:
             self.step(new, before)
 
     def late(self) -> None:
-        """The deadline, reported, naming the targets not yet gone."""
+        """The deadline, reported: no read made by it found none new once
+        each target was seen gone (or stopped). It names the targets not
+        yet gone, or, where none is left, says the deadline passed in the
+        last pass (RV7-37, N1: true on both paths)."""
         left = sorted(getattr(held, "pid", held) for held in self.live())
         what = "stopped" if self.kill is None else "gone"
-        self.keep(RuntimeError(f"the clean-up's deadline passed before a read found none new "
-                               f"once each process found was {what} (pids not yet gone: {left})"))
+        rest = (f"pids not yet gone: {left}" if left
+                else "none is left: the deadline passed in the last pass")
+        self.keep(RuntimeError(f"the clean-up's deadline passed before a read made by it found "
+                               f"none new once each process found was {what} ({rest})"))
 
     def step(self, new, before) -> None:
         """What one read calls for: stop what it found, kill what is there,
