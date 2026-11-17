@@ -9493,10 +9493,30 @@ def register_serve_sweep(paths: dict) -> None:
     checks, and `run/` is renamed and replaced by a link after the open.
     `O_NOFOLLOW` applies to `run/` itself, and `lstat` and `unlink` act on
     each final component without following a link. A `run/` that cannot be
-    opened, is not a directory, is not this uid's or is not mode 0700 is not
-    swept at all, and one line says so; so does a platform where `os.stat`
-    and `os.unlink` take no `dir_fd` or `os.listdir` takes no descriptor
-    (`os.supports_dir_fd`, `os.supports_fd`), which fails closed the same way.
+    opened, is not a directory, is not this uid's or is not mode 0700, or
+    whose descriptor cannot be `fstat`ed, is not swept at all, and one line
+    says so; so does a platform where `os.stat` and `os.unlink` take no
+    `dir_fd` or `os.listdir` takes no descriptor (`os.supports_dir_fd`,
+    `os.supports_fd`), which fails closed the same way.
+
+    THAT ONE LINE GOES TO STANDARD ERROR, NOT TO `register.log` (lane 5's
+    commit 17 report; socket API 2.2 and ERR-28: nothing is written in a
+    directory that fails its check): `register_serve_log` opens `register.log`
+    by its path, into the directory that failed, or through a link planted
+    in its place, to its target. Standard error resolves no path: where the
+    launcher started `serve` (`register_serve_launch`), it is the descriptor of
+    `register.log` that the launcher opened before the start, `stderr=log`,
+    and so the line reaches the log file, and a `serve` run by hand writes it
+    to its terminal. The line is written by `note`, without a time, and a
+    standard error that cannot be written to changes nothing: the sweep is
+    skipped all the same.
+
+    The lines after the check has passed, a listing that fails and an entry
+    that cannot be read or removed, go through `register_serve_log` as
+    before. Their directory is the checked one; but `register.log` itself is
+    opened by its path, as for every other line the service writes, and the
+    sweep claims nothing for that open.
+
     This is the sweep's own guarantee: the rest of the start opens `run/`'s
     files by their paths, as before, and nothing here is claimed for them.
 
@@ -9530,19 +9550,25 @@ def register_serve_sweep(paths: dict) -> None:
     `REGISTER_SERVE_BIND_TRIES` (8) draws find their names taken, by that
     leftover or by any other entry, or by one occupied name drawn again, the
     start still ends at 69."""
-    skipped = "the temporary leftovers were not swept: "
+    def refuse(why: str) -> None:
+        # THE FAIL-CLOSED LINE, TO STANDARD ERROR (commit 18): never through
+        # `register_serve_log`, which opens `register.log` by its path, in a
+        # directory that has failed its check or through a link in its place.
+        try:
+            note(f"serve: the temporary leftovers were not swept: {why}")
+        except (OSError, ValueError, AttributeError):
+            pass            # a standard error that cannot be written: skipped all the same
+
     # NO DESCRIPTOR-RELATIVE CALLS, NO SWEEP (lane 3's ruling, #165
     # 6934655836): without them the sweep would resolve `run/`'s path anew.
     if not (os.stat in os.supports_dir_fd and os.unlink in os.supports_dir_fd
             and os.listdir in os.supports_fd):
-        register_serve_log(paths, skipped + "this platform cannot list, stat or unlink "
-                                            "relative to a directory descriptor")
+        refuse("this platform cannot list, stat or unlink relative to a directory descriptor")
         return
     try:
         fd = os.open(paths["run"], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as exc:
-        register_serve_log(paths, f"{skipped}run/ could not be opened "
-                                  f"({errno.errorcode.get(exc.errno, exc.errno)})")
+        refuse(f"run/ could not be opened ({errno.errorcode.get(exc.errno, exc.errno)})")
         return
     try:
         # THE CHECK IS OF THE DESCRIPTOR, never of the path again.
@@ -9554,7 +9580,7 @@ def register_serve_sweep(paths: dict) -> None:
         except OSError as exc:
             why = f"could not be checked ({errno.errorcode.get(exc.errno, exc.errno)})"
         if why:
-            register_serve_log(paths, f"{skipped}run/ {why}")
+            refuse(f"run/ {why}")
             return
         try:
             names = os.listdir(fd)
