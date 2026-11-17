@@ -3299,8 +3299,8 @@ _FILES_WHY = ("could not be run: there is no lanes-index beside {…}/lanes-edit
               "could not be asked: no cache file could be made under {…} to hold its answer",
               "exited 0 without answering one line, index or primary",
               "exited 0 without answering one line, mode index or mode primary",
-              "did not answer within 2 s, and was stopped (exit 124)",
-              "was killed (exit 137): by its 2 s timer after it ignored the stop, or by a signal",
+              "did not answer within its 5 s timer, and was stopped (exit 124)",
+              "was killed (exit 137): by its 5 s timer after it ignored the stop, or by a signal",
               "was killed by a signal (exit 137)",
               "exited {n}", "exited {n} ({…})")
 _RENAME_OWED = " The move is owed: {…}."
@@ -3750,7 +3750,7 @@ def test_the_burst_report_prints_each_warning_whole_and_no_credential():
     T257zc), and never whole (T257zg; lane 2's pre-review RV9-36 of P09 at
     `2407ea06`, N4). The planted value is no credential of any login."""
     planted = "planted-not-a-password"
-    warning = ("lanes-edit: WARNING: `lanes-index mode` did not answer within 2 s, and was "
+    warning = ("lanes-edit: WARNING: `lanes-index mode` did not answer within its 5 s timer, and was "
                "stopped (exit 124), so `set-row-state` runs in files mode, as on a "
                "workstation with no lanes-index configuration (feature 007, D3).")
     refusal = ("lanes-edit: lanes/STORE is on origin/main at 17ceb1c26f81, the tip this "
@@ -3906,7 +3906,7 @@ def test_a_failure_message_shows_no_line_of_a_writers_output_that_no_template_ma
     value. Before T257zh the message held the writer's whole stderr. The
     planted value is no credential of any login."""
     planted = f"fake-{uuid.uuid4().hex}"
-    warning = ("lanes-edit: WARNING: `lanes-index mode` did not answer within 2 s, and was stopped "
+    warning = ("lanes-edit: WARNING: `lanes-index mode` did not answer within its 5 s timer, and was stopped "
                "(exit 124), so `set-row-state` runs in files mode, as on a workstation with no "
                "lanes-index configuration (feature 007, D3).")
     proc = subprocess.CompletedProcess(
