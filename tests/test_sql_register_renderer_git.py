@@ -138,10 +138,10 @@ import pytest
 
 from conftest import REPO, WINDOWS_SKIP
 from sql_register_cleanup import (IDENTITY, LEADS_A_GROUP, LEAVES_A_MEMBER, LINUX_ONLY, SAY_ME,
-                                  SLEEP, _GapFifo, _Pipe, _Undying, _carried, _each, _end_pin,
-                                  _ended, _fifo_reader, _keep, _misrecorded, _nonce, _owned,
-                                  _pidfds, _pin, _pin_child, _raise_first, _reap_all, _release,
-                                  _reported, _send_each, _settle_pinned, _settled, _stat, _table,
+                                  SLEEP, _GapFifo, _Pipe, _Settled, _Undying, _carried, _each,
+                                  _end_pin, _ended, _fifo_reader, _keep, _misrecorded, _nonce,
+                                  _owned, _pidfds, _pin, _pin_child, _raise_first, _reap_all,
+                                  _release, _reported, _send_each, _settle_pinned, _stat, _table,
                                   _with_identity)
 from sql_register_helpers import PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_LOG, flipped_copy
 
@@ -485,7 +485,7 @@ def _end_hold(proc, fifo: Path, fd: int | None, est) -> None:
 #: `_send_each`, `_release`, `_wait_all` and `_raise_first`), are
 #: `tests/sql_register_cleanup.py`'s, which this module and the rollback
 #: module import (round CX-34): its docstring says how a process is owned.
-#: So is the one loop of stop, kill, confirm and read again (`_settled`,
+#: So is the one loop of stop, kill, confirm and read again (`_Settled`,
 #: `_settle_pinned`; round CX-35), which `_settle` and the wrapper run.
 #: The clean-up below, `_quiesce` and the reads it makes, is this module's.
 
@@ -896,7 +896,7 @@ def end_all(targets, error, ended=()):
     return error
 
 
-''' + inspect.getsource(_settled) + r'''
+''' + inspect.getsource(_Settled) + r'''
 
 def kill_above(pid):
     """SIGKILL to the process above, and to every other member of the group
@@ -913,7 +913,7 @@ def kill_above(pid):
     Where the process above is gone before it is pinned, its group's
     members are still found by the nonce and the group's id; a stop not
     seen is an error; and the discovery and the end are the shared
-    clean-up's one loop (`_settled`, whose source this script carries; lane
+    clean-up's one loop (`_Settled`, whose source this script carries; lane
     3's Codex review of code PR 97 at `5a120647`, SHOULD 2): read after
     read (`members`), then each target killed and seen gone, then /proc
     read again, until a read made once every target is seen gone finds
@@ -964,7 +964,8 @@ def kill_above(pid):
     except OSError as exc:  # kept; its group is still read, and every target ended
         errors.append(exc)
     try:
-        _settled(lambda: members(pid, nonce, targets, ended), stop, kill, live, until, errors)
+        _Settled(lambda: members(pid, nonce, targets, ended), stop, kill, live, until,
+                 errors).run()
     except BaseException as exc:  # kept; every target is still ended, then the first is raised
         errors.append(exc)
     error = end_all(targets, errors[0] if errors else None, ended)
@@ -3749,7 +3750,7 @@ def test_a_wrapper_kill_ends_a_gone_leader_s_group_and_every_pidfd_whatever_a_st
 
 @LINUX_ONLY
 def test_a_wrapper_kill_reads_again_once_every_target_is_gone_whatever_a_stop_did(tmp_path):
-    """SHOULD 2 at `5a120647`: the shared clean-up's one loop (`_settled`),
+    """SHOULD 2 at `5a120647`: the shared clean-up's one loop (`_Settled`),
     run by `GIT_WRAPPER`'s `kill_above` on a model (`KILL_HARNESS`), with
     no process read or signalled. 4002's stop is never seen, and in that
     gap it forks 4005, a late member of the group. Every target is still
