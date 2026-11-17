@@ -7908,6 +7908,21 @@ def register_serve_launch(paths: dict) -> str | None:
     and is passed over (`register_serve_note`); `lanes-edit.sh`'s start
     sends it to `/dev/null`.
 
+    A LOG THAT IS VISIBLY UNUSABLE IS REFUSED BEFORE THE LAUNCH (lane 5's
+    re-review of b3e5f0fe, its decision 2; socket API §9, `serve --start`'s
+    exit 2 "where `serve` could not be launched, its `register.log` not
+    opened"; commit 31). The launcher `lstat`s `run/register.log` by its
+    path, which opens nothing, as the starters already read the stamp by
+    its path; where it exists and is not a regular file of this uid, it
+    returns why, naming `register.log`, and launches nothing, so `serve
+    --start` refuses with 2 and a client starts no service. A missing log
+    is no refusal: `serve` makes it. This check races: the log can change
+    between the `lstat` and `serve`'s own open. The race is harmless, since
+    `serve`'s open of `register.log` relative to its checked `run/`
+    descriptor is the authority (`register_serve_log_open`): a log that has
+    since become unusable ends that start at 69 with nothing made, and one
+    that has since become usable lets it run.
+
     THE LAUNCHER IS STARTED BY `__file__` AS PYTHON GIVES IT, NEVER
     NORMALIZED (lane 3's ruling, #165 6894116246, which closes this line;
     lane 1's R2, #165 6892234131, NIT 1): `register_serve_launch_file()`.
@@ -7958,6 +7973,14 @@ def register_serve_launch(paths: dict) -> str | None:
     finds another install reads directly, and starts no `serve`, is a named
     follow-up after v1.3.0, in its own PR; it is not built here."""
     try:
+        st = os.lstat(paths["log"])
+    except FileNotFoundError:
+        st = None
+    except OSError as exc:
+        return f"{paths['log']} could not be read ({exc.strerror or exc})"
+    if st is not None and not (stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid()):
+        return f"{paths['log']} is not a regular file of this uid"
+    try:
         subprocess.Popen([sys.executable or "python3", register_serve_launch_file(), "serve"],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=None,
                          cwd="/", env=register_serve_env(), close_fds=True,
@@ -7975,9 +7998,11 @@ def register_serve_start_only() -> int:
     refused one, Q6(c)'s included, or a mode other than `primary`; checks the
     directory and the path's length, refusing 2 for either; exits 0 where a
     failure stamp younger than 60 s stands, starting none; and otherwise
-    starts `serve` (`register_serve_launch`) and exits 0. A live service is
-    left as it is: the `serve` it starts finds `register.lock` held and exits
-    0. It writes no stamp of its own."""
+    starts `serve` (`register_serve_launch`) and exits 0, or refuses with 2
+    where the launcher refuses, `register.log` there and not a regular file
+    of this uid among its reasons (commit 31), starting none. A live service
+    is left as it is: the `serve` it starts finds `register.lock` held and
+    exits 0. It writes no stamp of its own."""
     if not register_serve_possible():
         note("serve --start: REFUSED: this platform has no Unix socket, so no service runs")
         return EXIT_REFUSED
