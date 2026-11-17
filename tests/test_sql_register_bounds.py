@@ -126,6 +126,7 @@ hook's calls are told from the bind's.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import json
 import os
@@ -3731,6 +3732,80 @@ def test_a_failure_message_shows_no_line_of_a_writers_output_that_no_template_ma
     assert "output: 5 line(s), 1 of them WARNING lines, 0 of no known template withheld" in said, \
         f"stderr's counts:\n{said}"
     assert "register busy" not in said, f"a line no template matches is shown:\n{said}"
+
+
+#: What a failure message may not format but through `_said_safely` (T257zi):
+#: a captured stream's attribute, a name these modules give a stream, and the
+#: helpers that showed one before T257zh, T255s and T258l.
+_STREAM_ATTRS = ("stdout", "stderr", "err", "out")
+_STREAM_NAMES = ("err", "out", "streams", "stdout", "stderr")
+_STREAM_CALLS = ("_said", "_masked")
+
+
+def _raw_streams_in(path: Path) -> list:
+    """Each place in `path`'s source where a failure message formats a
+    captured stream other than through `_said_safely` (T257zi): in an
+    assert's message, or in the arguments of `pytest.fail`, `pytest.skip`,
+    `pytest.xfail`, `print` or a call whose name ends `Error` or
+    `Exception`, an attribute `.stdout`, `.stderr`, `.err` or `.out`, a name
+    `err`, `out`, `streams`, `stdout` or `stderr`, a call to `_said` or
+    `_masked`, or a call `.said()`, outside any `_said_safely(...)`. Each is
+    `file:line: the expression`."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found = []
+
+    def walk(node, line):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and \
+                node.func.id == "_said_safely":
+            return
+        hit = ((isinstance(node, ast.Attribute) and node.attr in _STREAM_ATTRS)
+               or (isinstance(node, ast.Name) and node.id in _STREAM_NAMES)
+               or (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                   and node.func.id in _STREAM_CALLS)
+               or (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                   and node.func.attr == "said" and not node.args))
+        if hit:
+            found.append(f"{path.name}:{getattr(node, 'lineno', line)}: {ast.unparse(node)[:80]}")
+            return
+        for child in ast.iter_child_nodes(node):
+            walk(child, line)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assert) and node.msg is not None:
+            walk(node.msg, node.lineno)
+        elif isinstance(node, ast.Call):
+            name = ast.unparse(node.func)
+            if name in ("pytest.fail", "pytest.skip", "pytest.xfail", "print") or \
+                    name.endswith(("Error", "Exception")):
+                for arg in [*node.args, *(k.value for k in node.keywords)]:
+                    walk(arg, node.lineno)
+    return found
+
+
+def test_no_failure_message_formats_a_captured_stream_but_through_the_one_helper():
+    """The static check (T257zi; lane 3's ruling 6946445277 on lane 2's
+    pre-review RV9-36 of P09 at `2407ea06`, S2: "a test reads the three
+    modules and fails if an assert message formats a captured stdout or
+    stderr other than through the helper, so the class stays closed"), with
+    no engine and nothing imported: bounds, measure and managed are parsed,
+    and no failure message in them formats a captured stream other than
+    through `_said_safely` (`_raw_streams_in`). Each place found is named
+    by file and line.
+
+    It catches the forms these modules use for a stream: `.stdout`,
+    `.stderr`, `.err` and `.out`, slices and `strip()`s of them,
+    `communicate()`'s `err` and `out`, `streams`, and the old helpers
+    `_said`, `_masked` and `.said()`. It cannot catch a stream copied into
+    another name before the message (`text = proc.stderr`, then `{text}`),
+    a whole process formatted as itself (`{proc}`), a stream that reaches a
+    message through another function, or text that is not a stream, an
+    exception's message among them."""
+    here = Path(__file__).resolve().parent
+    found = [place for name in ("test_sql_register_bounds.py", "test_sql_register_measure.py",
+                                "test_sql_register_managed.py")
+             for place in _raw_streams_in(here / name)]
+    assert not found, (f"{len(found)} failure message(s) format a captured stream other than "
+                       f"through _said_safely:\n" + "\n".join(found))
 
 
 # ============================== D9's rollback and cutover rows (T278), real engine
