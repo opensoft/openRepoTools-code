@@ -637,13 +637,22 @@ class Managed:
     def logins(self, service: str, *engineers: str, dump: bool = True,
                folder: str = "passfiles") -> dict:
         """`login add` for each engineer, and for the dump job, under the pty:
-        each printed line in its login's 0600 file. Returns the files."""
+        each printed line in its login's 0600 file. Returns the files. Each
+        run is `_added`'s, so this frame, whose `*engineers` makes pytest
+        8.3.4 print its locals as arguments in a long entry, holds no printed
+        password line (T258w; lane 2's pre-review RV9-41 of P09 at
+        `4895579`, B1)."""
         files: dict = {}
         for who in [*engineers, *([DUMP] if dump else [])]:
-            proc = self.login("add", who, service)
-            assert proc.returncode == 0, f"login add {who} failed:\n{_said_safely(proc)}"
-            files.update(self.passfiles(proc.stdout, folder))
+            files.update(self.passfiles(self._added(who, service), folder))
         return files
+
+    def _added(self, who: str, service: str) -> str:
+        """`login add <who>`'s stdout, its printed password lines, or an
+        AssertionError that shows its exit and counts (T258w)."""
+        proc = self.login("add", who, service)
+        assert proc.returncode == 0, f"login add {who} failed:\n{_said_safely(proc)}"
+        return proc.stdout
 
     def passfiles(self, text: str, folder: str = "passfiles") -> dict:
         return {login: _private(self.home / folder / login, line + "\n")
@@ -2004,9 +2013,16 @@ def _w_creates(files: dict) -> tuple:
 
 
 def _w_git(cwd: Path, env: dict, *args: str) -> str:
+    """git's stdout, or an AssertionError that shows its exit and counts. Its
+    run is dropped before the raise (T258w; lane 2's pre-review RV9-41 of
+    P09 at `4895579`, B1): pytest 8.3.4 prints a long entry's locals as its
+    arguments where the function takes `*args`."""
     proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, env=env,
                           timeout=120, check=False)
-    assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {_said_safely(proc)}"
+    if proc.returncode != 0:
+        said = f"git {' '.join(args)} in {cwd}: {_said_safely(proc)}"
+        del proc
+        raise AssertionError(said)
     return proc.stdout
 
 
@@ -2315,6 +2331,14 @@ class PhaseW:
         entry = {"journal": {"kind": kind, "verb": kind, "lane": OPERATOR, "workstation": WS,
                              "author": AUTHOR, "message": f"{kind} by {OPERATOR} (T258)", **journal},
                  "not_after": clock, "edits": edits, "files": rows}
+        return self._committed(kind, entry)
+
+    def _committed(self, kind: str, entry: dict) -> int:
+        """`entry` committed by `commit_write` as e1's writer login; its seq.
+        Kept out of `_commit`, whose `**journal` makes pytest 8.3.4 print its
+        locals as arguments in a long entry, so that no frame with `**` holds
+        the writer's run when it fails (T258w; lane 2's pre-review RV9-41 of
+        P09 at `4895579`, B1)."""
         proc = self.m.commit(W_DB, "lanes_w_e1", self.files["lanes_w_e1"], entry)
         assert proc.returncode == 0, f"the {kind} entry did not commit:\n{_said_safely(proc)}"
         return _whole(proc.stdout.split()[-1], f"the {kind} entry's seq")
