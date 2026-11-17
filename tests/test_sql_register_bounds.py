@@ -1635,7 +1635,7 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
         # every form (4.18:758-760; B14 tasks:454), so a refused reader's
         # "nothing on stdout" (TP:3603) is its `mode primary` line alone.
         assert proc.stdout == "mode primary\n", \
-            f"a reader's 69 prints its mode line and nothing more: {_said_safely(proc.stdout)!r}"
+            f"a reader's 69 prints its mode line and nothing more: {_said_safely(proc)!r}"
     if row == "mode-query":
         assert proc.stdout == "index\n" and bench.calls() == [], "the query reads no database"
     if row == "status":
@@ -1709,7 +1709,7 @@ def _answer_2_row(pg, tmp_path: Path, request, fault: str) -> None:
     finally:
         relay.close()
     assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {_said_safely(proc.stderr)}"
-    assert "BINDING" in proc.stdout + proc.stderr, f"{case}: no BINDING: {_said_safely(proc.stderr)}"
+    assert "BINDING" in proc.stdout + proc.stderr, f"{case}: no BINDING: {_said_safely(proc)}"
     assert elapsed < spec["bound"], f"{case}: {elapsed:.2f} s, not under {spec['bound']} s"
     reads = [c for c in bench.calls()[mark[0]:] if c.get("sid") == mine]
     assert len(reads) == 1 and reads[0]["exit"] == 0, \
@@ -1917,10 +1917,10 @@ def test_the_outage_declare_probe_ends_inside_its_bound_and_the_declaration_foll
             _end(session)
     declaration = config.parent / "register-outage"
     if form == "word":
-        assert proc.returncode == 0, _said_safely(proc.stderr)
+        assert proc.returncode == 0, _said_safely(proc)
         assert declaration.exists(), "the declaration is written"
     else:
-        assert proc.returncode == 2, _said_safely(proc.stderr)
+        assert proc.returncode == 2, _said_safely(proc)
         assert not declaration.exists(), "no file in the --rollback form"
     assert elapsed < 2 * 8, f"{case}: {elapsed:.2f} s"
     _record(f"outage-probe-{case}", elapsed, 8, "timing rule 2")
@@ -2457,7 +2457,7 @@ def test_each_register_call_is_one_request(tmp_path, monkeypatch, call):
                     [{"kind": "version", "stdout": "psql (PostgreSQL) 14.11\n"}])
         calls, probes = _fake_log(log)
         assert proc.returncode == 69, f"exit {proc.returncode}: {_said_safely(proc.stderr)}"
-        assert "14.11" in proc.stderr, f"the 69 names the version: {_said_safely(proc.stderr)}"
+        assert "14.11" in proc.stderr, f"the 69 names the version: {_said_safely(proc)}"
         assert len(probes) == 1 and calls == [], \
             f"one --version call and no request: {len(probes)}, {len(calls)}"
         return
@@ -2632,7 +2632,7 @@ def test_the_lookups_tries_start_inside_the_window_and_end_in_3(pg, tmp_path, re
         if session is not None:
             _end(session)
     assert proc.returncode == 3, f"lookup-{fault}: {proc.returncode}: {_said_safely(proc.stderr)}"
-    assert bench.write_id in proc.stderr, f"the 3 names the write's id: {_said_safely(proc.stderr)}"
+    assert bench.write_id in proc.stderr, f"the 3 names the write's id: {_said_safely(proc)}"
     tries = [b["begin"] for b in bench.begins()]
     assert tries, "the lookup made no try"
     for before, after in zip(tries, tries[1:]):
@@ -3090,9 +3090,9 @@ def test_the_joined_snapshot_logs_one_statement_and_reads_byte_identical_to_the_
     lines.append("COMMIT;")
     one_by_one = subprocess.run([db.psql_bin, *REGISTER_ARGV], input="\n".join(lines) + "\n",
                                 capture_output=True, text=True, env=db.env(FX_WRITER), timeout=60)
-    assert one_by_one.returncode == 0, _said_safely(one_by_one.stderr)
+    assert one_by_one.returncode == 0, _said_safely(one_by_one)
     assert outs[0] == one_by_one.stdout, \
-        f"the joined snapshot read {outs[0]!r}, one by one {_said_safely(one_by_one.stdout)!r}"
+        f"the joined snapshot read {outs[0]!r}, one by one {_said_safely(one_by_one)!r}"
 
 
 #: `C`, the commit's client timer, at `c` = 2 and `N_a` = 1 (D9).
@@ -3784,7 +3784,13 @@ def _raw_streams_in(path: Path) -> list:
     `file:line: the expression`. A module whose docstring does not say
     PYTEST_DONT_REWRITE is a place too (T257zj): pytest's assertion
     rewriting would add each tested operand, a raw stream among them, to a
-    failure's message."""
+    failure's message. So is a message whose every `_said_safely(...)` is
+    given a bare stream, a `.stdout`, `.stderr`, `.err` or `.out` or text
+    built from one, and that shows no exit, with no `exit`, `returncode` or
+    `.code` anywhere in it (T257zn; lane 2's pre-review RV9-37 of P09 at
+    `d9a1f2bf`, S9: lane 3's ruling 6946445277 has each such message show
+    the writer's exit): it passes the process whole, whose exit the helper
+    shows, or says in fixed words that there is no exit."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found = []
     if "PYTEST_DONT_REWRITE" not in (ast.get_docstring(tree, clean=False) or ""):
@@ -3806,15 +3812,29 @@ def _raw_streams_in(path: Path) -> list:
         for child in ast.iter_child_nodes(node):
             walk(child, line)
 
+    def exitless(message: list, line: int) -> None:
+        calls = [n for arg in message for n in ast.walk(arg) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name) and n.func.id == "_said_safely"]
+        bare = [call for call in calls
+                if any(isinstance(n, ast.Attribute) and n.attr in _STREAM_ATTRS
+                       for said in [*call.args[:1], *(k.value for k in call.keywords if k.arg == "said")]
+                       for n in ast.walk(said))]
+        text = " ".join(ast.unparse(arg) for arg in message)
+        if calls and len(bare) == len(calls) and \
+                not any(word in text for word in ("exit", "returncode", ".code")):
+            found.append(f"{path.name}:{line}: a bare stream and no exit: {text[:80]}")
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Assert) and node.msg is not None:
             walk(node.msg, node.lineno)
+            exitless([node.msg], node.lineno)
         elif isinstance(node, ast.Call):
             name = ast.unparse(node.func)
             if name in ("pytest.fail", "pytest.skip", "pytest.xfail", "print") or \
                     name.endswith(("Error", "Exception")):
                 for arg in [*node.args, *(k.value for k in node.keywords)]:
                     walk(arg, node.lineno)
+                exitless([*node.args, *(k.value for k in node.keywords)], node.lineno)
     return found
 
 
@@ -3830,6 +3850,8 @@ def test_no_failure_message_formats_a_captured_stream_but_through_the_one_helper
     its docstring (T257zj; RV9-37, B1), since pytest's assertion rewriting
     would put each tested operand's value, a raw stream or a whole
     `CompletedProcess` among them, beside every message the helper made.
+    And no message gives the helper only bare streams and shows no exit
+    (T257zn; RV9-37, S9): it shows the writer's exit, or says it has none.
 
     It catches the forms these modules use for a stream: `.stdout`,
     `.stderr`, `.err` and `.out`, slices and `strip()`s of them,
@@ -3838,7 +3860,10 @@ def test_no_failure_message_formats_a_captured_stream_but_through_the_one_helper
     another name before the message (`text = proc.stderr`, then `{text}`),
     a whole process formatted as itself (`{proc}`), a stream that reaches a
     message through another function, or text that is not a stream, an
-    exception's message among them."""
+    exception's message among them. For the exit (T257zn), a name given to
+    the helper counts as a whole process, so a stream copied into a name
+    first (`said = held.send(...)`, then `_said_safely(said)`) is not
+    caught, and any `exit` in the message's words counts as its exit."""
     here = Path(__file__).resolve().parent
     found = [place for name in ("test_sql_register_bounds.py", "test_sql_register_measure.py",
                                 "test_sql_register_managed.py")
@@ -3991,7 +4016,7 @@ class Operator:
                                  f"2026-10-01T05:20:00Z: opensoft/repoH main {TIP_A}",
                                  env={"LANES_LANE": OPERATOR})
             assert proc.returncode == 0, (
-                f"the dead HOLD's release, lanes-edit.sh append-line: {_said_safely(proc.stdout)}{_said_safely(proc.stderr)}")
+                f"the dead HOLD's release, lanes-edit.sh append-line: {_said_safely(proc)}")
             self.reg.c = self.reg.tip()
         proc = self.reg.import_at(pg, self.reg.c)
         assert proc.returncode == 0, \
@@ -4438,7 +4463,7 @@ def _snapshot_miss(pg, tmp_path: Path, request, fault: str) -> None:
                              env=op.env, cwd=str(op.reg.wip), timeout=120,
                              stdin=subprocess.DEVNULL)
     assert planted.stdout.strip() == str(head + 5), \
-        f"{case}: the cache's head was not planted at {head + 5}: {_said_safely(planted.stdout)}{_said_safely(planted.stderr)}"
+        f"{case}: the cache's head was not planted at {head + 5}: {_said_safely(planted)}"
     relay = StartupRelay(f"{pg.host}/.s.PGSQL.{pg.port}",
                          armed=lambda: any(c.get("snapshot") for c in op.calls()))
     argv = ["register", "snapshot", "--write-id", "new", "--lane", op.lane,
@@ -4454,7 +4479,7 @@ def _snapshot_miss(pg, tmp_path: Path, request, fault: str) -> None:
         f"{case}: the first request never reached the cluster: {op.calls()}"
     requests = op.begins()
     assert len(requests) == 2, \
-        f"{case}: the miss's second request was not sent: {len(requests)} requests: {_said_safely(proc.stderr)}"
+        f"{case}: the miss's second request was not sent: {len(requests)} requests: {_said_safely(proc)}"
     assert relay.silenced, f"{case}: the second request never met F2"
     elapsed = op.exited - requests[0]["begin"]
     assert elapsed < 2 * spec["bound"], f"{case}: {elapsed:.2f} s against {spec['bound']} s"
@@ -4813,7 +4838,7 @@ def test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusi
     # Either is the marker's, never T409's placeholder, which names no marker.
     assert "LR002" in writer.stderr or "marker adding" in writer.stderr, \
         (f"the writer's 69 is the marker's refusal, at its snapshot or LR002, not T409's "
-         f"placeholder: {_said_safely(writer.stderr)}")
+         f"placeholder: {_said_safely(writer)}")
     mark = len(_shim_calls(where))
     proc, _ = op.run(op.argv("record-marker"), op.config())
     recorded = [e for e in _shim_calls(where)[mark:] if "record_marker(" in e["stdin"]]
