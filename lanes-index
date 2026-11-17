@@ -759,8 +759,17 @@ def load_config(text: str | None = None) -> dict:
         sqlite_path = os.path.abspath(sqlite_path)
         tree = git_work_tree_of(os.path.dirname(os.path.realpath(sqlite_path)))
         if tree:
+            # THE FILE, OR THE KEY ALONE (lane 3's rulings, opensoft/openRepoTools#165
+            # 6933409373 and 6934430226; contracts/config.md section 4, :119): the
+            # store's path is named only where `sqlite=`'s value holds no `://`, no
+            # `@` and no `=`, so it can be no URL and no `password=`; otherwise the
+            # key alone, as R11's refusal names it.
+            named = (f"the SQLite store {sqlite_path}"
+                     if "://" not in cfg["sqlite"] and "@" not in cfg["sqlite"]
+                     and "=" not in cfg["sqlite"]
+                     else "the SQLite store `sqlite=` names")
             raise Refusal(
-                f"the SQLite store {sqlite_path} would be inside the git work tree {tree}; "
+                f"{named} would be inside the git work tree {tree}; "
                 f"the index lives on local disk and never inside a work tree "
                 f"(Amendment 14(c)). Name another path with `sqlite=`")
         cfg["sqlite"] = sqlite_path
