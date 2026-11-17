@@ -5705,3 +5705,46 @@ def test_the_engine_probes_problem_shows_no_text_a_tool_printed(monkeypatch, tmp
         pytest.fail(found.problem, pytrace=False)  # `pg_engine`'s, under the switch
     assert not _t257zzb_seen(request, failed, planted), \
         f"{kind}: the planted value shows in {_t257zzb_seen(request, failed, planted)}"
+
+
+@pytest.mark.parametrize("form", ["five-capitals", "across-a-newline", "verbose"])
+def test_a_failed_psqls_sqlstate_is_taken_only_from_its_verbose_form_on_one_line(
+        monkeypatch, request, form):
+    """T257zze (lane 2's pre-review RV9-38 of P09, N1; lane 3's ruling
+    6949488277, "`_SQLSTATE`'s pattern made strict"; T229p), with no engine
+    and no process: psql, run by `Cluster.psql` with subprocess.run a
+    stand-in, exits 3. `[five-capitals]`, RV9-38's F2 `fiveupper` case:
+    its message's first word is five capitals and a colon (`ERROR:
+    <word>: ...`). `[across-a-newline]`: an `ERROR:` line ends, and the
+    next line begins with five of `[0-9A-Z]`, a digit among them, and a
+    colon, at once and after psql's own prefix. Neither word is shown, as
+    a SQLSTATE or at all, and the error says "no SQLSTATE in its text".
+    `[verbose]`: psql's real verbose form, `ERROR:  42601: ...` after its
+    prefix and `ERROR:<tab>42P01: ...`, shows SQLSTATE 42601 and 42P01,
+    and the planted value echoed on a `LINE 1:` is shown nowhere. Each is
+    checked in the error's `str`, `repr`, `args` and formatted traceback,
+    and in pytest's report of it (`_t257zzb_seen`). Each word is drawn at
+    run time from letters no word of the report holds, so only the error
+    can show it. The planted value is no credential of any login."""
+    import pgcluster
+    word = "".join("JKQVWXZ"[b % 7] for b in os.urandom(5))
+    coded = "".join("JKQVWXZ"[b % 7] for b in os.urandom(4)) + str(os.urandom(1)[0] % 10)
+    planted = f"fake-{uuid.uuid4().hex}"
+    told, state, hidden = {
+        "five-capitals": (f"ERROR:  {word}: a planted head\n", "no SQLSTATE in its text", word),
+        "across-a-newline": (f"ERROR:\n{coded}: a planted line\npsql:<stdin>:2: ERROR:  \n"
+                             f"{coded}: again\n", "no SQLSTATE in its text", coded),
+        "verbose": (f"psql:<stdin>:1: ERROR:  42601: syntax error at or near \"x\"\n"
+                    f"LINE 1: ALTER ROLE r PASSWORD '{planted}' x;\nERROR:\t42P01: relation "
+                    f"\"t\" does not exist\n", "SQLSTATE 42601, 42P01", planted),
+    }[form]
+    cluster = pgcluster.Cluster(Path("/nonexistent/bin"))
+    cluster.root = Path("/nonexistent")
+    monkeypatch.setattr(pgcluster.subprocess, "run",
+                        lambda argv, **kw: subprocess.CompletedProcess(argv, 3, "", told))
+    with pytest.raises(pgcluster.ClusterError) as failed:
+        cluster.psql("SELECT 1", dbname="register", user="lanes_admin")
+    assert not _t257zzb_seen(request, failed, hidden), \
+        f"{form}: the planted word shows in {_t257zzb_seen(request, failed, hidden)}"
+    assert str(failed.value).startswith(f"psql as lanes_admin on register exited 3: {state}; "), \
+        f"{form}: the error does not say {state}"
