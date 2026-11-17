@@ -103,7 +103,7 @@ pytestmark = [WINDOWS_SKIP]
 #: names has landed, and the skip names them. The rows are T224's Order
 #: (tasks:2156), T230's (tasks:2220, with its As built at :2219) and T258's
 #: (tasks:2464), tasks.md at lane 3's commit 17 `204145ae`. No task is common
-#: to all 27 functions, so there is no "*" row. T224j's, T224n's, T224o's,
+#: to all of its functions, so there is no "*" row. T224j's, T224n's, T224o's,
 #: T224p's, T258e's, T258f's, T258g's and T258h's cases, which run on synthetic text
 #: and stand-ins with no database, have no row: they run ungated.
 SQL_REGISTER_GATE_TABLE = {
@@ -2568,21 +2568,50 @@ def test_a_phase_w_writer_that_exits_while_its_group_holds_a_pipe_is_reaped_afte
 
 
 def test_a_phase_w_writers_stop_joins_its_reader_and_closes_its_pipes_when_its_signal_step_raises(
-        monkeypatch):
+        tmp_path, monkeypatch):
     """T258g (Codex's review of P09 at `d3a2fd5c`, SHOULD 3's last point:
     `stop()` skipped its join when `_end_process()` raised), no database: a
-    stand-in writer, started as `launch` starts one, holds both pipes for
-    0.5 s, closes them and lives 0.5 s more. Its `stop()` runs at once, with
-    the signal step, `_end_process` or `_signal_unreaped`, made to raise
-    `ChildProcessError` as `os.waitid` does where something else reaped the
-    run. The error must reach the caller, and by then the reader must be
-    joined and both pipes closed. Before T258g the error left `stop()` before
-    the join, with the reader still reading and both pipes open."""
+    stand-in writer, started as `launch` starts one, holds both pipes until
+    a FIFO barrier is released, then 0.3 s more, closes them and lives 0.5 s
+    more. Its `stop()` runs with the signal step, `_end_process` or
+    `_signal_unreaped`, made to raise `ChildProcessError` as `os.waitid`
+    does where something else reaped the run. That step, the signal seam,
+    is reached once: it records the reader alive and both pipes open, then
+    releases the barrier, then raises. The error must reach the caller, and
+    by then the reader must be joined and both pipes closed. Before T258g the
+    error left `stop()` before the join, with the reader still reading and
+    both pipes open. The barrier replaces a 0.5 s sleep from the stand-in's
+    start, which a delayed case could outlive, so the old code passed
+    (T258j; Codex's review of P09 at `b8f9e35a`, SHOULD 6)."""
     monkeypatch.setitem(globals(), "END_S", 2.0)
+    barrier, seen = tmp_path / "barrier", []
+    os.mkfifo(barrier)
+
+    def release() -> None:
+        """The barrier released: a line written to it, opened without
+        blocking once the stand-in has it open to read, within 10 s."""
+        end = time.monotonic() + 10
+        while True:
+            try:
+                fd = os.open(barrier, os.O_WRONLY | os.O_NONBLOCK)
+                break
+            except OSError as exc:
+                assert exc.errno == errno.ENXIO and time.monotonic() < end, (
+                    f"the stand-in did not open its barrier in 10 s: {exc}")
+                time.sleep(0.05)
+        try:
+            os.write(fd, b"go\n")
+        finally:
+            os.close(fd)
 
     def fails(*args, **kwargs):
+        seen.append((writer._thread.is_alive(), writer.proc.stdout.closed,
+                     writer.proc.stderr.closed))
+        if len(seen) == 1:
+            release()
         raise ChildProcessError("T258g's stand-in: the run was reaped elsewhere")
-    writer = _w_stand_in("w-raises", "sleep 0.5; exec >&- 2>&-; sleep 0.5")
+    writer = _w_stand_in("w-raises", 'read -r _ < "$1"; sleep 0.3; exec >&- 2>&-; sleep 0.5',
+                         str(barrier))
 
     class Phase:
         writers = [writer]
@@ -2594,6 +2623,9 @@ def test_a_phase_w_writers_stop_joins_its_reader_and_closes_its_pipes_when_its_s
                 writer.stop()
             state = (writer._thread.is_alive(), writer.proc.stdout.closed,
                      writer.proc.stderr.closed)
+        assert seen == [(True, False, False)], (
+            f"at the signal seam the reader alive, stdout closed and stderr closed are {seen}, "
+            f"not once (True, False, False)")
         assert state == (False, True, True), (
             f"stop()'s signal step raised, and the reader alive, stdout closed and stderr "
             f"closed are {state}, not (False, True, True)")
