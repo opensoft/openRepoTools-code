@@ -121,10 +121,11 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: `test_a_client_of_another_uid_is_closed_by_so_peercred`: tasks:2278 at
 #: lane 3's commit 31 `8f50d105` says it fails until L5-S1, lane 5's T512,
 #: under the same Order (tasks:2302 there). T237zzr's row, and the rows of
-#: the letters after it for T512's chain 3, its commit 15 and its commit 20
-#: (lane 3, #165 6934144108, 6934055909, 6934655836 and 6935289154), are
-#: T237's other service rows, T512 and T513, the two tasks P23 lands. No task
-#: is common to every row, so there is no "*" row.
+#: the letters after it for T512's chain 3, its commit 15, its commit 20 and
+#: its commits 22 to 26 (lane 3, #165 6934144108, 6934055909, 6934655836,
+#: 6935289154, 6936069476 and 6937934447; lane 5, 6937684143), are T237's other service
+#: rows, T512 and T513, the two tasks P23 lands. No task is common to every
+#: row, so there is no "*" row.
 SQL_REGISTER_GATE_TABLE = {
     "test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither": ("T512", "T513"),  # T237; tasks:2302
     "test_a_bind_body_past_its_bound_ends_with_the_bounds_code_and_leaves_no_process": ("T502",),  # T214; tasks:2013
@@ -144,6 +145,8 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_fifo_at_register_lock_is_a_lock_that_cannot_be_opened": ("T512", "T513"),  # T237zzs; P23 (#165 6934144108)
     "test_a_fifo_at_register_log_never_holds_a_start_or_the_service": ("T512", "T513"),  # T237zzs; P23 (#165 6934144108)
     "test_a_guard_that_starts_too_late_refuses_2_without_a_read": ("T103", "T113", "T507"),  # T213; tasks:1992
+    "test_a_launched_start_refused_for_no_psql_where_run_fails_the_stamps_own_check_leaves_register_log_as_it_was": ("T512", "T513"),  # T237zzz; P23 (#165 6937934447)
+    "test_a_launched_start_whose_run_directory_fails_its_own_check_leaves_register_log_as_it_was": ("T512", "T513"),  # T237zzz; P23 (#165 6937934447)
     "test_a_live_bind_past_its_bound_that_timeout_has_not_ended_answers_2_and_names_the_pid_to_kill": ("T502",),  # T214; tasks:2013
     "test_a_malformed_bind_pid_waits_for_the_deadline_then_is_stale": ("T502",),  # T214; tasks:2013
     "test_a_noncanonical_out_names_no_facts_file_and_no_words": ("T502", "T514"),  # T214; tasks:2013, and T514 (T214z)
@@ -154,8 +157,10 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_service_that_cannot_start_falls_back_to_the_direct_read": ("T512", "T513"),  # T237; tasks:2302
     "test_a_service_that_never_answers_falls_back_inside_5_s": ("T512", "T513"),  # T237; tasks:2302
     "test_a_stale_socket_is_unlinked_under_the_lock_and_rebound": ("T512", "T513"),  # T237; tasks:2302
+    "test_a_start_refused_for_no_psql_is_not_stamped_where_run_fails_the_stamps_own_check": ("T512", "T513"),  # T237zzz; P23 (#165 6937684143)
+    "test_a_start_refused_for_no_psql_is_stamped_where_run_passes_the_stamps_own_check": ("T512", "T513"),  # T237zzz; P23 (#165 6937684143)
     "test_a_start_that_returns_at_a_live_socket_or_a_failed_bind_lets_register_lock_go": ("T512", "T513"),  # T237zzt; P23 (#165 6934144108)
-    "test_a_start_whose_run_directory_fails_the_sweeps_own_check_refuses_with_2_and_binds_nothing": ("T512", "T513"),  # T237zzv; P23 (#165 6935289154)
+    "test_a_start_whose_run_directory_fails_the_sweeps_own_check_refuses_with_2_and_binds_nothing": ("T512", "T513"),  # T237zzv, T237zzz; P23 (#165 6935289154, 6937684143)
     "test_a_whole_file_fetch_the_start_line_cuts_fills_the_image_cache_for_the_next_prompt": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_a_write_between_two_requests_is_in_the_next_answer": ("T107", "T227", "T228", "T512", "T513"),  # T237; tasks:2302
     "test_after_bound_one_moved_then_the_next_prompt_passes": ("T502",),  # T214; tasks:2013
@@ -8775,44 +8780,79 @@ def test_the_sweep_passes_over_an_entry_gone_logs_one_it_cannot_date_or_remove_a
     ]), said
 
 
-# THE START'S REFUSAL AT THE SWEEP'S OWN CHECK OF `run/` (T237zzv), T512's
-# commit 20, `0f188ab6` (commit 21, `71c32005`, changes comments and
-# docstrings only). THE ORACLE is lane 3's ruling on lane 5's question (#165
-# 6935289154): "when the sweep's own check of `run/` fails after `serve`'s
-# check passed, the start REFUSES with §2.2's exit 2. It does not bind by
-# path." And why: "A second check that fails means `run/` changed after it
-# was checked. Binding a socket there by path would trust a directory that
-# has just failed its check. §2.2 refuses that case, so the start ends
-# there." It asks for "a case for it in lane 2's T237 sweep cases". Socket
-# API section 2.2 (`f2098c21`, :163-168): "Never used, never repaired": a
-# directory that fails the check "is not used", "the service exits 2 naming
-# it", and `serve` "writes nothing in it". The code: `register_serve_sweep`
-# (:9448) returns why where its own check by a descriptor fails, in
-# `register_serve_dir_check`'s words; `register_serve_run` (:9650 at
-# `71c32005`, :9647 at `0f188ab6`) takes it at the call (:9755, :9751),
-# writes one line to standard error, `serve: REFUSED: the service's
-# directory <run> <why>, at the sweep's check, made after serve's first: ...`,
-# closes the lock's descriptor and returns `EXIT_REFUSED` (2, :150). Cases
-# and expectations are lane 5's, in `T512C20-REPORT-1117a.md`.
+# THE START'S REFUSAL AT ITS OWN SECOND CHECK OF `run/` (T237zzv, then
+# T237zzz), T512's commit 20, `0f188ab6` (commit 21, `71c32005`, changes
+# comments and docstrings only), then its commit 22, `e691f094`. THE ORACLE
+# is lane 3's ruling on lane 5's question (#165 6935289154): "when the
+# sweep's own check of `run/` fails after `serve`'s check passed, the start
+# REFUSES with §2.2's exit 2. It does not bind by path." And why: "A second
+# check that fails means `run/` changed after it was checked. Binding a
+# socket there by path would trust a directory that has just failed its
+# check. §2.2 refuses that case, so the start ends there." It asks for "a
+# case for it in lane 2's T237 sweep cases". Socket API section 2.2
+# (`f2098c21`, :163-168): "Never used, never repaired": a directory that
+# fails the check "is not used", "the service exits 2 naming it", and
+# `serve` "writes nothing in it". Cases and expectations are lane 5's, in
+# `T512C20-REPORT-1117a.md`.
+#
+# T237zzz: NO LOCK EITHER. Lane 3's BLOCKING 1 on `71c32005` (#165
+# 6935871785, Codex's order) moved the check ahead of the lock, and commit 22
+# makes it so. The code at T512's tip, `a47ab074` (commit 26):
+# `register_serve_run` (:9718) first opens `run/` once, with `O_DIRECTORY`
+# and `O_NOFOLLOW`, and checks that descriptor (`register_serve_dir_open`,
+# :9505, in `register_serve_dir_check`'s words) before any lock or socket
+# path is used; where it fails (:9769) it writes one line to standard error,
+# `serve: REFUSED: the service's directory <run> <why>, at the start's own
+# check by a descriptor, made after serve's first: ...`, and returns
+# `EXIT_REFUSED` (2, :150), having opened and made nothing in `run/`: "no
+# lock, no socket, no owner file and no stamp". At commits 20 and 21 the
+# same check was the sweep's (`register_serve_sweep`, :9448 at `71c32005`),
+# made after `register.lock` was opened by its path, and its line said `at
+# the sweep's check`; the case asserts the words both lines carry, `made
+# after serve's first`, which `cmd_serve`'s own refusal of the directory
+# does not. The refusal case asserts lane 2's letter as lane 5 sets it out
+# (#165 6937684143): exit 2; no `register.lock` in the failed `run/` or in a
+# link's target; no `register.sock` and no `s.*` socket; no `register.owner`
+# and no `register.failed`; and `register.log` byte for byte as before.
+#
+# T237zzz: AND NO STAMP (lane 2's choice, 6937684143; T512's commits 25,
+# `40713fa2`, and 26, `a47ab074`). `register_serve_stamp` (:7652), which
+# `cmd_serve` calls for `config-refused`, `path-too-long` and `no-psql`
+# after its first check, now checks `run/` by `register_serve_dir_open`
+# first (:7687): where that check fails it opens and writes nothing and
+# returns why, and `cmd_serve`'s note says `not stamped <cause>: <why>`
+# (:8033 for `no-psql`); the exit stays 2. `register_serve_dir_check` says
+# a directory that fails "is never stamped (ERR-28)". Before commit 25 the
+# stamp opened `register.lock` and wrote `register.failed` by their paths,
+# so a `run/` changed in that window was stamped, through a link into the
+# link's target. Of the three causes, `no-psql` is the one the stand-in
+# reaches: its `--version` changes `run/` and then names no version, so
+# `register_serve_psql` refuses it (:8029). `config-refused` and
+# `path-too-long` are stamped before `psql` is run, so no `psql` can change
+# `run/` between `cmd_serve`'s first check and their stamps.
 #
 # THE WINDOW, MADE DETERMINISTIC. `cmd_serve` checks the directory first
 # (`register_serve_dir_check`), then the configuration, then `psql`
 # (`register_serve_psql`: `psql --version`, once per process), and only then
-# runs `register_serve_run`, whose sweep makes the check again. A `psql`
-# whose `--version` changes `run/` therefore changes it after the first
-# check and before the second, every time (`_RUN_CHANGING_PSQL`).
+# runs `register_serve_run`, which makes the check again; a `psql` it
+# refuses is stamped (`register_serve_stamp`), which makes it again too. A
+# `psql` whose `--version` changes `run/` therefore changes it after the
+# first check and before the second, every time (`_RUN_CHANGING_PSQL`).
 #
 # NOT TESTED: another uid's `run/` and a `run/` whose `fstat` fails, which
-# the sweep's check refuses too: neither can be made for real as non-root
-# (lane 5 covers them with injected stand-ins). And `register.lock`, which
-# no case requires or forbids: the start opens and takes it by its path
-# before the sweep (socket API section 8.3's order, which commit 20 leaves),
-# so an empty one of this uid's may stand where the start reached, and lane
-# 5 states that as the refusal's limit.
+# the start's check refuses too: neither can be made for real as non-root
+# (lane 5 covers them with injected stand-ins). Nor a platform where
+# `os.open` takes no `dir_fd`, where the lock and the stamp go by their
+# paths after the check.
 
 #: THE THREE CHANGES lane 5 names, the ids of the refusal case: `run/` at
 #: mode 0755 or 0770, and `run/` renamed with a link in its place.
 RUN_CHANGES = ("mode-0755", "mode-0770", "link")
+#: The reason the second check gives for each change, in
+#: `register_serve_dir_check`'s words: for the link, only the phrase, since
+#: the error's text is the kernel's (on Linux, "Not a directory").
+RUN_REASONS = {"mode-0755": "is mode 755, not 700", "mode-0770": "is mode 770, not 700",
+               "link": "cannot be opened"}
 #: How long a start has to end, or to bind, in these cases.
 RUN_REFUSED_S = 15.0
 #: The leftovers of an earlier start that each case plants in `run/`: a
@@ -8831,7 +8871,9 @@ RUN_LEFT_LOG = "2026-11-16T00:00:00Z stopped: idle for 900 s\n"
 #: `run/` to `moved` and puts a symbolic link to `other` at its path; a
 #: control writes no file and changes nothing. `run-change.done` records
 #: what it did, so a case knows the change was made here, and a later
-#: `--version` call changes nothing.
+#: `--version` call changes nothing. With `fail` (T237zzz), that first
+#: `--version` call then exits 1 and prints nothing, a `psql` that names no
+#: version, which `serve` refuses as `no-psql` and stamps.
 _RUN_CHANGING_PSQL = r'''#!@PY@ -I
 import json, os, sys
 HERE = @HERE@
@@ -8852,6 +8894,8 @@ if args == ["--version"] and not os.path.exists(done):
         os.symlink(spec["other"], spec["run"])
     with open(done, "x", encoding="utf-8") as handle:
         handle.write(how + "\n")
+    if spec.get("fail"):
+        sys.exit(1)
 os.execv(REAL, [REAL] + args)
 '''
 
@@ -8868,18 +8912,20 @@ def _run_left(run: Path) -> frozenset:
     return frozenset(p.name for p in run.iterdir())
 
 
-def _run_changing_psql(est: Estate, how: str = None, **paths) -> Path:
+def _run_changing_psql(est: Estate, how: str = None, fail: bool = False, **paths) -> Path:
     """`_RUN_CHANGING_PSQL` as `psql` in a directory of its own, in front of
     the case's cluster's real one, set to change `run/` as `how` says (None:
-    not at all) with `paths` (`run`, and for `link`, `moved` and `other`).
+    not at all) with `paths` (`run`, and for `link`, `moved` and `other`),
+    and with `fail` to answer that `--version` call with no version.
     The directory is returned; `_with_path` puts it first on a `PATH`."""
     where = est.root / "run-change-bin"
     where.mkdir(parents=True, exist_ok=True)
     _script(where / "psql", _RUN_CHANGING_PSQL, PY=sys.executable, HERE=_q(where),
             REAL=_q(est.pg.cluster.tool("psql")))
-    if how is not None:
+    if how is not None or fail:
         (where / "run-change.json").write_text(
-            json.dumps({"how": how, **{k: str(v) for k, v in paths.items()}}), encoding="utf-8")
+            json.dumps({"how": how or "none", "fail": fail,
+                        **{k: str(v) for k, v in paths.items()}}), encoding="utf-8")
     return where
 
 
@@ -8926,39 +8972,47 @@ def _serve_until_it_ends_or_binds(est: Estate, where: Path, limit: float = RUN_R
 def test_a_start_whose_run_directory_fails_the_sweeps_own_check_refuses_with_2_and_binds_nothing(
         estate, change):
     """T237zzv, T512's commit 20 (lane 3's ruling, #165 6935289154; socket
-    API section 2.2): a `serve` whose `run/` passed `cmd_serve`'s check and
-    then fails the sweep's own, by the descriptor it opens, refuses with 2.
-    `run/` is this uid's at 0700 with a stamp temporary 11 minutes old, a
-    leftover socket and a `register.log` of one line (`_run_left`); the
-    stand-in `psql`'s `--version` (`_RUN_CHANGING_PSQL`), which `cmd_serve`
-    runs after its check and before `register_serve_run`, changes it:
+    API section 2.2), and T237zzz, its commit 22 (lane 3's BLOCKING 1, #165
+    6935871785; lane 2's letter as lane 5 sets it out, 6937684143): a
+    `serve` whose `run/` passed `cmd_serve`'s check and then fails the
+    start's own, by the descriptor it opens, refuses with 2 and opens and
+    makes nothing in it. `run/` is this uid's at 0700 with a stamp temporary
+    11 minutes old, a leftover socket and a `register.log` of one line
+    (`_run_left`); the stand-in `psql`'s `--version` (`_RUN_CHANGING_PSQL`),
+    which `cmd_serve` runs after its check and before `register_serve_run`,
+    changes it:
 
     - `[mode-0755]` and `[mode-0770]`: `run/` is made mode 0755, or 0770;
-      the sweep's check finds "is mode 755, not 700", or 770.
+      the start's check finds "is mode 755, not 700", or 770.
     - `[link]`: `run/` is renamed to `run.moved` and a link to another
       directory of this uid's at 0700, planted with leftovers of its own,
-      is put at its path; the sweep's open, with `O_NOFOLLOW`, fails, "cannot
-      be opened" (on Linux, "Not a directory": the case asserts the phrase,
-      not the error's text). The lock and the probe, which go by path, run
-      through the link first, as `serve` runs them.
+      is put at its path; the start's open, with `O_NOFOLLOW`, fails,
+      "cannot be opened" (on Linux, "Not a directory": the case asserts the
+      phrase, not the error's text). Before commit 22 the lock and the
+      probe, which went by path, ran through the link first.
 
     The start ends with 2, and standard error says `serve: REFUSED: the
-    service's directory` naming `run/`, the reason, and `at the sweep's
-    check`. It binds nothing: in each directory the start could have written
-    in (`run/`; or `run.moved` and the link's target) no socket, no
-    `register.sock`, no `register.owner` and no `register.failed`, and no
-    name at all besides the planted ones and `register.lock`, which the start
-    opened by its path before the sweep and which is neither required nor
-    forbidden. `register.log` is as it was, with no new line; and the stale
-    temporary and the leftover socket are still there, since the start sweeps
-    nothing in a directory that failed. The directory is never repaired: its
-    mode is the changed one, or the link is still the link.
+    service's directory` naming `run/`, the reason, and `made after serve's
+    first`, the words of the second check's line at commits 20 to 26 (its
+    `at the sweep's check` became `at the start's own check by a
+    descriptor` at commit 22), which `cmd_serve`'s own refusal does not
+    write. In each directory the start could have written in (`run/`; or
+    `run.moved` and the link's target), and as lane 5 sets lane 2's letter
+    out: no `register.lock`; no `register.sock` and no `s.*` socket; no
+    `register.owner` and no `register.failed`; `register.log` byte for byte
+    as it was; and no name at all besides the planted ones. The stale
+    temporary and the leftover socket are still there, since the start
+    sweeps nothing in a directory that failed. The directory is never
+    repaired: its mode is the changed one, or the link is still the link.
 
     Before commit 20 (`bc7f34c7`, commit 19) the sweep wrote one line to
     standard error, swept nothing and went on by `run/`'s path: the start
     bound a socket in the failed directory, wrote an owner file there and
-    served, and the case fails on its first assertion. The control is
-    `test_the_start_sweeps_when_run_passes_the_sweeps_own_check`."""
+    served, and the case fails on its first assertion. At commits 20 and 21
+    (`71c32005`) the start refused with 2 but had opened `register.lock` by
+    its path first, so an empty one stood in `run/`, or in the link's
+    target, and the case fails on its `register.lock` assertion. The control
+    is `test_the_start_sweeps_when_run_passes_the_sweeps_own_check`."""
     import stat as stat_mod
     est = estate(mode="primary")
     run = _run_dir(est)
@@ -8973,21 +9027,29 @@ def test_a_start_whose_run_directory_fails_the_sweeps_own_check_refuses_with_2_a
     code, bound, err = _serve_until_it_ends_or_binds(est, where)
     assert _changed_how(where) == change, \
         f"the stand-in psql did not change run/ at its --version call: {_changed_how(where)!r} {err!r}"
-    reason = {"mode-0755": "is mode 755, not 700", "mode-0770": "is mode 770, not 700",
-              "link": "cannot be opened"}[change]
+    reason = RUN_REASONS[change]
     went = ("it was still running" + (", with a socket at register.sock" if bound else "")
             if code is None else f"it ended {code}")
     assert (code == 2 and "serve: REFUSED: the service's directory" in err
-            and str(run) in err and reason in err and "at the sweep's check" in err), \
-        f"the start did not refuse at the sweep's check with 2 ({change}): {went}, stderr {err!r}"
+            and str(run) in err and reason in err and "made after serve's first" in err), \
+        (f"the start did not refuse at its second check of run/ with 2 ({change}): {went}, "
+         f"stderr {err!r}")
     for d in dirs:
         names = {p.name for p in d.iterdir()}
-        made = names - left - {"register.lock"}
-        assert not made, f"the start wrote {sorted(made)} in {d}, which failed the sweep's check"
+        made = names - left
+        # T237zzz: LANE 2'S LETTER AS LANE 5 SETS IT OUT (#165 6937684143).
+        assert "register.lock" not in names, \
+            f"the start made register.lock in {d}, which failed its check: it opens nothing there"
+        assert "register.sock" not in names and not [n for n in made if n.startswith("s.")], \
+            f"the start bound a socket in {d}, which failed its check: {sorted(made)}"
+        assert "register.owner" not in names and "register.failed" not in names, \
+            (f"the start wrote an owner file or a stamp in {d}, which failed its check: "
+             f"{sorted(made)}")
+        assert (d / "register.log").read_bytes() == RUN_LEFT_LOG.encode("utf-8"), \
+            f"the start wrote to register.log in {d}"
+        assert not made, f"the start made {sorted(made)} in {d}, which failed its check"
         assert not left - names, \
             f"the start removed {sorted(left - names)} from {d}: nothing is swept in a failed directory"
-        assert (d / "register.log").read_text(encoding="utf-8") == RUN_LEFT_LOG, \
-            f"the start wrote to register.log in {d}"
     if change == "link":
         assert os.path.islink(run) and os.readlink(run) == str(other), \
             "run/ is no longer the link the stand-in planted: it was repaired or replaced"
@@ -9027,3 +9089,298 @@ def test_the_start_sweeps_when_run_passes_the_sweeps_own_check(estate):
     assert {"register.sock", "register.owner"} <= names, \
         f"the start did not bind and write its owner file: {sorted(names)}"
     assert code == 0, f"the service did not end with 0 on SIGTERM: {code}"
+
+
+@pytest.mark.parametrize("change", RUN_CHANGES)
+def test_a_start_refused_for_no_psql_is_not_stamped_where_run_fails_the_stamps_own_check(
+        estate, change):
+    """T237zzz, T512's commits 25 and 26 (lane 5, #165 6937684143, "a `run/`
+    changed after the first check gives `not stamped <cause>: …`, nothing
+    written, and exit 2"; socket API section 2.2 and ERR-28: a directory
+    that fails its check is never stamped). The same `run/` and leftovers
+    as the refusal case (`_run_left`), and the same stand-in `psql`, whose
+    first `--version` call changes `run/` as `[mode-0755]`, `[mode-0770]`
+    or `[link]` says and then names no version (`fail`), so `cmd_serve`
+    refuses it, `no-psql`, and calls `register_serve_stamp`, whose own
+    check of `run/` by a descriptor fails.
+
+    The start ends with 2 and `serve: REFUSED: no usable psql:`. In each
+    directory the stamp could have written in (`run/`; or `run.moved` and
+    the link's target): no `register.lock`, no `register.failed` and no
+    temporary of it, no name at all besides the planted ones, none removed,
+    and `register.log` byte for byte as it was. The note says `not stamped
+    no-psql:` and why, `run/`'s path and the check's reason, and never
+    `stamped no-psql`. `run/` is not repaired.
+
+    Before commit 25 (`71c32005`, commit 21; and commits 22 to 24) the
+    stamp opened `register.lock` and wrote `register.failed` by their paths:
+    both stand in `run/`, or in the link's target, and the case fails on its
+    `register.lock` assertion. At commit 25 nothing is written, but the note
+    still says `stamped no-psql`, and the case fails on its note. The
+    control is
+    `test_a_start_refused_for_no_psql_is_stamped_where_run_passes_the_stamps_own_check`."""
+    import stat as stat_mod
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    left = _run_left(run)
+    dirs, other, moved = [run], None, None
+    if change == "link":
+        other = _state_home() / "link-target"
+        assert _run_left(other) == left, "the link's target was not planted as run/ was"
+        moved = run.with_name("run.moved")
+        dirs = [moved, other]
+    where = _run_changing_psql(est, change, fail=True, run=run, moved=moved, other=other)
+    code, bound, err = _serve_until_it_ends_or_binds(est, where)
+    assert _changed_how(where) == change, \
+        (f"the stand-in psql did not change run/ at its --version call: "
+         f"{_changed_how(where)!r} {err!r}")
+    went = ("it was still running" + (", with a socket at register.sock" if bound else "")
+            if code is None else f"it ended {code}")
+    assert code == 2 and "serve: REFUSED: no usable psql: " in err, \
+        f"the start did not refuse its psql with 2 ({change}): {went}, stderr {err!r}"
+    for d in dirs:
+        names = {p.name for p in d.iterdir()}
+        made = names - left
+        assert "register.lock" not in names, \
+            f"the stamp made register.lock in {d}, which failed its check: {sorted(made)}"
+        assert "register.failed" not in names and not [
+            n for n in made if n.startswith("register.failed.tmp-")], \
+            f"the start stamped {d}, which failed its check: {sorted(made)}"
+        assert not made, f"the start made {sorted(made)} in {d}, which failed its check"
+        assert not left - names, f"the start removed {sorted(left - names)} from {d}"
+        assert (d / "register.log").read_bytes() == RUN_LEFT_LOG.encode("utf-8"), \
+            f"the start wrote to register.log in {d}"
+    assert ("not stamped no-psql: " in err and f"{run} {RUN_REASONS[change]}" in err
+            and "; stamped no-psql" not in err), \
+        f"the note did not say no-psql was not stamped, and why ({change}): stderr {err!r}"
+    if change == "link":
+        assert os.path.islink(run) and os.readlink(run) == str(other), \
+            "run/ is no longer the link the stand-in planted: it was repaired or replaced"
+    else:
+        assert stat_mod.S_IMODE(os.lstat(run).st_mode) == int(change[5:], 8), \
+            "run/'s mode was changed back: a directory that fails its check is never repaired"
+
+
+def test_a_start_refused_for_no_psql_is_stamped_where_run_passes_the_stamps_own_check(estate):
+    """T237zzz, the control (lane 5, #165 6937684143: "With `run/` good, it
+    stamps as before"): the same leftovers in `run/` and the same stand-in
+    `psql`, whose first `--version` call changes nothing and names no
+    version. `run/` passes the stamp's own check as it passed `cmd_serve`'s,
+    so `no-psql` is stamped under `register.lock` (socket API section 8.6),
+    before commits 25 and 26 and after them: exit 2, `serve: REFUSED: no
+    usable psql:` and `stamped no-psql` on standard error; `register.failed`
+    holds the UTC and `no-psql` and no other text; `register.lock` and
+    `register.failed` are the only new names, so no temporary of the stamp
+    is left and nothing is bound; nothing is swept; and `register.log` is
+    as it was."""
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    left = _run_left(run)
+    where = _run_changing_psql(est, fail=True)
+    code, bound, err = _serve_until_it_ends_or_binds(est, where)
+    names = {p.name for p in run.iterdir()}
+    assert _changed_how(where) == "none", \
+        (f"the stand-in psql's --version was not reached, or changed run/: "
+         f"{_changed_how(where)!r} {err!r}")
+    went = ("it was still running" + (", with a socket at register.sock" if bound else "")
+            if code is None else f"it ended {code}")
+    assert (code == 2 and "serve: REFUSED: no usable psql: " in err
+            and "; stamped no-psql" in err), \
+        f"the start did not refuse its psql with 2 and stamp no-psql: {went}, stderr {err!r}"
+    stamp = run / "register.failed"
+    words = stamp.read_text(encoding="ascii").split() if stamp.is_file() else None
+    assert words is not None and len(words) == 2 and words[1] == "no-psql", \
+        f"register.failed does not hold the UTC and no-psql alone: {words!r}"
+    assert names - left == {"register.lock", "register.failed"}, \
+        (f"the stamp made more, or less, than register.lock and register.failed: "
+         f"{sorted(names - left)}")
+    assert not left - names, f"the start removed {sorted(left - names)} from {run}"
+    assert (run / "register.log").read_bytes() == RUN_LEFT_LOG.encode("utf-8"), \
+        f"the start wrote to register.log in {run}"
+
+
+# T237zzz: THE SAME CHECKS THROUGH THE LAUNCH PATH, `register.log` FIRST
+# (lane 3's Codex review of `a47ab074`, #165 6937934447, BLOCKING 1, ruled
+# IN: "`register_serve_launch` opens `register.log` and gives that
+# descriptor to the child as its stderr (:7914-7922). So the refusal's note
+# (:9772-9776), and a failed stamp's "not stamped" (:8018-8033), append to
+# the log inside the directory that failed"; and "Lane 2's further letter
+# for T237zzv asserts `register.log` unchanged in a `run/` that failed,
+# beside no `register.lock`"). The cases above start `serve` with its
+# standard error on the case's pipe, so they cannot see that write; these
+# start it as a client does, `lanes-index serve --start`
+# (`register_serve_start_only`, then `register_serve_launch`), with the same
+# stand-in `psql` and the same changes of `run/`, made after the starter's
+# check and `serve`'s first. The service is detached from the starter, so a
+# small reaper (`_LAUNCH_REAPER`) runs the starter as a child subreaper
+# (Linux's `PR_SET_CHILD_SUBREAPER`), takes the detached service as its own
+# child when the starter exits, and reads its exit code with `waitpid`.
+# Codex's fix keeps the start's diagnostics on a descriptor outside `run/`
+# until the child holds and has checked its `run/` descriptor, so the
+# starter's own standard error is kept in a file, never a pipe a service
+# could hold open.
+
+#: THE REAPER: runs its argv (`serve --start`) with its output in
+#: `@OUT@.start-out` and `.start-err`, as a child subreaper, then waits, up
+#: to `@LIMIT@` seconds, for every process the starter left; one still alive
+#: then is sent `SIGTERM` and waited for again. `@OUT@` gets, as JSON,
+#: whether it is a subreaper, the starter's exit code, each reaped
+#: `[pid, exit code]` and whether the wait timed out.
+_LAUNCH_REAPER = r'''#!@PY@ -I
+import ctypes, json, os, signal, subprocess, sys
+OUT = @OUT@
+LIMIT = @LIMIT@
+reaper = ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+def children():
+    pids = []
+    for tid in os.listdir("/proc/self/task"):
+        try:
+            with open(f"/proc/self/task/{tid}/children", encoding="ascii") as handle:
+                pids += [int(p) for p in handle.read().split()]
+        except OSError:
+            pass
+    return pids
+def alarm(signum, frame):
+    raise TimeoutError
+signal.signal(signal.SIGALRM, alarm)
+with open(OUT + ".start-out", "wb") as out, open(OUT + ".start-err", "wb") as err:
+    start = subprocess.run(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=out, stderr=err)
+ended, timed_out = [], False
+signal.alarm(LIMIT)
+try:
+    while True:
+        try:
+            pid, status = os.waitpid(-1, 0)
+        except ChildProcessError:
+            break
+        ended.append([pid, os.waitstatus_to_exitcode(status)])
+except TimeoutError:
+    timed_out = True
+    for pid in children():
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    signal.alarm(10)
+    try:
+        while True:
+            pid, status = os.waitpid(-1, 0)
+            ended.append([pid, os.waitstatus_to_exitcode(status)])
+    except (ChildProcessError, TimeoutError):
+        pass
+signal.alarm(0)
+with open(OUT, "w", encoding="utf-8") as handle:
+    json.dump({"reaper": reaper, "start": start.returncode, "ended": ended,
+               "timed_out": timed_out}, handle)
+'''
+
+
+def _launch_until_the_service_ends(est: Estate, where: Path, limit: float = RUN_REFUSED_S) -> dict:
+    """`lanes-index serve --start`, as a client starts the service, with
+    `where` first on its `PATH`, under `_LAUNCH_REAPER`: the reaper's JSON,
+    with the starter's standard error as `err`. Skips where this platform
+    has no child subreaper (Linux's `prctl`)."""
+    out = est.root / "launch.json"
+    reaper = _script(est.root / "launch-reaper", _LAUNCH_REAPER, PY=sys.executable, OUT=_q(out),
+                     LIMIT=str(int(limit)))
+    subprocess.run([str(reaper), sys.executable, str(est.index), "serve", "--start"],
+                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                   env=est.env(PATH=_with_path(est, where)), cwd=str(est.wip),
+                   timeout=limit + 30)
+    got = json.loads(out.read_text(encoding="utf-8"))
+    if not got["reaper"]:
+        pytest.skip("no child subreaper here (PR_SET_CHILD_SUBREAPER is Linux's)")
+    got["err"] = Path(str(out) + ".start-err").read_text(encoding="utf-8", errors="replace")
+    return got
+
+
+def _launched_and_left_as_it_was(est: Estate, change: str, fail: bool) -> None:
+    """The launch-path case for `change`, a refusal (`fail` False) or a
+    `no-psql` stamp (`fail` True): lane 5's oracle (#165 6937684143) in
+    each directory the start could have written in, `register.lock` first
+    and `register.log` byte for byte as Codex's BLOCKING 1 asks (#165
+    6937934447)."""
+    import stat as stat_mod
+    run = _run_dir(est)
+    left = _run_left(run)
+    dirs, other, moved = [run], None, None
+    if change == "link":
+        other = _state_home() / "link-target"
+        assert _run_left(other) == left, "the link's target was not planted as run/ was"
+        moved = run.with_name("run.moved")
+        dirs = [moved, other]
+    where = _run_changing_psql(est, change, fail=fail, run=run, moved=moved, other=other)
+    got = _launch_until_the_service_ends(est, where)
+    assert _changed_how(where) == change, \
+        (f"the launched service's stand-in psql did not change run/ at its --version call: "
+         f"{_changed_how(where)!r} {got!r}")
+    assert not got["timed_out"] and [code for _pid, code in got["ended"]] == [2], \
+        f"the launched service did not end with 2 alone ({change}): {got!r}"
+    for d in dirs:
+        names = {p.name for p in d.iterdir()}
+        made = names - left
+        assert "register.lock" not in names, \
+            f"the launched start made register.lock in {d}, which failed its check: {sorted(made)}"
+        assert "register.sock" not in names and not [n for n in made if n.startswith("s.")], \
+            f"the launched start bound a socket in {d}, which failed its check: {sorted(made)}"
+        assert not {"register.owner", "register.failed"} & names and not [
+            n for n in made if n.startswith("register.failed.tmp-")], \
+            (f"the launched start wrote an owner file or a stamp in {d}, which failed its "
+             f"check: {sorted(made)}")
+        log = (d / "register.log").read_bytes()
+        assert log == RUN_LEFT_LOG.encode("utf-8"), \
+            (f"the launched start wrote to register.log in {d}, which failed its check "
+             f"(#165 6937934447, BLOCKING 1): {log[len(RUN_LEFT_LOG):]!r}")
+        assert not made, f"the launched start made {sorted(made)} in {d}, which failed its check"
+        assert not left - names, f"the launched start removed {sorted(left - names)} from {d}"
+    if change == "link":
+        assert os.path.islink(run) and os.readlink(run) == str(other), \
+            "run/ is no longer the link the stand-in planted: it was repaired or replaced"
+    else:
+        assert stat_mod.S_IMODE(os.lstat(run).st_mode) == int(change[5:], 8), \
+            "run/'s mode was changed back: a directory that fails its check is never repaired"
+
+
+@pytest.mark.parametrize("change", RUN_CHANGES)
+def test_a_launched_start_whose_run_directory_fails_its_own_check_leaves_register_log_as_it_was(
+        estate, change):
+    """T237zzz, the refusal case through the launch path (lane 3's Codex
+    review of `a47ab074`, #165 6937934447, BLOCKING 1; lane 5's oracle,
+    6937684143; socket API section 2.2 and ERR-28). `serve --start` checks
+    `run/` and launches the service with `register.log` as its standard
+    error (`register_serve_launch`); the service passes its first check,
+    and the stand-in `psql`'s `--version` then changes `run/` as
+    `[mode-0755]`, `[mode-0770]` or `[link]` says. The service ends with 2
+    (read by the reaper), and in each directory it could have written in:
+    no `register.lock`; no `register.sock` and no new `s.*`; no
+    `register.owner` and no `register.failed`; `register.log` byte for byte
+    as it was; no new name and none removed; `run/` not repaired.
+
+    At `a47ab074` (commit 26) the refusal's line is appended to
+    `register.log` in the failed `run/`, the launcher's descriptor of it,
+    and the case fails on its `register.log` assertion alone; before commit
+    22 (`71c32005`) it fails first on `register.lock`. It passes once the
+    start's diagnostics stay outside `run/` until its own check has passed
+    (Codex's first fix, ruled IN)."""
+    _launched_and_left_as_it_was(estate(mode="primary"), change, fail=False)
+
+
+@pytest.mark.parametrize("change", RUN_CHANGES)
+def test_a_launched_start_refused_for_no_psql_where_run_fails_the_stamps_own_check_leaves_register_log_as_it_was(
+        estate, change):
+    """T237zzz, the stamp case through the launch path (#165 6937934447,
+    BLOCKING 1: "a failed stamp's "not stamped" (:8018-8033)" appends to the
+    log inside the directory that failed): the same launch, with the
+    stand-in's `--version` changing `run/` and then naming no version, so
+    the service refuses `no-psql` and `register_serve_stamp`'s own check of
+    `run/` fails. The service ends with 2, and in each directory: no
+    `register.lock`, no socket, no `register.owner`, no `register.failed`
+    and no temporary of it, `register.log` byte for byte as it was, no new
+    name and none removed; `run/` not repaired.
+
+    At `a47ab074` the note `not stamped no-psql: ...` is appended to
+    `register.log` in the failed `run/`, and the case fails on its
+    `register.log` assertion alone; before commit 25 (`71c32005`, and
+    commits 22 to 24) it fails first on `register.lock`, with
+    `register.failed` written beside it."""
+    _launched_and_left_as_it_was(estate(mode="primary"), change, fail=True)
