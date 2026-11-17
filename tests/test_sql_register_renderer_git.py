@@ -3342,6 +3342,11 @@ def test_a_clean_up_never_signals_a_logged_pid_and_start_token_without_the_case_
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                     start_new_session=True)
         procs.append(stranger)
+        until = time.monotonic() + 5  # their environments are set only once their execs are done
+        while (_carried(renderer.pid) != nonce
+               or not Path(f"/proc/{stranger.pid}/environ").read_bytes()):
+            assert time.monotonic() < until, "a child's environment was never set"
+            time.sleep(0.005)
         logged = [{"renderer": proc.pid, "renderer_start": _stat(proc.pid)["start"]}
                   for proc in procs]
         est = SimpleNamespace(root=estate, bin=estate / "bin", nonce=nonce,
