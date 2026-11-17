@@ -1319,8 +1319,23 @@ REGISTER_HEADER = ["# LANES.md", "",
                    "|---|---|---|---|---|---|---|"]
 #: A password in the configuration's password file, which no output carries.
 SECRET = "t215-secret-password"
+#: A password-file form, `<host>:<port>:<database>:<user>:<password>` (`*` for
+#: any of the first four, `\:` and `\\` escaped), wherever it is: in a run of
+#: text with no blank, all that follows the fourth colon is taken as the
+#: password, so a field more, before or after it, hides no password.
+_PASSWORD_FILE_FORM = re.compile(r"((?:(?:[^:\s\\]|\\.)*:){4})(?:[^\s\\]|\\.)+")
 #: The probe's answer where the database answers with the switch at primary.
 PRIMARY = [{"match": "register_switch", "stdout": "primary|5|cutover\n", "exit": 0}]
+
+
+def _redacted(text: str) -> str:
+    """`text` as a failure may quote it (T219k): SECRET, and the last field of
+    each password-file form, read `<password>`. The two password-absence
+    cases take each oracle on their output as a bool, from the output itself,
+    and quote the output only redacted, so that neither a message of theirs
+    nor pytest's rewrite of an operand prints a password (Codex's SHOULD 7 on
+    P09 at `21dd3642`; 6931509747)."""
+    return _PASSWORD_FILE_FORM.sub(r"\1<password>", (text or "").replace(SECRET, "<password>"))
 
 
 def _register(session_cell: str) -> str:
@@ -1389,20 +1404,26 @@ def test_the_guards_outage_refusal_names_the_store_the_cause_and_both_ways_out(t
                                encoding="utf-8")
     config = estate.config()
     result = estate.guard(config)
-    out = result["out"]
+    # NO PASSWORD IN A FAILURE (T219k): each oracle on the output is a bool
+    # taken from the raw text, and each message quotes it `_redacted`; no
+    # assert has the output as an operand, which pytest's rewrite prints.
+    raw, leaked = result["out"], SECRET in result["err"]
+    out, err = _redacted(raw), _redacted(result["err"])
     assert not result["killed"], "the hook was killed at 5 s, and the prompt passed"
     assert estate.psql_starts(), (
         f"the guard made no direct read: the fake psql has no call: {out[-600:]}")
     assert result["exit"] == 2, f"the guard exited {result['exit']}"
-    added = re.search(r"the register could not be read \(([^)]*)\)", out)
+    added = re.search(r"the register could not be read \(([^)]*)\)", raw)
     assert added, f"the refusal adds no name after `the register could not be read`: {out[-600:]}"
-    assert "register_db" in added.group(1), (
-        f"the added name {added.group(1)!r} does not name the database as register_url= gives it")
-    assert "t215_login" not in added.group(1), (
-        f"the added name {added.group(1)!r} carries the URL's user")
-    assert SECRET not in result["err"], f"stderr carries the password: {result['err'][-600:]}"
+    name = added.group(1)
+    names_db, names_user = "register_db" in name, "t215_login" in name
+    assert names_db, (
+        f"the added name {_redacted(name)!r} does not name the database as register_url= gives it")
+    assert not names_user, f"the added name {_redacted(name)!r} carries the URL's user"
+    assert not leaked, f"stderr carries the password: {err[-600:]}"
     for words in ("lanes-index status", "lanes-index rollback", "CLAUDE_NO_LANE=1"):
-        assert words in out, f"the refusal does not carry {words!r}: {out[-600:]}"
+        carried = words in raw
+        assert carried, f"the refusal does not carry {words!r}: {out[-600:]}"
 
 
 def test_claude_no_lane_lets_a_session_through_before_any_input(tmp_path):
@@ -1467,14 +1488,105 @@ def test_status_and_rollback_run_with_no_lane_session_and_no_guard(tmp_path, ver
     lane = WINDOW if verb == "rollback" else None
     env = estate.guard_env(config, TMUX=None, TMUX_PANE=None, LANES_LANE=lane)
     proc, elapsed = _index(estate, config, verb, env=env)
-    out = proc.stdout + proc.stderr
+    # NO PASSWORD IN A FAILURE (T219k), as in the guard's refusal above: no
+    # operand is the output, or `proc`, whose repr pytest's rewrite would print
+    # with its stdout and stderr.
+    raw = proc.stdout + proc.stderr
+    code, leaked, out = proc.returncode, SECRET in raw, _redacted(raw)
     bound = WAY_OUT_BOUND[verb]
     assert elapsed < 2 * bound, f"{verb} took {elapsed:.2f} s"
     _record(f"{verb} with the database stopped", elapsed, bound, "timing rule 2")
-    assert proc.returncode == 69, f"{verb} exited {proc.returncode}: {out[-600:]}"
+    assert code == 69, f"{verb} exited {code}: {out[-600:]}"
     if verb == "status":
-        assert _names_the_store(out), f"{verb} names no store: {out[-600:]}"
-    assert SECRET not in out
+        named = _names_the_store(raw)
+        assert named, f"{verb} names no store: {out[-600:]}"
+    assert not leaked, f"{verb}'s output carries the password: {out[-600:]}"
+
+
+class _Leaky:
+    """T219k's stand-in for `Estate` in the two password-absence cases: no
+    guard runs, and `guard()` and `psql_starts()` answer as the case gives."""
+
+    def __init__(self, root: Path, answer: dict, started: bool = True):
+        self.passfile = root / "pgpass"
+        self.answer, self.started = answer, started
+
+    def config(self) -> Path:
+        return self.passfile.parent / "lanes-index.conf"
+
+    def guard(self, config: Path) -> dict:
+        return dict(self.answer)
+
+    def psql_starts(self) -> list:
+        return [{"start": 0.0}] if self.started else []
+
+    def guard_env(self, config: Path, **extra) -> dict:
+        return {}
+
+
+def test_a_password_absence_case_that_fails_prints_no_password(tmp_path, monkeypatch):
+    """T219k (Codex's SHOULD 7 on P09 at `21dd3642`; 6931509747), with no
+    guard, no `lanes-index` and no database: the guard's refusal case and
+    both ids of the way-out case run on stand-ins for `Estate` and `_index`
+    whose output carries SECRET, bare and in its password-file line, and
+    another password, in a password-file line of its own. Each oracle of the
+    two cases is made to fail in turn; each failure is that oracle's own, and
+    its text, the message with pytest's rewrite of the operands, holds
+    neither password. A healthy output passes both cases. Before T219k the
+    messages quoted the raw output, and `assert SECRET not in out`, rewritten,
+    printed SECRET and the output. Each check here is a bool, so no failure of
+    this case prints a password either."""
+    module = sys.modules[__name__]
+    other = uuid.uuid4().hex
+    lines = (f"127.0.0.1:55432:other_db:t215_login:{SECRET}\n"
+             f"*:*:other_db:lanes_w_t219:{other}\n"
+             f"psql: the password {SECRET} was refused\n")
+    refusal = "lanes-index: the register could not be read (database register_db at 127.0.0.1:55432)\n"
+    ways = "run lanes-index status, or lanes-index rollback from a shell or a CLAUDE_NO_LANE=1 session\n"
+
+    def guard(out: str, err: str, started: bool = True, code: int = 2):
+        def run():
+            answer = {"exit": code, "killed": False, "out": out + err, "err": err,
+                      "t0": 0.0, "elapsed": 0.1}
+            monkeypatch.setattr(module, "Estate", lambda root, messages: _Leaky(root, answer, started))
+            test_the_guards_outage_refusal_names_the_store_the_cause_and_both_ways_out(tmp_path)
+        return run
+
+    def way_out(verb: str, out: str, err: str, code: int = 69):
+        def run():
+            proc = subprocess.CompletedProcess(["lanes-index", verb], code, out, err)
+            monkeypatch.setattr(module, "Estate", lambda root, messages: _Leaky(root, {}))
+            monkeypatch.setattr(module, "_index", lambda *argv, **options: (proc, 0.1))
+            test_status_and_rollback_run_with_no_lane_session_and_no_guard(tmp_path, verb)
+        return run
+
+    failing = [
+        ("no-read", guard(lines, refusal + ways, started=False), "the fake psql has no call"),
+        ("exit", guard(lines, refusal + ways, code=0), "the guard exited 0"),
+        ("no-name", guard(lines, ways), "adds no name"),
+        ("no-database", guard(lines, f"the register could not be read (login {SECRET})\n" + ways),
+         "does not name the database"),
+        ("user", guard(lines, f"the register could not be read (register_db t215_login:{SECRET})\n"
+                       + ways), "carries the URL's user"),
+        ("stderr", guard("", refusal + ways + lines), "stderr carries the password"),
+        ("way-out", guard(lines, refusal + "run lanes-index status\n"),
+         "does not carry 'lanes-index rollback'"),
+        ("status-exit", way_out("status", lines, refusal, code=1), "status exited 1"),
+        ("status-no-store", way_out("status", lines, "lanes-index: the store is down\n"),
+         "status names no store"),
+        ("status-leak", way_out("status", refusal, lines), "status's output carries the password"),
+        ("rollback-exit", way_out("rollback", lines, refusal, code=0), "rollback exited 0"),
+        ("rollback-leak", way_out("rollback", "", lines), "rollback's output carries the password"),
+    ]
+    for case, run, want in failing:
+        with pytest.raises(AssertionError) as failed:
+            run()
+        said = str(failed.value)
+        kept, own = SECRET in said or other in said, want in said
+        assert not kept, f"[{case}] the failure's text holds a password"
+        assert own, f"[{case}] the failure is not the oracle's own, {want!r}: {said[-300:]}"
+    for run in (guard("", refusal + ways), way_out("status", refusal, ""), way_out("rollback", "", "")):
+        run()
 
 
 def test_outage_declare_writes_its_fields_and_clear_removes_it(tmp_path):
