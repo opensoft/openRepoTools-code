@@ -1179,6 +1179,8 @@ def test_pytests_own_report_of_a_measure_failure_shows_no_planted_writer_text(re
                                            f"{CANDIDATES[1]}\tw2\n{planted}\n", "")
         with pytest.raises(AssertionError) as failed:
             _listed_as_expected(proc, "files", [CANDIDATES[0]])
+        assert planted in str(failed.getrepr(style="long", funcargs=True)), \
+            "a long report does not show the planted value, so this proves nothing"
     else:
         class _Pipe:
             def close(self) -> None:
