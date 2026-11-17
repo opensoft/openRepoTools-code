@@ -471,13 +471,20 @@ class Session:
         return self.err[start:].decode("utf-8", "replace")
 
     def exit_now(self) -> str:
-        """Its `psql`'s exit where it has ended, else that it still runs, by
-        `poll()` alone, at the moment it is asked (T258s; lane 2's targeted
-        check RV9-39 of P09 at `3c5b68bc`, S3: `send` returns where `psql`
-        ended too, so a message that said "its session still open" could say
-        the opposite of the truth)."""
-        code = self.proc.poll()
-        return f"its psql exit {code}" if code is not None else "no exit, its psql still running"
+        """Its `psql`'s exit where it has ended, else that it still runs, at
+        the moment it is asked (T258s; lane 2's targeted check RV9-39 of P09
+        at `3c5b68bc`, S3: `send` returns where `psql` ended too, so a message
+        that said "its session still open" could say the opposite of the
+        truth). It waits for the exit at most 1 s (T258u; lane 2's pre-review
+        RV9-40 of P09 at `161c3087`, S2): a `psql` closes its pipes as it
+        ends, before its exit can be reaped, so `poll()` alone, right after
+        `send` returned at stderr's end, said "still running" for a `psql`
+        that had ended in 8 of 300 runs. Only a failure's message asks."""
+        try:
+            code = self.proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            return "no exit in 1 s, its psql still running"
+        return f"its psql exit {code}"
 
     def close(self) -> subprocess.CompletedProcess:
         """`psql`'s stdin closed; then its stdout and stderr read together to
