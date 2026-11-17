@@ -1817,10 +1817,12 @@ def _end_held(session, *, kill: bool) -> None:
 
     Whatever the kill and the reap do, the readers are joined and the pipes
     closed (`_end_pipes`), in a `finally`. Before T255n a reap that raised
-    skipped both. A failure of the kill or the reap, as the reap's
-    `TimeoutExpired`, is kept and raised once they are done, with the first
-    clean-up failure as its cause; after a clean reap, the first clean-up
-    failure is raised."""
+    skipped both. A kill that raises is kept and the bounded reap is still
+    tried (T255p; Codex's review of P09 at `b8f9e35a`, item 8); before
+    T255p it skipped the reap. A failure of the kill or the reap, as the
+    reap's `TimeoutExpired`, is kept, the kill's where both fail, and raised
+    once they are done, with the first clean-up failure as its cause; after
+    a clean reap, the first clean-up failure is raised."""
     with contextlib.suppress(OSError):
         session.stdin.close()
     if not kill:
@@ -1828,11 +1830,15 @@ def _end_held(session, *, kill: bool) -> None:
             session.wait(timeout=60)
     reaped = None
     try:
-        if session.poll() is None:
-            session.kill()
-        session.wait(timeout=REAP_S)
-    except Exception as exc:
-        reaped = exc
+        try:
+            if session.poll() is None:
+                session.kill()
+        except Exception as exc:
+            reaped = exc
+        try:
+            session.wait(timeout=REAP_S)
+        except Exception as exc:
+            reaped = exc if reaped is None else reaped
     finally:
         left = _end_pipes(session)
     if reaped is not None:
@@ -2004,12 +2010,13 @@ class _StandInSession:
     """A held session that never ends in the time it is given, for T255n's
     case, with no process: its kill and each wait are recorded in `events`,
     with its readers' joins and its pipes' closes, and each wait raises
-    `TimeoutExpired`. Its stderr reader `stays` running where asked."""
+    `TimeoutExpired`. Its stderr reader `stays` running where asked, and
+    its kill raises `PermissionError` where it `refuses` (T255p)."""
 
     args, returncode = ("psql",), None
 
-    def __init__(self, stays: bool):
-        self.events = []
+    def __init__(self, stays: bool, refuses: bool = False):
+        self.events, self.refuses = [], refuses
         self.stdin, self.stdout, self.stderr = (_StandInPipe(name, self.events)
                                                 for name in ("stdin", "stdout", "stderr"))
         self.readers = [_StandInReader("stdout-reader", self.events, False),
@@ -2020,13 +2027,15 @@ class _StandInSession:
 
     def kill(self) -> None:
         self.events.append("kill")
+        if self.refuses:
+            raise PermissionError("T255p's stand-in: the kill was refused")
 
     def wait(self, timeout=None):
         self.events.append(f"wait {timeout:g}")
         raise subprocess.TimeoutExpired(self.args, timeout)
 
 
-@pytest.mark.parametrize("case", ["kill", "no-kill", "reader-left"])
+@pytest.mark.parametrize("case", ["kill", "no-kill", "reader-left", "kill-fails"])
 def test_a_held_sessions_end_joins_its_readers_and_closes_its_pipes_where_its_reap_fails(case):
     """`_end_held` where the reap after the kill raises (T255n; Codex's
     review of P09 at `d3a2fd5c`, SHOULD 2), with no engine and no process:
@@ -2042,9 +2051,14 @@ def test_a_held_sessions_end_joins_its_readers_and_closes_its_pipes_where_its_re
     runs at the deadline. The reap's error is still the one raised, with
     that reader named in its cause; stdin and stdout are closed, and stderr
     is left to its reader, since a close of it would wait on the read the
-    reader is blocked in (`_end_pipes`)."""
-    session = _StandInSession(stays=case == "reader-left")
-    with pytest.raises(subprocess.TimeoutExpired) as failed:
+    reader is blocked in (`_end_pipes`). `[kill-fails]`: the kill raises
+    `PermissionError` (T255p; Codex's review of P09 at `b8f9e35a`, item 8).
+    The bounded reap is still tried, and the kill's error is the one raised,
+    once both readers are joined and the three pipes closed. Before T255p the
+    kill's error skipped the reap."""
+    session = _StandInSession(stays=case == "reader-left", refuses=case == "kill-fails")
+    raised = PermissionError if case == "kill-fails" else subprocess.TimeoutExpired
+    with pytest.raises(raised) as failed:
         _end_held(session, kill=case != "no-kill")
     want = (["close stdin"] + (["wait 60"] if case == "no-kill" else [])
             + ["kill", f"wait {REAP_S:g}", "join stdout-reader", "join stderr-reader",
