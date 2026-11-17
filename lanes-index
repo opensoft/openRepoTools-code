@@ -7649,11 +7649,15 @@ def _register_serve_open_regular(path: str, flags: int, *, dir_fd: int | None = 
     return fd
 
 
-def register_serve_stamp(paths: dict, cause: str) -> None:
+def register_serve_stamp(paths: dict, cause: str) -> tuple:
     """THE FAILURE STAMP, `register.failed` (Y:3926-3931; socket API §8.6):
     the UTC and the fixed cause, and no other text, for the three causes that
     end `serve` before it listens: `path-too-long`, `config-refused` and
-    `no-psql`. A stamp that cannot be written is passed over.
+    `no-psql`. A stamp that cannot be written is passed over, and said: it
+    returns (True, "") only where it wrote the stamp, else (False, why), and
+    `cmd_serve`'s note says "stamped <cause>" only in the first case, and
+    otherwise "not stamped <cause>" and why (lane 5's re-review of
+    40713fa2, NIT A, commit 26). No exit depends on it.
 
     ONLY UNDER `register.lock` (lane 1's U5 gate, #165 6882025131, N9;
     socket API 8.6, draft 13): `serve` makes these checks before it takes
@@ -7681,8 +7685,9 @@ def register_serve_stamp(paths: dict, cause: str) -> None:
     the lock and the stamp go by their paths, as before, but after the
     check."""
     run_fd, why = register_serve_dir_open(paths["run"])
-    if why:
-        return                      # a `run/` that fails its check is never stamped (ERR-28)
+    if why:                         # a `run/` that fails its check is never stamped (ERR-28)
+        return False, (f"its directory {paths['run']} {why}, at the stamp's own check by a "
+                       f"descriptor")
     at = (os.open in os.supports_dir_fd and os.rename in os.supports_dir_fd
           and os.unlink in os.supports_dir_fd)
     lock = None
@@ -7698,22 +7703,31 @@ def register_serve_stamp(paths: dict, cause: str) -> None:
         if lock is not None:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                return              # a service holds it: no stamp
+            except OSError as exc:
+                # A SERVICE HOLDS IT: NO STAMP.
+                return False, (f"register.lock is held by another process, or could not be "
+                               f"locked ({exc.strerror or exc})")
         data = f"{utc_now()} {cause}\n".encode("ascii")
         if at:
             _register_serve_write(REGISTER_SERVE_FILES["failed"], data, dir_fd=run_fd)
         else:
             _register_serve_write(paths["failed"], data)
-    except OSError:
-        pass
+    except OSError as exc:
+        return False, f"register.failed could not be written ({exc.strerror or exc})"
     finally:
+        # EACH CLOSE IS GUARDED (lane 5's re-review of 40713fa2, NIT B, commit
+        # 26): an error closing the lock leaks no `run_fd` and raises nothing,
+        # so the caller's exit stays 2.
         if lock is not None:
-            os.close(lock)
+            try:
+                os.close(lock)
+            except OSError:
+                pass
         try:
             os.close(run_fd)
         except OSError:
             pass
+    return True, ""
 
 
 def _register_serve_read_regular(path: str, size: int) -> bytes:
@@ -8000,21 +8014,23 @@ def cmd_serve(args: list[str]) -> int:
             raise Refusal(f"this workstation's configuration is mode={cfg['mode']}")
         store = PostgresStore(cfg, "register_reader")
     except Refusal as exc:
-        register_serve_stamp(paths, "config-refused")
+        stamped, why = register_serve_stamp(paths, "config-refused")
         note(f"serve: REFUSED: {exc}. The register service runs only where the configuration "
-             f"is mode=primary and loads; stamped config-refused")
+             f"is mode=primary and loads; "
+             + ("stamped config-refused" if stamped else f"not stamped config-refused: {why}"))
         return EXIT_REFUSED
     size = register_serve_too_long(paths)
     if size:
-        register_serve_stamp(paths, "path-too-long")
+        stamped, why = register_serve_stamp(paths, "path-too-long")
         note(f"serve: REFUSED: the service's socket path {paths['sock']} is {size} bytes, over "
-             f"{REGISTER_SERVE_SOCKET_MAX}, and nothing shortens it (Y:3777-3781); stamped "
-             f"path-too-long")
+             f"{REGISTER_SERVE_SOCKET_MAX}, and nothing shortens it (Y:3777-3781); "
+             + ("stamped path-too-long" if stamped else f"not stamped path-too-long: {why}"))
         return EXIT_REFUSED
     why = register_serve_psql(store)
     if why:
-        register_serve_stamp(paths, "no-psql")
-        note(f"serve: REFUSED: no usable psql: {why}; stamped no-psql")
+        stamped, unstamped = register_serve_stamp(paths, "no-psql")
+        note(f"serve: REFUSED: no usable psql: {why}; "
+             + ("stamped no-psql" if stamped else f"not stamped no-psql: {unstamped}"))
         return EXIT_REFUSED
     return register_serve_run(cfg, store, paths, (install, config_stamp))
 
