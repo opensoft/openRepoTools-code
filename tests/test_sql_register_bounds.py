@@ -2239,7 +2239,7 @@ def test_a_register_path_drops_each_inherited_pg_variable_before_psql(tmp_path, 
 LIBPQ_READING = "libpq reads 1 as 2 and 0 as no limit"
 
 
-def _t257u_refused_with_no_value(said: str, key: str, value: str) -> None:
+def _t257u_refused_with_no_value(said: str, key: str, value: str, its_exit: str) -> None:
     """An under-2 refusal's text, the case's `tmp_path` blanked out, as T257s's
     refused ids read theirs (T257u): it names the URL's key, `connect_timeout=`
     and the minimum, and shows no value of the case, neither its
@@ -2247,16 +2247,19 @@ def _t257u_refused_with_no_value(said: str, key: str, value: str) -> None:
     as a token of its own, not part of a word or a dotted number, anywhere
     outside the refusal's own words on libpq's reading, `LIBPQ_READING`
     (T257zb; Codex's review of P09 at `b8f9e35a`, SHOULD 11: the bare value
-    was not looked for, so "value 1 is under 2" passed)."""
+    was not looked for, so "value 1 is under 2" passed). `its_exit` says
+    the exit of what refused, or that it has none (T257zq; lane 2's
+    pre-review RV9-37 of P09 at `d9a1f2bf`, S9)."""
     case = f"[{key}, connect_timeout={value}]"
-    assert f"`{key}=`" in said, f"{case} the key is not named: {_said_safely(said)}"
+    assert f"`{key}=`" in said, f"{case} ({its_exit}) the key is not named: {_said_safely(said)}"
     assert "`connect_timeout=`" in said and "under 2" in said, (
-        f"{case} `connect_timeout=` and its minimum are not named: {_said_safely(said)}")
+        f"{case} ({its_exit}) `connect_timeout=` and its minimum are not named: {_said_safely(said)}")
     shown = [v for v in (f"connect_timeout={value}", "t257_", "register_db", "127.0.0.1", "55432")
              if v in said]
-    assert not shown, f"{case} the refusal shows {shown}: {_said_safely(said)}"
+    assert not shown, f"{case} ({its_exit}) the refusal shows {shown}: {_said_safely(said)}"
     bare = re.findall(rf"(?<![\w.]){re.escape(value)}(?!\w|\.\d)", said.replace(LIBPQ_READING, ""))
-    assert not bare, f"{case} the refusal shows the value {value} as a token of its own: {_said_safely(said)}"
+    assert not bare, (f"{case} ({its_exit}) the refusal shows the value {value} as a token of its own: "
+                      f"{_said_safely(said)}")
 
 
 def test_a_connect_timeout_under_2_is_refused_at_load_config(tmp_path, monkeypatch):
@@ -2290,13 +2293,14 @@ def test_a_connect_timeout_under_2_is_refused_at_load_config(tmp_path, monkeypat
                 error = exc
             assert isinstance(error, mod.Refusal), \
                 f"{key}=...?connect_timeout={value} loaded: {error!r}"
-            _t257u_refused_with_no_value(str(error).replace(str(tmp_path), "<tmp>"), key, value)
+            _t257u_refused_with_no_value(str(error).replace(str(tmp_path), "<tmp>"), key, value,
+                                         "load_config's Refusal, raised in this process, so no exit")
             res = _cli(["mode"], tmp_path)
             streams = (res.stdout + res.stderr).replace(str(tmp_path), "<tmp>")
             assert res.returncode == 2 and res.stdout == "", (
                 f"[{key}, connect_timeout={value}] mode exits {res.returncode}, not 2 with an "
                 f"empty stdout: {_said_safely(streams)}")
-            _t257u_refused_with_no_value(streams, key, value)
+            _t257u_refused_with_no_value(streams, key, value, f"`mode` exit {res.returncode}")
     config.write_text("".join(
         line + ("?connect_timeout=2" if line.startswith(("register_url=", "reader_url=")) else "")
         + "\n" for line in text.splitlines()), encoding="utf-8")
@@ -3129,7 +3133,8 @@ def test_the_lookups_wait_counts_from_the_snapshot_calls_end_and_gets_no_lr011(
     out, err = _communicated(writer)    # its group, its pipes, on a timeout too (T257w)
     scripts, times = _shim_calls(where), bench.calls()
     assert len(times) == len(scripts), \
-        f"a call was cut by its timer: {len(scripts)} sent, {len(times)} ended: {_said_safely(err)}"
+        (f"a call was cut by its timer: {len(scripts)} sent, {len(times)} ended: "
+         f"{_said_safely(subprocess.CompletedProcess(writer.args, writer.returncode, out, err))}")
     snapshot = next((i for i, e in enumerate(scripts) if "commit_write" not in e["stdin"]
                      and "find_write" not in e["stdin"]), None)
     lookup = next((i for i, e in enumerate(scripts) if "find_write" in e["stdin"]), None)
@@ -3816,7 +3821,9 @@ def _raw_streams_in(path: Path) -> list:
     (T257zj): pytest's assertion rewriting would add each tested operand, a
     raw stream among them, to a failure's message. So is a message whose
     every `_said_safely(...)` is given a bare stream, a `.stdout`, `.stderr`,
-    `.err` or `.out` or text built from one, and that shows no exit, with no
+    `.err` or `.out` or text built from one, or, since T257zq, a name its
+    function binds to a stream's text (as above) or a parameter annotated
+    `str` or `bytes`, and that shows no exit, with no
     `exit`, `returncode` or `.code` anywhere in it (T257zn; lane 2's
     pre-review RV9-37 of P09 at `d9a1f2bf`, S9: lane 3's ruling 6946445277
     has each such message show the writer's exit): it passes the process
@@ -3959,11 +3966,12 @@ def _raw_streams_in(path: Path) -> list:
                 if place not in found:
                     found.append(place)
 
-    def exitless(message: list, line: int) -> None:
+    def exitless(message: list, derived: dict, line: int) -> None:
         calls = [n for arg in message for n in ast.walk(arg) if isinstance(n, ast.Call)
                  and isinstance(n.func, ast.Name) and n.func.id == "_said_safely"]
         bare = [call for call in calls
-                if any(isinstance(n, ast.Attribute) and n.attr in _STREAM_ATTRS
+                if any((isinstance(n, ast.Attribute) and n.attr in _STREAM_ATTRS)
+                       or raw(said, derived, message=False) is not None
                        for said in [*call.args[:1], *(k.value for k in call.keywords if k.arg == "said")]
                        for n in ast.walk(said))]
         text = " ".join(ast.unparse(arg) for arg in message)
@@ -3972,6 +3980,12 @@ def _raw_streams_in(path: Path) -> list:
             place = f"{path.name}:{line}: a bare stream and no exit: {text[:80]}"
             if place not in found:
                 found.append(place)
+
+    def texts(function) -> dict:
+        """The function's parameters annotated as text (T257zq)."""
+        given = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
+        return {a.arg: "all" for a in given if a.annotation is not None
+                and ast.unparse(a.annotation) in ("str", "bytes", "bytearray", "Optional[str]", "str | None")}
 
     functions = [node for node in ast.walk(tree)
                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
@@ -3988,8 +4002,9 @@ def _raw_streams_in(path: Path) -> list:
         else:
             continue
         function = owner.get(id(node))
-        walk(message, bound[id(function)] if function is not None else {}, node.lineno)
-        exitless(message, node.lineno)
+        derived = bound[id(function)] if function is not None else {}
+        walk(message, derived, node.lineno)
+        exitless(message, {**derived, **(texts(function) if function is not None else {})}, node.lineno)
     return found
 
 def test_no_failure_message_formats_a_captured_stream_but_through_the_one_helper():
@@ -4015,10 +4030,11 @@ def test_no_failure_message_formats_a_captured_stream_but_through_the_one_helper
     raise of any class or a call that prints or warns. What it cannot see
     is listed in `_raw_streams_in`'s docstring, so a 0 here is no proof
     that no text of a stream reaches a failure's output. For the exit
-    (T257zn), a name given to the helper counts as a whole process, so a
-    stream copied into a name first (`said = held.send(...)`, then
-    `_said_safely(said)`) is not caught, and any `exit` in the message's
-    words counts as its exit."""
+    (T257zn; T257zq), a name given to the helper counts as a whole process
+    unless its function binds it to a stream's text or annotates it `str`
+    or `bytes`, so a name bound to another call's result (`said =
+    held.send(...)`, then `_said_safely(said)`) or an unannotated parameter
+    is not caught, and any `exit` in the message's    words counts as its exit."""
     here = Path(__file__).resolve().parent
     found = [place for name in ("test_sql_register_bounds.py", "test_sql_register_measure.py",
                                 "test_sql_register_managed.py")
@@ -4063,6 +4079,16 @@ def test_planted(proc, session, failed, ends, said_by):
         assert tool, f"{argv[0]} made no call"  # clean
     shown = [f"writer {i}" for i, (_, _, err) in enumerate(ends) if "files mode" in err]
     assert not shown, f"{shown}"  # clean
+    copied = proc.stderr.strip()
+    assert not copied, f"its stderr: {_said_safely(copied)}"  # planted
+    assert not copied, f"exit {proc.returncode}: {_said_safely(copied, stream='stderr')}"  # clean
+    assert not said_by, f"{_said_safely(said_by)}"  # clean
+
+
+def _planted_text(text: str, data: bytes):
+    assert not text, f"{_said_safely(text)}"  # planted
+    assert not data, f"{_said_safely(data, stream='stderr')}"  # planted
+    assert not text, f"{_said_safely(text)}, and has no exit"  # clean
 '''
 
 
@@ -4075,10 +4101,14 @@ def test_the_static_check_names_each_kind_of_place_it_catches(tmp_path):
     `.errs` and `.output`, a raise of a class whose name ends neither
     `Error` nor `Exception`, `pytest.exit`, `sys.stderr.write`,
     `sys.stdout.write` and `warnings.warn`, text sliced from a stream into a
-    name, a loop over a stream's lines, and a str's `join` of one. It names
-    no line marked clean: the helper, `len()` and `_whole()`, a pipe's
-    `.closed`, a literal's item that holds no stream (`ended[0]`, `argv[0]`)
-    and a comprehension whose element holds none."""
+    name, a loop over a stream's lines, and a str's `join` of one. And, for
+    the exit (T257zq; RV9-37, S9, the limit T257zn stated), a message that
+    gives the helper only a name holding a stream's text, or a parameter
+    annotated `str` or `bytes`, and shows no exit. It names no line marked
+    clean: the helper, `len()` and `_whole()`, a pipe's `.closed`, a
+    literal's item that holds no stream (`ended[0]`, `argv[0]`), a
+    comprehension whose element holds none, and a message with a name of
+    text that shows an exit or says there is none."""
     planted = tmp_path / "test_planted.py"
     planted.write_text(_PLANTED, encoding="utf-8")
     lines = _PLANTED.splitlines()
