@@ -484,12 +484,15 @@ _SQLSTATE = re.compile(r"^(?:psql:\S*: )?(?:ERROR|FATAL|PANIC):[ \t]+(?=[A-Z]{0,
                        re.M)
 #: A line of the server's log at ERROR, FATAL or PANIC (T229l; anchored by
 #: T229v, lane 2's pre-review RV9-41 of P09, N3): at the line's start, after
-#: the default `log_line_prefix`, `%m [%p] ` (its time's three words and the
-#: pid in brackets), where it is there, the severity as the server writes
-#: it, then `:` and two spaces. So a logged statement whose text holds
-#: `ERROR:` is not counted; a continuation line of a logged statement that
-#: itself begins `ERROR:  ` would be. It is a count only: no line is shown.
-_LOG_SEVERE = re.compile(r"^(?:\S+ \S+ \S+ \[\d+\] )?(?:ERROR|FATAL|PANIC):  ")
+#: one of the fixture's own `log_line_prefix` forms where it is there, the
+#: severity as the server writes it, then `:` and two spaces. The forms are
+#: the default, `%m [%p] ` (its time's three words and the pid in
+#: brackets), and `%p ` (the pid and a space), which managed sets on its
+#: clusters (T229x; lane 2's targeted check RV9-43 of P09 at `94a40564`, NIT
+#: C). So a logged statement whose text holds `ERROR:` is not counted; a
+#: continuation line of a logged statement that itself begins `ERROR:  `
+#: would be. It is a count only: no line is shown.
+_LOG_SEVERE = re.compile(r"^(?:\S+ \S+ \S+ \[\d+\] |\d+ )?(?:ERROR|FATAL|PANIC):  ")
 
 
 def _psql_failed(user: str, dbname: str, proc: subprocess.CompletedProcess) -> str:
