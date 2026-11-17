@@ -104,8 +104,8 @@ pytestmark = [WINDOWS_SKIP]
 #: (tasks:2156), T230's (tasks:2220, with its As built at :2219) and T258's
 #: (tasks:2464), tasks.md at lane 3's commit 17 `204145ae`. No task is common
 #: to all 27 functions, so there is no "*" row. T224j's, T224n's, T224o's,
-#: T224p's, T258e's and T258f's cases, which run on synthetic text and
-#: stand-ins with no database, have no row: they run ungated.
+#: T224p's, T258e's, T258f's and T258g's cases, which run on synthetic text
+#: and stand-ins with no database, have no row: they run ungated.
 SQL_REGISTER_GATE_TABLE = {
     # T224: until L1-A7 (T109), L1-A8 (T110), L1-A17 (T119, T120) and T229.
     # Lane 1's two cases' T109 and T110, and `[in-recovery]`'s T229, are in
@@ -2037,12 +2037,19 @@ class W258Writer:
         the reader has ended, both pipes are closed. Only then is it reaped,
         `proc.wait(END_S)`, whose `TimeoutExpired` is raised. No signal follows
         the reap. A reader still alive here is the caller's to raise: a process
-        outside the group holds a pipe, and the reader still owns the pipes."""
-        _signal_unreaped(self.proc, group=True, wait=END_S)
-        self._thread.join(END_S)
-        if not self._thread.is_alive():
-            for pipe in (self.proc.stdout, self.proc.stderr):
-                pipe.close()
+        outside the group holds a pipe, and the reader still owns the pipes.
+        The join and the closes are in a `finally`, so a signal step that
+        raises (`os.waitid`'s `ChildProcessError`, where something else reaped
+        the run) still has the reader joined and the pipes closed before its
+        error goes on, with no reap after it (T258g; Codex's review of P09 at
+        `d3a2fd5c`, SHOULD 3's last point)."""
+        try:
+            _signal_unreaped(self.proc, group=True, wait=END_S)
+        finally:
+            self._thread.join(END_S)
+            if not self._thread.is_alive():
+                for pipe in (self.proc.stdout, self.proc.stderr):
+                    pipe.close()
         self.proc.wait(END_S)
 
     def wait(self, timeout: float = 150) -> int:
@@ -2509,6 +2516,42 @@ def test_a_phase_w_writer_that_exits_while_its_group_holds_a_pipe_is_reaped_afte
     finally:
         if pid is not None:
             _end_if_left(int(pid), started)
+        Phase.writers = [writer] if writer.proc.returncode is None else []
+        PhaseW._stop(Phase)
+        writer._thread.join(15)
+
+
+def test_a_phase_w_writers_stop_joins_its_reader_and_closes_its_pipes_when_its_signal_step_raises(
+        monkeypatch):
+    """T258g (Codex's review of P09 at `d3a2fd5c`, SHOULD 3's last point:
+    `stop()` skipped its join when `_end_process()` raised), no database: a
+    stand-in writer, started as `launch` starts one, holds both pipes for
+    0.5 s, closes them and lives 0.5 s more. Its `stop()` runs at once, with
+    the signal step, `_end_process` or `_signal_unreaped`, made to raise
+    `ChildProcessError` as `os.waitid` does where something else reaped the
+    run. The error must reach the caller, and by then the reader must be
+    joined and both pipes closed. Before T258g the error left `stop()` before
+    the join, with the reader still reading and both pipes open."""
+    monkeypatch.setitem(globals(), "END_S", 2.0)
+
+    def fails(*args, **kwargs):
+        raise ChildProcessError("T258g's stand-in: the run was reaped elsewhere")
+    writer = _w_stand_in("w-raises", "sleep 0.5; exec >&- 2>&-; sleep 0.5")
+
+    class Phase:
+        writers = [writer]
+    try:
+        with monkeypatch.context() as patch:
+            patch.setitem(globals(), "_end_process", fails)
+            patch.setitem(globals(), "_signal_unreaped", fails)
+            with pytest.raises(ChildProcessError, match="reaped elsewhere"):
+                writer.stop()
+            state = (writer._thread.is_alive(), writer.proc.stdout.closed,
+                     writer.proc.stderr.closed)
+        assert state == (False, True, True), (
+            f"stop()'s signal step raised, and the reader alive, stdout closed and stderr "
+            f"closed are {state}, not (False, True, True)")
+    finally:
         Phase.writers = [writer] if writer.proc.returncode is None else []
         PhaseW._stop(Phase)
         writer._thread.join(15)
