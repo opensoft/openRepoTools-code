@@ -4146,9 +4146,14 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
     calls raises with text of its own, which pytest prints under every
     traceback style (T257zs's `_error_safely` is the form for the product's
     errors; `Cluster.psql`'s is T229k's); `pytest.raises(match=...)`'s
-    failure, which prints the exception's text beside its pattern;
-    `json.loads` of a stream, whose error quotes no text but whose frame's
-    argument `s` a long traceback prints, as it prints every frame's
+    failure, which prints the exception's text beside its pattern; a
+    parser but `int()` and `float()` whose error quotes the text it was
+    given, which every traceback style prints: a dict's lookup by a stream's
+    text as its key (its KeyError), `list.index`, `datetime.fromisoformat`,
+    `strptime` and `ipaddress`'s parsers (T257zzzg; lane 2's pre-review
+    RV9-42 of P09 at `857a41d2`, N3); `json.loads` of a stream, whose
+    error quotes no text but whose frame's argument `s` a long traceback
+    prints, as it prints every frame's
     arguments: pytest's own report of a failed test, a fixture or a
     teardown prints no frame's arguments only at the short style T205e makes
     the default, and an explicit `--tb=long`, `--fulltrace` or
