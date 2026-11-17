@@ -285,6 +285,21 @@ def _gone(pid: int, started: str) -> bool:
     return fields[19] != started or fields[0] in ("Z", "X")
 
 
+def _gone_by(pid: int, started: str, deadline: float) -> bool:
+    """Whether the process `pid` that started at `started` is seen `_gone`
+    before the monotonic `deadline`: the clock is read after each look, and
+    absence counts only where that reading is still before the deadline, so
+    a pause of the case past it never turns a later end into a pass (T224r;
+    Codex's review of P09 at `b8f9e35a`, SHOULD 3)."""
+    while True:
+        gone = _gone(pid, started)
+        if time.monotonic() >= deadline:
+            return False
+        if gone:
+            return True
+        time.sleep(0.05)
+
+
 def _end_if_left(pid: int, started: str) -> None:
     """A case's last clean-up of a process it did not start itself, known by
     its pid and its start time (T258f): pinned by a pidfd, then killed through
@@ -858,14 +873,10 @@ def _t224p_child_gone_by(mark: Path, start: float) -> bool:
     With the case's `RUN_S` of 3 s and `END_S` of 2 s that is 5 s after the
     start, at least 3 s before the child's own watchdog, `T224O_WATCHDOG_S`,
     which the child arms after its fork, after `start`: only the run's end
-    can satisfy it, never the watchdog."""
+    can satisfy it, never the watchdog. The clock is read after each look,
+    so a pause of the case past the deadline fails it (`_gone_by`; T224r)."""
     pid, started = Path(f"{mark}.child").read_text().split()
-    deadline = start + RUN_S + END_S
-    while not _gone(int(pid), started):
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.05)
-    return True
+    return _gone_by(int(pid), started, start + RUN_S + END_S)
 
 
 def _t224p_end_child(mark: Path) -> None:
@@ -889,11 +900,12 @@ def test_run_reads_its_terminal_and_stderr_together_and_ends_a_run_at_its_one_de
     run that fills its stderr pipe before it writes to its terminal ends 0
     with all of both, since neither is read only after the other ends. A run
     that does not end, with a child in its group holding both, is ended at
-    `RUN_S`: `_run` raises `TimeoutExpired` within its bounds, the run is
-    reaped, and its child is gone by `RUN_S + END_S`, 5 s, after the run
+    `RUN_S`: `_run` raises `TimeoutExpired` within `RUN_S + END_S`, 5 s, the
+    run is reaped, and its child is seen gone by that same 5 s after the run
     started, at least 3 s before the child's own 8 s watchdog, so the
     watchdog cannot pass the case (T224p; its negative control is the next
-    case). The child is ended in a finally whatever happened. It runs on Linux
+    case), nor can a pause of the case past those 5 s (T224r; Codex's review
+    of P09 at `b8f9e35a`, SHOULD 3). The child is ended in a finally whatever happened. It runs on Linux
     alone: the stand-in's child comes of `os.fork()` and names itself by
     `/proc/<pid>/stat`, which the oracle reads too (T224q; Codex's review of
     P09 at `d3a2fd5c`, SHOULD 5)."""
@@ -911,8 +923,8 @@ def test_run_reads_its_terminal_and_stderr_together_and_ends_a_run_at_its_one_de
     try:
         start, ended = _t224p_hung_run(script, mark, env)
         took = ended - start
-        assert took < 3.0 + 2 * 2.0 + 1.5, (
-            f"_run ended a hung run after {took:.1f} s, past its bounds")
+        assert took < RUN_S + END_S, (      # T224r: `_run` itself ends within 5 s
+            f"_run ended a hung run after {took:.1f} s, past its {RUN_S + END_S:.0f} s bound")
         try:
             os.waitid(os.P_PID, int(mark.read_text()), os.WEXITED | os.WNOHANG | os.WNOWAIT)
             reaped = False
