@@ -496,7 +496,10 @@ def pg_url_env(url: str, what: str = "the URL") -> dict:
         env[PG_URL_PARAMS[name]] = _pg_url_decode(raw_value, what, f"`{name}=`")
     if "PGCONNECT_TIMEOUT" in env:
         raw = env["PGCONNECT_TIMEOUT"]
-        if not re.fullmatch(r"\s*[+-]?[0-9]+\s*", raw):
+        # ASCII WHITESPACE ONLY (T512RF3, NIT 3; commit 38): `int` takes what
+        # this lets through, so `5%1C`, a separator `\s` matches outside ASCII,
+        # is refused here, not a `ValueError` and a traceback.
+        if not re.fullmatch(r"\s*[+-]?[0-9]+\s*", raw, re.ASCII):
             raise Refusal(f"{what} carries a `connect_timeout=` that is not a whole number "
                           f"of seconds")
         if int(raw) < CONNECT_TIMEOUT_MIN:
@@ -8118,14 +8121,19 @@ def register_serve_config_words(exc: Exception) -> str:
     configuration step is written as the file, `config_path`'s, and, where
     `load_config` refused one line (`line_number`), that line's number, and
     no text of the line or of any value. Q6(c)'s refusal (`PrimaryNotBuilt`)
-    is a fixed text already, and is kept. `lanes-index mode` says the
-    refusal whole, to its caller."""
-    if isinstance(exc, PrimaryNotBuilt):
+    is a fixed text already, and is kept, as is `cmd_serve`'s refusal of a
+    mode other than `primary`, marked `whole`, whose mode `load_config` has
+    checked to be `index` or `primary` (T512RF3, SHOULD 1; commit 38).
+    `cd / && lanes-index mode` says the refusal whole, to its caller: a
+    launched `serve` runs in `/`, so it resolves a relative path there
+    (socket API §8.4), and `mode` run elsewhere can load what it refused
+    (T512RF3, SHOULD 1; commit 38)."""
+    if isinstance(exc, PrimaryNotBuilt) or getattr(exc, "whole", False):
         return str(exc)
     number = getattr(exc, "line_number", None)
     at = f" at its line {number}" if number else ""
     return (f"the configuration {config_path()[0]} is refused{at}; the refusal's text is "
-            f"left out of the log, and `{PROG} mode` says it")
+            f"left out of the log, and `cd / && {PROG} mode` says it")
 
 
 def cmd_serve(args: list[str]) -> int:
@@ -8211,7 +8219,9 @@ def cmd_serve(args: list[str]) -> int:
     try:
         cfg, config_stamp = register_serve_load()
         if cfg["mode"] != "primary":
-            raise Refusal(f"this workstation's configuration is mode={cfg['mode']}")
+            refusal = Refusal(f"this workstation's configuration is mode={cfg['mode']}")
+            refusal.whole = True    # `index`, as `load_config` checked: written whole
+            raise refusal
         store = PostgresStore(cfg, "register_reader")
     except Refusal as exc:
         stamped, why = register_serve_stamp(paths, "config-refused")
@@ -10012,7 +10022,7 @@ def register_serve_launched() -> bool:
         try:
             st = os.fstat(fd)
         except OSError:
-            return False            # closed, or no `fstat`: not on `/dev/null`
+            return False            # closed, or `fstat` failed
         if (st.st_dev, st.st_ino) != (null.st_dev, null.st_ino):
             return False
     return True
