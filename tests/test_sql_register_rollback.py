@@ -5,10 +5,11 @@ AT-F1; AT-8; T273; FR-051, FR-052, FR-059; also US6) (opensoft/openRepoTools#165
 T273 writes this module: 21 tests, 20 from AT-8 (11), AT-F1 (7) and section
 4.2 (2), and T304's own (R-F10-34), and T273d a 22nd: AT-F2's rollback rerun
 after a 3 with a files-mode write between (lane 3's #165 6814260122), not yet
-in B15's T273 text. Two more, at the end, test no AT case: the fault-path
-regressions of the module's own teardown (lane 3's Codex review of code PR
-97 at `6d479418`, SHOULDs 1 and 2; the coordinator's #165 6934112467),
-whose rows wait for no task. T304's own test,
+in B15's T273 text. Six more, at the end, test no AT case: the fault-path
+regressions of the module's own teardown (lane 3's Codex reviews of code PR
+97 at `6d479418`, SHOULDs 1 and 2, and at `18529e5a`, BLOCKING and
+SHOULD 1; the coordinator's #165 6934112467), whose rows wait for no
+task. T304's own test,
 `test_rollback_steps_0_and_1_run_only_against_a_scratch_schema` (NOTES
 question 6; B10 tasks:1011-1024; `PLACEMENT.md` section 4), is phase 1's,
 and lane 3's T304 selects it with its word `sql_register_rollback and
@@ -107,7 +108,11 @@ pytestmark = [WINDOWS_SKIP]
 #: THE LANDING GATE'S TABLE (T280; `tests/sql_register_gate.py` reads it): the
 #: tasks each id waits for, from T273's Order (tasks:2512 at 204145ae). In a
 #: gated run an id is skipped while any of its tasks has no marker in
-#: `tests/sql_register_landed/`. T281 removes it with the gate.
+#: `tests/sql_register_landed/`. T281 removes it with the gate. The module
+#: has no `"*"` row: each test has its own. The teardown's own fault-path
+#: regressions, at the end, need no engine and no task, so each has an empty
+#: row and ordinary PR CI runs it (lane 3's Codex review of code PR 97 at
+#: `18529e5a`, SHOULD 5, read for this module).
 SQL_REGISTER_GATE_TABLE = {
     "test_a_cutover_and_a_rollback_leave_exactly_two_operator_entries": ("T121", "T304", "T326"),  # T273; tasks:2512
     "test_a_files_mode_claim_after_rollback_leaves_one_holder": ("T121", "T304", "T326"),  # T273; tasks:2512
@@ -122,7 +127,11 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_rollback_goes_back_to_its_check_past_a_last_error_and_refuses_a_divergence_recorded_meanwhile": ("T121", "T304", "T326"),  # T273; tasks:2512
     "test_a_rollback_rerun_resumes_after_its_own_entry": ("T121", "T304", "T326"),  # T273; tasks:2512
     "test_a_rollback_retries_a_lost_turn_on_a_fresh_k_through_its_check": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_teardown_ends_a_push_forked_before_its_first_record": (),  # T273; the teardown's own fault path, no task (Codex at 18529e5a, SHOULD 1)
+    "test_a_teardown_raises_on_a_call_logged_with_no_start_token": (),  # T273; the teardown's own fault path, no task (Codex at 18529e5a, SHOULD 1)
+    "test_a_teardown_signals_through_pidfds_alone_and_spares_a_wrong_start_token": (),  # T273; the teardown's own fault path, no task (Codex at 18529e5a, BLOCKING)
     "test_a_write_that_committed_before_the_rollback_is_found_by_its_rerun_after_it": ("T121", "T304", "T326", "T327", "T415", "T416", "T417"),  # T273; tasks:2512
+    "test_an_abort_release_runs_neither_git_nor_the_held_command": (),  # T273; the teardown's own fault path, no task (Codex at 18529e5a, SHOULD 1)
     "test_held_at_push_never_returns_with_its_rollback_unreaped": (),  # T273; the teardown's own fault path, no task (Codex at 6d479418, SHOULD 2)
     "test_rollback_exits_2_on_lr012_naming_the_divergence_and_both_ways_out": ("T107", "T109", "T121", "T304"),  # T273; tasks:2512
     "test_rollback_from_a_partitioned_clone_is_refused_and_removes_no_marker": ("T121", "T304", "T326"),  # T273; tasks:2512
@@ -285,7 +294,11 @@ def _open_when_held(fifo: Path, proc: subprocess.Popen, seconds: float = 120):
     return None
 
 
-def _let_go(fifo: Path, fd: int | None = None) -> None:
+#: What an abort release writes into its FIFO (`_let_go`), beside its mark.
+ABORT = b"abort\n"
+
+
+def _let_go(fifo: Path, fd: int | None = None, abort: bool = False) -> None:
     """A FIFO'S LAST RELEASE, with no moment at which a reader can open it
     and be left on it (lane 3's Codex review of code PR 97 at `6d479418`,
     SHOULD 1; lane 2's RV7-30, N1). Where the owner still holds its write
@@ -296,48 +309,159 @@ def _let_go(fifo: Path, fd: int | None = None) -> None:
     reader, unlinked while that end is held, and the end closed: a reader
     blocked in its `open()` is let go by that open and reads EOF at the
     close, and one that comes later finds no FIFO (ENOENT) and exits. A FIFO
-    already gone is left so. Copied from T270's renderer module."""
+    already gone is left so. EOF is a held push's release into its git, so a
+    release on the path that succeeds is EOF alone. An ABORT RELEASE
+    (`abort`, the teardown's, once what it owns is killed, `_teardown`)
+    first writes `ABORT` into the FIFO and makes the mark `<fifo>.abort`
+    beside it: the wrapper's held push, let go then, reads one or the other
+    and runs no git (lane 3's Codex review of code PR 97 at `18529e5a`,
+    SHOULD 1). Copied from T270's renderer module."""
     if fd is None:
         try:
             fd = os.open(str(fifo), os.O_RDWR | os.O_NONBLOCK)
         except FileNotFoundError:
             return
     try:
-        fifo.unlink(missing_ok=True)
-    finally:
-        os.close(fd)
-
-
-def _exited(pid: int, start: str) -> bool:
-    """Whether `pid`, which started at `start` (`ps -o lstart=`), is gone: a
-    pid whose start time no longer matches is gone. Copied from T270's
-    renderer module."""
-    if hasattr(os, "pidfd_open"):
-        try:
-            fd = os.pidfd_open(pid)
-        except ProcessLookupError:
-            return True
-        except OSError:
-            fd = None
-        if fd is not None:
-            import select
+        if abort:
             try:
-                poller = select.poll()
-                poller.register(fd, select.POLLIN)
-                if poller.poll(0):
-                    return True
-            finally:
-                os.close(fd)
-    else:
+                os.write(fd, ABORT)
+            except (BrokenPipeError, BlockingIOError):
+                pass  # no reader is left to read it, or the FIFO already holds it
+            Path(f"{fifo}.abort").touch()
+    finally:
         try:
-            os.kill(pid, 0)
+            fifo.unlink(missing_ok=True)
+        finally:
+            os.close(fd)
+
+
+# ------------------------------------------------------------------ owned processes
+#: A PROCESS'S IDENTITY HERE (lane 3's Codex review of code PR 97 at
+#: `18529e5a`, BLOCKING): its pid and its start token, field 22 of
+#: `/proc/<pid>/stat` (`starttime`, in clock ticks since boot), which the
+#: wrapper logs and `_stat` reads. The teardown signals a process only
+#: through a pidfd (`_pin`), opened, then checked against that token, and
+#: held from the check through every signal, which goes through it
+#: (`signal.pidfd_send_signal`): never by a number, so a process that ends
+#: and whose pid is used again is never confused with its successor. A group
+#: is never signalled by its id: each member is pinned the same way. Where
+#: this Python or kernel has no pidfd, the teardown fails closed (`_pidfds`).
+#: `_stat`, `_pidfds`, `_Pinned`, `_pin` and `_table` are copied from T270's
+#: renderer module; unlike T270's clean-up, this teardown finds no process by
+#: a path (`_find`).
+
+def _stat(pid: int) -> dict | None:
+    """`/proc/<pid>/stat`, read once: the process's state, ppid, process
+    group, session and start token (field 22, as text); None where no
+    process has the pid."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_bytes()
+    except OSError:
+        return None
+    fields = raw[raw.rindex(b")") + 2:].split()
+    return {"state": fields[0].decode(), "ppid": int(fields[1]), "pgrp": int(fields[2]),
+            "session": int(fields[3]), "start": fields[19].decode()}
+
+
+def _pidfds() -> None:
+    """Fails closed (`RuntimeError`) where this Python has no pidfd: no
+    clean-up here falls back to a signal by number. `os.pidfd_open` and
+    `signal.pidfd_send_signal` are Python 3.9's, on Linux 5.3 and later;
+    a kernel without them refuses the open, which `_pin` raises."""
+    missing = [name for name, there in (("os.pidfd_open", hasattr(os, "pidfd_open")),
+                                        ("signal.pidfd_send_signal",
+                                         hasattr(signal, "pidfd_send_signal")))
+               if not there]
+    if missing:
+        raise RuntimeError(f"{' and '.join(missing)} missing: a clean-up here signals a process "
+                           f"only through a pidfd (Python 3.9 or later, Linux 5.3 or later), "
+                           f"never by its number")
+
+
+class _Pinned:
+    """A PROCESS PINNED (`_pin`): its pid, its start token and its pidfd,
+    held until `close()`. Every signal goes through the pidfd, which names
+    this process alone, ended or not; its exit is read from it."""
+
+    def __init__(self, pid: int, start: str, fd: int):
+        self.pid, self.start, self.fd = pid, start, fd
+
+    def gone(self) -> bool:
+        """Whether it has ended: its pidfd reads as ready (`POLLIN`)."""
+        import select
+        poller = select.poll()
+        poller.register(self.fd, select.POLLIN)
+        return bool(poller.poll(0))
+
+    def send(self, sig: int) -> None:
+        try:
+            signal.pidfd_send_signal(self.fd, sig)
         except ProcessLookupError:
-            return True
-        except PermissionError:
-            pass
-    now = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True,
-                         text=True, check=False).stdout
-    return " ".join(now.split()) != start
+            pass  # it has ended; the pidfd names it alone, so no other process is signalled
+
+    def close(self) -> None:
+        os.close(self.fd)
+
+
+def _pin(pid: int, start: str, **same) -> _Pinned | None:
+    """`pid` PINNED, where it is still the process that started at `start`:
+    its pidfd opened, its stat read after the open and checked against
+    `start` and each field in `same` (`ppid` or `pgrp`), then the pidfd
+    polled. A process alive at that poll held the pid from the open through
+    the read, so the stat read was its own. None where it has ended, is a
+    zombie, or is another process: no pidfd on another is kept. A `start`
+    that is empty names no process, which raises (`RuntimeError`)."""
+    _pidfds()
+    if not start:
+        raise RuntimeError(f"pid {pid} has no start token, so it cannot be told from a process "
+                           f"that uses its pid again")
+    try:
+        fd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return None
+    except OSError as exc:
+        raise RuntimeError(f"os.pidfd_open({pid}) failed ({exc}): a clean-up here signals a "
+                           f"process only through a pidfd, never by its number") from exc
+    pinned = _Pinned(pid, start, fd)
+    now = _stat(pid)
+    if (now is None or now["state"] in ("Z", "X") or now["start"] != start
+            or any(now[key] != value for key, value in same.items()) or pinned.gone()):
+        pinned.close()
+        return None
+    return pinned
+
+
+def _table() -> dict:
+    """{pid: `_stat`} of every process this user owns, but pid 1, this
+    process and its ancestors, which no clean-up here ever signals."""
+    mine, pid = set(), os.getpid()
+    while pid > 1 and pid not in mine:
+        mine.add(pid)
+        above = _stat(pid)
+        pid = above["ppid"] if above else 0
+    table, uid = {}, os.getuid()
+    for name in os.listdir("/proc"):
+        if not name.isdigit() or int(name) in mine or int(name) == 1:
+            continue
+        try:
+            if os.stat(f"/proc/{name}").st_uid != uid:
+                continue
+        except OSError:
+            continue
+        found = _stat(int(name))
+        if found is not None:
+            table[int(name)] = found
+    return table
+
+
+def _stopped(held: _Pinned) -> bool:
+    """Whether `held` is seen stopped, or has ended: its stat, read while its
+    pidfd shows it alive, in state `T` or `t`. A stopped process forks no
+    child, so a read made once each one found is stopped misses none."""
+    now = _stat(held.pid)
+    if held.gone():
+        return True
+    return now is not None and now["start"] == held.start and now["state"] in ("T", "t")
 
 
 def _held_pushes(estate) -> list:
@@ -348,20 +472,57 @@ def _held_pushes(estate) -> list:
             if g.get("outcome") == "held"]
 
 
-def _kill_held(pid: int, start: str) -> None:
-    """SIGKILL to a held push, by the group it leads (T320's `_run_bounded`
-    starts each git call in a session of its own), or to it alone where it
-    leads none; only while it is still the process that started at `start`
-    (`_exited`), so a pid used again is never signalled."""
-    if not start or _exited(pid, start):
-        return
-    try:
-        if os.getpgid(pid) == pid:
-            os.killpg(pid, signal.SIGKILL)
+def _logged(estate) -> list:
+    """(pid, start token, what) of each git call's launch record
+    (`git-wrapper.started`), which the wrapper writes before anything else
+    and `arm()` never resets, and of each push it logged as held
+    (`_held_pushes`)."""
+    found = [(rec.get("pid"), rec.get("start") or "", "a git call's launch record")
+             for rec in _jsonl(estate.bin / "git-wrapper.started")]
+    found += [(pid, start or "", "a held push") for pid, start in _held_pushes(estate)]
+    return found
+
+
+def _find(procs, estate, pinned: dict, problems: list) -> int:
+    """ONE READ of what the teardown owns: each process found, and not
+    pinned already, pinned (`_pin`) and stopped (SIGSTOP) through its pidfd,
+    so none forks or runs on while the rest are found. Returns how many are
+    new. Owned are:
+    - `procs`, the case's own children not yet reaped;
+    - each git call by its launch record, and each push the wrapper logged
+      as held, where `estate` is given, each by its pid and start token
+      (`_logged`); one with no start token cannot be told from a process
+      that uses its pid again, so it is never signalled, and it is a
+      problem (`problems`);
+    - each child of a process pinned already, and each member of a group
+      one leads, found while that one is pinned and alive: a push the
+      rollback forked before its first record, or the git under a held push.
+    No path is scanned for: the estates here are shared, so only what the
+    case started, or its wrapper recorded, is the teardown's."""
+    table, wanted = _table(), {}
+    for proc in procs:
+        if proc is not None and proc.returncode is None and proc.pid in table:
+            wanted[proc.pid] = table[proc.pid]["start"]
+    for pid, start, what in (_logged(estate) if estate is not None else []):
+        if not start:
+            if f"{what} names pid {pid} with no start token" not in problems:
+                problems.append(f"{what} names pid {pid} with no start token")
         else:
-            os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+            wanted.setdefault(pid, start)
+    for parent in list(pinned.values()):
+        for pid, found in table.items():
+            if parent.pid in (found["ppid"], found["pgrp"]) and not parent.gone():
+                wanted.setdefault(pid, found["start"])
+    new = 0
+    for pid, start in wanted.items():
+        if (pid, start) in pinned or pid not in table or table[pid]["start"] != start:
+            continue
+        held = _pin(pid, start)
+        if held is not None:
+            held.send(signal.SIGSTOP)
+            pinned[(pid, start)] = held
+            new += 1
+    return new
 
 
 def _drain(proc, grace: float):
@@ -386,56 +547,92 @@ def _drain(proc, grace: float):
 def _teardown(*procs, estate=None, fifo: Path | None = None, fd: int | None = None,
               grace: float = 60) -> list:
     """THE ROLLBACK MODULE'S ONE TEARDOWN, for a case's outer `finally`, from
-    the making of what it ends (lane 3's Codex review of code PR 97 at
-    `6d479418`, SHOULDs 1 and 2). Whatever ended the case, in this order,
-    each step tried whatever an earlier one raised:
-    1. each child in `procs` (a None is skipped) not yet reaped killed by its
-       pid (`Popen.kill`, which signals no child already reaped): the
-       rollback and the `psql` sessions share this process's group, so never
-       `killpg`;
-    2. each push the wrapper held (`_held_pushes`, where `estate` is given)
-       killed by its group, while it is still the process it logged
-       (`_kill_held`): the rollback is killed first, so it never sees its
-       push end, and the push is killed before the FIFO lets it go, so it
-       never runs (the rerun case is that kill); one whose start time was
-       not logged is never signalled, and the let-go ends it;
-    3. `fifo`, where one is given, let go and unlinked (`_let_go`), with the
-       write end `fd` where the case still holds one, so a call held on it,
-       or one that reaches it later, ends;
+    the making of what it ends (lane 3's Codex reviews of code PR 97 at
+    `6d479418`, SHOULDs 1 and 2, and at `18529e5a`, BLOCKING and SHOULDs 1
+    and 2). Whatever ended the case, in this order, each step tried whatever
+    an earlier one raised:
+    1. what it owns found, pinned to its start token and stopped through its
+       pidfd (`_find`), read after read, each read made once every process
+       found is seen stopped (`_stopped`), until a read finds nothing new,
+       within `grace` s: each child in `procs` not yet reaped (a None is
+       skipped), each git call the wrapper recorded at its launch or as
+       held, where `estate` is given, and each child, or group member, of a
+       process found, so a push forked before its first record is found as
+       the rollback's child;
+    2. each process found killed (SIGKILL) through its pidfd, never by a
+       number, and each child in `procs` by its own `Popen.kill` too, which
+       signals no child already reaped (the rollback and the `psql`
+       sessions share this process's group, so never `killpg`): a push is
+       killed before the FIFO lets it go, so it never runs (the rerun case
+       is that kill);
+    3. `fifo`, where one is given, let go with an abort and unlinked
+       (`_let_go`), with the write end `fd` where the case still holds one:
+       a push held on it that no read found, or one that reaches it later,
+       runs no git;
     4. each child drained, bounded, its pipes closed on a last timeout, and
        waited for, bounded (`_drain`), which raises where one stays unreaped;
-    5. each held push waited for, at most `grace` s, until it is gone.
-    Then the first error met is raised, or, where a held push is still
-    there, that is: the teardown never returns with a process it owns left.
+    5. each process found seen gone, within `grace` s, then step 1's read
+       made again, and what it finds killed and waited for, until a read
+       finds nothing new; past `grace`, one read more, then no more.
+    A launch record or a `held` line with no start token is never signalled,
+    and is an error. Then the errors are raised: the one alone, or each
+    named in one, chained from the first; a process found that is still
+    there is one: the teardown never returns with a process it owns left.
     Returns each child's (stdout, stderr), as far as each came."""
-    errors, said = [], []
+    errors, said, problems, pinned = [], [], [], {}
 
     def attempt(step, *args):
         try:
             return step(*args)
-        except Exception as exc:  # each step is tried; the first error is raised below
+        except Exception as exc:  # each step is tried; the errors are raised below
             errors.append(exc)
             return None
 
-    for proc in procs:
-        if proc is not None:
-            attempt(proc.kill)
-    held = (attempt(_held_pushes, estate) or []) if estate is not None else []
-    for pid, start in held:
-        attempt(_kill_held, pid, start)
-    if fifo is not None:
-        attempt(_let_go, fifo, fd)
-    for proc in procs:
-        said.append(attempt(_drain, proc, grace) if proc is not None else None)
-    deadline = time.monotonic() + grace
-    while (held and time.monotonic() < deadline
-           and not all(_exited(pid, start) for pid, start in held if start)):
-        time.sleep(0.05)
-    left = [pid for pid, start in held if start and not _exited(pid, start)]
-    if errors:
-        raise errors[0]
+    try:
+        deadline = time.monotonic() + grace
+        while True:
+            new = attempt(_find, procs, estate, pinned, problems)
+            while (time.monotonic() < deadline
+                   and not all(_stopped(held) for held in pinned.values())):
+                time.sleep(0.01)
+            if not new or time.monotonic() >= deadline:
+                break  # a read, made with each process found stopped, found nothing new
+        for held in pinned.values():
+            attempt(held.send, signal.SIGKILL)
+        for proc in procs:
+            if proc is not None:
+                attempt(proc.kill)
+        if fifo is not None:
+            attempt(_let_go, fifo, fd, True)
+        for proc in procs:
+            said.append(attempt(_drain, proc, grace) if proc is not None else None)
+        deadline, last = time.monotonic() + grace, False
+        while True:
+            end = max(deadline, time.monotonic() + 1)
+            while time.monotonic() < end and not all(held.gone() for held in pinned.values()):
+                time.sleep(0.02)
+            if last or not attempt(_find, procs, estate, pinned, problems):
+                break  # the read again found nothing new, or the time is up
+            for held in pinned.values():
+                if not held.gone():
+                    attempt(held.send, signal.SIGKILL)
+            last = time.monotonic() >= deadline  # past it, the new ones killed, then no more
+        left = sorted(held.pid for held in pinned.values() if not held.gone())
+    finally:
+        for held in pinned.values():
+            held.close()
+    if problems:
+        errors.insert(0, RuntimeError(f"{'; '.join(problems)}: a process logged with no start "
+                                      f"token cannot be told from one that uses its pid again, "
+                                      f"so it was never signalled"))
     if left:
-        raise RuntimeError(f"held pushes {left} are still there {grace:g} s after their SIGKILL")
+        errors.append(RuntimeError(f"pids {left} are still there {grace:g} s after their "
+                                   f"SIGKILL through their pidfds"))
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise RuntimeError("; ".join(f"{type(exc).__name__}: {exc}"
+                                     for exc in errors)) from errors[0]
     return said
 
 
@@ -911,15 +1108,22 @@ def _requests(log: Path) -> list:
 #: TEST 5'S `git` WRAPPER (TP:1060-1080), with what AT-8 needs: each call is
 #: one JSON line of `git-wrapper.log`, its subcommand, its argv, its pid, and
 #: `psql_before`, the number of requests the `psql` log named in the control
-#: file held when it started. `hold`, `{"call": <subcommand>, "fifo": path}`,
-#: blocks that call on the FIFO until the test closes its end; its `held`
-#: line also carries `start`, its own start time as `ps -o lstart=` gives it,
-#: by which a teardown knows it is still that process (`_kill_held`).
+#: file held when it started. Before anything else each call writes its
+#: launch record, its pid and start token, field 22 of its `/proc/<pid>/stat`,
+#: to `git-wrapper.started`, which `arm()` never resets, so the teardown owns
+#: it from its launch (`_teardown`). `hold`, `{"call": <subcommand>, "fifo":
+#: path}`, blocks that call on the FIFO until the test closes its end; its
+#: `held` line also carries `start`, its start token, by which the teardown
+#: knows it is still that process (`_pin`). Let go by an abort release
+#: (`_let_go`'s `abort`), the held call ends with 75 and runs no git.
 GIT_WRAPPER = r'''#!/usr/bin/env -S python3 -I
-import json, os, subprocess, sys
+# Before anything else each call writes its launch record, its pid and start
+# token, to git-wrapper.started.
+import fcntl, json, os, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONTROL = os.path.join(HERE, "git-wrapper.json")
 LOG = os.path.join(HERE, "git-wrapper.log")
+STARTED = os.path.join(HERE, "git-wrapper.started")
 WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path",
               "--config-env"}
 
@@ -945,13 +1149,33 @@ def requests(path):
         return 0
 
 
-def started(pid):
+def stat(pid):
+    """The fields of /proc/<pid>/stat after the command's name, or None."""
     try:
-        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True,
-                             text=True, timeout=10).stdout
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return " ".join(out.split())
+        with open("/proc/%d/stat" % pid, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return None
+    return raw[raw.rindex(b")") + 2:].split()
+
+
+def started(pid):
+    """`pid`'s start token: field 22 of its /proc stat, its start in clock
+    ticks since boot, which no process that uses the pid again shares; ""
+    where it is gone."""
+    fields = stat(pid)
+    return fields[19].decode() if fields else ""
+
+
+def launched():
+    """THE LAUNCH RECORD, before anything else the call does: its pid and
+    start token, one line of git-wrapper.started, which `arm()` never
+    resets, so the teardown owns the call from its launch."""
+    me = os.getpid()
+    with open(STARTED, "a", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        handle.write(json.dumps({"pid": me, "start": started(me)}) + "\n")
+        handle.flush()
 
 
 def log(record):
@@ -960,6 +1184,7 @@ def log(record):
 
 
 def main():
+    launched()
     args = sys.argv[1:]
     with open(CONTROL, encoding="utf-8") as handle:
         control = json.load(handle)
@@ -970,7 +1195,10 @@ def main():
     if hold and hold.get("call") == sub:
         log(dict(record, outcome="held", start=started(os.getpid())))
         with open(hold["fifo"], "rb") as fifo:
-            fifo.read()
+            said = fifo.read()
+        if said or os.path.exists(hold["fifo"] + ".abort"):
+            log(dict(record, outcome="aborted", rc=75))
+            return 75  # an abort release: this call runs no git
     rc = subprocess.run([control["git"]] + args).returncode
     log(dict(record, outcome="ran", rc=rc))
     return rc
@@ -2064,12 +2292,13 @@ def test_a_rollback_rerun_resumes_after_its_own_entry(request, tmp_path):
     k = estate.k
     proc, fd = _held_at_push(estate)
     # The kill at the push is the teardown itself, with nothing between it
-    # and `_held_at_push`, which owns all until it returns: the held push,
-    # by its group while it is still the process it logged, and the
-    # rollback, by its pid, are killed, so the push never runs; then the
-    # FIFO is let go and unlinked, the rollback reaped and the push seen
-    # gone, every wait bounded (lane 3's Codex review of code PR 97 at
-    # `6d479418`, SHOULD 2).
+    # and `_held_at_push`, which owns all until it returns: the rollback and
+    # the held push with its git, each stopped, then killed through a pidfd
+    # pinned to its start token, the rollback by its pid too, so the push
+    # never runs; then the FIFO is let go with an abort and unlinked, the
+    # rollback reaped and the push seen gone, every wait bounded (lane 3's
+    # Codex reviews of code PR 97 at `6d479418`, SHOULD 2, and at
+    # `18529e5a`, BLOCKING).
     _teardown(proc, estate=estate, fifo=estate.root / "push.fifo", fd=fd)
     switch = estate.switch()
     assert (switch["marker_state"], estate.journal()[-1]) == ("removing", [k + 1, "rollback", True])
@@ -2335,12 +2564,14 @@ def test_rollback_exits_2_on_lr012_naming_the_divergence_and_both_ways_out(rb_re
 
 # ------------------------------------------------------------------ the teardown's own faults
 #: The fault-path regressions of this module's own teardown (lane 3's Codex
-#: review of code PR 97 at `6d479418`, SHOULDs 1 and 2; the coordinator's
-#: reproductions, #165 6934112467). They need no engine and no task, so their
-#: rows wait for none. Each child they start is theirs, ended and reaped in
-#: their own `finally`; the rollback they hold is a stub, never a process.
-#: `_Pipe`, `_fifo_reader`, `_on_fifo`, `_ended`, `_reap_all` and `_GapFifo`
-#: are copied from T270's renderer module.
+#: reviews of code PR 97 at `6d479418`, SHOULDs 1 and 2, and at `18529e5a`,
+#: BLOCKING and SHOULD 1; the coordinator's reproductions, #165 6934112467).
+#: They need no engine and no task, so their rows wait for none. Each child
+#: they start is theirs, ended and reaped in their own `finally`, and each
+#: process it starts in turn is pinned (`_pin`) and, where still there,
+#: killed through that pidfd; the rollback they hold is a stub or a stand-in,
+#: never `lanes-index`. `_Pipe`, `_fifo_reader`, `_on_fifo`, `_ended`,
+#: `_reap_all` and `_GapFifo` are copied from T270's renderer module.
 LINUX_ONLY = pytest.mark.skipif(not sys.platform.startswith("linux"),
                                 reason="a FIFO opened O_RDWR, and /proc, are Linux's")
 
@@ -2392,10 +2623,13 @@ def _fifo_reader(path) -> subprocess.Popen:
                             stderr=subprocess.PIPE, text=True)
 
 
-def _on_fifo(proc: subprocess.Popen, seconds: float = 5) -> bool:
-    """Whether `proc` is seen asleep on a FIFO, in its `open()`
-    (`wait_for_partner`) or its `read()`, within `seconds`: False where it
-    ends first, the time runs out, or its `/proc` cannot be read."""
+def _on_fifo(proc: subprocess.Popen, seconds: float = 5, fifo=None) -> bool:
+    """Whether `proc` is seen on a FIFO within `seconds`: asleep in its
+    `open()` (`wait_for_partner`) or its `read()`, or, where `fifo` is
+    given, holding it open (a link in its `/proc/<pid>/fd` is the FIFO's
+    path), so a wait channel the kernel does not show still finds it. False
+    where it ends first, the time runs out, or its `/proc` cannot be read."""
+    path = os.path.realpath(str(fifo)) if fifo is not None else None
     deadline = time.monotonic() + seconds
     while proc.poll() is None and time.monotonic() < deadline:
         try:
@@ -2404,8 +2638,26 @@ def _on_fifo(proc: subprocess.Popen, seconds: float = 5) -> bool:
             return False
         if any(word in wchan for word in ("partner", "pipe", "fifo")):
             return True
+        if path is not None and path in _fd_links(proc.pid):
+            return True
         time.sleep(0.01)
     return False
+
+
+def _fd_links(pid: int) -> list:
+    """What each of `pid`'s open fds links to, as `/proc/<pid>/fd` shows it;
+    an fd closed while they are read is passed over."""
+    links = []
+    try:
+        names = os.listdir(f"/proc/{pid}/fd")
+    except OSError:
+        return links
+    for name in names:
+        try:
+            links.append(os.readlink(f"/proc/{pid}/fd/{name}"))
+        except OSError:
+            continue
+    return links
 
 
 def _ended(proc: subprocess.Popen, seconds: float = 5) -> bool:
@@ -2441,7 +2693,7 @@ class _GapFifo:
 
     def unlink(self, missing_ok: bool = False) -> None:
         self.readers.append(_fifo_reader(self.path))
-        self.on = _on_fifo(self.readers[-1])
+        self.on = _on_fifo(self.readers[-1], fifo=self.path)
         self.path.unlink(missing_ok=missing_ok)
 
 
@@ -2453,7 +2705,11 @@ def test_a_push_fifo_let_go_leaves_no_reader_blocked(tmp_path):
     unlink is let go. With the write end held, as a held window holds it,
     the reader already on the FIFO and one that comes in that gap both read
     EOF. Either way the FIFO is gone, and a reader that comes after finds
-    none (ENOENT) and ends."""
+    none (ENOENT) and ends. Each reader of the gap must be seen on the FIFO
+    before its unlink, so the race is exercised, not passed by default;
+    then every reader before the let-go exits 0, and only the one after it
+    meets ENOENT (lane 3's Codex review of code PR 97 at `18529e5a`,
+    SHOULD 4)."""
     fifo = tmp_path / "push.fifo"
     readers: list = []
     try:
@@ -2475,9 +2731,12 @@ def test_a_push_fifo_let_go_leaves_no_reader_blocked(tmp_path):
         assert not left, f"readers {left} of {len(readers)} are left blocked"
     finally:
         said = _reap_all(readers)
-    on = [first.on, True, second.on]  # each reader seen on the FIFO before its let-go
-    assert all(proc.returncode == 0 for proc, seen in zip(readers, on) if seen), (
-        [proc.returncode for proc in readers], on, said)
+    assert first.on and second.on, (
+        f"a reader that came in the gap before the unlink was not seen on the FIFO (without "
+        f"the write end: {first.on}; with it: {second.on}), so the race went unexercised")
+    assert [proc.returncode for proc in readers[:3]] == [0, 0, 0], (
+        f"a reader that came before the let-go did not exit 0: "
+        f"{[proc.returncode for proc in readers]} {said}")
     assert readers[3].returncode != 0 and "FileNotFoundError" in said[3], (
         f"a reader that came after the let-go found a FIFO: {said[3]}")
 
@@ -2513,3 +2772,231 @@ def test_held_at_push_never_returns_with_its_rollback_unreaped(monkeypatch, tmp_
         assert parked and _ended(parked[0]), "the call parked on the FIFO is left blocked"
     finally:
         _reap_all(parked)
+
+
+#: A process that sleeps, as a held push's git does, until it is killed.
+SLEEPS = "import time; time.sleep(300)"
+
+#: A HELD PUSH'S STAND-IN, started in a session of its own as T320's
+#: `_run_bounded` starts each git call: it forks a second member of its
+#: group, its git, which sleeps; writes that member's pid to argv[1]; and
+#: sleeps.
+LEADS_A_GROUP = """
+import os, sys, time
+pid = os.fork()
+if pid == 0:
+    time.sleep(300)
+    os._exit(0)
+with open(sys.argv[1] + ".tmp", "w") as handle:
+    handle.write(str(pid))
+os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+time.sleep(300)
+"""
+
+#: A ROLLBACK'S STAND-IN that forks a push before the push writes any
+#: record: the push, in a session of its own and with no pipe of the
+#: rollback's, blocks on the FIFO argv[1] and, let go, makes `ran` (EOF) or
+#: `aborted` (an abort release) in argv[2], then ends; the rollback writes
+#: the push's pid to argv[3], then sleeps.
+FORKS_A_PUSH = """
+import os, sys, time
+fifo, out, record = sys.argv[1:4]
+pid = os.fork()
+if pid == 0:
+    os.setsid()
+    null = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(null, fd)
+    with open(fifo, "rb") as handle:
+        said = handle.read()
+    aborted = said or os.path.exists(fifo + ".abort")
+    open(os.path.join(out, "aborted" if aborted else "ran"), "w").close()
+    os._exit(0)
+with open(record + ".tmp", "w") as handle:
+    handle.write(str(pid))
+os.replace(record + ".tmp", record)
+time.sleep(300)
+"""
+
+
+def _written_pid(path: Path, proc: subprocess.Popen, seconds: float = 10) -> int | None:
+    """The pid `proc` writes to `path`, once it is there; None where `proc`
+    ends, or the time runs out, first."""
+    deadline = time.monotonic() + seconds
+    while proc.poll() is None and time.monotonic() < deadline:
+        if path.exists():
+            return int(path.read_text(encoding="utf-8"))
+        time.sleep(0.01)
+    return None
+
+
+def _pin_now(pid: int | None) -> _Pinned | None:
+    """`pid` pinned by the case itself (`_pin`), at the start token it has
+    now; None where there is none."""
+    now = _stat(pid) if pid is not None else None
+    return _pin(pid, now["start"]) if now is not None else None
+
+
+def _gone(held: _Pinned, seconds: float = 5) -> bool:
+    """Whether the process pinned as `held` ends within `seconds`."""
+    deadline = time.monotonic() + seconds
+    while not held.gone() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return held.gone()
+
+
+def _end_pinned(held: _Pinned | None) -> None:
+    """A process the case pinned, killed through its pidfd where it is still
+    there, and the pidfd closed."""
+    if held is not None:
+        try:
+            if not held.gone():
+                held.send(signal.SIGKILL)
+        finally:
+            held.close()
+
+
+@LINUX_ONLY
+def test_a_teardown_signals_through_pidfds_alone_and_spares_a_wrong_start_token(monkeypatch,
+                                                                                 tmp_path):
+    """BLOCKING at `18529e5a`: the teardown signals no process by a number
+    and runs no `ps`. A held push, in a session of its own, logged as held
+    with its start token, whose group holds a second member, its git; and a
+    stranger, logged as held and launched with a token one tick on, so not
+    the process that has its pid. With `os.kill`, `os.killpg`, `os.getpgid`,
+    `subprocess.run` and `subprocess.Popen` each a recorder, `_teardown`
+    calls none of them, kills the push (-9) and its git through their
+    pidfds, and leaves the stranger running."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    quiet = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                 start_new_session=True)
+    push = subprocess.Popen([sys.executable, "-I", "-c", LEADS_A_GROUP,
+                             str(tmp_path / "member.pid")], **quiet)
+    stranger = subprocess.Popen([sys.executable, "-I", "-c", SLEEPS], **quiet)
+    member, called = None, []
+
+    def recorder(name: str):
+        def record(*args, **kwargs):
+            called.append(name)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return record
+
+    try:
+        member = _pin_now(_written_pid(tmp_path / "member.pid", push))
+        assert member is not None, "the push never forked its git"
+        token, wrong = _stat(push.pid)["start"], str(int(_stat(stranger.pid)["start"]) + 1)
+        (bin_ / "git-wrapper.log").write_text("".join(json.dumps(
+            {"sub": "push", "pid": pid, "outcome": "held", "start": start}) + "\n"
+            for pid, start in ((push.pid, token), (stranger.pid, wrong))), encoding="utf-8")
+        (bin_ / "git-wrapper.started").write_text(
+            json.dumps({"pid": stranger.pid, "start": wrong}) + "\n", encoding="utf-8")
+        with monkeypatch.context() as patch:
+            for owner, name in ((os, "kill"), (os, "killpg"), (os, "getpgid"),
+                                (subprocess, "run"), (subprocess, "Popen")):
+                patch.setattr(owner, name, recorder(f"{owner.__name__}.{name}"))
+            _teardown(estate=SimpleNamespace(bin=bin_), grace=5)
+        assert called == [], f"the teardown signalled by a number, or ran a command: {called}"
+        assert _ended(push) and push.returncode == -signal.SIGKILL, (
+            f"the held push was not killed (SIGKILL): {push.returncode}")
+        assert _gone(member), "the push's git, a member of its group, is still there"
+        assert stranger.poll() is None, (
+            "the stranger, logged with a start token not its own, was signalled")
+    finally:
+        _end_pinned(member)
+        _reap_all([push, stranger])
+
+
+@LINUX_ONLY
+def test_a_teardown_ends_a_push_forked_before_its_first_record(tmp_path):
+    """SHOULD 1 at `18529e5a`: a push the rollback forked, in a session of
+    its own, parked on the FIFO before it wrote any record (no launch
+    record, no `held` line), is found by the teardown as the rollback's
+    child, stopped, and killed before the FIFO is let go: it runs nothing,
+    neither on EOF nor on the abort. The rollback is a stand-in, the case's
+    child, killed and reaped (-9), and the FIFO is gone."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    fifo, record = tmp_path / "push.fifo", tmp_path / "push.pid"
+    os.mkfifo(str(fifo), 0o600)
+    rollback = subprocess.Popen([sys.executable, "-I", "-c", FORKS_A_PUSH, str(fifo),
+                                 str(tmp_path), str(record)], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    push = None
+    try:
+        push = _pin_now(_written_pid(record, rollback))
+        assert push is not None, "the stand-in rollback never forked its push"
+        parked = SimpleNamespace(pid=push.pid, poll=lambda: 0 if push.gone() else None)
+        assert _on_fifo(parked, 10, fifo=fifo), "the push never came to the FIFO"
+        _teardown(rollback, estate=SimpleNamespace(bin=bin_), fifo=fifo, grace=10)
+        _gone(push)
+        made = sorted(name for name in ("ran", "aborted") if (tmp_path / name).exists())
+        assert made == [], (
+            f"the push forked before its first record was let go, not killed: it made {made}")
+        assert push.gone(), "the push forked before its first record is still there"
+        assert rollback.returncode == -signal.SIGKILL, rollback.returncode
+        assert not fifo.exists(), "the push FIFO is still there"
+    finally:
+        _end_pinned(push)
+        _reap_all([rollback])
+
+
+@LINUX_ONLY
+def test_a_teardown_raises_on_a_call_logged_with_no_start_token(tmp_path):
+    """SHOULD 1 at `18529e5a`: a launch record, and a `held` line, whose
+    start token is empty each name a process the teardown cannot tell from
+    one that uses its pid again: it signals neither, does the rest (the FIFO
+    is let go and gone), then raises (`RuntimeError`) naming each. Their
+    pids are above Linux's pid_max ceiling, so no process has them."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    launched, held = _Stuck.pid + 1, _Stuck.pid + 2
+    (bin_ / "git-wrapper.started").write_text(
+        json.dumps({"pid": launched, "start": ""}) + "\n", encoding="utf-8")
+    (bin_ / "git-wrapper.log").write_text(json.dumps(
+        {"sub": "push", "pid": held, "outcome": "held", "start": ""}) + "\n", encoding="utf-8")
+    fifo = tmp_path / "push.fifo"
+    os.mkfifo(str(fifo), 0o600)
+    with pytest.raises(RuntimeError, match="no start token") as raised:
+        _teardown(estate=SimpleNamespace(bin=bin_), fifo=fifo, grace=2)
+    assert f"pid {launched} " in str(raised.value) and f"pid {held} " in str(raised.value), (
+        f"the error does not name each pid logged with no start token: {raised.value}")
+    assert not fifo.exists(), "the push FIFO is still there after the teardown raised"
+
+
+@LINUX_ONLY
+def test_an_abort_release_runs_neither_git_nor_the_held_command(tmp_path):
+    """SHOULD 1 at `18529e5a`: the real wrapper (`GIT_WRAPPER`), its push
+    held on the FIFO, has written its launch record first: its pid, with the
+    start token it has while it runs. Let go by an abort release
+    (`_let_go`'s `abort`), the held call ends 75 and logs `aborted`: its
+    "git", a script that would leave a mark, never runs, so neither does the
+    push it holds, and no `ran` line is logged. The wrapper runs in a
+    session of its own, as T320's `_run_bounded` starts each git call, and
+    is the case's child, ended and reaped in its `finally`."""
+    bin_ = tmp_path / "bin"
+    wrapper_path = _script(bin_ / "git", GIT_WRAPPER)
+    fake = _script(tmp_path / "real-git", '#!/bin/sh\n: > "$0.ran"\n')
+    fifo = tmp_path / "push.fifo"
+    os.mkfifo(str(fifo), 0o600)
+    (bin_ / "git-wrapper.json").write_text(json.dumps(
+        {"git": str(fake), "psql_log": "", "hold": {"call": "push", "fifo": str(fifo)}}),
+        encoding="utf-8")
+    wrapper = subprocess.Popen([str(wrapper_path), "push", "origin", "HEAD:main"],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, cwd=str(tmp_path),
+                               start_new_session=True)
+    try:
+        assert _on_fifo(wrapper, 30, fifo=fifo), "the wrapper never held its push on the FIFO"
+        token = _stat(wrapper.pid)["start"]
+        _let_go(fifo, abort=True)
+        _ended(wrapper, 30)
+    finally:
+        said = _reap_all([wrapper])
+    calls = _jsonl(bin_ / "git-wrapper.log")
+    assert wrapper.returncode == 75, f"the aborted push ended {wrapper.returncode}, not 75: {said}"
+    assert not (tmp_path / "real-git.ran").exists(), "the aborted push ran its git"
+    assert [call.get("outcome") for call in calls] == ["held", "aborted"], calls
+    assert calls[0].get("start") == token, f"the held line's start is not its token: {calls[0]}"
+    assert _jsonl(bin_ / "git-wrapper.started") == [{"pid": wrapper.pid, "start": token}], (
+        "the wrapper's launch record is not its pid with the start token it had while it ran")
