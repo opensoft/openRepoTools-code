@@ -6072,11 +6072,27 @@ def test_a_failed_psqls_sqlstate_is_taken_only_from_its_verbose_form_on_one_line
     and the planted value echoed on a `LINE 1:` is shown nowhere. Each is
     checked in the error's `str`, `repr`, `args` and formatted traceback,
     and in pytest's report of it (`_t257zzb_seen`). Each word is drawn at
-    run time from letters no word of the report holds, so only the error
-    can show it. The planted value is no credential of any login."""
+    run time, and drawn again while any source or path a report prints
+    holds it (T257zzzb; lane 2's pre-review RV9-41 of P09, N2), so only
+    the error can show it. The planted value is no credential of any
+    login."""
     import pgcluster
-    word = "".join("JKQVWXZ"[b % 7] for b in os.urandom(5))
-    coded = "".join("JKQVWXZ"[b % 7] for b in os.urandom(4)) + str(os.urandom(1)[0] % 10)
+    # T257zzzb: the letters by their code points, so no run of them is in any
+    # source; and a word is drawn again while this module's or pgcluster's
+    # source or path, or the working directory, holds it.
+    letters = [chr(code) for code in (74, 75, 81, 86, 87, 88, 90)]
+    printed = "\n".join([Path(__file__).read_text(encoding="utf-8"),
+                         Path(pgcluster.__file__).read_text(encoding="utf-8"),
+                         str(Path(__file__).resolve()), str(Path(pgcluster.__file__).resolve()),
+                         os.getcwd()])
+
+    def drawn(size: int, digit: bool) -> str:
+        while True:
+            candidate = "".join(letters[b % 7] for b in os.urandom(size))
+            candidate += str(os.urandom(1)[0] % 10) if digit else ""
+            if candidate not in printed:
+                return candidate
+    word, coded = drawn(5, False), drawn(4, True)
     planted = f"fake-{uuid.uuid4().hex}"
     told, state, hidden = {
         "five-capitals": (f"ERROR:  {word}: a planted head\n", "no SQLSTATE in its text", word),
