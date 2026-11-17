@@ -1908,7 +1908,8 @@ def test_a_revoked_login_is_refused_69_and_writes_nothing(tmp_path, request, cas
         m.psql(f"REVOKE {WRITER} FROM lanes_w_e2;\n", W_DB, user=ADMIN)
         role = m.role("lanes_w_e2")
         assert role["canlogin"] and role["groups"] == [], (
-            f"step 2 alone did not keep LOGIN and take the membership: {role}")
+            f"step 2 alone did not keep LOGIN and take the membership: canlogin {role.get('canlogin')}, "
+            f"groups {role.get('groups')}")
     for login, words in REVOKED[case].items():
         refused = m.as_login(login, W_DB, "SELECT 1;\n", w.files[login])
         assert refused.returncode == 2 and words in refused.stderr, (
