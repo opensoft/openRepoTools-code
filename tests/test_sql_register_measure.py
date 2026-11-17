@@ -1819,32 +1819,37 @@ def _end_held(session, *, kill: bool) -> None:
     closed (`_end_pipes`), in a `finally`. Before T255n a reap that raised
     skipped both. A kill that raises is kept and the bounded reap is still
     tried (T255p; Codex's review of P09 at `b8f9e35a`, item 8); before
-    T255p it skipped the reap. A failure of the kill or the reap, as the
-    reap's `TimeoutExpired`, is kept, the kill's where both fail, and raised
-    once they are done, with the first clean-up failure as its cause; after
-    a clean reap, the first clean-up failure is raised."""
+    T255p it skipped the reap. Each failure is kept and raised once all
+    are done, in one chain (T255q; Codex's review of P09 at `fb359e64`,
+    lane 3's post 6945142764, SHOULD 1): the kill's error first, then the
+    reap's, as its `TimeoutExpired`, then the first clean-up failure, each
+    the `__cause__` of the one before it, and each only where it happened.
+    So where both the kill and the reap fail, the raised error still says
+    that the session may be alive and unreaped; before T255q the reap's
+    error was dropped there."""
     with contextlib.suppress(OSError):
         session.stdin.close()
     if not kill:
         with contextlib.suppress(subprocess.TimeoutExpired):
             session.wait(timeout=60)
-    reaped = None
+    killed = reaped = None
     try:
         try:
             if session.poll() is None:
                 session.kill()
         except Exception as exc:
-            reaped = exc
+            killed = exc
         try:
             session.wait(timeout=REAP_S)
         except Exception as exc:
-            reaped = exc if reaped is None else reaped
+            reaped = exc
     finally:
         left = _end_pipes(session)
-    if reaped is not None:
-        raise reaped from left
-    if left is not None:
-        raise left
+    failures = [failure for failure in (killed, reaped, left) if failure is not None]
+    for failure, cause in zip(failures, failures[1:]):
+        failure.__cause__ = cause
+    if failures:
+        raise failures[0]
 
 
 def _ask(session, text: str) -> None:
@@ -1982,13 +1987,16 @@ def test_a_held_sessions_end_is_bounded_joins_its_readers_and_raises_what_it_can
 
 class _StandInPipe:
     """One of a held session's pipes, for T255n's case: its close is
-    recorded in `events`."""
+    recorded in `events`, and then raises `OSError` where it `breaks`
+    (T255q)."""
 
-    def __init__(self, name: str, events: list):
-        self.name, self.events = name, events
+    def __init__(self, name: str, events: list, breaks: bool = False):
+        self.name, self.events, self.breaks = name, events, breaks
 
     def close(self) -> None:
         self.events.append(f"close {self.name}")
+        if self.breaks:
+            raise OSError(f"T255q's stand-in: the close of {self.name} failed")
 
 
 class _StandInReader:
@@ -2010,14 +2018,16 @@ class _StandInSession:
     """A held session that never ends in the time it is given, for T255n's
     case, with no process: its kill and each wait are recorded in `events`,
     with its readers' joins and its pipes' closes, and each wait raises
-    `TimeoutExpired`. Its stderr reader `stays` running where asked, and
-    its kill raises `PermissionError` where it `refuses` (T255p)."""
+    `TimeoutExpired`. Its stderr reader `stays` running where asked, its
+    kill raises `PermissionError` where it `refuses` (T255p), and its
+    stdout's close raises `OSError` where it `breaks` (T255q)."""
 
     args, returncode = ("psql",), None
 
-    def __init__(self, stays: bool, refuses: bool = False):
+    def __init__(self, stays: bool, refuses: bool = False, breaks: bool = False):
         self.events, self.refuses = [], refuses
-        self.stdin, self.stdout, self.stderr = (_StandInPipe(name, self.events)
+        self.stdin, self.stdout, self.stderr = (_StandInPipe(name, self.events,
+                                                             breaks and name == "stdout")
                                                 for name in ("stdin", "stdout", "stderr"))
         self.readers = [_StandInReader("stdout-reader", self.events, False),
                         _StandInReader("stderr-reader", self.events, stays)]
@@ -2052,11 +2062,16 @@ def test_a_held_sessions_end_joins_its_readers_and_closes_its_pipes_where_its_re
     that reader named in its cause; stdin and stdout are closed, and stderr
     is left to its reader, since a close of it would wait on the read the
     reader is blocked in (`_end_pipes`). `[kill-fails]`: the kill raises
-    `PermissionError` (T255p; Codex's review of P09 at `b8f9e35a`, item 8).
-    The bounded reap is still tried, and the kill's error is the one raised,
-    once both readers are joined and the three pipes closed. Before T255p the
-    kill's error skipped the reap."""
-    session = _StandInSession(stays=case == "reader-left", refuses=case == "kill-fails")
+    `PermissionError` (T255p; Codex's review of P09 at `b8f9e35a`, item 8),
+    and stdout's close raises `OSError` (T255q). The bounded reap is still
+    tried, and the kill's error is the one raised, once both readers are
+    joined and the three pipes closed, with the reap's `TimeoutExpired` as
+    its cause and stdout's `OSError` as the reap's (T255q; Codex's review of
+    P09 at `fb359e64`, lane 3's post 6945142764, SHOULD 1). Before T255p
+    the kill's error skipped the reap; before T255q the reap's error was
+    dropped, and the `OSError` was the kill's cause."""
+    session = _StandInSession(stays=case == "reader-left", refuses=case == "kill-fails",
+                              breaks=case == "kill-fails")
     raised = PermissionError if case == "kill-fails" else subprocess.TimeoutExpired
     with pytest.raises(raised) as failed:
         _end_held(session, kill=case != "no-kill")
@@ -2067,6 +2082,13 @@ def test_a_held_sessions_end_joins_its_readers_and_closes_its_pipes_where_its_re
     cause = failed.value.__cause__
     if case == "reader-left":
         assert isinstance(cause, AssertionError) and "stderr-reader still ran" in str(cause), repr(cause)
+    elif case == "kill-fails":
+        chain = [failed.value, cause, getattr(cause, "__cause__", None)]
+        assert isinstance(cause, subprocess.TimeoutExpired), \
+            f"the kill's error has not the reap's as its cause: {chain!r}"
+        assert isinstance(chain[2], OSError) and "close of stdout" in str(chain[2]), \
+            f"the reap's error has not stdout's close as its cause: {chain!r}"
+        assert chain[2].__cause__ is None, f"the chain goes on: {chain[2].__cause__!r}"
     else:
         assert cause is None, f"a clean clean-up gave the reap's error a cause: {cause!r}"
 
