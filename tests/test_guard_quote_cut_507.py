@@ -41,7 +41,10 @@ that ends 2; and form C's tip read against a `git` that never answers
 (SHOULD 2), run in `lanes-index` loaded as a module, as the suite's other
 modules load it; and E1's first cause line (SHOULD 3), run through
 `cmd_register_read` in that module, with its configuration, its
-declaration, its `T0` and its direct read stood in for.
+declaration, its `T0` and its direct read stood in for; and the post-bind
+refill off primary (SHOULD 4), `guard_bind_refill` with the file's own
+`reg_prefetch` and `reg_read_files`, cut out and run twice in `bash`, as its
+two call sites run it, against a stand-in `lanes-index`.
 """
 
 from __future__ import annotations
@@ -471,3 +474,80 @@ def test_e1s_cause_line_names_the_database_from_reader_url(tmp_path, monkeypatch
         f"at its timer), so the read failed (E1)"), err
     assert "t507_reader" not in err and "connect_timeout" not in err, err
     assert started == [declared], "form C did not start once after E1's line"
+
+
+#: A `lanes-index` for the refill: it logs its arguments, then answers as
+#: `REFILL_ANSWER` says: `mode index`, `mode primary`, or a refused
+#: configuration's 1, which the door reads as files mode with a warning.
+REFILL_STUB = ("#!/bin/sh\nprintf 'call %s\\n' \"$*\" >> \"$REFILL_LOG\"\n"
+               "case \"$REFILL_ANSWER\" in\n"
+               "  index) printf 'mode index\\n' ;;\n"
+               "  primary) printf 'mode primary\\n' ;;\n"
+               "  *) printf 'lanes-index: REFUSED: a refused configuration\\n' >&2; exit 1 ;;\n"
+               "esac\n")
+
+#: What `guard_bind_refill` and `reg_prefetch` call, stood in for, and the
+#: globals they read. Its arguments: the stand-in `lanes-index`, the log, the
+#: cache file. `reg_flush` and `reg_fail` log that they ran.
+REFILL_STANDINS = r'''
+set -u
+qc_stub="$1"; qc_log="$2"; SE_CACHE_FILE="$3"; SCRIPT_DIR="${3%/*}"; cmd=guard
+GB_REFILLED=0; REG_MODE=""; REG_STORE=""; RO_FAILED=""; RO_WHY=""
+note() { printf 'lanes-edit: %s\n' "$*" >&2; }
+reg_config_present() { return 0; }
+lanes_index_bin() { printf '%s\n' "$qc_stub"; }
+reg_flush() { printf 'flush\n' >> "$qc_log"; }
+reg_fail() { printf 'fail\n' >> "$qc_log"; return 69; }
+'''
+
+#: The bind's two calls: `guard_bind_bg`'s after `lane-start`, then
+#: `guard_bound_check`'s, each followed by the state it leaves.
+REFILL_RUN = r'''
+for qc_call in 1 2; do
+  guard_bind_refill
+  printf 'after %s %s %s %s\n' "$qc_call" "$GB_REFILLED" "$REG_MODE" "${REG_STORE:-none}" >> "$qc_log"
+done
+'''
+
+
+@pytest.mark.parametrize("answer,mode,refilled,store,warnings", [
+    ("index", "index", "2", "none", 0),
+    ("refused", "files", "2", "none", 1),
+    ("primary", "primary", "1", "sql", 0),
+], ids=["off-primary-index", "off-primary-files-mode-fallback", "primary"])
+def test_the_post_bind_refill_asks_once_and_off_primary_later_only_flushes(
+        tmp_path, answer, mode, refilled, store, warnings):
+    """The post-bind refill makes one form-1 read, `register read --prefetch
+    --cache <file> --files register,aliases`, never `--for guard`, however
+    many times the bind calls it (lane 5's Claude pre-review of P19, NIT 5,
+    `7b5cad67`; lane 3's Codex review of chain 2, SHOULD 4). Off primary on a
+    configured workstation, `mode index` or a call that fell to files mode,
+    it records `GB_REFILLED=2`, and the second call, `guard_bound_check`'s,
+    only flushes, so the next read is a fresh files read, with no second
+    prefetch and, after a fall to files mode, no second WARNING. On primary
+    (`GB_REFILLED=1`) the second call does nothing, as before; that id is the
+    control.
+
+    The two off-primary ids fail on the refill that left `GB_REFILLED` at 0
+    off primary, which asked `lanes-index` again and warned again."""
+    stub = tmp_path / "lanes-index"
+    stub.write_text(REFILL_STUB, encoding="utf-8")
+    stub.chmod(0o755)
+    log = tmp_path / "refill.log"
+    script = (REFILL_STANDINS + _function("reg_prefetch") + _function("reg_read_files")
+              + _function("guard_bind_refill") + REFILL_RUN)
+    res = subprocess.run(["bash", "-c", script, "bash", str(stub), str(log),
+                          str(tmp_path / "cache")],
+                         capture_output=True, timeout=60, check=False,
+                         env={"PATH": os.environ["PATH"], "LC_ALL": "C",
+                              "REFILL_LOG": str(log), "REFILL_ANSWER": answer})
+    assert res.returncode == 0, res.stderr
+    lines = log.read_text(encoding="utf-8").splitlines()
+    calls = [line for line in lines if line.startswith("call ")]
+    assert len(calls) == 1, f"the refill asked lanes-index {len(calls)} times: {lines}"
+    assert calls[0].startswith("call register read --prefetch --cache ") \
+        and calls[0].endswith(" --files register,aliases") and "--for" not in calls[0], calls
+    second = ["flush"] if refilled == "2" else []
+    assert lines == ["flush", calls[0], f"after 1 {refilled} {mode} {store}", *second,
+                     f"after 2 {refilled} {mode} {store}"], lines
+    assert res.stderr.count(b"WARNING:") == warnings, res.stderr
