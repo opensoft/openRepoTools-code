@@ -1930,7 +1930,8 @@ def _ask(session, text: str) -> None:
     if line is None:
         _end_held(session, kill=True)
         raise AssertionError(f"the held session gave no {marker} line within {ASK_S:g} s, or "
-                             f"ended (exit {session.returncode}): {_drained(session.errs)}")
+                             f"ended (exit {session.returncode}); its stderr: "
+                             f"{_said_safely(_drained(session.errs))}")
 
 
 #: T255m's stand-ins for `psql`: one that answers each `\echo` line as
@@ -2014,7 +2015,9 @@ def test_a_held_sessions_end_is_bounded_joins_its_readers_and_raises_what_it_can
         elif case == "never-answers":
             with pytest.raises(AssertionError, match="gave no t255-") as failed:
                 _ask(session, "SELECT 1;")
-            assert "t255m stand-in: silent" in str(failed.value), str(failed.value)
+            said = str(failed.value)
+            assert "t255m stand-in: silent" not in said, f"the stand-in's stderr is shown:\n{said}"
+            assert "its stderr: output: 1 line(s)" in said, f"its stderr's counts:\n{said}"
             assert session.returncode == -signal.SIGKILL, f"exit {session.returncode}"
         elif case in ("reap-times-out", "end-reap-times-out"):
             def stuck(timeout=None):
