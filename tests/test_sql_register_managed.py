@@ -93,6 +93,7 @@ from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQ
                                   PSQL_SHIM_LOG, REGISTER_FAKE_PSQL, RENDER_SET_PATH, flipped_copy,
                                   guard_strip_env)
 from test_sql_register_bounds import _said_safely  # the one helper for a failure's output (T258l)
+from test_sql_register_bounds import _whole  # a number from output, quoting none of it (T258n)
 
 pytestmark = [WINDOWS_SKIP]
 
@@ -2252,7 +2253,7 @@ class PhaseW:
                  "not_after": clock, "edits": edits, "files": rows}
         proc = self.m.commit(W_DB, "lanes_w_e1", self.files["lanes_w_e1"], entry)
         assert proc.returncode == 0, f"the {kind} entry did not commit:\n{_said_safely(proc)}"
-        return int(proc.stdout.split()[-1])
+        return _whole(proc.stdout.split()[-1], f"the {kind} entry's seq")
 
     def _to_primary(self) -> int:
         """AT-LR006's route over C, as e1's writer login: the render set's
