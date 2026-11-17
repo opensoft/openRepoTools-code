@@ -6431,7 +6431,7 @@ def test_a_chained_pgcluster_failure_shows_no_tool_text_in_pytests_report(
     assert not shown, f"{path}: the planted value shows in {shown}"
 
 
-@pytest.mark.parametrize("site", ["run-ok", "git", "make-logins"])
+@pytest.mark.parametrize("site", ["run-ok", "git", "make-logins", "make-logins-then-psql"])
 def test_a_failed_tools_raising_frame_in_pgcluster_keeps_no_text_of_its_run(monkeypatch, tmp_path, site):
     """T257zzzj (lane 2's targeted check RV9-43 of P09 at `94a40564`, NIT
     B; T229t; T229u), with no engine and no process: a tool's run fails
@@ -6443,7 +6443,12 @@ def test_a_failed_tools_raising_frame_in_pgcluster_keeps_no_text_of_its_run(monk
     of any frame of pgcluster's, whatever the traceback style: pytest
     8.3.4 prints a long entry's locals as the arguments of `_run_ok`'s
     `**env` and `git`'s `*args`, and every style but short prints frames'
-    arguments, `--showlocals` their locals. Under the suite's short style
+    arguments, `--showlocals` their locals. `[make-logins-then-psql]`
+    (T257zzzl; lane 2's targeted check RV9-44 of P09 at `3faf9453`, S-1):
+    `login add` succeeds, printing the planted value, and the psql that
+    follows in `make_logins` raises, so its frame is walked past T229u's
+    `del` after a successful `login add`, not only past the one before
+    its own raise. Under the suite's short style
     T257zzza's and T257zzb's cases pass with T229t undone; this one does
     not. Before T229t `_run_ok` and `git` kept the run as `proc`; before
     T229u `make_logins` kept `login add`'s `out` and `err`, its printed
@@ -6467,6 +6472,17 @@ def test_a_failed_tools_raising_frame_in_pgcluster_keeps_no_text_of_its_run(monk
             monkeypatch.setattr(cluster, "lanes_index_tty", lambda argv: (
                 1, f"{planted} printed\n", f"{site}: {planted} on stderr\n"))
             cluster.make_logins("register")
+        elif site == "make-logins-then-psql":
+            cluster = object.__new__(pgcluster.Cluster)
+            cluster.passwords = {}
+
+            def psql(sql, **kwargs):
+                raise pgcluster.ClusterError("psql as postgres on register exited 2: a stand-in")
+            monkeypatch.setattr(cluster, "admin_service", lambda database: f"fx_{database}")
+            monkeypatch.setattr(cluster, "lanes_index_tty", lambda argv: (
+                0, f"{planted} printed\n", f"{site}: {planted} on stderr\n"))
+            monkeypatch.setattr(cluster, "psql", psql)
+            cluster.make_logins("register")
         else:
             register = object.__new__(pgcluster.ImportedRegister)
             register.root, register.wip, register.env = tmp_path, tmp_path, {}
@@ -6483,7 +6499,8 @@ def test_a_failed_tools_raising_frame_in_pgcluster_keeps_no_text_of_its_run(monk
             held += [f"{frame.f_code.co_name}.{name}" for name, value in frame.f_locals.items()
                      if planted in repr(value)]
         tb = tb.tb_next
-    want = {"run-ok": "_run_ok", "git": "git", "make-logins": "make_logins"}[site]
+    want = {"run-ok": "_run_ok", "git": "git", "make-logins": "make_logins",
+            "make-logins-then-psql": "make_logins"}[site]
     assert want in ours, f"{site}: {want} is not in the error's traceback, only {ours}"
     assert not held, f"{site}: a frame of pgcluster's keeps the planted value in: {held}"
     assert planted not in str(failed.value), f"{site}: the planted value is in the error's text"
