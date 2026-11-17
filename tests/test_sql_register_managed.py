@@ -1300,12 +1300,14 @@ def test_the_reader_login_dumps_both_schemas_and_still_cannot_write(tmp_path, re
                         f"WHERE schemaname IN ('{REGISTER}', '{INDEX}');", "t224_reg").split(","):
         schema, table = name.split()
         assert re.search(rf"TABLE {schema} {table}\b", listing), f"the dump lacks {name}"
-    head = subprocess.run([m.cluster.tool("pg_restore"), "--data-only", f"--schema={REGISTER}",
-                           "--table=register_head", "--file=-", str(target)],
-                          capture_output=True, text=True, timeout=120, check=False).stdout
+    restored = subprocess.run([m.cluster.tool("pg_restore"), "--data-only", f"--schema={REGISTER}",
+                               "--table=register_head", "--file=-", str(target)],
+                              capture_output=True, text=True, timeout=120, check=False)
+    head = restored.stdout
     b = m.value(f"SELECT seq FROM {REGISTER}.register_head;", "t224_reg")
     assert re.search(rf"^1\t{b}\b", head, re.M) or re.search(rf"\t{b}\b", head), (
-        f"the dump's register_head does not give the head {b}:\n{head}")
+        f"the dump's register_head does not give the head {b}: pg_restore's "
+        f"{_said_safely(restored)}")
     # M6: a sequence the indexer makes later is dumped, by the default privilege.
     m.psql(f"SET ROLE {INDEXER};\nCREATE SEQUENCE {INDEX}.t224_seq_ok;\n", "t224_reg")
     again, _ = m.dump("t224_reg", files[DUMP], "second.dump")
@@ -1787,9 +1789,12 @@ def test_dump_restore_privileges_hold_after_roles_only_the_restore_and_bootstrap
     # `bootstrap` after the restore re-ran no statement and wrote no label.
     assert {state for _what, state in _objects(after.stdout)} == {"unchanged"}, _said_safely(after)
     since = target.log()[mark:end]
-    ran = [line for line in since.splitlines()
-           if re.search(r"statement: (CREATE|GRANT|REVOKE|ALTER|INSERT|UPDATE)\b", line)]
-    assert ran == [], f"bootstrap after the restore re-ran statements: {ran}"
+    ran = [found.group(1) for found in
+           (re.search(r"statement: (CREATE|GRANT|REVOKE|ALTER|INSERT|UPDATE)\b", line)
+            for line in since.splitlines()) if found]
+    # Only the count and the verbs: a role's statement can hold its password (T258m).
+    assert ran == [], (f"bootstrap after the restore re-ran {len(ran)} statement(s): "
+                       f"{', '.join(sorted(set(ran)))}; no statement's text is shown")
     restored = target.value(f"SELECT database_label FROM {REGISTER}.register_switch;", db)
     assert restored == label, f"the restored register's label is {restored!r}, not the source's {label!r}"
 
