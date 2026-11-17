@@ -1025,7 +1025,8 @@ def test_a_pending_hand_edit_names_the_file_and_a_recovery_that_works(pg, tmp_pa
     checkout"; B14 tasks:1151, "It is looked for in the lane checkout"): with
     a hand edit of `lanes/LANES.md` pending in the writing lane's own
     checkout `<c>` (`<W>-lanes/<lane>`, which `RegisterWorkstation` makes),
-    a write refuses before its snapshot (the shim's log is empty), naming the
+    a write refuses with exit 2 (spec.md:1131; tasks:1157, "a pending hand
+    edit refuses 2") before its snapshot (the shim's log is empty), naming the
     file and one recovery command, the one backticked `git` command in its
     stderr, its argv by `shlex.split` the restore of that file alone; running it,
     with no shell, in `<c>` leaves `<c>`'s `status --porcelain` empty, and
@@ -1041,7 +1042,7 @@ def test_a_pending_hand_edit_names_the_file_and_a_recovery_that_works(pg, tmp_pa
     target = checkout / "lanes" / "LANES.md"
     target.write_bytes(target.read_bytes() + b"a pending hand edit\n")
     proc = ws.run(argv, lane)
-    assert proc.returncode != 0 and ws.shim_calls() == [], (proc.returncode, ws.shim_calls())
+    assert proc.returncode == 2 and ws.shim_calls() == [], (proc.returncode, ws.shim_calls())
     assert "lanes/LANES.md" in proc.stderr, proc.stderr
     commands = re.findall(r"`(git [^`]+)`", proc.stderr)
     assert len(commands) == 1, f"the refusal names {len(commands)} recovery commands: " \
