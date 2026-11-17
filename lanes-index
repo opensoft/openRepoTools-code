@@ -1516,6 +1516,24 @@ LEGACY_SOURCE_LINE = ("source not shown: an earlier build filed an entry under a
                       "reconcile removes it")
 
 
+#: THE KEY RULE'S `password` TERM (lane 3's ruling, question 2 of
+#: opensoft/openRepoTools-code#89 comment 6955397261): `password` in ASCII letters, in any
+#: case by explicit classes, then any run of separators, then `=` or `%3D`. A separator is a
+#: character `str.isspace()` holds, as the ruling's explicit list of 29 (U+0009-000D,
+#: U+001C-0020, U+0085, U+00A0, U+1680, U+2000-200A, U+2028, U+2029, U+202F, U+205F and
+#: U+3000), each written as backslash-u and four hex digits, which both engines read; `+`;
+#: or a percent-escape, `%` and two hex digits. ONE ASCII raw-string text, used verbatim by
+#: Python (`re.search`, no flags; SQLite takes Python's list) and PostgreSQL (`~`, never
+#: `~*`, under `standard_conforming_strings`). Never backslash-x, which PostgreSQL reads with
+#: any number of hex digits. The word is literal: `p%61ssword=`, and `pa` U+017F `sword=`,
+#: stay clean, as the rule is structural.
+PASSWORD_RULE = (r"[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd](["
+                 r"\u0009\u000a\u000b\u000c\u000d\u001c\u001d\u001e\u001f\u0020"
+                 r"\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+                 r"\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+                 r"+]|%[0-9A-Fa-f]{2})*(=|%3[Dd])")
+
+
 def _is_legacy(name: str) -> bool:
     """A KEY AN EARLIER BUILD FILED AND THIS ONE WOULD NOT (lane 3's rulings,
     opensoft/openRepoTools-code#89 comments 6944416906 and 6944673181), judged by its
@@ -1527,14 +1545,14 @@ def _is_legacy(name: str) -> bool:
     URL with userinfo, which no workstation's name holds. A key of every other form is
     one this build files, and stays as it is. ITS EDGES (lane 3's ruling,
     opensoft/openRepoTools-code#89 comment 6947619546): a key holding a control
-    character (C0, DEL or C1), or `password`, optional spaces and then `=` or `%3D`, in
-    any case, is legacy too; and no source this build makes is (`resolve_source`,
-    `inventory_source`)."""
+    character (C0, DEL or C1), or `password` and then `=` or `%3D` across any run of
+    separators (`PASSWORD_RULE`, lane 3's ruling on comment 6955397261), is legacy too;
+    and no source this build makes is (`resolve_source`, `inventory_source`)."""
     if not name.startswith(FILED_PREFIXES):
         return True
     if _source_key(name) != name or re.search(r"[\x00-\x1f\x7f-\x9f]", name):
         return True
-    if re.search(r"password *(=|%3d)", name, re.IGNORECASE):
+    if re.search(PASSWORD_RULE, name):
         return True
     return (not name.startswith("register:") and
             re.search(r"[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*@", name) is not None)
@@ -1543,11 +1561,13 @@ def _is_legacy(name: str) -> bool:
 #: `_is_legacy` AS THE SERVER READS IT (lane 1's coordinator, on commit 14's design): the
 #: PostgreSQL removal chooses a legacy source's rows by the same structural rule, so neither
 #: a legacy key nor any value made from one, a digest included, is in the script. Term by
-#: term: no filed prefix; `password=` in any case; `_source_key`'s userinfo in an http(s)
+#: term: no filed prefix; `PASSWORD_RULE` itself; `_source_key`'s userinfo in an http(s)
 #: URL, or holding a `:` in any URL; an `inventory:` or `ledger:` key holding URL userinfo.
+#: No term is case-blind (`~*`): each case is an explicit class, as Python reads it (lane 3's
+#: ruling on comment 6955397261).
 PG_LEGACY_SQL = ("(NOT (source LIKE 'register:%' OR source LIKE 'inventory:%' OR source LIKE "
-                 "'ledger:%') OR source ~ '[\\x01-\\x1f\\x7f-\\x9f]' OR source ~* 'password *(=|%3d)' "
-                 "OR source ~* '^register:https?://[^/?#]*@' "
+                 "'ledger:%') OR source ~ '[\\x01-\\x1f\\x7f-\\x9f]' OR source ~ '" + PASSWORD_RULE + "' "
+                 "OR source ~ '^register:[Hh][Tt][Tt][Pp][Ss]?://[^/?#]*@' "
                  "OR source ~ '^register:[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*:[^/?#]*@' OR (source "
                  "!~ '^register:' AND source ~ '[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*@'))")
 
@@ -1592,29 +1612,24 @@ PSQL_CAS_LOST = ("the provenance of this workstation's source moved under this s
 #: The SQLSTATEs of a table or schema that does not exist: an index `open_read` calls
 #: `wiped`, and `open_write` fills.
 PSQL_UNDEFINED = ("42P01", "3F000")
-#: psql's ERROR LINE under `VERBOSITY=verbose` (lane 3's ruling, B5 of
-#: opensoft/openRepoTools-code#89 comment 6947619546): a line that BEGINS with psql's
-#: `psql:<input>:<line>: ` locus, then `ERROR:`, `FATAL:` or `PANIC:`, two blanks and the
-#: SQLSTATE. The first such line is the error. THE LOCUS IS REQUIRED (W116's re-check of
-#: commit 15): under `-f -` psql puts it before the first line of each message it reports
-#: (logging.c), never before a DETAIL, HINT, QUERY, CONTEXT or LINE line, nor before a line
-#: of a message's own text, so a quoted value that holds a newline and then `ERROR:  42P01:`
-#: is never the error. psql says an error with no locus only before it reads the script:
-#: a bad option, which carries no SQLSTATE, or a connection that fails, exit 2 (startup.c,
-#: `EXIT_BADCONN`), which `_failure` answers by the exit alone, before it reads a line.
-PSQL_ERROR_RE = re.compile(r"^psql:[^\n]*?:[0-9]+: (?:ERROR|FATAL|PANIC):  ([0-9A-Z]{5}): ",
-                           re.M)
-#: A server whose messages are in another language names the severity in it: then the
-#: error is the last line that carries psql's locus, which no subordinate line carries
-#: and after which ON_ERROR_STOP sends nothing. The locus is there because the index's psql
-#: reads its script as a file, `-f -` (`INDEX_PSQL_ARGS`).
-PSQL_LOCUS_RE = re.compile(r"^psql:[^\n]*?:[0-9]+: [^\s:]+:  ([0-9A-Z]{5}): ", re.M)
-#: THE INDEX'S psql ARGUMENTS (W116's pre-review of commit 15): the script on stdin as the
-#: file `-`, which psql 16 names `<stdin>` (command.c, `process_file`), so its logger puts
-#: `psql:<stdin>:<line>: ` before each message it reports (logging.c); piped with no `-f`,
-#: psql logs tersely, with no locus, and `PSQL_LOCUS_RE` would find none.
+#: psql's ERROR LINE (lane 3's ruling, question 1 of opensoft/openRepoTools-code#89 comment
+#: 6955397261): the index's psql runs under `VERBOSITY=sqlstate`, so libpq prints a message
+#: as its severity and its SQLSTATE alone, with no text, DETAIL, HINT, QUERY or CONTEXT, and
+#: under `-f -` psql puts its `psql:<input>:<line>: ` locus before it: one line a message, and
+#: no quoted value reaches stderr. The LAST line that carries the locus decides: a NOTICE's
+#: located line (42P07 of `IF NOT EXISTS`) comes before a later error, and ON_ERROR_STOP
+#: prints nothing after the error. Where that line ends in a colon, two blanks and a
+#: five-character code, that is the code; otherwise (a psql-side error, located with no code)
+#: there is no SQLSTATE. Not the last MATCH: an earlier NOTICE's code would win.
+PSQL_LOCATED_RE = re.compile(r"^psql:[^\n]*:[0-9]+: [^\n]*$", re.M)
+PSQL_SQLSTATE_RE = re.compile(r"^psql:[^\n]*:[0-9]+: [^\n]+:  ([0-9A-Z]{5})$", re.M)
+#: THE INDEX'S psql ARGUMENTS: the script on stdin as the file `-`, which psql 16 names
+#: `<stdin>` (command.c, `process_file`), so its logger puts `psql:<stdin>:<line>: ` before
+#: each message (logging.c); and `VERBOSITY=sqlstate` (lane 3's ruling on comment
+#: 6955397261, in place of `verbose`; psql 12 or later has it, and spec.md puts psql 15 or
+#: later on every workstation). The register path keeps `verbose` (`REGISTER_PSQL_ARGS`).
 INDEX_PSQL_ARGS = ("--no-psqlrc", "-X", "-q", "-v", "ON_ERROR_STOP=1",
-                   "-v", "VERBOSITY=verbose", "-v", "SHOW_CONTEXT=never", "-f", "-")
+                   "-v", "VERBOSITY=sqlstate", "-v", "SHOW_CONTEXT=never", "-f", "-")
 
 
 def branch() -> str:
@@ -5130,10 +5145,9 @@ class PostgresStore:
         if register:
             return self._run_register(script, timer, options)
         try:
-            # `VERBOSITY=verbose` AND `SHOW_CONTEXT=never`, AS EVERY REGISTER CALL HAS THEM
-            # (`REGISTER_PSQL_ARGS`): psql's error line carries the SQLSTATE, and no
-            # CONTEXT line follows it. Every psql has `VERBOSITY=verbose`. The script is the
-            # file `-` (`INDEX_PSQL_ARGS`), so each message psql reports carries its locus.
+            # `VERBOSITY=sqlstate` AND `SHOW_CONTEXT=never` (`INDEX_PSQL_ARGS`, lane 3's
+            # ruling on comment 6955397261): each message is its severity and SQLSTATE
+            # alone. The script is the file `-`, so each message carries psql's locus.
             proc = subprocess.run(
                 [self.psql, *INDEX_PSQL_ARGS],
                 input=script, capture_output=True, text=True, check=False,
@@ -5152,10 +5166,9 @@ class PostgresStore:
         ruling, BLOCKING 5 of opensoft/openRepoTools-code#89 comment 6944416906): psql
         can quote the script in a `LINE`, `QUERY` or `CONTEXT` line or a COPY row, so
         nothing of what it says is said or filed. Its stderr is read for the SQLSTATE
-        alone, from psql's own error line, the one with psql's locus (`PSQL_ERROR_RE`'s
-        first line; in a server of another language, `PSQL_LOCUS_RE`'s last), never a
-        DETAIL, HINT, QUERY or CONTEXT line or a line a quoted value carries, so no
-        message text decides:
+        alone: under `VERBOSITY=sqlstate` it holds no text, and the LAST line with psql's
+        locus decides (`PSQL_SQLSTATE_RE`; lane 3's ruling on comment 6955397261), so no
+        message text and no severity word decides:
           - exit 2: psql could not connect, or lost the connection;
           - 42P01 or 3F000: a table or schema the index needs does not exist, which
             `open_read` calls `wiped` (commit 13's caret mend, now by the code);
@@ -5164,9 +5177,9 @@ class PostgresStore:
           - any other SQLSTATE, by its five characters; none, by psql's exit."""
         if code == 2:
             return StoreUnusable("unreachable", PSQL_NO_CONNECTION)
-        primary = PSQL_ERROR_RE.findall(stderr)
-        located = PSQL_LOCUS_RE.findall(stderr)
-        sqlstate = primary[0] if primary else (located[-1] if located else "")
+        located = PSQL_LOCATED_RE.findall(stderr)
+        last = PSQL_SQLSTATE_RE.match(located[-1]) if located else None
+        sqlstate = last.group(1) if last else ""
         if cas and sqlstate in ("P0001", "23505"):
             return CasLost(PSQL_CAS_LOST)
         if sqlstate in PSQL_UNDEFINED:
