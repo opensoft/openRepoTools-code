@@ -250,4 +250,7 @@ def test_the_guards_outage_refusal_names_waiting_for_the_database_first(tmp_path
                       "the files")
     where = ways.index("from a shell or a `CLAUDE_NO_LANE=1` session")
     assert wait < again < status < word < where, ways
+    lost = ways.index("with the database lost for good the second way out is instead the disaster "
+                      "procedure in the manual's runbook, \"The database lost for good\"")
+    assert word < lost < where, ways
     assert ways.endswith(f"session. {S3_BYPASS}"), ways
