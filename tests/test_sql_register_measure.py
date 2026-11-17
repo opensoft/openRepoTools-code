@@ -1728,11 +1728,11 @@ def _path_m5(reg, root: Path):
                      warm.returncode, _said_safely(warm.stderr))
                 time.sleep(0.2)
             proc = read("cache")
-            assert proc.returncode == 0, (_said_safely(proc.stderr),
+            assert proc.returncode == 0, (_said_safely(proc),
                                           f"the last of {warmed} warming reads: {warm.returncode}",
                                           _said_safely(warm.stderr))
             assert FALLBACK not in proc.stderr, \
-                (_said_safely(proc.stderr), f"the last of {warmed} warming reads: {warm.returncode}",
+                (_said_safely(proc), f"the last of {warmed} warming reads: {warm.returncode}",
                  _said_safely(warm.stderr))
         finally:
             _end_group(serve)
