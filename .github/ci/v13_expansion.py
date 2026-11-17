@@ -25,7 +25,7 @@ SOURCES = {
 }
 # Preparation ceilings only; every exact head and complete ordered chain is
 # still bound separately. Never infer a new source binding from these limits.
-HISTORY_LIMITS = {"P07": 40, "P09": 24}
+HISTORY_LIMITS = {"P07": 40, "P09": 165}
 FILES = {
     "P07": {**{f"tests/test_sql_register_{name}.py": "A" for name in
                ("divergence", "render", "renderer_git", "rollback", "shape", "writes")},
@@ -35,7 +35,8 @@ FILES = {
     "P09": {**{f"tests/test_sql_register_{name}.py": "A" for name in
                ("bounds", "disaster", "drill", "guard", "landing_expired", "managed",
                 "measure", "outage")},
-            "tests/test_sql_register_fixture.py": "M", "tests/pgcluster.py": "M"},
+            "tests/test_sql_register_fixture.py": "M", "tests/pgcluster.py": "M",
+            "tests/conftest.py": "M"},
 }
 FULL = {"mode": "preparation", "required_ci": "full", "skip_ci": False,
         "queue_admission": False, "activation": False,

@@ -26,28 +26,31 @@ not permit rebasing, skipped commits or widening an inventory. Consent6928862535
 is conditional; review links remain pending until actual exact-head reviews.
 
 Those old cuts are superseded. Owner handoff6947653181 supplies P07's completed
-CX-37 cutcab8fcfd, pending fresh exact-head review and all consent conditions.
-Observed P09fb359e64 is NOT READY under review6945142764 and is being fixed.
+CX-37 cutcab8fcfd, with clean review6948304918 and remaining consent conditions.
+Owner handoff6956070097 supplies P09's final165-commit cut1d16c0cc; lane3 agrees
+it in6956738431 and the fresh local Codex review6958093018 is clean. The prior
+P09fb359e64 remains rejected; its review is not reused.
 Both source bindings,
 histories, review and consent references are therefore empty/null pending the
-next completed owner cuts. Observed hashes are diagnostic context only; they
+remaining qualification gates. Observed hashes are diagnostic context only; they
 cannot generate a preview. The helper `tests/sql_register_cleanup.py` is an
 exact added regular-file inventory entry, per P07 handoff6940832411 and lane3
-agreement6940947493. Its final T270 ownership record still must land in spec80;
-declaring this path does not accept the helper's code or broaden live scopes.
+agreement6940947493. Its final T270 ownership record is now in normally merged
+spec80 at c245bc3726bfd80aea8ddbe4b8d167c64916e0c9; declaring this path does not
+accept the helper's code or broaden live scopes.
 
-The proposed preparation ceilings are P07 40 commits and P09 24 commits,
+The proposed preparation ceilings are P07 40 commits and P09 165 commits,
 counted from their respective declared anchors. P07's complete40-commit CX-37
-chain is owner-confirmed in code97 comment6947653181; P09 retains its prior
-eight-plus-sixteen ceiling pending its next completed owner handoff. These are not automatic
+chain is owner-confirmed in code97 comment6947653181; P09's complete165-commit
+CX-36 chain is owner-confirmed in code103 comment6956070097. These are not automatic
 bindings of unpublished heads. Exact bundles, complete ordered SHAs, current
 review/consent and validation are still required. Larger or different chains
 need explicit reviewed changes; never truncate history or restack a lane to
 fit. Live policy limits and all fallback behavior remain unchanged.
 
-This private update stages the exact P0740 bound for validation and independent
-review, without binding that head or accepting its product code. P09's24 bound
-does not fit its later moving chains. Any final replacement count still needs
+This private update stages the exact40/165 bounds for validation and independent
+review, without binding either head or accepting its product code. The prior
+P09 ceiling24 no longer fits its completed chain. Any replacement count still needs
 explicit boundary/prefix validation and independent review, never truncation.
 
 Historically, P07's exported CX-31 tip18529e5a had a complete16-commit chain whose
@@ -69,7 +72,8 @@ unsupported histories, mixed paths, unsafe modes, nonempty markers, dependent
 members and conflicts. A valid preview still requires **full CI** and grants
 **no admission**. Review/consent links are context, not authenticated authority.
 
-P09 changes a frozen foundation helper. Its before/after blobs must receive a
+P09's exact inventory includes modified regular files `tests/conftest.py` and
+`tests/pgcluster.py`, both frozen-foundation paths. Their before/after blobs must receive a
 separate explicit foundation/landing review before any future activation; do
 not broaden the live verifier or copy a new digest merely to clear a refusal.
 Activation also needs current-main/source/review proofs, reviewed queue and

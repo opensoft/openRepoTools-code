@@ -4,7 +4,7 @@
   "scope": "sql-register-v13-next-preparation",
   "base": "804a97be1ab5305e3ed9d4f778e2cf89dacc55f5",
   "prerequisite": "7f1141be15ac9c0d20c25c802ba9533c2fec811c",
-  "spec_revision": "6e6427e411176f8a47f9631b619b0986e5d72262",
+  "spec_revision": "c245bc3726bfd80aea8ddbe4b8d167c64916e0c9",
   "owner_coordination": 6927765450,
   "held_prs": [106],
   "order": ["P07", "P09"],
@@ -41,11 +41,12 @@
         "head": null,
         "commits": []
       },
-      "observed_head": "fb359e644717055a010cfecab0251384fc2ae116",
+      "observed_head": "1d16c0cc5092fd8704a67399acee81ef2436f21a",
       "owner_consent": null,
       "review": null,
       "tasks": ["T213", "T214", "T215", "T219", "T220", "T224", "T226", "T229", "T230", "T237", "T253", "T254", "T255", "T257", "T258", "T274", "T276", "T278", "T279"],
       "files": {
+        "tests/conftest.py": "M",
         "tests/pgcluster.py": "M",
         "tests/test_sql_register_bounds.py": "A",
         "tests/test_sql_register_disaster.py": "A",

@@ -69,12 +69,13 @@ def test_ci_v13_expansion_real_manifest_is_disabled_and_separate(expansion, poli
     assert loaded["enabled"] is False
     assert loaded["held_prs"] == [106]
     assert loaded["order"] == ["P07", "P09"]
-    assert expansion.HISTORY_LIMITS == {"P07": 40, "P09": 24}
+    assert expansion.HISTORY_LIMITS == {"P07": 40, "P09": 165}
     for profile in loaded["profiles"].values():
         assert profile["source"]["head"] is None
         assert profile["source"]["commits"] == []
         assert profile["owner_consent"] is profile["review"] is None
     assert loaded["profiles"]["P07"]["files"]["tests/sql_register_cleanup.py"] == "A"
+    assert loaded["profiles"]["P09"]["files"]["tests/conftest.py"] == "M"
     active = expansion.projection.read_policy(REPO, "HEAD")
     assert set(active["profiles"]) == {"P05", "P06"}
     for path in ("delivery_route.py", "delivery_verify.py", "delivery_evidence.py", "delivery_v13.py"):
@@ -117,19 +118,21 @@ def test_ci_v13_expansion_preview_preserves_full_and_exposes_foundation(cohort, 
     assert result["status"] == expected
     assert [row["profile"] for row in result["previews"]] == ["P07", "P09"]
     # P07 cannot transition the foundation; P09 changes it only in the final prefix.
-    helper = "tests/pgcluster.py"
-    original = git(root, "rev-parse", f"{policy['base']}:{helper}")
-    assert git(root, "rev-parse", f"{result['previews'][0]['tree']}:{helper}") == original
-    changed = git(root, "rev-parse", f"{result['previews'][1]['tree']}:{helper}")
-    assert changed == git(root, "rev-parse", f"{policy['profiles']['P09']['source']['head']}:{helper}")
-    assert changed != original
-    assert set(result["foundation_changes_requiring_activation_review"]) == {"tests/pgcluster.py"}
+    helpers = {"tests/conftest.py", "tests/pgcluster.py"}
+    for helper in helpers:
+        original = git(root, "rev-parse", f"{policy['base']}:{helper}")
+        assert git(root, "rev-parse", f"{result['previews'][0]['tree']}:{helper}") == original
+        changed = git(root, "rev-parse", f"{result['previews'][1]['tree']}:{helper}")
+        assert changed == git(root, "rev-parse", f"{policy['profiles']['P09']['source']['head']}:{helper}")
+        assert changed != original
+    assert set(result["foundation_changes_requiring_activation_review"]) == helpers
     assert_full(result, expansion)
     assert before == (git(root, "rev-parse", "HEAD"), git(root, "status", "--porcelain"),
                       git(root, "show-ref"))
 
 
-@pytest.mark.parametrize("name,count", [("P09", 4), ("P09", 12), ("P07", 13), ("P07", 16), ("P07", 40), ("P09", 24)])
+@pytest.mark.parametrize("name,count", [("P09", 4), ("P09", 12), ("P07", 13), ("P07", 16),
+                                       ("P07", 40), ("P09", 24), ("P09", 25), ("P09", 165)])
 def test_ci_v13_expansion_exact_bounded_fixes_can_be_previewed(cohort, expansion, name, count):
     root, policy = cohort
     (root / expansion.CONFIG).unlink()
@@ -148,7 +151,7 @@ def test_ci_v13_expansion_exact_bounded_fixes_can_be_previewed(cohort, expansion
     assert_full(result, expansion)
 
 
-@pytest.mark.parametrize("name,limit", [("P07", 40), ("P09", 24)])
+@pytest.mark.parametrize("name,limit", [("P07", 40), ("P09", 165)])
 @pytest.mark.parametrize("overflow", [False, True])
 def test_ci_v13_expansion_per_profile_history_ceiling(tmp_path, expansion, policy, name, limit, overflow):
     profile = policy["profiles"][name]
@@ -198,7 +201,7 @@ def test_ci_v13_expansion_per_source_landed_anchor(cohort, expansion, fault):
     "release-unheld", "float-held-id", "wrong-number", "wrong-branch", "extra-file", "missing-file",
     "wrong-status", "wrong-task", "unbound-lineage", "unbound-review", "wrong-scope",
     "bad-observed-head", "boolean-comment", "duplicate-json", "oversized", "bad-anchor", "missing-anchor",
-    "missing-cleanup-helper", "modified-cleanup-helper",
+    "missing-cleanup-helper", "modified-cleanup-helper", "missing-report-hook", "added-report-hook",
 ])
 def test_ci_v13_expansion_manifest_refuses_unsafe_or_ambiguous_input(tmp_path, expansion, policy, fault):
     profile = policy["profiles"]["P07"]
@@ -215,6 +218,8 @@ def test_ci_v13_expansion_manifest_refuses_unsafe_or_ambiguous_input(tmp_path, e
     elif fault == "missing-file": profile["files"].pop("tests/test_sql_register_shape.py")
     elif fault == "missing-cleanup-helper": profile["files"].pop("tests/sql_register_cleanup.py")
     elif fault == "modified-cleanup-helper": profile["files"]["tests/sql_register_cleanup.py"] = "M"
+    elif fault == "missing-report-hook": policy["profiles"]["P09"]["files"].pop("tests/conftest.py")
+    elif fault == "added-report-hook": policy["profiles"]["P09"]["files"]["tests/conftest.py"] = "A"
     elif fault == "wrong-status": profile["files"]["tests/test_sql_register_shape.py"] = "M"
     elif fault == "wrong-task": profile["tasks"].append("T999")
     elif fault == "unbound-lineage": profile["source"].update(head=None, commits=["a" * 40])
@@ -285,6 +290,28 @@ def test_ci_v13_expansion_bound_source_refusals(cohort, expansion, fault):
     result = expansion.inspect(root, main)
     assert result["status"] == "refused"
     assert result["reason"] == "invalid-preparation-context"
+    assert_full(result, expansion)
+
+
+@pytest.mark.parametrize("fault", ["missing", "executable", "symlink"])
+def test_ci_v13_expansion_report_hook_requires_regular_modified_file(cohort, expansion, fault):
+    root, policy = cohort
+    (root / expansion.CONFIG).unlink()
+    profile = policy["profiles"]["P09"]
+    source = profile["source"]
+    git(root, "checkout", "-q", "--detach", source["head"])
+    target = root / "tests/conftest.py"
+    if fault == "executable":
+        target.chmod(0o755)
+    else:
+        target.unlink()
+        if fault == "symlink":
+            target.symlink_to("pgcluster.py")
+    source["head"] = commit(root, "unsafe report hook")
+    source["commits"].append(source["head"])
+    write(root, expansion.CONFIG, json.dumps(policy))
+    result = expansion.inspect(root, policy["base"])
+    assert result["status"] == "refused"
     assert_full(result, expansion)
 
 
