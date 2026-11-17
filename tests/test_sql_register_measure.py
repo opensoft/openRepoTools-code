@@ -1783,7 +1783,10 @@ def _end_pipes(session):
     it at that pipe's end (`_lines_of`, T255o), and the reader is named. An
     ended reader has closed its own pipe, so its close here does nothing.
     Returns the first failure, for `_end_held` to raise: a reader
-    still running, or a close that failed; None where all is ended."""
+    still running, or a close that failed; None where all is ended. Each
+    later failure is the `__cause__` of the one before it, so none is
+    dropped (T255r; lane 2's pre-review RV9-36 of P09 at `2407ea06`, N2);
+    before T255r only the first was returned."""
     end = time.monotonic() + REAP_S
     for reader in session.readers:
         reader.join(max(0.0, end - time.monotonic()))
@@ -1801,6 +1804,8 @@ def _end_pipes(session):
             pipe.close()
         except OSError as exc:
             failures.append(exc)
+    for failure, cause in zip(failures, failures[1:]):
+        failure.__cause__ = cause
     return failures[0] if failures else None
 
 
@@ -2058,10 +2063,13 @@ def test_a_held_sessions_end_joins_its_readers_and_closes_its_pipes_where_its_re
     both readers are joined and stdin, stdout and stderr closed. Before
     T255n it was raised straight from the reap, with no reader joined and
     neither reader's pipe closed. `[reader-left]`: the stderr reader still
-    runs at the deadline. The reap's error is still the one raised, with
-    that reader named in its cause; stdin and stdout are closed, and stderr
-    is left to its reader, since a close of it would wait on the read the
-    reader is blocked in (`_end_pipes`). `[kill-fails]`: the kill raises
+    runs at the deadline, and stdout's close raises `OSError`. The reap's
+    error is still the one raised, with that reader named in its cause and
+    stdout's `OSError` as that cause's own (T255r; lane 2's pre-review
+    RV9-36 of P09 at `2407ea06`, N2: before T255r the `OSError` was
+    dropped); stdin and stdout are closed, and stderr is left to its
+    reader, since a close of it would wait on the read the reader is
+    blocked in (`_end_pipes`). `[kill-fails]`: the kill raises
     `PermissionError` (T255p; Codex's review of P09 at `b8f9e35a`, item 8),
     and stdout's close raises `OSError` (T255q). The bounded reap is still
     tried, and the kill's error is the one raised, once both readers are
@@ -2071,7 +2079,7 @@ def test_a_held_sessions_end_joins_its_readers_and_closes_its_pipes_where_its_re
     the kill's error skipped the reap; before T255q the reap's error was
     dropped, and the `OSError` was the kill's cause."""
     session = _StandInSession(stays=case == "reader-left", refuses=case == "kill-fails",
-                              breaks=case == "kill-fails")
+                              breaks=case in ("kill-fails", "reader-left"))
     raised = PermissionError if case == "kill-fails" else subprocess.TimeoutExpired
     with pytest.raises(raised) as failed:
         _end_held(session, kill=case != "no-kill")
@@ -2082,6 +2090,10 @@ def test_a_held_sessions_end_joins_its_readers_and_closes_its_pipes_where_its_re
     cause = failed.value.__cause__
     if case == "reader-left":
         assert isinstance(cause, AssertionError) and "stderr-reader still ran" in str(cause), repr(cause)
+        after = cause.__cause__
+        assert isinstance(after, OSError) and "close of stdout" in str(after), \
+            f"the reader's error has not stdout's close as its cause: {after!r}"
+        assert after.__cause__ is None, f"the chain goes on: {after.__cause__!r}"
     elif case == "kill-fails":
         chain = [failed.value, cause, getattr(cause, "__cause__", None)]
         assert isinstance(cause, subprocess.TimeoutExpired), \
