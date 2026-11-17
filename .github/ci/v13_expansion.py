@@ -25,11 +25,12 @@ SOURCES = {
 }
 # Preparation ceilings only; every exact head and complete ordered chain is
 # still bound separately. Never infer a new source binding from these limits.
-HISTORY_LIMITS = {"P07": 13, "P09": 24}
+HISTORY_LIMITS = {"P07": 16, "P09": 24}
 FILES = {
     "P07": {**{f"tests/test_sql_register_{name}.py": "A" for name in
                ("divergence", "render", "renderer_git", "rollback", "shape", "writes")},
             "tests/fixtures/lanes-edit-v1.1.0/SHA256SUMS": "A",
+            "tests/sql_register_cleanup.py": "A",
             "tests/fixtures/lanes-edit-v1.1.0/lanes-edit.sh": "A"},
     "P09": {**{f"tests/test_sql_register_{name}.py": "A" for name in
                ("bounds", "disaster", "drill", "guard", "landing_expired", "managed",
@@ -56,7 +57,7 @@ def read_policy(root):
     require(type(policy["schema_version"]) is int and policy["schema_version"] == 1
             and policy["enabled"] is False and policy["scope"] == SCOPE
             and policy["held_prs"] == [106] and type(policy["held_prs"][0]) is int
-            and policy["order"] == ["P09", "P07"]
+            and policy["order"] == ["P07", "P09"]
             and type(policy["owner_coordination"]) is int and policy["owner_coordination"] > 0
             and isinstance(policy["profiles"], dict) and set(policy["profiles"]) == set(SOURCES))
     for key in ("base", "prerequisite", "spec_revision"):

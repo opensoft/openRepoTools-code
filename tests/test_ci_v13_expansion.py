@@ -68,16 +68,27 @@ def test_ci_v13_expansion_real_manifest_is_disabled_and_separate(expansion, poli
     assert len(digest) == 64
     assert loaded["enabled"] is False
     assert loaded["held_prs"] == [106]
-    assert loaded["order"] == ["P09", "P07"]
-    assert expansion.HISTORY_LIMITS == {"P07": 13, "P09": 24}
-    assert all(profile["source"]["commits"][-1] == profile["source"]["head"]
-               for profile in loaded["profiles"].values())
+    assert loaded["order"] == ["P07", "P09"]
+    assert expansion.HISTORY_LIMITS == {"P07": 16, "P09": 24}
+    for profile in loaded["profiles"].values():
+        assert profile["source"]["head"] is None
+        assert profile["source"]["commits"] == []
+        assert profile["owner_consent"] is profile["review"] is None
+    assert loaded["profiles"]["P07"]["files"]["tests/sql_register_cleanup.py"] == "A"
     active = expansion.projection.read_policy(REPO, "HEAD")
     assert set(active["profiles"]) == {"P05", "P06"}
     for path in ("delivery_route.py", "delivery_verify.py", "delivery_evidence.py", "delivery_v13.py"):
         text = (REPO / ".github/ci" / path).read_text()
         assert "v13_expansion" not in text
         assert "v13-prepared-cohort" not in text
+
+
+def test_ci_v13_expansion_real_observations_do_not_bind_owner_heads(expansion, policy):
+    result = expansion.inspect(REPO, policy["base"])
+    assert result["status"] == "pending-owner-heads"
+    assert result["reason"] == "unbound-source"
+    assert "previews" not in result
+    assert_full(result, expansion)
 
 
 def test_ci_v13_expansion_missing_heads_stay_pending(cohort, expansion):
@@ -104,14 +115,21 @@ def test_ci_v13_expansion_preview_preserves_full_and_exposes_foundation(cohort, 
     result = expansion.inspect(root, policy["base"])
     expected = "preview-ready-for-review" if linked else "preview-pending-owner-reviews"
     assert result["status"] == expected
-    assert [row["profile"] for row in result["previews"]] == ["P09", "P07"]
+    assert [row["profile"] for row in result["previews"]] == ["P07", "P09"]
+    # P07 cannot transition the foundation; P09 changes it only in the final prefix.
+    helper = "tests/pgcluster.py"
+    original = git(root, "rev-parse", f"{policy['base']}:{helper}")
+    assert git(root, "rev-parse", f"{result['previews'][0]['tree']}:{helper}") == original
+    changed = git(root, "rev-parse", f"{result['previews'][1]['tree']}:{helper}")
+    assert changed == git(root, "rev-parse", f"{policy['profiles']['P09']['source']['head']}:{helper}")
+    assert changed != original
     assert set(result["foundation_changes_requiring_activation_review"]) == {"tests/pgcluster.py"}
     assert_full(result, expansion)
     assert before == (git(root, "rev-parse", "HEAD"), git(root, "status", "--porcelain"),
                       git(root, "show-ref"))
 
 
-@pytest.mark.parametrize("name,count", [("P09", 4), ("P09", 12), ("P07", 13), ("P09", 24)])
+@pytest.mark.parametrize("name,count", [("P09", 4), ("P09", 12), ("P07", 13), ("P07", 16), ("P09", 24)])
 def test_ci_v13_expansion_exact_bounded_fixes_can_be_previewed(cohort, expansion, name, count):
     root, policy = cohort
     (root / expansion.CONFIG).unlink()
@@ -130,7 +148,7 @@ def test_ci_v13_expansion_exact_bounded_fixes_can_be_previewed(cohort, expansion
     assert_full(result, expansion)
 
 
-@pytest.mark.parametrize("name,limit", [("P07", 13), ("P09", 24)])
+@pytest.mark.parametrize("name,limit", [("P07", 16), ("P09", 24)])
 @pytest.mark.parametrize("overflow", [False, True])
 def test_ci_v13_expansion_per_profile_history_ceiling(tmp_path, expansion, policy, name, limit, overflow):
     profile = policy["profiles"][name]
@@ -180,6 +198,7 @@ def test_ci_v13_expansion_per_source_landed_anchor(cohort, expansion, fault):
     "release-unheld", "float-held-id", "wrong-number", "wrong-branch", "extra-file", "missing-file",
     "wrong-status", "wrong-task", "unbound-lineage", "unbound-review", "wrong-scope",
     "bad-observed-head", "boolean-comment", "duplicate-json", "oversized", "bad-anchor", "missing-anchor",
+    "missing-cleanup-helper", "modified-cleanup-helper",
 ])
 def test_ci_v13_expansion_manifest_refuses_unsafe_or_ambiguous_input(tmp_path, expansion, policy, fault):
     profile = policy["profiles"]["P07"]
@@ -194,6 +213,8 @@ def test_ci_v13_expansion_manifest_refuses_unsafe_or_ambiguous_input(tmp_path, e
     elif fault == "wrong-branch": profile["source"]["branch"] = "main"
     elif fault == "extra-file": profile["files"]["lane-start"] = "M"
     elif fault == "missing-file": profile["files"].pop("tests/test_sql_register_shape.py")
+    elif fault == "missing-cleanup-helper": profile["files"].pop("tests/sql_register_cleanup.py")
+    elif fault == "modified-cleanup-helper": profile["files"]["tests/sql_register_cleanup.py"] = "M"
     elif fault == "wrong-status": profile["files"]["tests/test_sql_register_shape.py"] = "M"
     elif fault == "wrong-task": profile["tasks"].append("T999")
     elif fault == "unbound-lineage": profile["source"].update(head=None, commits=["a" * 40])
@@ -215,7 +236,7 @@ def test_ci_v13_expansion_manifest_refuses_unsafe_or_ambiguous_input(tmp_path, e
 @pytest.mark.parametrize("fault", [
     "extra-path", "nonempty-marker", "deleted-fixture", "executable", "symlink",
     "unlisted-commit", "merge-commit", "overlong-history", "wrong-review-head",
-    "boolean-review-comment", "stale-main", "conflict", "temporary-offscope",
+    "boolean-review-comment", "stale-main", "conflict", "temporary-offscope", "executable-cleanup-helper",
 ])
 def test_ci_v13_expansion_bound_source_refusals(cohort, expansion, fault):
     root, policy = cohort
@@ -227,6 +248,7 @@ def test_ci_v13_expansion_bound_source_refusals(cohort, expansion, fault):
     elif fault == "nonempty-marker": write(root, expansion.projection.MARKERS + "T210", "not empty\n")
     elif fault == "deleted-fixture": (root / "tests/fixtures/lanes-edit-v1.1.0/SHA256SUMS").unlink()
     elif fault == "executable": (root / "tests/test_sql_register_shape.py").chmod(0o755)
+    elif fault == "executable-cleanup-helper": (root / "tests/sql_register_cleanup.py").chmod(0o755)
     elif fault == "symlink":
         target = root / "tests/test_sql_register_shape.py"
         target.unlink()
@@ -255,7 +277,7 @@ def test_ci_v13_expansion_bound_source_refusals(cohort, expansion, fault):
         (root / "outside.py").unlink()
         source["head"] = commit(root, "restore final scope")
         source["commits"].append(source["head"])
-    if fault in {"extra-path", "nonempty-marker", "deleted-fixture", "executable", "symlink"}:
+    if fault in {"extra-path", "nonempty-marker", "deleted-fixture", "executable", "symlink", "executable-cleanup-helper"}:
         source["head"] = commit(root, "unsafe scoped fix")
         source["commits"].append(source["head"])
     write(root, expansion.CONFIG, json.dumps(policy))

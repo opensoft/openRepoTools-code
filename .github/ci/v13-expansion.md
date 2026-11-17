@@ -11,6 +11,12 @@ Coordination starts at opensoft/openRepoTools#165 comment6927765450. Old public
 heads are observations only. A null source binding is pending, not a wildcard.
 P08/code#106 stays held, including `.github/workflows/release.yml`.
 
+Renewed owner consent (issue165 comments6938017311 and6938099557) requires
+P07 before P09. The disabled inspector therefore accepts only that order and
+previews P07 first with the original foundation, followed by P09's declared
+helper transition. Reversed order refuses; this does not change any live queue
+or grant consent to a moved product head.
+
 The resolved cut includes P09's T237zzi (one trailing empty line removed;
 unchanged AST), per lane2 comment6930368576 and lane3 ruling6930389021.
 Lane1 published P07 `4e9821ab` and P09 `f4f0ebce`; their declared histories
@@ -19,13 +25,34 @@ must contain the common prerequisite and already be in frozen main. This does
 not permit rebasing, skipped commits or widening an inventory. Consent6928862535
 is conditional; review links remain pending until actual exact-head reviews.
 
-The preparation ceilings are P07 13 commits and P09 24 commits,
-counted from their respective declared anchors. These accommodate lane2's
-reported fix chains (issue165 comment6932539623); they are not automatic
+Those old cuts are superseded. Current observed heads5a120647/b8f9e35a are
+NOT READY under exact-head reviews6941178190/6940693024. Both source bindings,
+histories, review and consent references are therefore empty/null pending the
+next completed owner cuts. Observed hashes are diagnostic context only; they
+cannot generate a preview. The helper `tests/sql_register_cleanup.py` is an
+exact added regular-file inventory entry, per P07 handoff6940832411 and lane3
+agreement6940947493. Its final T270 ownership record still must land in spec80;
+declaring this path does not accept the helper's code or broaden live scopes.
+
+The preparation ceilings are P07 16 commits and P09 24 commits,
+counted from their respective declared anchors. P07's four-plus-nine-plus-three
+chain is owner-confirmed in issue165 comment6935365475; P09 retains its prior
+eight-plus-sixteen ceiling pending its final owner handoff. These are not automatic
 bindings of unpublished heads. Exact bundles, complete ordered SHAs, current
 review/consent and validation are still required. Larger or different chains
 need explicit reviewed changes; never truncate history or restack a lane to
 fit. Live policy limits and all fallback behavior remain unchanged.
+
+These held limits do not fit the later26/58-commit observations and are not
+being published as their qualification. Final counts need fresh explicit
+boundary/prefix validation and independent review after the owners finish.
+
+P07's final exported CX-31 tip18529e5a has a complete16-commit chain whose
+prefixes and exact inventory were checked independently. The ceiling update
+does not bind that head or satisfy its conditional consent: the genuine
+exact-head review, new33-node hosted verification, fresh full CI and landed
+spec80 notes remain separate gates. The observed P09 CX-31 chain has29 commits;
+structural acquisition alone does not raise its ceiling or accept that cut.
 
 With acquired immutable objects in an isolated checkout, inspect a bound cohort:
 
