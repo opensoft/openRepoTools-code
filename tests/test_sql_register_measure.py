@@ -253,9 +253,17 @@ SEED = {
 
 # ------------------------------------------------------------------ the estate
 def git(cwd: Path, *args: str, env: dict | None = None) -> str:
+    """git's stdout, or an AssertionError that shows its exit and counts. Its
+    run is dropped before the raise (T255zf; lane 2's pre-review RV9-41 of
+    P09 at `4895579`, B1): pytest 8.3.4 prints a long entry's locals as its
+    arguments where the function takes `*args`, so `proc`, both streams,
+    would show under an explicit `--tb=long`."""
     proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
                           env=env, check=False)
-    assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {_said_safely(proc)}"
+    if proc.returncode != 0:
+        said = f"git {' '.join(args)} in {cwd}: {_said_safely(proc)}"
+        del proc
+        raise AssertionError(said)
     return proc.stdout
 
 
