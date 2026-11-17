@@ -154,6 +154,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_service_that_cannot_start_falls_back_to_the_direct_read": ("T512", "T513"),  # T237; tasks:2302
     "test_a_service_that_never_answers_falls_back_inside_5_s": ("T512", "T513"),  # T237; tasks:2302
     "test_a_stale_socket_is_unlinked_under_the_lock_and_rebound": ("T512", "T513"),  # T237; tasks:2302
+    "test_a_start_that_returns_at_a_live_socket_or_a_failed_bind_lets_register_lock_go": ("T512", "T513"),  # T237zzt; P23 (#165 6934144108)
     "test_a_whole_file_fetch_the_start_line_cuts_fills_the_image_cache_for_the_next_prompt": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_a_write_between_two_requests_is_in_the_next_answer": ("T107", "T227", "T228", "T512", "T513"),  # T237; tasks:2302
     "test_after_bound_one_moved_then_the_next_prompt_passes": ("T502",),  # T214; tasks:2013
@@ -8264,3 +8265,108 @@ def test_a_fifo_at_register_log_never_holds_a_start_or_the_service(estate, case)
         assert hook.err.splitlines().count(FALLBACK) == 1, hook.err
         assert not servers, f"the guard's client started a service: {servers}"
     assert stat_mod.S_ISFIFO(os.lstat(fifo).st_mode), "the FIFO at register.log was replaced"
+
+
+#: A STAND-IN FOR `lanes-index serve` THAT READS `register.lock` ONCE ITS
+#: START HAS RETURNED (T237zzt): it loads @INDEX@ as `_OTHER_UID_SERVE`
+#: does, runs `serve` through `main` in its own process, and then prints one
+#: JSON line: `main`'s exit, the descriptors of that process still open on
+#: `register.lock` (by device and inode, through `/proc/self/fd`), and the
+#: errno of `flock(LOCK_EX | LOCK_NB)` on a descriptor it opens afresh, or
+#: null where that lock is taken: a lock left on any other open of the file
+#: refuses it.
+_LOCK_AFTER_SERVE = r'''import fcntl, importlib.machinery, importlib.util, json, os, sys
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("lanes_index_lock_after_serve", @INDEX@)
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+sys.modules[loader.name] = module
+loader.exec_module(module)
+code = module.main(["serve"])
+lock = module.register_serve_paths()["lock"]
+mine = os.stat(lock)
+fds = []
+for name in os.listdir("/proc/self/fd"):
+    try:
+        st = os.stat("/proc/self/fd/" + name)
+    except OSError:
+        continue
+    if (st.st_dev, st.st_ino) == (mine.st_dev, mine.st_ino):
+        fds.append(int(name))
+probe = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+try:
+    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    refused = None
+except OSError as exc:
+    refused = exc.errno
+finally:
+    os.close(probe)
+print(json.dumps({"code": code, "fds": fds, "refused": refused}))
+'''
+
+
+@pytest.mark.parametrize("case", ["live-socket", "bind-fails"])
+def test_a_start_that_returns_at_a_live_socket_or_a_failed_bind_lets_register_lock_go(
+        estate, case):
+    """T512'S COMMIT 14, THE LOCK'S LIFETIME (T237zzt; lane 3's Codex review
+    of chain 3, #165 6934144108: "no existing test observes the two
+    descriptors newly closed by commit 14").
+
+    THE ORACLE. `serve` holds `register.lock` for the service's whole life
+    (socket API section 8.3), and only a service's life: `register_serve_run`
+    closes the lock's descriptor on each return after its open (`309626c9`:
+    "THE LOCK'S DESCRIPTOR IS CLOSED ON EACH RETURN"), the two that commit
+    added among them: a live service's answer at the probe, exit 0 (section
+    8.3, "one that answers means a live service, and it exits 0"), and the
+    bind's failure, exit 69 (section 8.3's 69; the function's docstring, "at
+    once at any other `OSError` from the bind, the listen, the owner file,
+    the rename or the `lstat` after it"). The exit of `serve`'s process
+    closes the descriptor anyway, so the case runs `serve` in a stand-in's
+    process (`_LOCK_AFTER_SERVE`), which reads, once `main` has returned,
+    that no descriptor of its own is left on `register.lock` and that a
+    fresh open's `flock(LOCK_EX | LOCK_NB)` is taken. Before commit 14 both
+    returns left the descriptor open, and the lock held.
+
+    - `[live-socket]`: a socket of the case's own at the fixed path
+      (`_Listener`), which accepts, with no service and so no lock held:
+      the start takes the lock, its probe connects, and it returns 0. The
+      listener records that connection, with no byte sent.
+    - `[bind-fails]`: a directory at `register.sock`: the probe's connect is
+      refused, so the start binds at a name of its own and renames that
+      socket onto the fixed path, which fails (`EISDIR`), and it returns 69,
+      saying the socket "could not be bound". `run/` is this uid's at 0700
+      (section 2.2)."""
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    listener = None
+    if case == "live-socket":
+        listener = _Listener(est, hang=False)
+    else:
+        run.mkdir(parents=True, exist_ok=True, mode=0o700)
+        run.chmod(0o700)
+        (run / "register.sock").mkdir(mode=0o700)
+    stand_in = est.root / "t" / "serve-lock-after.py"
+    stand_in.parent.mkdir(parents=True, exist_ok=True)
+    stand_in.write_text(_LOCK_AFTER_SERVE.replace("@INDEX@", _q(est.index)), encoding="utf-8")
+    probed = None
+    try:
+        done = subprocess.run([sys.executable, str(stand_in)], capture_output=True, text=True,
+                              env=est.env(), cwd=str(est.wip), timeout=60)
+        if listener is not None:
+            probed = _until(lambda: list(listener.got), 2)
+    finally:
+        if listener is not None:
+            listener.close()
+    lines = done.stdout.strip().splitlines()
+    assert done.returncode == 0 and lines, done
+    seen = json.loads(lines[-1])
+    if case == "live-socket":
+        assert seen["code"] == 0 and probed == [b""], \
+            f"the start did not return 0 at the live socket's probe: {seen} {probed} {done.stderr}"
+    else:
+        assert seen["code"] == 69 and "could not be bound" in done.stderr, \
+            f"the start did not return 69 at its failed bind: {seen} {done.stderr}"
+    refused = seen["refused"]
+    got = "taken" if refused is None else errno.errorcode.get(refused, str(refused))
+    assert not seen["fds"] and refused is None, (
+        f"serve returned {seen['code']} ({case}) with register.lock still open on its "
+        f"descriptor(s) {seen['fds']}, and a fresh open's flock(LOCK_EX | LOCK_NB): {got}")
