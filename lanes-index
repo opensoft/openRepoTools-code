@@ -7600,18 +7600,22 @@ def register_serve_too_long(paths: dict) -> int:
     return size if size > REGISTER_SERVE_SOCKET_MAX else 0
 
 
-def _register_serve_write(path: str, data: bytes) -> None:
+def _register_serve_write(path: str, data: bytes, *, dir_fd: int | None = None) -> None:
     """`path` written whole by a temp file beside it and `os.replace`, mode
-    0600. Raises `OSError`."""
+    0600. Raises `OSError`. With `dir_fd`, `path` is a name in that
+    directory, and the temporary is created, renamed over it and, on a
+    failure, unlinked, each relative to that descriptor
+    (`register_serve_stamp`, commit 25)."""
     temp = f"{path}.tmp-{os.getpid()}-{os.urandom(4).hex()}"
-    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
+                 dir_fd=dir_fd)
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
-        os.replace(temp, path)
+        os.replace(temp, path, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
     except BaseException:
         try:
-            os.unlink(temp)
+            os.unlink(temp, dir_fd=dir_fd)
         except OSError:
             pass
         raise
@@ -7657,25 +7661,59 @@ def register_serve_stamp(paths: dict, cause: str) -> None:
     never where another holds it, a live service that answers its clients,
     beside which a stamp would hold every start back for nothing. Where the
     lock cannot be opened, or is not a regular file (NIT 2), or this platform
-    has no `flock`, it is written as before."""
+    has no `flock`, it is written as before.
+
+    THROUGH A CHECKED DESCRIPTOR OF `run/` (lane 5's pre-review of 7049fb0f,
+    T512R4-REPORT-1117b.md, SHOULD 1, commit 25; socket API 2.2 and ERR-28:
+    a directory that fails its check is never stamped). The stamp comes after
+    `cmd_serve`'s first check, and `run/` can change in between (the
+    configuration's load, the `psql` check), so `run/` is first opened and
+    checked again by one descriptor (`register_serve_dir_open`). Where that
+    check fails, no stamp is written, and nothing is opened or made in
+    `run/`; the caller's exit is as it was. Where it passes, `register.lock`
+    is opened relative to that descriptor, and the stamp's temporary is
+    created, renamed over `register.failed` and, on a failure, unlinked, each
+    relative to it (`_register_serve_write` with `dir_fd`), so a `run/`
+    replaced after the check gains neither file. The descriptors are closed
+    on every return. WHERE `os.open`, `os.rename` OR `os.unlink` TAKES NO
+    `dir_fd` (`os.supports_dir_fd`; `os.replace` calls `renameat` as
+    `os.rename` does and is in no set, so `os.rename` is the member checked),
+    the lock and the stamp go by their paths, as before, but after the
+    check."""
+    run_fd, why = register_serve_dir_open(paths["run"])
+    if why:
+        return                      # a `run/` that fails its check is never stamped (ERR-28)
+    at = (os.open in os.supports_dir_fd and os.rename in os.supports_dir_fd
+          and os.unlink in os.supports_dir_fd)
+    lock = None
     try:
-        import fcntl
-        lock = _register_serve_open_regular(
-            paths["lock"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW)
-    except (ImportError, OSError):
-        lock = None
-    try:
+        try:
+            import fcntl
+            lock = _register_serve_open_regular(
+                REGISTER_SERVE_FILES["lock"] if at else paths["lock"],
+                os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=run_fd if at else None)
+        except (ImportError, OSError):
+            lock = None
         if lock is not None:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
                 return              # a service holds it: no stamp
-        _register_serve_write(paths["failed"], f"{utc_now()} {cause}\n".encode("ascii"))
+        data = f"{utc_now()} {cause}\n".encode("ascii")
+        if at:
+            _register_serve_write(REGISTER_SERVE_FILES["failed"], data, dir_fd=run_fd)
+        else:
+            _register_serve_write(paths["failed"], data)
     except OSError:
         pass
     finally:
         if lock is not None:
             os.close(lock)
+        try:
+            os.close(run_fd)
+        except OSError:
+            pass
 
 
 def _register_serve_read_regular(path: str, size: int) -> bytes:
@@ -9624,8 +9662,8 @@ def register_serve_sweep(paths: dict, fd: int) -> None:
     # opened `register.lock` by its path.
     if not (os.open in os.supports_dir_fd and os.stat in os.supports_dir_fd
             and os.unlink in os.supports_dir_fd and os.listdir in os.supports_fd):
-        refuse("this platform cannot open, list, stat or unlink relative to a directory "
-               "descriptor")
+        refuse("this platform does not offer all of open, list, stat and unlink relative to "
+               "a directory descriptor")
         return
     try:
         names = os.listdir(fd)
@@ -9740,6 +9778,8 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     # its path, as before, but now after the check, and the sweep sweeps
     # nothing (ruling 3's reading, #165 6935871785). The descriptor is closed
     # on every return, by the `finally` below, before the bind.
+    lock = None
+    keep = False            # True once the sweep is done: from there the bind's paths close it
     try:
         lock_at = os.open in os.supports_dir_fd
         try:
@@ -9769,19 +9809,20 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
                 if register_serve_try_lock(lock):
                     break
             except OSError as exc:
-                os.close(lock)
                 note(f"serve: {paths['lock']} could not be locked ({exc.strerror or exc})")
                 register_serve_log(paths, f"register.lock could not be locked "
                                           f"({errno.errorcode.get(exc.errno, exc.errno)})")
                 return EXIT_UNAVAILABLE
         else:
-            os.close(lock)
             return EXIT_OK      # ONE INSTANCE: another service holds the lock
-        # THE LOCK'S DESCRIPTOR IS CLOSED ON EACH RETURN, as the two above close
-        # it (lane 5's Claude pre-review of P23, NIT 3): a live service's answer
-        # here, and the bind's failure below. The probe only sets `live`, and the
-        # close follows it, so an `OSError` from the close is not taken for a
-        # stale socket's.
+        # THE LOCK'S DESCRIPTOR IS CLOSED ON EACH RETURN, AND ON AN EXCEPTION,
+        # BEFORE THE BIND (lane 5's Claude pre-review of P23, NIT 3; lane 5's
+        # pre-review of 7049fb0f, NIT 5, commit 25): by the `finally` below,
+        # once, for a lock that cannot be taken, a lock another holds, a live
+        # service's answer, and an exception from the probe's `socket()` or
+        # the sweep, which then goes on up; the bind's failure below closes it
+        # itself. The probe only sets `live`, and the close follows it, so an
+        # `OSError` from the close is not taken for a stale socket's.
         probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         live = False
         try:
@@ -9793,13 +9834,18 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
         finally:
             probe.close()
         if live:
-            os.close(lock)
             return EXIT_OK
         # THE SWEEP, UNDER THE LOCK, THROUGH THE CHECKED DESCRIPTOR (socket API
         # §8.3; commit 22): `register_serve_sweep` lists, stats and unlinks
         # relative to `run_fd`, and does not close it.
         register_serve_sweep(paths, run_fd)
+        keep = True
     finally:
+        if lock is not None and not keep:
+            try:
+                os.close(lock)
+            except OSError:
+                pass
         try:
             os.close(run_fd)
         except OSError:
