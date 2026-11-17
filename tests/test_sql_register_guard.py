@@ -9404,7 +9404,7 @@ def test_a_launched_start_refused_for_no_psql_where_run_fails_the_stamps_own_che
 #
 # THE WINDOW. `serve --start` loads the configuration itself and refuses a
 # refused one to its own caller, starting nothing (`register_serve_start_only`,
-# :8078 at `cd58ba24`), so the line is planted after the starter's load and
+# :8053 at `cd58ba24`), so the line is planted after the starter's load and
 # before the launched `serve`'s. `load_config` runs `git`
 # (`git_work_tree_of`, of the configuration's directory, :675) after the
 # file's own checks and before it reads the file (:691), and the launched
@@ -9416,7 +9416,8 @@ def test_a_launched_start_refused_for_no_psql_where_run_fails_the_stamps_own_che
 # NOTHING OF THE LINE IS PRINTED (lane 2's rule for planted secrets): a
 # failure gives counts and fixed words, never the password, the URL or the
 # log's text; the log is read and counted in `_url_line_counts`, which keeps
-# no copy of it; and the starter's own standard error is dropped unread.
+# no copy of it; and the starter's own standard error is read by
+# `_launch_until_the_service_ends` and dropped without use.
 
 #: THE PLANTED LINE (T237zzzb): a bare URL whose userinfo holds a FAKE
 #: password and whose query holds an `=`, so `load_config` takes all of it up
@@ -9424,13 +9425,13 @@ def test_a_launched_start_refused_for_no_psql_where_run_fails_the_stamps_own_che
 #: the estate, so its count in `register.log` is a count of the line's text
 #: there.
 URL_LINE_USER = "t237zzzb-user"
-URL_LINE_PASSWORD = "t237zzzb-planted-fake-password"
+URL_LINE_SECRET = "t237zzzb-planted-fake-password"
 URL_LINE_HOST = "t237zzzb-host.invalid"
-URL_LINE = (f"postgresql://{URL_LINE_USER}:{URL_LINE_PASSWORD}@{URL_LINE_HOST}/register"
+URL_LINE = (f"postgresql://{URL_LINE_USER}:{URL_LINE_SECRET}@{URL_LINE_HOST}/register"
             f"?sslmode=require")
 #: The parts counted in `register.log`, by the names a failure gives: the
 #: password, the userinfo's user and its `:`, and the host.
-URL_LINE_PARTS = {"password": URL_LINE_PASSWORD, "userinfo": URL_LINE_USER + ":",
+URL_LINE_PARTS = {"password": URL_LINE_SECRET, "userinfo": URL_LINE_USER + ":",
                   "host": URL_LINE_HOST}
 
 #: THE STAND-IN `git` (T237zzzb), first on the launch's `PATH`: every call
@@ -9462,8 +9463,11 @@ def _config_planting_git(est: Estate, conf: Path) -> Path:
     where.mkdir(parents=True, exist_ok=True)
     _script(where / "git", _CONFIG_PLANTING_GIT, PY=sys.executable, HERE=_q(where),
             REAL=_q(shutil.which("git")))
-    (where / "config-plant.json").write_text(json.dumps({"conf": str(conf), "line": URL_LINE}),
-                                             encoding="utf-8")
+    # Written from this frame, with the dumps an inline expression: `Path.write_text(data)`
+    # and `json.dump(obj, handle)` each run a frame whose argument holds the line, which
+    # a failed write would show in the traceback.
+    with open(where / "config-plant.json", "w", encoding="utf-8") as handle:
+        handle.write(json.dumps({"conf": str(conf), "line": URL_LINE}))
     return where
 
 
@@ -9512,6 +9516,9 @@ def test_a_launched_start_refusing_a_bare_url_line_with_a_query_keeps_its_passwo
     there is no child subreaper."""
     est = estate(mode="primary")
     conf = Path(est.extra["LANES_INDEX_CONFIG"])
+    if not conf.read_bytes().endswith(b"\n"):
+        pytest.fail("the estate's configuration does not end with a newline, so the planted "
+                    "line's number is unknown")
     number = len(conf.read_text(encoding="utf-8").splitlines()) + 1
     where = _config_planting_git(est, conf)
     got = _launch_until_the_service_ends(est, where)
