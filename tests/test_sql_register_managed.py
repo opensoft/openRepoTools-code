@@ -102,7 +102,9 @@ pytestmark = [WINDOWS_SKIP]
 #: names has landed, and the skip names them. The rows are T224's Order
 #: (tasks:2156), T230's (tasks:2220, with its As built at :2219) and T258's
 #: (tasks:2464), tasks.md at lane 3's commit 17 `204145ae`. No task is common
-#: to all 22 functions, so there is no "*" row.
+#: to all 23 functions, so there is no "*" row. T224j's and T224n's cases, which
+#: run on synthetic text and stand-ins with no database, have no row: they run
+#: ungated.
 SQL_REGISTER_GATE_TABLE = {
     # T224: until L1-A7 (T109), L1-A8 (T110), L1-A17 (T119, T120) and T229.
     # Lane 1's two cases' T109 and T110, and `[in-recovery]`'s T229, are in
@@ -1183,18 +1185,35 @@ CHECK_11 = {
     "system-root": (lambda env: env.url(sslrootcert="system"), False),
     "plaintext": (lambda env: env.url(sslmode="disable", sslrootcert=None), False),
 }
-#: The fault each failing case is built to show, in the words of `_ready_check_tls`
-#: (line R `9bdd317b`), which puts the URL's faults first in its connection's part of
-#: the line (T224l): a FAIL for another cause, a restart's stale port among them, does
-#: not pass. `[leaf-only]`'s fault is libpq's own text for a chain it cannot verify, so
-#: it has no row.
+
+
+def _says(*words: str):
+    """A failing check-11 case's predicate on check 11's reason: it holds
+    each of `words` (T224n). `words` stays on it for a failure's message."""
+    def holds(reason: str) -> bool:
+        return all(word in reason for word in words)
+    holds.words = words
+    return holds
+
+
+#: The fault each failing case is built to show, as a predicate on check 11's reason,
+#: one for EVERY failing case (T224l, T224n): a FAIL for another cause, a restart's
+#: stale port among them, does not pass. The URL's faults are in the words of
+#: `_ready_check_tls` (line R `9bdd317b`), which puts them first in its connection's
+#: part of the line. `[leaf-only]`'s is libpq's own, for a chain it cannot verify: the
+#: server sends the leaf without its intermediate, so the root alone cannot verify it,
+#: and psql 16 says, under the `LC_ALL=C` that `TlsEnvironment` sets, `connection to
+#: server at "127.0.0.1", port <port> failed: SSL error: certificate verify failed`,
+#: which `_ready_psql_why` puts in the line (Codex's review of P09 at `21dd3642`,
+#: SHOULD 5 in lane 3's numbering).
 CHECK_11_FAULT = {
-    "sslmode-prefer": "its URL carries sslmode=prefer, not sslmode=verify-full",
-    "no-sslrootcert": "its URL carries no sslrootcert= naming the issuer's root file",
-    "unix-socket": "its URL names a Unix socket",
-    "in-recovery": "pg_is_in_recovery() is not false",
-    "system-root": "its sslrootcert= is system",
-    "plaintext": "its URL carries sslmode=disable, not sslmode=verify-full",
+    "sslmode-prefer": _says("its URL carries sslmode=prefer, not sslmode=verify-full"),
+    "no-sslrootcert": _says("its URL carries no sslrootcert= naming the issuer's root file"),
+    "unix-socket": _says("its URL names a Unix socket"),
+    "in-recovery": _says("pg_is_in_recovery() is not false"),
+    "leaf-only": _says("SSL error: certificate verify failed"),
+    "system-root": _says("its sslrootcert= is system"),
+    "plaintext": _says("its URL carries sslmode=disable, not sslmode=verify-full"),
 }
 
 
@@ -1210,9 +1229,74 @@ def test_ready_check_11_needs_tls_and_the_primary(tmp_path, request, case):
         assert state == "FAIL" and proc.returncode == 2, (
             f"[{case}] check 11 does not fail, or ready does not exit 2:\n{_said(proc)}")
         assert env.login in reason, f"[{case}] check 11 does not name the connection:\n{_said(proc)}"
-        fault = CHECK_11_FAULT.get(case)
-        assert fault is None or fault in reason, (
-            f"[{case}] check 11 fails, but not for {fault!r} (T224l):\n{_said(proc)}")
+        fault = CHECK_11_FAULT[case]
+        wanted = " and ".join(repr(word) for word in fault.words)
+        assert fault(reason), (
+            f"[{case}] check 11 fails, but not for {wanted} (T224l, T224n):\n{_said(proc)}")
+
+
+#: Check 11's reason for each failing case as `ready` would print it, the URL's faults
+#: in `_ready_check_tls`'s words (line R `9bdd317b`) and a connection's in libpq 16's
+#: (psql under `LC_ALL=C`), for T224n's regression; and a FAIL for another cause, the
+#: port a restart did not keep.
+CHECK_11_SAID = {
+    "sslmode-prefer": "its URL carries sslmode=prefer, not sslmode=verify-full",
+    "no-sslrootcert": "its URL carries no sslrootcert= naming the issuer's root file",
+    "unix-socket": ("its URL names a Unix socket, where libpq ignores sslmode and nothing is "
+                    "encrypted; its own pg_stat_ssl row shows ssl false: the connection is not "
+                    "encrypted"),
+    "in-recovery": "pg_is_in_recovery() is not false: it reached a server in recovery, not the primary",
+    "leaf-only": ('its connection and read failed (c 10 s, N_a 1): psql: error: connection to server '
+                  'at "127.0.0.1", port 54321 failed: SSL error: certificate verify failed'),
+    "system-root": ("its sslrootcert= is system, whose store holds no private root (C7, design "
+                    "Y:2324); its connection and read failed (c 10 s, N_a 1): psql: error: "
+                    'connection to server at "127.0.0.1", port 54321 failed: SSL error: '
+                    "certificate verify failed"),
+    "plaintext": ("its URL carries sslmode=disable, not sslmode=verify-full; its URL carries no "
+                  "sslrootcert= naming the issuer's root file"),
+}
+CHECK_11_STALE_PORT = ('its connection and read failed (c 10 s, N_a 1): psql: error: connection to '
+                       'server at "127.0.0.1", port 54321 failed: Connection refused')
+
+
+def test_each_failing_check_11_case_passes_its_own_fault_and_no_other_cause(tmp_path, monkeypatch):
+    """T224n (Codex's review of P09 at `21dd3642`, SHOULD 5 in lane 3's
+    numbering): check 11's case itself, run with a stand-in for its TLS
+    environment whose `ready` prints one check-11 FAIL line, with no
+    database. Each failing case passes its own fault and fails the same FAIL
+    for a restart's stale port, `[leaf-only]` among them; and every failing
+    case has a predicate. No password is in any line."""
+    login = "lanes_w_fx"
+
+    class StandIn:
+        said = ""
+
+        def __init__(self, _request, _root):
+            self.login = login
+
+        def url(self, **_query) -> str:
+            return f"postgresql://{login}@127.0.0.1:54321/t229"
+
+        def socket_url(self) -> str:
+            return self.url()
+
+        def restart(self, **_option) -> None:
+            pass
+
+        def ready(self, _register_url: str) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(
+                [], 2, f"check 11: FAIL: writer {login} (`register_url=`): {StandIn.said}\n", "")
+
+    monkeypatch.setitem(globals(), "TlsEnvironment", StandIn)
+    failing = [case for case, (_make, passes) in CHECK_11.items() if not passes]
+    for case in failing:
+        StandIn.said = CHECK_11_SAID[case]
+        test_ready_check_11_needs_tls_and_the_primary(tmp_path, None, case)
+        StandIn.said = CHECK_11_STALE_PORT
+        with pytest.raises(AssertionError, match=r"check 11 fails, but not for"):
+            test_ready_check_11_needs_tls_and_the_primary(tmp_path, None, case)
+    missing = sorted(set(failing) - set(CHECK_11_FAULT))
+    assert not missing, f"no fault predicate for the failing check-11 cases {missing} (T224n)"
 
 
 # ============================================================ tls_at_load
