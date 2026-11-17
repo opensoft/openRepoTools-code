@@ -1588,6 +1588,204 @@ def test_the_register_is_named_by_its_remote_and_no_url(estate, origin, reposito
     assert res.stdout == "", said
 
 
+# ===================================== a credentialed register: its key, its status, CasLost
+#
+# Round 4's commit 12, on lane 3's ruling (opensoft/openRepoTools-code#89 comment
+# 6940341452) of lane 1's sites 1 to 4: no credential reaches `status`'s "source" line,
+# `export`'s `source=`, the store's key or the status file's key, and `CasLost`'s stderr
+# text carries no URL in any form. A source with no credential keeps today's key.
+# Codex's two further sites of the class (comment 6940769355), the `sync` and
+# `reconcile` label on stdout and `export`'s `why` for a source with no provenance,
+# print the same key; and an identified register is filed under it, never as
+# `register:?` (lane 2's note 2 on commit 11, comment 6940663109).
+
+#: (id, `workspace.yaml`'s `repository:`, the index's key for it)
+REGISTER_KEYS = [
+    ("https-userinfo", f"https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r",
+     f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"),
+    ("https-token", f"https://{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r",
+     f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"),
+    ("ssh-password", f"ssh://u:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r",
+     f"register:ssh://{REGISTER_HOST}/{REGISTER_PATH}/r"),
+    # controls: no credential, so today's key exactly; the last one's `@` stands past
+    # the end of its authority (its `?`), so it has no userinfo
+    ("https-plain", f"https://{REGISTER_HOST}/{REGISTER_PATH}/r",
+     f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"),
+    ("ssh-login", f"ssh://git@{REGISTER_HOST}/{REGISTER_PATH}/r",
+     f"register:ssh://git@{REGISTER_HOST}/{REGISTER_PATH}/r"),
+    ("owner-repo", "opensoft/t104-fake-repo", "register:opensoft/t104-fake-repo"),
+    ("https-query-at", f"https://{REGISTER_HOST}?{REGISTER_PATH}@x/r",
+     f"register:https://{REGISTER_HOST}?{REGISTER_PATH}@x/r"),
+]
+
+
+@pytest.mark.parametrize("repository, key", [
+    pytest.param(repository, key, id=ident) for ident, repository, key in REGISTER_KEYS])
+def test_a_credentialed_register_is_keyed_and_shown_without_it(estate, monkeypatch,
+                                                                repository, key):
+    """NO CREDENTIAL IN A KEY OR A NAME (lane 3's ruling): with `workspace.yaml`'s
+    `repository:` a URL with a user and a password, a token, or an ssh password, the
+    index's key - the store's and the status file's, as `resolve_source` gives it - is
+    the URL without its credential; a provenance under it is exported with that
+    `source=`, and no file of the state folder holds the credential. `status` names the
+    key so, once, and names a name an earlier build filed with the credential without
+    it.
+    The fake secret is on no stream and not in `meta`. A source with no credential
+    keeps today's key."""
+    agents = estate.root / "agents-c12"
+    agents.mkdir()
+    (agents / "workspace.yaml").write_text(f"repository: {repository}\npath: {estate.ws}\n",
+                                           encoding="utf-8")
+    env = {"AGENT_PROTOCOL_ROOT": str(agents), "LANES_WORKSPACE_ROOT": str(estate.ws)}
+    monkeypatch.setenv("AGENT_PROTOCOL_ROOT", str(agents))
+    monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
+    mod = load_indexer()
+    assert mod.resolve_source(None, str(estate.ws)) == key
+    store = mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"})
+    store.open_write()
+    store.apply(key, None, "1" * 40, {}, {})
+    out = estate.root / "exp"
+    out.mkdir()
+    ex = estate.index("export", "--out", out, env=env)
+    for path in sorted(estate.state.rglob("*")):
+        if path.is_file():
+            assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path} keeps it"
+    st = estate.index("status", env=env)
+    # an entry an earlier build filed under the credentialed name, for `status` to show
+    mod.write_status(f"register:{repository}", last_error="an earlier build's entry")
+    again = estate.index("status", env=env)
+    meta = (out / "meta").read_text(encoding="utf-8") if (out / "meta").exists() else ""
+    why = (out / "why").read_text(encoding="utf-8") if (out / "why").exists() else ""
+    said = (f"status:\n{st.stdout}{st.stderr}\nagain:\n{again.stdout}{again.stderr}\n"
+            f"export {ex.returncode}:\n{ex.stdout}{ex.stderr}\nmeta:\n{meta}\nwhy:\n{why}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert ex.returncode == 0, said
+    assert f"source={key}" in meta.splitlines(), said
+    # this workstation's key, once: the store's and `status`'s own are one key
+    assert st.stdout.count(f"source {key}\n") == 1, said
+    assert f"source {key}\n" in again.stdout, said
+    for shown in (st.stdout, st.stderr, again.stdout, again.stderr, ex.stdout, ex.stderr,
+                  meta, why):
+        assert CONFIG_SECRET not in shown, f"the credential was shown:\n{said}"
+
+
+#: (id, the key a sync passes to `SqliteStore.apply`, whether `CasLost` names it)
+CAS_KEYS = [
+    ("cas-legacy-key", f"register:https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}"
+                       f"/{REGISTER_PATH}/r", False),
+    ("cas-url-key", f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r", False),
+    ("cas-scp-key", f"register:git@{REGISTER_HOST}:{REGISTER_PATH}/r", False),
+    ("cas-owner-repo", "register:opensoft/t104-fake-repo", True),
+    ("cas-inventory", "inventory:Eagle", True),
+]
+
+
+@pytest.mark.parametrize("key, named", [
+    pytest.param(key, named, id=ident) for ident, key, named in CAS_KEYS])
+def test_the_compare_and_swap_refusal_names_no_url(estate, key, named):
+    """`CasLost` NAMES NO URL (exit-codes.md:57; lane 3's ruling): a compare-and-swap
+    that finds the provenance moved is refused, nothing written, with its words; a
+    plain `register:` or `inventory:` key is named as before, and a key that is a URL
+    in any form, with or without a credential, is not: none of its credential, host
+    and path is in the text."""
+    mod = load_indexer()
+    store = mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"})
+    store.open_write()
+    with pytest.raises(mod.CasLost) as caught:
+        store.apply(key, {"commit_sha": "0" * 40}, "1" * 40, {}, {})
+    text = str(caught.value)
+    assert "moved under this sync" in text and "nothing was written" in text, text
+    assert (key in text) == named, text
+    for part in (CONFIG_SECRET, REGISTER_HOST, REGISTER_PATH):
+        assert part not in text, text.replace(CONFIG_SECRET, "<the secret>")
+
+
+def _store_keys(db: Path) -> set:
+    """The `source` of every row of every table of the store that has the column."""
+    conn = sqlite3.connect(str(db))
+    try:
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()]
+        keys: set = set()
+        for table in tables:
+            if "source" in [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]:
+                keys |= {r[0] for r in conn.execute(f"SELECT DISTINCT source FROM {table}")}
+        return keys
+    finally:
+        conn.close()
+
+
+#: (id, `workspace.yaml`'s `repository:`, its key: today's, `register:` and the repository
+#: less its `.git`, where it has no userinfo; that less its credential where it has one)
+SYNCED_SOURCES = [
+    ("https-host-path", f"https://{REGISTER_HOST}/{REGISTER_PATH}/r.git",
+     f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"),
+    ("owner-repo", "opensoft/t104-fake-repo", "register:opensoft/t104-fake-repo"),
+    ("https-userinfo",
+     f"https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r.git",
+     f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"),
+]
+
+
+@pytest.mark.parametrize("repository, key", [
+    pytest.param(repository, key, id=ident) for ident, repository, key in SYNCED_SOURCES])
+def test_an_identified_register_is_synced_and_filed_under_its_key(estate, repository, key):
+    """AN IDENTIFIED SOURCE IS FILED AS BEFORE, AND NO CREDENTIAL IS PRINTED (lane 2's
+    note 2 on commit 11, opensoft/openRepoTools-code#89 comment 6940663109; lane 3's
+    ruling and its limit 2, comment 6940341452; Codex's two further sites, comment
+    6940769355): with `workspace.yaml`'s `repository:` a URL with no userinfo, GitHub's
+    `owner/repo` or a URL with a token, `export` before any sync says in `why` that the
+    key has no provenance; `sync` files every row of the store under the key - today's
+    key exactly where the source has no userinfo - and names it in its label, as a
+    second `sync` and a `reconcile --dry-run` do; a `reconcile` that then fails with its
+    source identified files its error under the key in the status file, not as
+    `register:?`; and `status` names the key once. The credential is on no stream, in no
+    file of the state folder and in no row of the store."""
+    agents = estate.root / "agents-synced"
+    agents.mkdir()
+    (agents / "workspace.yaml").write_text(f"repository: {repository}\npath: {estate.ws}\n",
+                                           encoding="utf-8")
+    env = {"AGENT_PROTOCOL_ROOT": str(agents), "LANES_WORKSPACE_ROOT": str(estate.ws)}
+    # a store with no provenance in it, for `export`'s `why`
+    load_indexer().SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"}).open_write()
+    out = estate.root / "exp-none"
+    out.mkdir()
+    none = estate.index("export", "--out", out, env=env)
+    why = (out / "why").read_text(encoding="utf-8") if (out / "why").exists() else ""
+    first = estate.index("sync", env=env)
+    keys = _store_keys(estate.sqlite)
+    again = estate.index("sync", env=env)
+    dry = estate.index("reconcile", "--dry-run", env=env)
+    # the register's tree unreadable: the source resolves, and the read after it fails
+    with _unreadable(estate, "origin/main:lanes"):
+        failed = estate.index("reconcile", env=env)
+    status = estate.index("status", env=env)
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    kept = json.loads(filed.read_text(encoding="utf-8")) if filed.exists() else {}
+    runs = {"export": none, "sync": first, "sync again": again, "reconcile --dry-run": dry,
+            "reconcile": failed, "status": status}
+    said = ("\n".join(f"{name} exit {res.returncode}:\n{res.stdout}{res.stderr}"
+                      for name, res in runs.items())
+            + f"\nwhy: {why}\nstore keys: {sorted(keys)}\nstatus file: {sorted(kept)}"
+            ).replace(CONFIG_SECRET, "<the secret>")
+    assert none.returncode == 3 and f"no provenance for {key} in the " in why, said
+    assert first.returncode == 0 and f"sync: {key} at register@" in first.stdout, said
+    assert keys == {key}, said
+    assert again.returncode == 0 and f"sync: {key} at register@" in again.stdout, said
+    assert "nothing to write" in again.stdout, said
+    assert dry.returncode == 0 and f"reconcile: {key} at register@" in dry.stdout, said
+    assert failed.returncode == 1, said
+    assert sorted(kept) == [key] and kept[key].get("last_error"), said
+    assert status.stdout.count(f"source {key}\n") == 1, said
+    assert _store_keys(estate.sqlite) == {key}, said
+    for name, res in runs.items():
+        assert CONFIG_SECRET not in res.stdout + res.stderr, f"{name} showed it:\n{said}"
+    assert CONFIG_SECRET not in why, said
+    for path in sorted(estate.state.rglob("*")):
+        if path.is_file():
+            assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path} keeps it:\n{said}"
+
+
 FAKE_PSQL = r"""#!/usr/bin/env python3
 # A FAKE psql: it records what it was asked and answers the few queries
 # lanes-index makes as an EMPTY schema-1 store would. No database exists.
