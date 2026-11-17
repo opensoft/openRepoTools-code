@@ -104,8 +104,7 @@ from sql_register_cleanup import (IDENTITY, LEADS_A_GROUP, LEAVES_A_MEMBER, LINU
                                   _GapFifo, _Pinned, _Pipe, _Undying, _carried, _each, _end_pin,
                                   _ended, _fifo_reader, _keep, _misrecorded, _nonce, _on_fifo,
                                   _owned, _pin, _pin_child, _reap_all, _release, _reported,
-                                  _seen_stopped, _send_each, _stat, _table, _wait_all,
-                                  _with_identity)
+                                  _send_each, _settle_pinned, _stat, _table, _with_identity)
 from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_LOG,
                                   REGISTER_FAKE_PSQL, RENDER_GIT_HALF_LINE, flipped_copy,
                                   guard_strip_env)
@@ -362,7 +361,9 @@ def _let_go(fifo: Path, fd: int | None = None, abort: bool = False) -> None:
 #: `_send_each`, `_release` and `_wait_all`), are
 #: `tests/sql_register_cleanup.py`'s (T270's), which this module and the
 #: renderer module import (round CX-34): its docstring says how a process
-#: is owned. The teardown below is this module's; unlike T270's clean-up,
+#: is owned. So is the one loop of stop, kill, confirm and read again
+#: (`_settle_pinned`; round CX-35), which steps 1 and 5 of `_teardown` run.
+#: The teardown below is this module's; unlike T270's clean-up,
 #: it finds no process by a path (`_find`).
 
 
@@ -473,17 +474,16 @@ def _attempt(errors: list, step, *args):
 
 
 def _stop_owned(procs, estate, books: SimpleNamespace, grace: float) -> None:
-    """`_teardown`'s step 1: read after read (`_find`), each made once every
-    process found is seen stopped (`_stopped`), until one finds nothing
-    new, within `grace` s. One not seen stopped by then is an error
-    (`_seen_stopped`; lane 3's Codex review of code PR 97 at `f776b435`,
-    SHOULD 1)."""
-    deadline = time.monotonic() + grace
-    while _attempt(books.errors, _find, procs, estate, books):
-        late = _seen_stopped(books.pinned.values(), deadline, books.refused)
-        if late is not None:
-            books.errors.append(RuntimeError(late))
-            return  # past the deadline: what is found is killed next
+    """`_teardown`'s step 1, the shared clean-up's one loop, stopping only
+    (`_settle_pinned`, its `kill` false; lane 3's Codex review of code PR 97
+    at `5a120647`, SHOULD 2): read after read (`_find`), each made once
+    every process found is seen stopped (`_stopped`), until one finds
+    nothing new. The deadline, `grace` s on, is checked on every read,
+    whatever was stopped, and is an error; so is one not seen stopped
+    (`_seen_stopped`; SHOULD 1 at `f776b435`). Errors are kept in
+    `books.errors`, and what is found is killed next."""
+    _settle_pinned(lambda: _find(procs, estate, books), books, time.monotonic() + grace,
+                   books.errors, kill=False)
 
 
 def _end_children(procs, books: SimpleNamespace, fifo, fd, grace: float) -> list:
@@ -502,29 +502,17 @@ def _end_children(procs, books: SimpleNamespace, fifo, fd, grace: float) -> list
 
 
 def _see_gone(procs, estate, books: SimpleNamespace, grace: float) -> list:
-    """`_teardown`'s step 5: each process found seen gone, within `grace` s,
-    then step 1's read made again, and what it finds seen stopped, killed
-    and waited for, until a read made once every one is seen gone finds
-    nothing new; past `grace`, one read more, and where that one still
-    finds a process new, that is an error. A process found here and not
-    seen stopped is an error too (lane 3's Codex review of code PR 97 at
-    `f776b435`, SHOULD 1). Returns the pids still there."""
-    deadline, last = time.monotonic() + grace, False
-    while True:
-        _wait_all(_Pinned.gone, books.pinned.values(), max(deadline, time.monotonic() + 1), 0.02)
-        if not _attempt(books.errors, _find, procs, estate, books):
-            break  # the read again, once each one is seen gone or the time is up, found none new
-        if last:
-            books.errors.append(RuntimeError(f"a read {grace:g} s on still found processes new "
-                                             f"to the teardown"))
-            break  # what it found is killed, and seen gone or named, as it is let go (_release)
-        late = _seen_stopped(books.pinned.values(), max(deadline, time.monotonic() + 1),
-                             books.refused)
-        if late is not None:
-            books.errors.append(RuntimeError(late))
-        _send_each([held for held in books.pinned.values() if not held.gone()], signal.SIGKILL,
+    """`_teardown`'s step 5, the shared clean-up's one loop (`_settle_pinned`;
+    lane 3's Codex review of code PR 97 at `5a120647`, SHOULD 2): each
+    process found seen gone, then step 1's read made again, and what it
+    finds seen stopped, killed and seen gone, until a read made once every
+    one is seen gone finds nothing new. The deadline, `grace` s on, is
+    checked on every read, whatever was stopped, and is an error; so is a
+    process found here and not seen stopped (SHOULD 1 at `f776b435`). An
+    earlier error never spares the read after the kill. Returns the pids
+    still there."""
+    _settle_pinned(lambda: _find(procs, estate, books), books, time.monotonic() + grace,
                    books.errors)
-        last = time.monotonic() >= deadline  # past it, one read more, then no more
     return sorted(held.pid for held in books.pinned.values() if not held.gone())
 
 
@@ -537,8 +525,10 @@ def _teardown(*procs, estate=None, fifo: Path | None = None, fd: int | None = No
     case, in this order, each step tried whatever an earlier one raised:
     1. what it owns found, registered, then stopped through its pidfd
        (`_find`), read after read, each read made once every process found
-       is seen stopped (`_stopped`), until a read finds nothing new, within
-       `grace` s: each child in `procs` not yet reaped (a None is skipped),
+       is seen stopped (`_stopped`), until a read finds nothing new, or the
+       deadline, `grace` s on and checked on every read, is reported (the
+       shared clean-up's one loop, `_settle_pinned`, stopping only): each
+       child in `procs` not yet reaped (a None is skipped),
        and every process carrying the case's identity, the estate's nonce
        or one a child carries, so a push forked before its first record,
        or a member of a group whose leader is gone, is found by it;
@@ -554,9 +544,11 @@ def _teardown(*procs, estate=None, fifo: Path | None = None, fd: int | None = No
        runs no git;
     4. each child drained, bounded, its pipes closed on a last timeout, and
        waited for, bounded (`_drain`), which raises where one stays unreaped;
-    5. each process found seen gone, within `grace` s, then step 1's read
-       made again, and what it finds killed and waited for, until a read
-       finds nothing new; past `grace`, one read more, then no more.
+    5. each process found seen gone, then step 1's read made again, and
+       what it finds stopped, killed and seen gone, until a read made once
+       every one is seen gone finds nothing new, or the deadline, `grace` s
+       on and checked on every read, is reported (the one loop again;
+       lane 3's Codex review of code PR 97 at `5a120647`, SHOULD 2).
     A launch record or a `held` line with no start token, or one whose pid
     and start token a live process has without the case's identity, is
     never signalled, and is an error. Where the logs cannot be read, their
