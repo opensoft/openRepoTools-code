@@ -1786,6 +1786,206 @@ def test_an_identified_register_is_synced_and_filed_under_its_key(estate, reposi
             assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path} keeps it:\n{said}"
 
 
+# ============== a legacy source: a key an earlier build filed with a credential in it
+#
+# Round 4's commit 13, on lane 3's ruling (opensoft/openRepoTools-code#89 comment
+# 6941833120) of BLOCKING 1 in its Codex review of ac4e0935. v1.1.0 and v1.2.0 keyed a
+# source as `source_of` read it, a credential included, in both stores and in the
+# status file, and SQLite's `CasLost` put that key in the `last_error` that
+# `_record_error` saved. `status` never prints such an entry's error, and the first
+# `sync` or `reconcile` removes the source from every table and from the status file.
+
+#: What `status` prints in place of a legacy entry's last error, whole.
+LEGACY_ENTRY_WORDS = ("not shown: an earlier build filed this entry under a key that held "
+                      "a credential, and the next sync or reconcile removes it")
+#: The key v1.2.0 filed for `workspace.yaml`'s `repository:` as an https URL with a
+#: token, and the key this build files for it.
+LEGACY_KEY = (f"register:https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}/"
+              f"{REGISTER_PATH}/r")
+CLEAN_KEY = f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"
+#: A source with no userinfo that no sync here touches: the control, kept byte for byte.
+CONTROL_KEY = f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/control"
+
+
+class _IndexTables:
+    """The index's store behind `lanes-index`'s back, as an upgrade case seeds and
+    reads it: SQLite's file, or the cluster's `t109_db` as its superuser, in the
+    schema `lanes_index`. Every value here is the test's own, so it goes into the SQL
+    as a literal."""
+
+    def __init__(self, estate: Estate, cluster=None):
+        self.estate, self.cluster = estate, cluster
+
+    def sql(self, *statements: str) -> list:
+        """The statements in one connection; the rows they answer, as text."""
+        if self.cluster is None:
+            conn = sqlite3.connect(str(self.estate.sqlite))
+            try:
+                # AS A BUILD WITHOUT `SQLITE_SECURE_DELETE` WRITES: what an update moves
+                # stays in the file's free space
+                conn.execute("PRAGMA secure_delete = OFF")
+                out = []
+                for statement in statements:
+                    out += ["|".join("" if v is None else str(v) for v in row)
+                            for row in conn.execute(statement).fetchall()]
+                conn.commit()
+                return out
+            finally:
+                conn.close()
+        text = self.cluster.psql("SET search_path TO lanes_index;\n" +
+                                 "".join(f"{s};\n" for s in statements), dbname="t109_db").stdout
+        return [line for line in text.splitlines() if line]
+
+    def tables(self) -> list:
+        """Every table of the store with a `source` column, as the store has them, not
+        as `lanes-index` lists them."""
+        if self.cluster is None:
+            return [t for t in self.sql("SELECT name FROM sqlite_master WHERE type = 'table' "
+                                        "ORDER BY name")
+                    if "source" in self.sql(f"SELECT name FROM pragma_table_info('{t}')")]
+        return self.sql("SELECT c.table_name FROM information_schema.columns c "
+                        "JOIN information_schema.tables t USING (table_schema, table_name) "
+                        "WHERE c.table_schema = 'lanes_index' AND c.column_name = 'source' "
+                        "AND t.table_type = 'BASE TABLE' ORDER BY 1")
+
+    def copy(self, tables: list, old: str, new: str) -> None:
+        """Every row of `old`, filed again under `new`."""
+        for t in tables:
+            self.sql(f"CREATE TEMP TABLE copy_{t} AS SELECT * FROM {t} WHERE source = '{old}'",
+                     f"UPDATE copy_{t} SET source = '{new}'",
+                     f"INSERT INTO {t} SELECT * FROM copy_{t}")
+
+    def rename(self, tables: list, old: str, new: str) -> None:
+        """Every row of `old`, filed under `new` in its place."""
+        for t in tables:
+            self.sql(f"UPDATE {t} SET source = '{new}' WHERE source = '{old}'")
+
+    def touch(self, tables: list, source: str) -> None:
+        """Every row of `source` written again, longer, as a later v1.2.0 sync wrote
+        it: the copies the old rows leave in SQLite's free space hold the key too."""
+        for t in tables:
+            self.sql(f"UPDATE {t} SET indexed_utc = indexed_utc || ' (v1.2.0)' "
+                     f"WHERE source = '{source}'")
+
+    def rows(self, tables: list, source: str) -> list:
+        """Every row of `source`, table by table, as text, in a fixed order."""
+        return [(t, self.sql(f"SELECT * FROM {t} WHERE source = '{source}' ORDER BY 1, 2"))
+                for t in tables]
+
+    def text(self, tables: list) -> str:
+        """Every row of every table, as text."""
+        return "\n".join(line for t in tables for line in self.sql(f"SELECT * FROM {t}"))
+
+
+def _an_upgrade(estate: Estate, store: _IndexTables, env: dict, first: str) -> None:
+    """THE UPGRADE CASE, on either store. This build's first `sync` files the clean
+    key; the case then leaves the store and the status file as v1.2.0 would have:
+    those rows under the credentialed key too (`beside-clean`) or in place of the
+    clean key's (`legacy-only`), the status entry under the credentialed key with
+    SQLite's `CasLost` text as `_record_error` saved it, the key whole in it, and a
+    control with no userinfo. `status` prints the fixed line in place of that error;
+    `first`, `reconcile` or `sync`, removes the credentialed key from every table and
+    from the status file. `sync` keeps the clean key's own rows and entry, and
+    `reconcile` rebuilds its rows. The control is as it was, byte for byte, and the
+    secret is on no stream, in the status file and in no row of the store. On
+    SQLite the case seeds with `secure_delete` off and rewrites the credentialed
+    rows once, so that copies of the key sit in the file's free space, and no file of
+    the state folder may hold it afterwards."""
+    agents = estate.root / "agents-upgrade"
+    agents.mkdir()
+    (agents / "workspace.yaml").write_text(
+        f"repository: https://{REGISTER_HOST}/{REGISTER_PATH}/r.git\npath: {estate.ws}\n",
+        encoding="utf-8")
+    env = dict(env, AGENT_PROTOCOL_ROOT=str(agents), LANES_WORKSPACE_ROOT=str(estate.ws))
+    seeded = estate.index("sync", env=env)
+    assert seeded.returncode == 0, seeded.stdout + seeded.stderr
+    tables = store.tables()
+    assert "provenance" in tables and "lanes" in tables, tables
+    beside = first == "sync"
+    store.copy(tables, CLEAN_KEY, CONTROL_KEY)
+    if beside:
+        store.copy(tables, CLEAN_KEY, LEGACY_KEY)
+    else:
+        store.rename(tables, CLEAN_KEY, LEGACY_KEY)
+    store.touch(tables, LEGACY_KEY)
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    status = json.loads(filed.read_text(encoding="utf-8"))
+    clean_entry = status.pop(CLEAN_KEY)
+    status[LEGACY_KEY] = dict(clean_entry, last_error=(
+        f"2026-11-01T00:00:00Z the provenance of {LEGACY_KEY} moved under this sync (it read "
+        f"111111111111, the store now holds 000000000000); nothing was written"))
+    status[CONTROL_KEY] = {"last_attempt_utc": "2026-11-01T00:00:00Z",
+                           "last_error": "2026-11-01T00:00:00Z the control's own error"}
+    if beside:
+        status[CLEAN_KEY] = dict(clean_entry, t104="the clean key's own entry")
+    filed.write_text(json.dumps(status, indent=1, sort_keys=True), encoding="utf-8")
+    control = store.rows(tables, CONTROL_KEY)
+    control_entry = json.dumps(status[CONTROL_KEY], sort_keys=True)
+    assert CONFIG_SECRET in store.text(tables), "the seed holds no secret: the case is vacuous"
+    before = estate.index("status", env=env)
+    run = estate.index(first, env=env)
+    after = estate.index("status", env=env)
+    kept = json.loads(filed.read_text(encoding="utf-8"))
+    said = (f"status before, exit {before.returncode}:\n{before.stdout}{before.stderr}\n"
+            f"{first}, exit {run.returncode}:\n{run.stdout}{run.stderr}\n"
+            f"status after, exit {after.returncode}:\n{after.stdout}{after.stderr}\n"
+            f"status file: {sorted(kept)}").replace(CONFIG_SECRET, "<the secret>")
+    assert f"  last error:  {LEGACY_ENTRY_WORDS}\n" in before.stdout, said
+    assert run.returncode == 0, said
+    assert ("removed 1 source(s) from the index and 1 entry(s) from the status file"
+            in run.stdout), said
+    assert sorted(kept) == sorted([CLEAN_KEY, CONTROL_KEY]), said
+    assert all(rows == [] for _table, rows in store.rows(tables, LEGACY_KEY)), said
+    if beside:
+        # THE CLEAN KEY'S OWN ROWS AND ENTRY ARE KEPT: the sync finds its rows at the
+        # tip, and its status entry keeps a field of its own
+        assert "the index is at the tip; nothing to write" in run.stdout, said
+        assert kept[CLEAN_KEY].get("t104") == "the clean key's own entry", said
+    else:
+        # REBUILT UNDER THE CLEAN KEY: as many rows in each table as the control's, a
+        # copy of what the first sync filed
+        assert f"reconcile: {CLEAN_KEY} at register@" in run.stdout, said
+        assert ([(t, len(rows)) for t, rows in store.rows(tables, CLEAN_KEY)] ==
+                [(t, len(rows)) for t, rows in control]), said
+    assert store.rows(tables, CONTROL_KEY) == control, f"the control moved:\n{said}"
+    assert json.dumps(kept[CONTROL_KEY], sort_keys=True) == control_entry, said
+    assert LEGACY_ENTRY_WORDS not in after.stdout, said
+    for shown in (before.stdout, before.stderr, run.stdout, run.stderr, after.stdout,
+                  after.stderr):
+        assert CONFIG_SECRET not in shown, f"the secret was shown:\n{said}"
+    assert CONFIG_SECRET.encode() not in filed.read_bytes(), said
+    assert CONFIG_SECRET not in store.text(tables), f"a row keeps the secret:\n{said}"
+    if store.cluster is None:
+        # NOR IN THE FILE'S FREE SPACE: no file of the state folder holds it
+        for path in sorted(estate.state.rglob("*")):
+            if path.is_file():
+                assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path}:\n{said}"
+
+
+@pytest.mark.parametrize("first", ["reconcile", "sync"], ids=["legacy-only", "beside-clean"])
+def test_an_upgrade_removes_a_legacy_credentialed_source(estate, first):
+    """AN UPGRADE FROM v1.2.0 LEAVES NO CREDENTIAL, ON SQLITE (lane 3's ruling,
+    opensoft/openRepoTools-code#89 comment 6941833120): `_an_upgrade`'s case, and no
+    file of the state folder holds the secret afterwards."""
+    _an_upgrade(estate, _IndexTables(estate), {}, first)
+
+
+@pytest.mark.parametrize("first", ["reconcile", "sync"], ids=["legacy-only", "beside-clean"])
+def test_an_upgrade_removes_a_legacy_credentialed_source_from_postgres(t109_engine, tmp_path,
+                                                                      first):
+    """THE SAME UPGRADE ON POSTGRESQL 16: `url=` and `reader_url=` name the cluster's
+    `t109_db` as its superuser. The schema `lanes_index` is made first, as the bootstrap
+    makes it, since the index's own DDL makes its tables and not its schema."""
+    import pgcluster
+    cluster, _bootstrap = t109_engine
+    estate = Estate(tmp_path / "up")
+    cluster.psql("CREATE SCHEMA lanes_index;", dbname="t109_db")
+    url = pgcluster.Database(cluster, "t109_db").url()
+    estate.write_config(f"url={url}\nreader_url={url}\n")
+    env = {"PATH": os.pathsep.join([str(cluster.bindir), estate.env["PATH"]])}
+    _an_upgrade(estate, _IndexTables(estate, cluster), env, first)
+
+
 FAKE_PSQL = r"""#!/usr/bin/env python3
 # A FAKE psql: it records what it was asked and answers the few queries
 # lanes-index makes as an EMPTY schema-1 store would. No database exists.
