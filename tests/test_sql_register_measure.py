@@ -1447,16 +1447,28 @@ WARM_S = 15.0
 
 
 def _end_group(proc: subprocess.Popen, wait: float = 10.0) -> None:
-    """`proc`, started with `start_new_session=True`, ended with every process
-    of its group and reaped (T237zzm; Codex's review of P09 at `f4f0ebce`,
-    SHOULD 4): TERM to the group, a wait of `wait` s, KILL to the group, and
-    a reap, its wait bounded too. A group already gone is not an error, and
-    nothing here raises."""
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(proc.pid, sig)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(wait)
+    """`proc`, started with `start_new_session=True`, ended with its process
+    group and reaped, and its group never signalled once its id may be
+    another's (T237zzo; Codex's review of P09 at `21dd3642`, BLOCKING). A
+    process already reaped, `returncode` set, as after a `poll()` that saw it
+    end, gets no signal. Otherwise each signal goes to its group while it is
+    still unreaped, so the group's id is still its own: TERM; up to `wait` s
+    for its exit, watched by `os.waitid(..., WNOWAIT)`, which does not reap
+    it; KILL; then one reap, `proc.wait(wait)`, whose `TimeoutExpired` is
+    raised, not suppressed. A reap by anything else meanwhile raises
+    `ChildProcessError` from `os.waitid`, before the KILL."""
+    if proc.returncode is not None:
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGTERM)
+    end = time.monotonic() + wait
+    while time.monotonic() < end:
+        if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+            break
+        time.sleep(0.05)
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    proc.wait(wait)
 
 
 def _path_m5(reg, root: Path):
