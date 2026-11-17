@@ -1697,8 +1697,16 @@ def test_each_shape_on_a_delayed_relay_is_recorded(pg_engine, request, shape, rt
                     ms, _none = timed(lambda: _ask(session, text))
                     times.append(ms)
             finally:
-                session.stdin.close()
-                session.wait(timeout=60)
+                # A pipe a failed `_ask` broke cannot skip the reap, and a session
+                # that outlives the bound is killed and reaped too (T255l).
+                with contextlib.suppress(OSError):
+                    session.stdin.close()
+                try:
+                    session.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    session.kill()
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        session.wait(timeout=10)
         return times[3:]
 
     env = tls.client_env()
