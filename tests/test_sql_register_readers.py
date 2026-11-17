@@ -40,6 +40,11 @@ WHAT IT HOLDS, by its five sources:
     never git, by the fake `git`'s argv log, on a real engine; and its
     moved-head ids, T505's two reruns where the head moves under a read, on
     the stub door (lane 5's proposal, #165 6860943489; lane 3, 6861148117).
+  * Lane 2's T217zzb (lane 5's `reg_names_ok`, Codex's BLOCKING 2 on `de033308`; lane 3's
+    answer to lane 5's question 1, #165 6933947760): on primary a register name that is
+    not the render set's, `LANES_PATH`, `LANES_LOG_PREFIX` or `LANES_ARCH_PATH` under
+    `lanes/` but not the fixed one, or a register directory that is not `lanes/`, ends a
+    decide read 69 with nothing on stdout and lowers a mirror read to the mirror.
 
 THE ARMS' IDS ARE THEIR LINES AT `2a057a6d`, as the test plan names them (the
 block, T217), so they move with slices 1a and 1b and are re-cited at each
@@ -89,7 +94,8 @@ the arms for
 lane 4's T402 to T408; `key()`'s trim, on primary only, for lane 4's T426;
 T235's for lane 5's T505, its three door forms included, whose oracles are
 lane 3's batch 7 (#165 6780364102), by batch 5's answers 3 and 4; and its
-moved-head notes id for T505 round 2b's B.
+moved-head notes id for T505 round 2b's B; and T217zzb's register-name cases for lane
+5's T505 alone, whose `reg_names_ok` requires the four names exactly.
 Every case on `RealRegister` (lane 1's three and `managed-projection`'s RE
 case) also fails until lane 2's T227 (`tmpl` built by the bootstrap) and
 T228 (the `lanes_w_fx` and `lanes_r_fx` logins), each by the fixture's own
@@ -141,6 +147,8 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_none_class_arm_makes_no_register_call_with_the_store_unreachable": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
     "test_a_primary_reader_makes_one_prefetch_and_every_read_site_reads_its_cache_at_one_n": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
     "test_a_read_site_with_no_prefetched_file_makes_one_more_register_read_and_never_a_git_read": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_a_register_name_that_is_not_the_render_sets_lowers_a_mirror_read_to_the_mirror_on_primary": ("T505",),  # T217zzb; tasks:746; lane 5's reg_names_ok, lane 3's 6933947760
+    "test_a_register_name_that_is_not_the_render_sets_refuses_a_decide_read_with_69_on_primary": ("T505",),  # T217zzb; tasks:746; lane 5's reg_names_ok, lane 3's 6933947760
     "test_an_expectation_2_at_lane_starts_last_write_dies": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
     "test_an_expectation_2_at_lane_starts_last_write_that_makes_a_row_under_an_at_files_base_dies": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; ERR-56's row-making 2, its twin's row
     "test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_notes_stamps_and_launches": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
@@ -265,13 +273,32 @@ def form(argv):
     return 1
 
 
-def caller_verb():
-    """The `lanes-edit.sh` verb whose process (or subshell) called this one."""
+def proc_argv(pid):
+    """`pid`'s command line as a list of words, [] where /proc will not give it."""
     try:
-        with open("/proc/%d/cmdline" % os.getppid(), "rb") as handle:
-            argv = [a.decode("utf-8", "replace") for a in handle.read().split(b"\0")]
+        with open("/proc/%d/cmdline" % pid, "rb") as handle:
+            return [a.decode("utf-8", "replace") for a in handle.read().split(b"\0")]
     except OSError:
-        return ""
+        return []
+
+
+def caller_verb():
+    """The `lanes-edit.sh` verb whose process (or subshell) called this one.
+    Under lanes-edit's backstop (T504: `timeout -k 1 <s>` before each register
+    read, where `timeout` is installed) the parent is `timeout`, whose command
+    line names no verb, so one `timeout` parent is stepped past, to the process
+    that ran it (its pid is /proc/<pid>/stat's fourth field). Read at the
+    parent alone, the verb is "" for every call under the backstop, and the
+    `managed-projection` check in the one-call test never runs while the test
+    stays green. A parent that is not `timeout` is read as it always was."""
+    pid = os.getppid()
+    argv = proc_argv(pid)
+    if argv and os.path.basename(argv[0]) == "timeout":
+        try:
+            with open("/proc/%d/stat" % pid, "rb") as handle:
+                argv = proc_argv(int(handle.read().rsplit(b")", 1)[1].split()[1]))
+        except (OSError, ValueError, IndexError):
+            return ""
     for i, a in enumerate(argv[:-1]):
         if a.endswith("lanes-edit.sh"):
             return argv[i + 1]
@@ -1099,11 +1126,6 @@ class PrimaryWorld(ArmWorld):
                 self.env.pop(key, None)
             else:
                 self.env[key] = value
-
-
-@pytest.fixture
-def arms(tmp_path: Path) -> ArmWorld:
-    return ArmWorld(tmp_path / "arms")
 
 
 # ----------------------------------------------------- the arms' table
@@ -2853,15 +2875,17 @@ def test_a_read_site_with_no_prefetched_file_makes_one_more_register_read_and_ne
 def test_the_flush_helper_drops_the_whole_read_family(tmp_path):
     """T505 (C6): `reg_flush`, taken from `lanes-edit.sh` by its text (the
     script cannot be sourced), drops `.register`, `.aliases`, `.archive`,
-    `.paths`, every `.log.*` and `.logpath.*`, and empties
-    `LANES_REGISTER_CACHE`."""
+    `.paths`, `.head`, `.outage`, every `.log.*` and `.logpath.*`, keeps
+    `.direct`, and empties `LANES_REGISTER_CACHE` (tasks:763; lane 5's NIT,
+    #165 6888923188)."""
     found = re.search(r"^reg_flush\(\) *\{.*?^\}[ \t]*$", LANES_EDIT.read_text(encoding="utf-8"),
                       re.M | re.S)
     assert found, "lanes-edit.sh has no reg_flush"
     cache = tmp_path / "se"
-    members = [".register", ".aliases", ".archive", ".paths", ".log.repoA-1", ".logpath.repoA-1",
-               ".log.%2c", ".logpath.%2c"]
-    for member in members:
+    members = [".register", ".aliases", ".archive", ".paths", ".head", ".outage", ".log.repoA-1",
+               ".logpath.repoA-1", ".log.%2c", ".logpath.%2c"]
+    kept = [".direct"]
+    for member in members + kept:
         (tmp_path / f"se{member}").write_text("cached\n", encoding="utf-8")
     script = (found.group(0) + '\nSE_CACHE_FILE="$1"; LANES_REGISTER_CACHE="$1.register"\n'
               'reg_flush\nprintf "[%s]" "$LANES_REGISTER_CACHE"\n')
@@ -2871,6 +2895,8 @@ def test_the_flush_helper_drops_the_whole_read_family(tmp_path):
     assert result.stdout == "[]", result.stdout
     left = [m for m in members if (tmp_path / f"se{m}").exists()]
     assert not left, ("the family is not all dropped", left)
+    gone = [m for m in kept if not (tmp_path / f"se{m}").exists()]
+    assert not gone, ("the flush dropped what it keeps", gone)
 
 
 def test_swapped_ranks_through_journal_last_on_primary(primary):
@@ -3119,6 +3145,11 @@ exec "$T235_REAL_GIT" "$@"
 #: The log directory `known_lanes`, `remote_log_events` and `worktree_rows`'
 #: pin read by git off primary (P2's `lanes-edit.sh`, `LANES_LOG_PREFIX`).
 LOG_DIR = "lanes/log"
+#: The archive `archive_text` reads by git off primary (`LANES_ARCH_PATH`):
+#: `register_published`'s `ls-tree`, then a `show` where it is published. On
+#: primary it reads `.archive` (T505 Q6); `lanes_rows` and `worktree_rows`
+#: read it on every listing (lane 5's NIT, #165 6888923188).
+ARCH_PATH = "lanes/archive/LANES-retired.md"
 
 #: T235's ids (F13c's block, T235): four the text writes whole, and three run
 #: through the module's door (`DOOR_WRAPPER`), whose oracles are lane 3's
@@ -3158,11 +3189,12 @@ T235_READ_FAILED = re.compile(r"^lanes-edit: the register could not be read", re
 
 
 def git_log_reads(log: Path, upto: re.Pattern | None = None) -> list:
-    """The calls in the fake `git`'s argv log that read `lanes/log` by git:
-    an `ls-tree` naming it, or a `show` of a path under it. Each call's line
-    holds US. Where the log is also the run's stderr (`[failed-second-read]`),
-    every other line is stderr's, and `upto`, where given, ends the scan at
-    the first of those it matches."""
+    """The calls in the fake `git`'s argv log that read `lanes/log` or the
+    archive by git: an `ls-tree` naming either, or a `show` of a path under
+    `lanes/log` or of the archive. Each call's line holds US. Where the log
+    is also the run's stderr (`[failed-second-read]`), every other line is
+    stderr's, and `upto`, where given, ends the scan at the first of those it
+    matches."""
     if not log.exists():
         return []
     found = []
@@ -3187,9 +3219,10 @@ def git_log_reads(log: Path, upto: re.Pattern | None = None) -> list:
         if not rest:
             continue
         verb, args = rest[0], rest[1:]
-        if verb == "ls-tree" and any(LOG_DIR in a for a in args):
+        if verb == "ls-tree" and any(read in a for a in args for read in (LOG_DIR, ARCH_PATH)):
             found.append(argv)
-        elif verb == "show" and any(a.startswith(LOG_DIR) or f":{LOG_DIR}" in a for a in args):
+        elif verb == "show" and any(a.startswith(read) or f":{read}" in a
+                                    for a in args for read in (LOG_DIR, ARCH_PATH)):
             found.append(argv)
     return found
 
@@ -3238,7 +3271,9 @@ def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_sto
     primary, `known_lanes`, `remote_log_events` and `worktree_rows` read the
     store and never git. Each id asserts the store's answer, and that no `git
     ls-tree` and no `git show` of `lanes/log` ran, by the fake `git`'s argv
-    log (`LOGGING_GIT`):
+    log (`LOGGING_GIT`), nor of the archive, which `archive_text` reads from
+    `.archive` on primary for `lanes_rows` and `worktree_rows` (T505 Q6; lane
+    5's NIT, #165 6888923188):
 
       * `[known-lanes]`: a lane's log with no register row, only in the store,
         which `known_lanes` lists from the family (`lanes --all --closed`);
@@ -3345,19 +3380,21 @@ def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_sto
                 "PATH": str(shim) + os.pathsep + estate.env["PATH"],
                 "T235_GIT_LOG": str(log), "T235_REAL_GIT": real_git}
 
-    # THE CONTROL: the fake `git` is the one on PATH, and its log shows the read the sites
-    # make off primary, so a run that logs none made none (a T505 run may log no call at all).
+    # THE CONTROL: the fake `git` is the one on PATH, and its log shows the reads the sites
+    # make off primary, of `lanes/log` and of the archive, so a run that logs none made none
+    # (a T505 run may log no call at all).
     control = tmp_path / "t235-git-control.log"
-    listed = estate.run("git", "-C", estate.wip, "ls-tree", "--name-only", "origin/main", "--",
-                        f"{LOG_DIR}/", env=git_env(control))
-    assert listed.returncode == 0 and git_log_reads(control), (
-        "the control: the fake git logged no ls-tree of lanes/log", listed.stderr)
+    for count, path in enumerate((f"{LOG_DIR}/", ARCH_PATH), 1):
+        listed = estate.run("git", "-C", estate.wip, "ls-tree", "--name-only", "origin/main", "--",
+                            path, env=git_env(control))
+        assert listed.returncode == 0 and len(git_log_reads(control)) == count, (
+            "the control: the fake git logged no ls-tree of", path, listed.stderr)
 
     def run(*argv: str) -> subprocess.CompletedProcess:
         log = tmp_path / f"t235-git-{'-'.join(argv)}.log"
         result = estate.run("bash", edit, *argv, env=git_env(log))
-        assert not git_log_reads(log), (case, argv, "git read lanes/log", git_log_reads(log),
-                                        result.stderr[-1500:])
+        assert not git_log_reads(log), (case, argv, "git read lanes/log or the archive",
+                                        git_log_reads(log), result.stderr[-1500:])
         return result
 
     def run_in_order(*argv: str) -> tuple:
@@ -3455,8 +3492,8 @@ def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_sto
             mirror = estate.edit(*argv)                      # the mirror's answer: files mode's
             result, stderr, both = run_in_order(*argv)
             reads = git_log_reads(both, upto=MIRROR_LINE)
-            assert not reads, (case, argv, "git read lanes/log before the mirror's label", reads,
-                               stderr[-1500:])
+            assert not reads, (case, argv, "git read lanes/log or the archive before the mirror's "
+                               "label", reads, stderr[-1500:])
             assert MIRROR_LINE.search(stderr), (case, argv, "no `read: mirror at` line",
                                                 stderr[-1500:])
             # SAID ONCE (lane 3's review of T505, SHOULD-1, #165 6783977065): the mirror line
@@ -4197,3 +4234,132 @@ def test_retired_rows_key_trims_leading_zeros_as_text_on_primary(estate, mode):
     if primary:
         assert primary.door.calls(), ("the primary run never reached the door, so it read as "
                                       "files mode does", primary.door.calls())
+
+
+# ----------------------------- T217zzb: T505's four register names, required exactly
+#: THE FOUR REGISTER NAMES, EXACTLY (T217zzb; lane 3's answer to lane 5's question 1, #165
+#: 6933947760, Codex's BLOCKING 2 on `de033308`; register-cli.md at spec `f2098c21`, :666 and
+#: :680-684): on primary `.paths` and `.head` hold the render set's names, `lanes/LANES.md`,
+#: `lanes/log/<key>.md` and the set `lanes/archive/`, and each site compares them with this
+#: checkout's `LANES_PREFIX`, `LANES_PATH`, `LANES_LOG_PREFIX` and `LANES_ARCH_PATH`
+#: (`reg_names_ok`). A name merely under `lanes/` is not the render set's, so each case sets
+#: one wrong value under `lanes/`, or, for `[sub-lanes]`, q5's register directory that is not
+#: `lanes/` (#165 6932653746). Each row is (the environment the case sets, `{wip}` being the
+#: checkout; the file the case needs in the checkout's working tree, never committed, since
+#: with no `LANES.md` at the `LANES_FILE` or `LANES_DIR` it names the script stops at
+#: "registry not found", exit 1, before the door; the words the refusal says on stderr, which
+#: are lane 5's, from `reg_names_ok` at chain 1's `3070a618`, and `None` for the control).
+#: `[lanes-file]` reaches `lanes/OTHER.md` by `LANES_FILE` alone, where `LANES_PATH` derives
+#: from the file's name (FIXREV2's NIT 2).
+REG_NAME_CASES = {
+    "default": ({}, None, None),
+    "lanes-path": ({"LANES_PATH": "lanes/OTHER.md"}, None,
+                   "whose LANES_PATH is `lanes/OTHER.md`, not `lanes/LANES.md`"),
+    "lanes-file": ({"LANES_FILE": "{wip}/lanes/OTHER.md"}, "lanes/OTHER.md",
+                   "whose LANES_PATH is `lanes/OTHER.md`, not `lanes/LANES.md`"),
+    "log-prefix": ({"LANES_LOG_PREFIX": "lanes/other/"}, None,
+                   "whose LANES_LOG_PREFIX is `lanes/other/`, not `lanes/log/`"),
+    "arch-path": ({"LANES_ARCH_PATH": "lanes/other/file"}, None,
+                  "whose LANES_ARCH_PATH is `lanes/other/file`, "
+                  "not `lanes/archive/LANES-retired.md`"),
+    "dot-dot": ({"LANES_PATH": "lanes/../x"}, None,
+                "whose LANES_PATH is `lanes/../x`, not `lanes/LANES.md`"),
+    "sub-lanes": ({"LANES_DIR": "{wip}/sub/lanes"}, "sub/lanes/LANES.md",
+                  "whose register directory is at `sub/lanes/`, not `lanes/`"),
+}
+
+
+def named_env(primary: Primary, case: str) -> tuple:
+    """`REG_NAME_CASES[case]`'s environment and refusal words, its working-tree file
+    made as a copy of the checkout's own `lanes/LANES.md`."""
+    env, seed, words = REG_NAME_CASES[case]
+    if seed:
+        target = primary.e.wip / seed
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text((primary.e.wip / "lanes" / "LANES.md").read_text(encoding="utf-8"),
+                          encoding="utf-8")
+    return {name: value.format(wip=primary.e.wip) for name, value in env.items()}, words
+
+
+def lane_states(stdout: str) -> dict:
+    """A `lanes` listing's rows as lane to state, its first and second columns: no
+    clock moves either, where the age column does."""
+    return {line.split("\t")[0]: line.split("\t")[1]
+            for line in stdout.splitlines() if "\t" in line}
+
+
+@pytest.mark.parametrize("case", sorted(REG_NAME_CASES))
+def test_a_register_name_that_is_not_the_render_sets_refuses_a_decide_read_with_69_on_primary(
+        primary, case):
+    """T217zzb (lane 5's `reg_names_ok`; Codex's BLOCKING 2 on `de033308`; lane 3's
+    #165 6933947760): on primary, with the store reachable, `who --lane repoA-2`, a decide
+    read, exits 69 with nothing on stdout where one of the four names is not the render set's,
+    and says which, in lane 5's words, on stderr: never the answer from the store, and never
+    8 or "no log" from a path that was compared and does not match (register-cli.md at
+    `f2098c21`, :666 and :680-684; tasks.md T504, "a decide read's 69 has nothing on
+    stdout"). It asked the store first, so the refusal is the names', not an outage's.
+
+      * `[lanes-path]`, `LANES_PATH=lanes/OTHER.md`, and `[lanes-file]`, `LANES_FILE`
+        ending in `OTHER.md`, whose `LANES_PATH` derives to the same;
+      * `[log-prefix]`, `LANES_LOG_PREFIX=lanes/other/`, and `[arch-path]`,
+        `LANES_ARCH_PATH=lanes/other/file`;
+      * `[dot-dot]`, `LANES_PATH=lanes/../x`, which is under `lanes/` as a string only;
+      * `[sub-lanes]`, `LANES_DIR` at a checkout's `sub/lanes`, which gives 69 naming
+        `sub/lanes/` (lane 5's question 5, #165 6932653746);
+      * `[default]`, the control: with no name set the same read exits 0, so the default
+        layout, whose four names are the render set's, is unchanged.
+
+    Where `reg_names_ok` took any `lanes/?*` (chain 1's `41465c03` and before), the five
+    values under `lanes/` were accepted: `[lanes-path]`, `[lanes-file]`, `[dot-dot]` and
+    `[arch-path]` answer 0 and `[log-prefix]` answers 8, so they fail there. `[sub-lanes]`
+    and `[default]` hold on both, since the register directory's clause is `de033308`'s. FAILS
+    UNTIL lane 5's T505 requires the four names exactly (`f217d85f`); gated on T505."""
+    env, words = named_env(primary, case)
+    result = primary.edit("who", "--lane", "repoA-2", env=env)
+    assert primary.door.register_calls(), \
+        (case, "the read never reached the store", result.returncode, result.stderr[-1500:])
+    if words is None:
+        assert result.returncode == 0 and result.stdout, \
+            (case, "the control", result.returncode, result.stdout, result.stderr[-1500:])
+        assert not T235_READ_FAILED.search(result.stderr), (case, result.stderr[-1500:])
+        return
+    assert result.returncode == 69, (case, result.returncode, result.stdout, result.stderr[-1500:])
+    assert result.stdout == "", (case, result.stdout)
+    assert words in result.stderr, (case, words, result.stderr[-1500:])
+    assert not MIRROR_LINE.search(result.stderr), (case, "a decide read says no mirror line",
+                                                   result.stderr[-1500:])
+
+
+@pytest.mark.parametrize("case", sorted(set(REG_NAME_CASES) - {"default"}))
+def test_a_register_name_that_is_not_the_render_sets_lowers_a_mirror_read_to_the_mirror_on_primary(
+        primary, case):
+    """T217zzb (lane 5's `reg_names_ok`; #165 6933947760): on primary, with the store
+    reachable, `lanes`, a mirror-class arm, prints `read: mirror at <sha12>, ...` on stderr
+    where one of the four names is not the render set's, and then reads the files: its
+    exit is files mode's, its rows and their states are files mode's under the same
+    environment, and the row only the store holds (`STORE_ONLY_LANE`) is not among them.
+    The control comes first: with no name set the same listing is the store's, with that
+    row and no mirror line, so the mirror's answer is not the store's by accident. The ids
+    are the decide read's (`REG_NAME_CASES`, less the control). Where `reg_names_ok` took any
+    `lanes/?*` (`41465c03` and before), `lanes` read the store under the five values under
+    `lanes/` and said no mirror line, so they fail there; `[sub-lanes]` holds on both.
+    FAILS UNTIL lane 5's T505 requires the four names exactly (`f217d85f`); gated on T505."""
+    control = primary.edit("lanes")
+    assert primary.door.register_calls(), \
+        (case, "the control never reached the store", control.stderr[-1500:])
+    assert STORE_ONLY_LANE in control.stdout and not MIRROR_LINE.search(control.stderr), \
+        (case, "the control is not the store's answer", control.returncode, control.stderr[-1500:])
+    env, _words = named_env(primary, case)
+    files = primary.files_edit("lanes", env=env)
+    primary.door.forget_calls()
+    result = primary.edit("lanes", env=env)
+    assert primary.door.register_calls(), \
+        (case, "the read never reached the store", result.stderr[-1500:])
+    assert MIRROR_LINE.search(result.stderr), (case, result.returncode, result.stderr[-1500:])
+    assert not MIRROR_LINE.search(result.stdout), (case, result.stdout[-1500:])
+    assert result.returncode == files.returncode, \
+        (case, result.returncode, files.returncode, result.stderr[-1500:])
+    assert lane_states(files.stdout), (case, "files mode listed no lane", files.stdout[-1500:])
+    assert lane_states(result.stdout) == lane_states(files.stdout), \
+        (case, "not files mode's rows", lane_states(result.stdout), lane_states(files.stdout))
+    assert STORE_ONLY_LANE not in result.stdout, (case, result.stdout[-1500:])
