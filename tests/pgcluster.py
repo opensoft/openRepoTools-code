@@ -35,7 +35,9 @@ THE FIXTURES:
   * `stoppable_cluster`, a cluster of the test's own, built like the
     session's, for the tests that stop the database: `stop()` is a fast
     shutdown, SIGINT and a wait, and `start_again()` starts it on the same
-    data and socket directories.
+    data and socket directories; `start_again(standby=True)` starts it in
+    recovery, with `standby.signal`, and fails unless `pg_is_in_recovery()`
+    is true, and the next plain start removes the file (T229d).
 
 THE TEMPLATES (T227; the test plan's section 3.1, "The templates"). `tmpl` is
 built on each cluster by P8's bootstrap, `lanes-index bootstrap --no-passwords`
@@ -89,18 +91,26 @@ and runs `SELECT 1` in it; `stoppable` starts a cluster, stops it by SIGINT,
 starts it again on the same directories and runs `SELECT 1`. It exits 0 when
 each named smoke passes, 1 when one fails or there is no engine, and 2 for a
 name it does not know.
+
+PYTEST_DONT_REWRITE (T229s): no assert here is rewritten, whatever hook loads
+this plugin, so an assert added later reports its own message and no
+operand's value, a tool's text among them.
 """
 
 from __future__ import annotations
 
 import os
+import queue
 import re
+import select
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -201,22 +211,32 @@ def required(environ=os.environ) -> bool:
 
 
 # ------------------------------------------------------------ the binaries
-def check_bindir(bindir: Path) -> Optional[str]:
-    """None where `bindir` holds the four tools at major 16, else why not."""
+def check_bindir(bindir: Path, shown: Optional[str] = None) -> Optional[str]:
+    """None where `bindir` holds the four tools at major 16, else why not.
+    The reason shows no text a tool printed (T229o; lane 3's ruling
+    6949488277 on lane 2's pre-review RV9-38 of P09, B2): a `--version`
+    that does not say major 16 is shown by its exit and counts, and
+    `shown` names the directory in place of its path where that path is a
+    tool's output, `pg_config --bindir`'s."""
+    where = str(bindir) if shown is None else shown
     if not bindir.is_dir():
-        return f"{bindir} is not a directory"
+        return f"{where} is not a directory"
     missing = [t for t in TOOLS if not os.access(str(bindir / t), os.X_OK) or (bindir / t).is_dir()]
     if missing:
-        return f"{bindir} has no {', '.join(missing)}"
+        return f"{where} has no {', '.join(missing)}"
     for tool in TOOLS:
+        label = str(bindir / tool) if shown is None else f"{shown}'s {tool}"
         try:
-            said = subprocess.run([str(bindir / tool), "--version"], stdin=DEVNULL, capture_output=True,
-                                  text=True, timeout=20, check=False).stdout.strip()
+            ran = subprocess.run([str(bindir / tool), "--version"], stdin=DEVNULL, capture_output=True,
+                                 text=True, timeout=20, check=False)
         except (OSError, subprocess.SubprocessError) as exc:
-            said = f"<{exc}>"
-        m = re.search(r"\(PostgreSQL\) (\d+)", said)
+            return f"{label} --version did not run: {type(exc).__name__}"
+        version = ran.stdout or ""
+        m = re.search(r"\(PostgreSQL\) (\d+)", version)
         if not m or int(m.group(1)) != MAJOR:
-            return f"{bindir / tool} is not PostgreSQL {MAJOR}: it says {said!r}"
+            return (f"{label} is not PostgreSQL {MAJOR}: its --version exited {ran.returncode} "
+                    f"and names {'another major' if m else 'no PostgreSQL major'}; "
+                    f"{len(version.splitlines())} line(s), none shown")
     return None
 
 
@@ -231,14 +251,15 @@ def find_bindir(environ=os.environ) -> Tuple[Optional[Path], str]:
     pg_config = shutil.which("pg_config", path=environ.get("PATH", os.defpath))
     if pg_config:
         try:
-            out = subprocess.run([pg_config, "--bindir"], stdin=DEVNULL, capture_output=True,
-                                 text=True, timeout=20, check=False).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            out = ""
-        why = check_bindir(Path(out)) if out else "it printed nothing"
+            ran = subprocess.run([pg_config, "--bindir"], stdin=DEVNULL, capture_output=True,
+                                 text=True, timeout=20, check=False)
+            out, how = (ran.stdout or "").strip(), f"exited {ran.returncode}"
+        except (OSError, subprocess.SubprocessError) as exc:
+            out, how = "", f"did not run ({type(exc).__name__})"
+        why = check_bindir(Path(out), shown="the directory it printed") if out else "it printed nothing"
         if why is None:
             return Path(out), f"`{pg_config} --bindir`"
-        tried.append(f"`{pg_config} --bindir` says {out or '-'}, and {why}")
+        tried.append(f"`{pg_config} --bindir` {how}, and {why}")
     else:
         tried.append("no pg_config on PATH")
     why = check_bindir(DEBIAN_BIN)
@@ -402,7 +423,15 @@ def sweep_stale() -> List[str]:
 
 
 class ClusterError(Exception):
-    pass
+    """A cluster's failure. Its text shows exits and counts, never a line of
+    a tool's output or of the server's log (T229k; T229l). `could_not_bind`
+    is True where a start failed and the server log's last five lines name
+    `bind` (T229l): what `TLSCluster.launch` read in the text before, kept as
+    a flag, not as text."""
+
+    def __init__(self, *args, could_not_bind: bool = False) -> None:
+        super().__init__(*args)
+        self.could_not_bind = could_not_bind
 
 
 class Bootstrap:
@@ -423,16 +452,71 @@ def _masked(text: str) -> str:
     return _SECRET_FIELD.sub(lambda m: m.group(1) + "<password>", text or "")
 
 
-def _tail(proc: subprocess.CompletedProcess, size: int = 800) -> str:
-    """A command's last words, stdout then stderr, on one line."""
-    said = " | ".join(line.strip() for line in f"{proc.stdout or ''}\n{proc.stderr or ''}".splitlines()
-                      if line.strip())
-    return said[-size:] or "<nothing>"
+def _counted(proc) -> str:
+    """What a failure message here shows of a tool's run (T229m; lane 3's
+    ruling 6949488277 on lane 2's pre-review RV9-38 of P09, B2): its exit
+    and each stream's count of lines. No line of either is shown: initdb's,
+    git's, openssl's, psql's and lanes-index's own text can echo a
+    statement, a password-file line, a path or a server's message."""
+    parts = [f"exit {proc.returncode}"]
+    for name in ("stdout", "stderr"):
+        said = getattr(proc, name, None)
+        if isinstance(said, bytes):
+            said = said.decode("utf-8", "replace")
+        parts.append(f"{name}: {len(said.splitlines()) if isinstance(said, str) else 0} line(s)")
+    return "; ".join(parts) + "; no line of either is shown"
 
 
-def _client_env(host: Path, user: str, dbname: str, appname: str, bindir: Path) -> dict:
+#: An error line of psql's stderr, after psql's own `psql:<stdin>:1: ` where
+#: it is there, and its SQLSTATE where psql prints one (`ERROR:  42P01: ...`,
+#: at `VERBOSITY` verbose; at the default, psql prints none). The SQLSTATE is
+#: taken only from that form on one line (T229p; lane 2's pre-review RV9-38 of
+#: P09, N1): `ERROR:`, spaces or tabs, never a newline, then five of
+#: `[0-9A-Z]` with a digit among them, as every SQLSTATE of PostgreSQL's and
+#: of the product's has, then `:`. So no five-capital word, such as `SYNTH:`,
+#: nor the head of a line after an `ERROR:` that ends its own, is shown as one
+#: (T229w). Its limit (T229r): at psql's default verbosity, a message
+#: whose first word is five of `[0-9A-Z]` with a digit and a colon would be
+#: shown as a SQLSTATE. PostgreSQL's primary messages begin in lower case, and
+#: psql's echo of a statement is a `LINE n:` line, which never matches.
+_PSQL_ERROR = re.compile(r"^(?:psql:\S*: )?(?:ERROR|FATAL|PANIC):", re.M)
+_SQLSTATE = re.compile(r"^(?:psql:\S*: )?(?:ERROR|FATAL|PANIC):[ \t]+(?=[A-Z]{0,4}[0-9])([0-9A-Z]{5}):",
+                       re.M)
+#: A line of the server's log at ERROR, FATAL or PANIC (T229l; anchored by
+#: T229v, lane 2's pre-review RV9-41 of P09, N3): at the line's start, after
+#: one of the fixture's own `log_line_prefix` forms where it is there, the
+#: severity as the server writes it, then `:` and two spaces. The forms are
+#: the default, `%m [%p] ` (its time's three words and the pid in
+#: brackets), and `%p ` (the pid and a space), which managed sets on its
+#: clusters (T229x; lane 2's targeted check RV9-43 of P09 at `94a40564`, NIT
+#: C). So a logged statement whose text holds `ERROR:` is not counted; a
+#: continuation line of a logged statement that itself begins `ERROR:  `
+#: would be. It is a count only: no line is shown.
+_LOG_SEVERE = re.compile(r"^(?:\S+ \S+ \S+ \[\d+\] |\d+ )?(?:ERROR|FATAL|PANIC):  ")
+
+
+def _psql_failed(user: str, dbname: str, proc: subprocess.CompletedProcess) -> str:
+    """What `Cluster.psql`'s `ClusterError` says when psql fails (T229k;
+    lane 3's ruling 6947252648 on lane 2's pre-review RV9-37 of P09 at
+    `d9a1f2bf`, S4): psql's exit, the SQLSTATE where its text has one, and
+    its stderr's counts. No line of psql's text is shown, since psql echoes
+    a failed statement (`LINE 1: ...`), and a role's statement can hold its
+    password. Nothing of the text is kept on the exception: no caller needs
+    it (CX-36's scan of every caller on `main` and at P09's head)."""
+    text = proc.stderr if isinstance(proc.stderr, str) else ""
+    lines = text.splitlines()
+    states = sorted(set(_SQLSTATE.findall(text)))
+    errors = len(_PSQL_ERROR.findall(text))
+    return (f"psql as {user} on {dbname} exited {proc.returncode}: "
+            f"{'SQLSTATE ' + ', '.join(states) if states else 'no SQLSTATE in its text'}; "
+            f"stderr: {len(lines)} line(s), {errors} of them ERROR, FATAL or PANIC lines; "
+            f"no line of it is shown")
+
+
+def _client_env(host: Path, user: str, dbname: str, appname: str, bindir: Path,
+                port: int = PORT) -> dict:
     env = _without_pg()
-    env.update(PGHOST=str(host), PGPORT=str(PORT), PGUSER=user, PGDATABASE=dbname,
+    env.update(PGHOST=str(host), PGPORT=str(port), PGUSER=user, PGDATABASE=dbname,
                PGAPPNAME=appname, PGCONNECT_TIMEOUT="10", LC_ALL="C",
                PATH=_engine_first(bindir, env.get("PATH", os.defpath)))
     return env
@@ -459,6 +543,9 @@ class Cluster:
         for an empty `tmpl` (the smokes' default). `imported` builds
         `tmpl_imported` too."""
         self.bindir, self.template_sql, self.imported = bindir, template_sql, imported
+        #: The port (T229): it names the socket file, and a TLS cluster's TCP
+        #: listener uses it too. `listen` and `settings` are `prepare()`'s.
+        self.port, self.listen, self.settings = PORT, "", []
         self.root: Optional[Path] = None
         self.proc: Optional[subprocess.Popen] = None
         self.count, self.timings = 0, {}
@@ -489,17 +576,48 @@ class Cluster:
             argv += ["-v", f"{name}={value}"]
         proc = subprocess.run([*argv, "-f", "-"], input=sql, capture_output=True, text=True,
                               timeout=120, env=_client_env(self.root, user, dbname, appname,
-                                                           self.bindir),
+                                                           self.bindir, self.port),
                               check=False)
         if check and proc.returncode != 0:
-            raise ClusterError(f"psql as {user} on {dbname} exited {proc.returncode}: {proc.stderr.strip()}")
+            # T229q (lane 2's pre-review RV9-38 of P09, N2): the message is
+            # made, then psql's run is dropped, so no stream of it stays in
+            # this frame, which the raise's traceback keeps (`--showlocals`).
+            failed = _psql_failed(user, dbname, proc)
+            del proc
+            raise ClusterError(failed)
         return proc
 
     def log_tail(self) -> str:
+        """What a failure message shows of the server's log (T229l; lane 3's
+        ruling 6949488277 on lane 2's pre-review RV9-38 of P09, B2): its
+        count of lines and of ERROR, FATAL or PANIC lines. No line of it is
+        shown: under `log_statement = 'all'` a role's statement, its
+        password among it, is a line of it."""
         try:
-            return " | ".join((self.root / "server.log").read_text().splitlines()[-5:])
+            lines = (self.root / "server.log").read_text(errors="replace").splitlines()
         except OSError:
-            return "<no log>"
+            return "server.log: not read"
+        severe = sum(1 for line in lines if _LOG_SEVERE.search(line))
+        return (f"server.log: {len(lines)} line(s), {severe} of them ERROR, FATAL or PANIC "
+                f"lines; no line of it is shown")
+
+    def _could_not_bind(self) -> bool:
+        """Whether the server log's last five lines name `bind`, in any case
+        (T229l): what `TLSCluster.launch` looked for in a failed start's text
+        when that text held those lines."""
+        try:
+            last = (self.root / "server.log").read_text(errors="replace").splitlines()[-5:]
+        except OSError:
+            return False
+        return any("bind" in line.lower() for line in last)
+
+    def _start_failed(self, what: str) -> ClusterError:
+        """A failed start's error: `what`, the log's counts, and whether its
+        last lines name a bind, as words and as `could_not_bind` (T229l)."""
+        bind = self._could_not_bind()
+        return ClusterError(f"{what}: {self.log_tail()}"
+                            f"{'; its last 5 lines name a bind' if bind else ''}",
+                            could_not_bind=bind)
 
     def ready(self) -> bool:
         """The postmaster's own `ready` status, line 8 of postmaster.pid: what pg_ctl -w reads."""
@@ -515,7 +633,7 @@ class Cluster:
         _SWEPT.extend(sweep_stale())
         self.root = Path(tempfile.mkdtemp(prefix=PREFIX, dir=SOCKET_PARENT))   # mode 0700
         (self.root / "owner").write_text(f"{os.getpid()} {_ticks(os.getpid())}\n")
-        sock = self.root / f".s.PGSQL.{PORT}"
+        sock = self.root / f".s.PGSQL.{self.port}"
         if len(os.fsencode(str(sock))) > SOCKET_MAX:
             raise ClusterError(f"the socket path {sock} is over {SOCKET_MAX} bytes")
         t1 = time.monotonic()
@@ -524,8 +642,9 @@ class Cluster:
                               capture_output=True, text=True, env=self.server_env(), timeout=120,
                               check=False)
         if init.returncode != 0:
-            raise ClusterError(f"initdb exited {init.returncode}: {init.stderr.strip()}")
+            raise ClusterError(f"initdb failed: {_counted(init)}")
         t2 = time.monotonic()
+        self.prepare()
         self.launch()
         t3 = time.monotonic()
         self.build_template()
@@ -570,7 +689,7 @@ class Cluster:
         name, path = f"fx_{database}", home / ".pg_service.conf"
         text = path.read_text(encoding="utf-8") if path.exists() else ""
         if f"[{name}]\n" not in text:
-            text += (f"[{name}]\nhost={self.root}\nport={PORT}\nuser={SUPERUSER}\n"
+            text += (f"[{name}]\nhost={self.root}\nport={self.port}\nuser={SUPERUSER}\n"
                      f"dbname={database}\n\n")
             path.write_text(text, encoding="utf-8")
             path.chmod(0o600)
@@ -652,15 +771,23 @@ class Cluster:
                      ["login", "add", "--dump-job", "--admin-service", service]):
             code, out, err = self.lanes_index_tty(argv)
             if code != 0:
-                raise ClusterError(f"`lanes-index {' '.join(argv[:3])}` through the admin service "
-                                   f"on {database} exited {code}, so the fixture has no logins "
-                                   f"(lane 1's T110, L1-A8, builds `login`): "
-                                   f"{_masked(out)[-400:]} | {_masked(err)[-400:]}")
+                failed = (f"`lanes-index {' '.join(argv[:3])}` through the admin service "
+                          f"on {database} exited {code}, so the fixture has no logins "
+                          f"(lane 1's T110, L1-A8, builds `login`): stdout: "
+                          f"{len(out.splitlines())} line(s), "
+                          f"{len(PASSWORD_LINE.findall(out))} of them password-file "
+                          f"lines; stderr: {len(err.splitlines())} line(s); no line of "
+                          f"either is shown")
+                del out, err
+                raise ClusterError(failed)
             self.passwords.update(PASSWORD_LINE.findall(out))
+            # T229u (RV9-41, N1): `login add`'s output, its password-file lines
+            # with their clear passwords, stays in no frame a later raise keeps.
+            del out, err
         names = ", ".join(f"'{login}'" for login in FX_LOGINS)
         can = self.psql(f"SELECT rolname FROM pg_catalog.pg_roles WHERE rolcanlogin AND "
                         f"rolname IN ({names}) ORDER BY 1;").stdout.split()
-        missing = sorted(set(FX_LOGINS) - set(can)) + sorted(set(FX_LOGINS) - set(self.passwords))
+        missing = [login for login in FX_LOGINS if login not in can or login not in self.passwords]
         if missing:
             raise ClusterError(f"after `login add`, these logins cannot log in or printed no "
                                f"password line: {', '.join(missing)}")
@@ -689,7 +816,7 @@ class Cluster:
             raise ClusterError(f"`lanes-index bootstrap --no-passwords` through the admin "
                                f"service on {database} exited {proc.returncode}, so the "
                                f"template has no register (lane 1's T109, L1-A7, builds the "
-                               f"bootstrap): {_tail(proc)}")
+                               f"bootstrap): {_counted(proc)}")
         return proc.stdout
 
     def build_imported(self) -> None:
@@ -717,7 +844,7 @@ class Cluster:
                 if proc.returncode != 0:
                     self.imported_problem = (f"`lanes-index import --at {register.c}` as {user} "
                                              f"exited {proc.returncode} (lane 1's T115, L1-A13, "
-                                             f"builds it): {_tail(proc)}")
+                                             f"builds it): {_counted(proc)}")
                 else:
                     self.imported_problem = self._imported_check(register.c)
             except (ClusterError, OSError, subprocess.SubprocessError) as exc:
@@ -745,15 +872,23 @@ class Cluster:
             dbname=IMPORTED).stdout.strip()
         wanted = f"0:import:{commit}|0|files:absent"
         if said != wanted:
-            return (f"`lanes-index import --at {commit}` exited 0, and {IMPORTED} reads "
-                    f"{said!r} (journal|head|switch), not {wanted!r}")
+            got = said.split("|")
+            differ = [part for i, part in enumerate(("journal", "head", "switch"))
+                      if len(got) != 3 or got[i] != wanted.split("|")[i]]
+            return (f"`lanes-index import --at {commit}` exited 0, and {IMPORTED}'s "
+                    f"{', '.join(differ)} differ from {wanted!r} (journal|head|switch); none "
+                    f"of what it reads is shown (T229n)")
         return None
+
+    def prepare(self) -> None:
+        """Between `initdb` and the first start: nothing here; T229's TLS and
+        counting clusters set their files and settings."""
 
     def launch(self) -> None:
         """`postgres` by `Popen` on this cluster's directories, and wait until it is ready."""
-        argv = [self.tool("postgres"), "-D", str(self.root / "data"), "-p", str(PORT),
-                "-c", "listen_addresses=", "-c", f"unix_socket_directories={self.root}"]
-        for setting in FAST:
+        argv = [self.tool("postgres"), "-D", str(self.root / "data"), "-p", str(self.port),
+                "-c", f"listen_addresses={self.listen}", "-c", f"unix_socket_directories={self.root}"]
+        for setting in [*FAST, *self.settings]:
             argv += ["-c", setting]
         with open(self.root / "server.log", "ab") as log:
             self.proc = subprocess.Popen(argv, stdin=DEVNULL, stdout=log, stderr=subprocess.STDOUT,
@@ -761,9 +896,9 @@ class Cluster:
         end = time.monotonic() + DEADLINE
         while not self.ready():
             if self.proc.poll() is not None:
-                raise ClusterError(f"postgres exited {self.proc.returncode} starting: {self.log_tail()}")
+                raise self._start_failed(f"postgres exited {self.proc.returncode} starting")
             if time.monotonic() > end:
-                raise ClusterError(f"postgres was not ready in {DEADLINE:.0f} s: {self.log_tail()}")
+                raise self._start_failed(f"postgres was not ready in {DEADLINE:.0f} s")
             time.sleep(POLL)
 
     def stop(self) -> None:
@@ -777,11 +912,34 @@ class Cluster:
             raise ClusterError(f"postgres did not stop in {DEADLINE:.0f} s after SIGINT: "
                                f"{self.log_tail()}") from None
 
-    def start_again(self) -> None:
-        """Start the stopped cluster on the same data and socket directories."""
+    def start_again(self, standby: bool = False) -> None:
+        """Start the stopped cluster on the same data and socket directories.
+        With `standby` (T229d; TP:5382-5387, check 11's restart in recovery;
+        lane 3's batch 11 (1), which corrects batch 7's ruling 2), it starts
+        in recovery: `standby.signal` is written in the data directory, the
+        start polls `postmaster.pid` for `ready`, as every start does, and
+        then fails unless `pg_is_in_recovery()` is true. A hot standby writes
+        `ready`, never `standby`: PostgreSQL 16 writes `standby` only with
+        `hot_standby` off, where no session connects, and a plain start
+        writes `ready` too, so only the query proves the recovery. A start
+        without it removes the file first, so the cluster comes back a
+        primary. T224 only calls it."""
         if self.proc is not None and self.proc.poll() is None:
             raise ClusterError("the cluster is running, so it cannot be started again")
+        signal_file = self.root / "data" / "standby.signal"
+        if standby:
+            signal_file.write_text("", encoding="utf-8")
+        elif signal_file.exists():
+            signal_file.unlink()
         self.launch()
+        if standby:
+            answer = self.psql("SELECT pg_is_in_recovery();", check=False)
+            if answer.returncode != 0 or answer.stdout.strip() != "t":
+                said = (_psql_failed(SUPERUSER, "postgres", answer) if answer.returncode != 0 else
+                        "f" if answer.stdout.strip() == "f" else
+                        f"neither t nor f: {len(answer.stdout.splitlines())} line(s), none shown")
+                raise ClusterError(f"the start with standby.signal is ready but not in recovery: "
+                                   f"pg_is_in_recovery() answered {said}: {self.log_tail()}")
 
     def new_database(self, template: str = TEMPLATE) -> str:
         """`CREATE DATABASE t_<n> TEMPLATE <template>`, then, where the
@@ -824,14 +982,14 @@ class Database:
     """One test's database, and how to reach it as each role."""
 
     def __init__(self, cluster: Cluster, name: str) -> None:
-        self.cluster, self.name, self.host, self.port = cluster, name, cluster.root, PORT
+        self.cluster, self.name, self.host, self.port = cluster, name, cluster.root, cluster.port
         self.psql_bin = cluster.tool("psql")
 
     def url(self, user: str = SUPERUSER) -> str:
-        return f"postgresql://{user}@{quote(str(self.host), safe='')}:{PORT}/{self.name}"
+        return f"postgresql://{user}@{quote(str(self.host), safe='')}:{self.port}/{self.name}"
 
     def env(self, user: str = SUPERUSER, appname: str = "pytest") -> dict:
-        return _client_env(self.host, user, self.name, appname, self.cluster.bindir)
+        return _client_env(self.host, user, self.name, appname, self.cluster.bindir, self.port)
 
     def psql(self, sql: str, user: str = SUPERUSER, check: bool = True) -> subprocess.CompletedProcess:
         return self.cluster.psql(sql, dbname=self.name, user=user, check=check)
@@ -855,10 +1013,14 @@ class Database:
 #: whose name differs from its lane's in case, and a lane with no log).
 def _test7_seed() -> Dict[str, str]:
     """C'S FILES BEFORE THE OPERATOR'S WRITE (T227b): T211's `SEED`, copied
-    from `tests/test_sql_register_import.py` at line W3a's `4bfef75c` byte
-    for byte (its lines 97-104, 112-115, 118-164 and 185-226), so that the
-    template holds test 7's register on a branch without that module. Each
-    copy must stay equal to the other until one imports it from here."""
+    from `tests/test_sql_register_import.py` at line W3a's `4bfef75c` (its
+    lines 97-104, 112-115, 118-164 and 185-226), so that the template holds
+    test 7's register on a branch without that module. It is that `SEED`
+    byte for byte but for one line, which T227c adds after
+    `TAKE_LINES["hold-no-utc"]`: its holder's `HOLD RELEASED`, which T211n's
+    `CutoverRegister` appends by `append-line` before its import instead
+    (`HOLD_NO_UTC_RELEASE`). Each copy must stay equal to the other, but for
+    that line, until one imports it from here."""
     UUID_A1 = "aaaaaaaa-0001-4000-8000-00000000a001"
     UUID_A2 = "aaaaaaaa-0003-4000-8000-00000000a003"
     UUID_B1 = "bbbbbbbb-0001-4000-8000-00000000b001"
@@ -1050,7 +1212,7 @@ class ImportedRegister:
             f"repository: {self.origin}\npath: {self.ws}\n", encoding="utf-8")
         self.env["LANES_REPO"] = str(self.wip)
         self._run_ok(["bash", str(LANES_EDIT), *TEST7_NOTE], LANES_LANE=TEST7_OPERATOR)
-        self.c = self.git("rev-parse", "origin/main")
+        self.c = self.commit_of("origin/main")
 
     def run(self, argv: List[str], cwd: Optional[Path] = None, timeout: float = 120,
             **env: str) -> subprocess.CompletedProcess:
@@ -1061,8 +1223,12 @@ class ImportedRegister:
     def _run_ok(self, argv: List[str], **env: str) -> str:
         proc = self.run(argv, **env)
         if proc.returncode != 0:
-            raise ClusterError(f"{' '.join(argv[:3])} exited {proc.returncode} building test 7's "
-                               f"fixture register: {_tail(proc)}")
+            # T229t (RV9-41, B1): pytest 8.3.4 prints a long entry's locals as
+            # the arguments of a function with **kw, so no run stays here.
+            failed = (f"{' '.join(argv[:3])} exited {proc.returncode} building test 7's "
+                      f"fixture register: {_counted(proc)}")
+            del proc
+            raise ClusterError(failed)
         return proc.stdout.strip()
 
     def git(self, *args: str, data: Optional[bytes] = None) -> str:
@@ -1070,10 +1236,23 @@ class ImportedRegister:
         proc = subprocess.run(["git", *args], cwd=str(self.wip), env=self.env, input=data,
                               capture_output=True, timeout=120, check=False)
         if proc.returncode != 0:
-            raise ClusterError(f"git {' '.join(args[:2])} exited {proc.returncode} building test "
-                               f"7's fixture register: "
-                               f"{proc.stderr.decode('utf-8', 'replace').strip()[-400:]}")
+            # T229t (RV9-41, B1): as `_run_ok`, for a function with *args.
+            failed = (f"git {' '.join(args[:2])} exited {proc.returncode} building test "
+                      f"7's fixture register: {_counted(proc)}")
+            del proc
+            raise ClusterError(failed)
         return proc.stdout.decode("utf-8", "replace").strip()
+
+    def commit_of(self, ref: str) -> str:
+        """`git rev-parse <ref>` in the operator lane's checkout: a commit
+        id, or a ClusterError that shows none of git's text (T229m), since
+        the id is shown in `imported_problem` and at the run's foot."""
+        said = self.git("rev-parse", ref)
+        if not re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", said):
+            raise ClusterError(f"git rev-parse {ref} exited 0 and printed no commit id building "
+                               f"test 7's fixture register: {len(said.splitlines())} line(s), "
+                               f"none of them shown")
+        return said
 
     def configuration(self, cluster: "Cluster", database: str, user: str) -> Path:
         """The operator's 0600 configuration, outside every work tree:
@@ -1106,6 +1285,579 @@ class ImportedRegister:
         return self.run([sys.executable, str(LANES_INDEX), "import", "--at", self.c],
                         cwd=self.wip, timeout=400, LANES_INDEX_CONFIG=str(config),
                         LANES_LANE=TEST7_OPERATOR)
+
+
+# ------------------------------------------------------------ section 5.6's clusters (T229)
+#: THE TLS CLUSTER'S `pg_hba.conf`, first match wins: the admin's socket by
+#: trust; any TCP connect without TLS rejected (the fixture's model of
+#: FR-011's server half, R09); TLS on loopback by SCRAM-SHA-256.
+TLS_HBA = ("local     all all              trust\n"
+           "hostnossl all all 0.0.0.0/0    reject\n"
+           "hostnossl all all ::/0         reject\n"
+           "hostssl   all all 127.0.0.1/32 scram-sha-256\n")
+
+#: The test CA's `openssl` configuration: no system `openssl.cnf` is read.
+CA_CONFIG = ("[req]\ndistinguished_name = dn\nprompt = no\nx509_extensions = v3_root\n[dn]\n"
+             "CN = openRepoTools test root\n[v3_root]\nbasicConstraints = critical,CA:TRUE\n"
+             "keyUsage = critical,keyCertSign,cRLSign\nsubjectKeyIdentifier = hash\n")
+CA_INTERMEDIATE = ("basicConstraints = critical,CA:TRUE,pathlen:0\nkeyUsage = critical,keyCertSign,"
+                   "cRLSign\nsubjectKeyIdentifier = hash\nauthorityKeyIdentifier = keyid\n")
+CA_LEAF = ("basicConstraints = critical,CA:FALSE\nkeyUsage = critical,digitalSignature\n"
+           "extendedKeyUsage = serverAuth\nsubjectAltName = DNS:localhost,IP:127.0.0.1\n"
+           "subjectKeyIdentifier = hash\nauthorityKeyIdentifier = keyid\n")
+
+
+def _openssl(args: List[str], cwd: Path) -> None:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("OPENSSL_")}
+    proc = subprocess.run(["openssl", *args], cwd=str(cwd), stdin=DEVNULL, capture_output=True,
+                          text=True, env=env, timeout=60, check=False)
+    if proc.returncode != 0:
+        raise ClusterError(f"openssl {' '.join(args[:2])} failed: {_counted(proc)}")
+
+
+def make_test_ca(directory: Path) -> Dict[str, Path]:
+    """THE TEST CA (T229; [X: hosting]): a chain, as the install's private CA
+    issues the endpoint's certificate, made by `openssl` with P-256 keys for
+    two days: a root, an intermediate and a leaf for `localhost` and
+    `127.0.0.1`. `chain` holds the leaf and the intermediate, as the
+    install's `tls.crt` does; `root` alone is what `sslrootcert=` names."""
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (directory / "ca.cnf").write_text(CA_CONFIG, encoding="utf-8")
+    (directory / "int.ext").write_text(CA_INTERMEDIATE, encoding="utf-8")
+    (directory / "leaf.ext").write_text(CA_LEAF, encoding="utf-8")
+    key = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes"]
+    _openssl(["req", "-x509", "-config", "ca.cnf", *key, "-keyout", "root.key", "-out", "root.crt",
+              "-days", "2"], directory)
+    for name, subject, issuer, serial in (("int", "openRepoTools test intermediate", "root", "2"),
+                                          ("leaf", "localhost", "int", "3")):
+        _openssl(["req", "-new", "-config", "ca.cnf", *key, "-keyout", f"{name}.key", "-out",
+                  f"{name}.csr", "-subj", f"/CN={subject}"], directory)
+        _openssl(["x509", "-req", "-in", f"{name}.csr", "-CA", f"{issuer}.crt", "-CAkey",
+                  f"{issuer}.key", "-set_serial", serial, "-days", "2", "-extfile", f"{name}.ext",
+                  "-out", f"{name}.crt"], directory)
+    for name in ("root.key", "int.key", "leaf.key"):
+        (directory / name).chmod(0o600)
+    chain = directory / "chain.crt"
+    chain.write_bytes((directory / "leaf.crt").read_bytes() + (directory / "int.crt").read_bytes())
+    return {"root": directory / "root.crt", "chain": chain, "leaf": directory / "leaf.crt",
+            "key": directory / "leaf.key"}
+
+
+def scram_verifier(password: str, iterations: int = 4096) -> str:
+    """A SCRAM-SHA-256 verifier for `password`, computed here as lane 1's
+    `register_scram_verifier` and psql's `\\password` compute it (RFC 5802,
+    RFC 7677), so no statement or log holds the password."""
+    import base64
+    import hashlib
+    import hmac
+    import secrets
+    salt = secrets.token_bytes(16)
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    client = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+    server = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+
+    def b64(raw: bytes) -> str:
+        return base64.b64encode(raw).decode("ascii")
+    return (f"SCRAM-SHA-256${iterations}:{b64(salt)}${b64(hashlib.sha256(client).digest())}:"
+            f"{b64(server)}")
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
+        probe_socket.bind(("127.0.0.1", 0))
+        return probe_socket.getsockname()[1]
+
+
+class TLSCluster(Cluster):
+    """SECTION 5.6'S TLS CLUSTER (T229): a cluster of its own, built like the
+    session's (its template, its logins), that also listens on 127.0.0.1 at
+    a free port, with `ssl=on`, `ssl_min_protocol_version = TLSv1.3` (CNPG's
+    default), the test CA's chain, and `TLS_HBA`. The admin keeps its
+    socket. `leaf_only` serves the leaf without the intermediate (T230's
+    `[leaf-only]`). At its start it clones one database, `database_name`.
+    Clients use lane 1's conninfo form, `sslmode=verify-full` with the root
+    alone as `sslrootcert=`; the logins authenticate by the SCRAM verifiers
+    `login add` set (T228)."""
+
+    def __init__(self, bindir: Path, template_sql="", imported: bool = False,
+                 leaf_only: bool = False) -> None:
+        super().__init__(bindir, template_sql, imported)
+        self.leaf_only = leaf_only
+        #: True while `start_again` runs, so `launch` keeps the port (T229h).
+        self.restarting = False
+        self.root_cert: Optional[Path] = None
+        self.database_name: Optional[str] = None
+        self.labels: Dict[str, str] = {}
+
+    def prepare(self) -> None:
+        self.tls = make_test_ca(self.root / "tls")
+        self.root_cert = self.tls["root"]
+        (self.root / "data" / "pg_hba.conf").write_text(TLS_HBA, encoding="utf-8")
+        self.port, self.listen = _free_port(), "127.0.0.1"
+        self._tls_settings()
+
+    def _tls_settings(self) -> None:
+        served = self.tls["leaf"] if self.leaf_only else self.tls["chain"]
+        self.settings = ["ssl=on", f"ssl_cert_file={served}", f"ssl_key_file={self.tls['key']}",
+                         "ssl_min_protocol_version=TLSv1.3", "password_encryption=scram-sha-256"]
+
+    def start_again(self, leaf_only: Optional[bool] = None, standby: bool = False) -> None:
+        """The start options T229 names: start the stopped cluster again on
+        the same directories and port, serving the leaf alone where
+        `leaf_only` is True, or the chain again where it is False; and, with
+        `standby`, in recovery, `Cluster.start_again`'s (T229d; T224's
+        `[in-recovery]`)."""
+        if leaf_only is not None:
+            self.leaf_only = leaf_only
+            self._tls_settings()
+        self.restarting = True
+        try:
+            super().start_again(standby=standby)
+        finally:
+            self.restarting = False
+
+    def launch(self) -> None:
+        """The start, with a new free port where another process took the
+        one chosen before the postmaster bound it: at the first start only.
+        A restart (`start_again`) keeps the port its clients and
+        configurations were given, so a bind failure there is raised, never
+        moved past (T229h). A bind failure is the error's `could_not_bind`,
+        since its text holds no line of the log (T229l)."""
+        for attempt in range(3):
+            try:
+                return super().launch()
+            except ClusterError as exc:
+                if attempt == 2 or self.restarting or not exc.could_not_bind:
+                    raise
+                self.port = _free_port()
+
+    def start(self) -> None:
+        super().start()
+        self.database_name = self.new_database()
+
+    def client_env(self, user: str = FX_WRITER, dbname: Optional[str] = None,
+                   appname: str = "pytest") -> dict:
+        """A client's environment for `user` over TLS: `host=localhost` for
+        the name check and `hostaddr=127.0.0.1`, so one connect (section
+        5.6), `verify-full`, the root alone, and the login's password file."""
+        env = _without_pg()
+        env.update(PGHOST="localhost", PGHOSTADDR="127.0.0.1", PGPORT=str(self.port), PGUSER=user,
+                   PGDATABASE=dbname or self.database_name, PGSSLMODE="verify-full",
+                   PGSSLROOTCERT=str(self.root_cert), PGPASSFILE=str(self.passfile(user)),
+                   PGAPPNAME=appname, PGCONNECT_TIMEOUT="10", LC_ALL="C",
+                   PATH=_engine_first(self.bindir, env.get("PATH", os.defpath)))
+        return env
+
+    def url(self, user: str = FX_WRITER, dbname: Optional[str] = None) -> str:
+        """Lane 1's URL form for `user` (Y:2326), at 127.0.0.1, since its six
+        URL parameters hold no `hostaddr`."""
+        return (f"postgresql://{user}@127.0.0.1:{self.port}/{dbname or self.database_name}"
+                f"?sslmode=verify-full&sslrootcert={self.root_cert}")
+
+    def label_of(self, dbname: Optional[str] = None) -> Optional[str]:
+        return self.labels.get(dbname or self.database_name, self.label)
+
+    def configuration(self, directory: Path, database: Optional[str] = None,
+                      mode: str = "index") -> Path:
+        """A 0600 `lanes-index.conf` in `directory`, naming `database` (by
+        default `database_name`): `register_url=` as `lanes_w_fx` and
+        `reader_url=` as `lanes_r_fx`, each with its password file, and the
+        database's switch label as `register_label=`."""
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = directory / "lanes-index.conf"
+        path.write_text("\n".join([
+            f"mode={mode}", f"register_url={self.url(FX_WRITER, database)}",
+            f"register_passfile={self.passfile(FX_WRITER)}", f"reader_url={self.url(FX_READER, database)}",
+            f"reader_passfile={self.passfile(FX_READER)}", f"register_label={self.label_of(database)}",
+            "register_schema=lanes_register", ""]), encoding="utf-8")
+        path.chmod(0o600)
+        return path
+
+    def second_database(self, label: str) -> "Database":
+        """A database of its own on this cluster, made empty and built by the
+        bootstrap with `label` in its switch (T218b's check 10)."""
+        self.count += 1
+        name = f"t_{self.count}"
+        self.psql(f"CREATE DATABASE {name};")
+        self.bootstrap(name, label)
+        self.labels[name] = label
+        return Database(self, name)
+
+
+class CountingCluster(Cluster):
+    """SECTION 5.6'S COUNTING CLUSTER (T229; M13): a cluster of its own,
+    built like the session's, started with `log_connections=on` and
+    `log_statement=all`, its log in `server.log` beside its data: one
+    `connection authorized` line per connection, and one `statement:` line
+    per Query message."""
+
+    def prepare(self) -> None:
+        self.settings = ["log_connections=on", "log_statement=all"]
+
+    def log(self) -> Path:
+        return self.root / "server.log"
+
+
+def _seam(relay, point: str, name: str = "") -> None:
+    """THE RELAYS' SEAM (T229f; Codex's SHOULD 5 on f060619c): each relay
+    calls it where a concurrent `close()` can meet one of its threads, and it
+    does nothing unless a test has set the relay's `seam` to a callable
+    `seam(point, name)`. The points: "accepted", in `_accept`, with a client
+    and its upstream connected, neither registered in `DelayedLoopback`, both
+    registered before the connect in `SilentAfterStartup` (T229i); "listed",
+    as the thread `name`, listed and started, leaves the lock it was started
+    under; "snapshot", in `close()`,
+    once it has taken its snapshot. A test's hook holds a thread at a point
+    on an event, so a window that only the scheduler would open is open every
+    time."""
+    if relay.seam is not None:
+        relay.seam(point, name)
+
+
+class DelayedLoopback:
+    """THE DELAYED-LOOPBACK RELAY (T229; R-P23, lane 3's option B, #165
+    6741861590): standard library only, needing no root. It listens on
+    127.0.0.1 at a free port, `port`, connects each client to 127.0.0.1 at
+    `target_port`, and delivers each byte `delay_s` after it read it, in each
+    direction, untouched, so TLS passes through and the client meets the
+    server's own certificate. An end's close reaches the other end after the
+    delay; when both directions have ended, both sockets close. It models no
+    slow start and no loss. `close()`, or leaving its `with`, ends it: a
+    client accepted while it closes is closed, never relayed (T229f)."""
+
+    #: T229f's seam (`_seam`): None, or a test's hook.
+    seam = None
+
+    def __init__(self, target_port: int, delay_s: float, target_host: str = "127.0.0.1") -> None:
+        self.target, self.delay = (target_host, int(target_port)), float(delay_s)
+        self.lock = threading.Lock()
+        self.sockets: set = set()
+        self.threads: List[threading.Thread] = []
+        self.closing = False
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(16)
+        self.port = self.listener.getsockname()[1]
+        self._spawn(self._accept, "accept")
+
+    def _start(self, target, name: str, *args) -> threading.Thread:
+        """Under `self.lock`, list the thread and start it (T229f): `close()`
+        snapshots under the same lock, so it never joins a thread not yet
+        started, and no later sweep of the dead drops one about to start."""
+        thread = threading.Thread(target=target, args=args, daemon=True,
+                                  name=f"delayed-loopback-{self.port}-{name}")
+        self.threads = [t for t in self.threads if t.is_alive()] + [thread]
+        thread.start()
+        return thread
+
+    def _spawn(self, target, name: str, *args) -> threading.Thread:
+        with self.lock:
+            thread = self._start(target, name, *args)
+        _seam(self, "listed", name)
+        return thread
+
+    def _accept(self) -> None:
+        while True:
+            try:
+                client, _ = self.listener.accept()
+            except OSError:
+                return
+            try:
+                upstream = socket.create_connection(self.target, timeout=10)
+                upstream.settimeout(None)
+            except OSError:
+                client.close()
+                continue
+            _seam(self, "accepted")
+            pair = {"open": 2, "sockets": (client, upstream)}
+            with self.lock:                 # T229f: registered and started in one act, or not at all
+                closing = self.closing
+                if not closing:
+                    self.sockets.update((client, upstream))
+                    self._start(self._read, "up", client, upstream, pair)
+                    self._start(self._read, "down", upstream, client, pair)
+            if closing:                     # accepted as `close()` began: closed, never relayed
+                client.close()
+                upstream.close()
+                return
+
+    def _read(self, source, sink, pair) -> None:
+        held: "queue.Queue" = queue.Queue()
+        writer = self._spawn(self._deliver, "deliver", held, sink, pair)
+        while True:
+            try:
+                data = source.recv(65536)
+            except OSError:
+                data = b""
+            held.put((time.monotonic() + self.delay, data))
+            if not data:
+                break
+        writer.join()
+
+    def _deliver(self, held, sink, pair) -> None:
+        while True:
+            due, data = held.get()
+            wait = due - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                if not data:
+                    sink.shutdown(socket.SHUT_WR)
+                    break
+                sink.sendall(data)
+            except OSError:
+                for end in pair["sockets"]:
+                    self._shut(end)
+                break
+        with self.lock:
+            pair["open"] -= 1
+            done = pair["open"] == 0
+            if done:
+                self.sockets.difference_update(pair["sockets"])
+        if done:
+            for end in pair["sockets"]:
+                end.close()
+
+    @staticmethod
+    def _shut(end) -> None:
+        try:
+            end.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def alive(self) -> List[str]:
+        """The relay's threads still running."""
+        with self.lock:
+            return [t.name for t in self.threads if t.is_alive()]
+
+    def close(self, wait: float = 10.0) -> None:
+        with self.lock:
+            self.closing = True             # T229f: before the listener's shutdown, under the lock
+            ends, threads = list(self.sockets), list(self.threads)
+        _seam(self, "snapshot")
+        self._shut(self.listener)
+        self.listener.close()
+        for end in ends:
+            self._shut(end)
+        end_by = time.monotonic() + wait + self.delay
+        for thread in threads:
+            thread.join(max(0.0, end_by - time.monotonic()))
+
+    def __enter__(self) -> "DelayedLoopback":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def delayed_loopback(target_port: int, delay_s: float) -> DelayedLoopback:
+    """T229's relay in front of `target_port` on 127.0.0.1, `delay_s` each
+    way: `with delayed_loopback(port, 0.075) as relay:` connect to
+    `relay.port`."""
+    return DelayedLoopback(target_port, delay_s)
+
+
+class SilentAfterStartup:
+    """THE SILENT-AFTER-STARTUP RELAY (T229c; lane 3's batch 8, "Lane 2's
+    relay: T229 builds it", #165 6780753157; TP:7682-7684): D9's F2, "a
+    relay that forwards to the cluster's socket until the startup completes,
+    then goes silent" (TP:3557-3558), which AT-F7's silent host, the
+    service's timer and the guard's `[2-service-down]` connect through too.
+    Standard library only. It listens on 127.0.0.1 at a free port, `port`,
+    and connects each client to `target_port` on 127.0.0.1, or, with
+    `socket_dir`, to a cluster's Unix socket,
+    `<socket_dir>/.s.PGSQL.<target_port>`, which the session's cluster alone
+    has.
+
+    It forwards both ways, untouched, until the startup completes, at the
+    server's first ReadyForQuery (`Z`, length 5); from then on it forwards
+    nothing either way and holds both sockets, reading and dropping what
+    reaches it, so neither end sees the other's bytes or its close until
+    `close()`. A close before then reaches the other end. `silenced` holds
+    the monotonic time each connection went silent, taken before the
+    ReadyForQuery is passed on. The startup's end is read in the server's
+    plain bytes, so a TLS stream, whose ReadyForQuery is encrypted, never
+    goes silent: connect without TLS (PostgreSQL answers an SSLRequest on a
+    Unix socket with `N`). It is T257's `StartupRelay` (line W3a,
+    `tests/test_sql_register_bounds.py`) taken over, so that once T257 and
+    the guard call this, one copy exists."""
+
+    READY = re.compile(rb"Z\x00\x00\x00\x05[ITE]")
+    #: T229f's seam (`_seam`): None, or a test's hook.
+    seam = None
+
+    def __init__(self, target_port: int, socket_dir=None) -> None:
+        self.target_port = int(target_port)
+        self.socket_dir = None if socket_dir is None else str(socket_dir)
+        self.lock = threading.Lock()
+        self.sockets: set = set()
+        self.silenced: List[float] = []
+        self.threads: List[threading.Thread] = []
+        self.done = False
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(16)
+        self.port = self.listener.getsockname()[1]
+        self._spawn(self._accept, "accept")
+
+    #: The bound on each upstream connect (T229i). A Unix socket's connect can
+    #: wait on a full backlog until it completes or times out: `CONNECT_WAIT` bounds it.
+    CONNECT_WAIT = 10.0
+
+    def _start(self, target, name: str, *args) -> None:
+        """Under `self.lock`, list the thread and start it (T229f, T229i):
+        `close()` snapshots under the same lock, so it never joins a thread
+        not yet started, and no thread starts after its snapshot."""
+        thread = threading.Thread(target=target, args=args, daemon=True,
+                                  name=f"silent-after-startup-{self.port}-{name}")
+        self.threads = [t for t in self.threads if t.is_alive()] + [thread]
+        thread.start()
+
+    def _spawn(self, target, name: str, *args) -> None:
+        with self.lock:                     # T229f: listed and started under `close()`'s lock
+            self._start(target, name, *args)
+        _seam(self, "listed", name)
+
+    def _upstream(self) -> socket.socket:
+        """A socket for the target, not yet connected (T229i)."""
+        family = socket.AF_INET if self.socket_dir is None else socket.AF_UNIX
+        return socket.socket(family, socket.SOCK_STREAM)
+
+    def _connect(self, upstream: socket.socket) -> None:
+        """`upstream`'s connect to the target, bounded by CONNECT_WAIT; a
+        shutdown by `close()` ends a TCP connect under way at once (T229i)."""
+        upstream.settimeout(self.CONNECT_WAIT)
+        if self.socket_dir is None:
+            upstream.connect(("127.0.0.1", self.target_port))
+        else:
+            upstream.connect(f"{self.socket_dir}/.s.PGSQL.{self.target_port}")
+        upstream.settimeout(None)
+
+    def _accept(self) -> None:
+        while True:
+            try:
+                client, _ = self.listener.accept()
+            except OSError:
+                return
+            try:
+                upstream = self._upstream()
+            except OSError:
+                client.close()
+                continue
+            pair = (client, upstream)
+            with self.lock:                 # T229i: tracked before the connect, so `close()` shuts both
+                if self.done:
+                    client.close()
+                    upstream.close()
+                    return
+                self.sockets.update(pair)
+            try:
+                self._connect(upstream)
+            except OSError:
+                with self.lock:             # untracked and closed here, or left to `close()`
+                    if self.done:
+                        return
+                    self.sockets.difference_update(pair)
+                client.close()
+                upstream.close()
+                continue
+            _seam(self, "accepted")
+            with self.lock:                 # T229i: `done` read, and the pump listed and started, in one act
+                if self.done:
+                    return
+                self._start(self._pump, "pump", client, upstream)
+            _seam(self, "listed", "pump")
+
+    def _pump(self, client: socket.socket, server: socket.socket) -> None:
+        seen, silent, ends = b"", False, [client, server]
+        while ends and not self.done:
+            try:
+                ready, _, _ = select.select(ends, [], [], 0.2)
+            except (OSError, ValueError):
+                return
+            for end in ready:
+                try:
+                    data = end.recv(65536)
+                except OSError:
+                    data = b""
+                if silent:
+                    if not data:
+                        ends.remove(end)            # held: its close reaches nobody
+                    continue
+                if not data:
+                    return self._drop(client, server)
+                if end is server:
+                    seen = (seen + data)[-64:]
+                    if self.READY.search(seen):
+                        silent = True
+                        self.silenced.append(time.monotonic())
+                try:
+                    (client if end is server else server).sendall(data)
+                except OSError:
+                    return self._drop(client, server)
+
+    def _drop(self, *ends: socket.socket) -> None:
+        """A close before the startup completes reaches the other end."""
+        with self.lock:
+            self.sockets.difference_update(ends)
+        for end in ends:
+            self._shut(end)
+            end.close()
+
+    @staticmethod
+    def _shut(end) -> None:
+        try:
+            end.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def alive(self) -> List[str]:
+        """The relay's threads still running."""
+        with self.lock:
+            return [t.name for t in self.threads if t.is_alive()]
+
+    def close(self, wait: float = 10.0) -> None:
+        """End the relay: no new connection; every socket it tracks, a pair
+        whose upstream connect is under way among them, shut down before any
+        join, so that no pump waits in `sendall()` and no TCP connect goes
+        on; every thread joined by one deadline, `wait` from now; every held
+        socket closed; and then, with `wait` above 0, a thread still alive
+        raised as a RuntimeError that names it (T229i; Codex's SHOULD 3 on
+        P09 at `21dd3642`). `close(wait=0)`, T229f's own case, joins without
+        waiting and raises nothing: its caller asks `alive()`."""
+        with self.lock:
+            self.done = True
+            ends, threads = list(self.sockets), list(self.threads)
+            self.sockets.clear()
+        _seam(self, "snapshot")
+        self._shut(self.listener)
+        self.listener.close()
+        for end in ends:
+            self._shut(end)
+        end_by = time.monotonic() + wait
+        for thread in threads:
+            thread.join(max(0.0, end_by - time.monotonic()))
+        for end in ends:
+            end.close()
+        left = [thread.name for thread in threads if thread.is_alive()]
+        if left and wait > 0:
+            raise RuntimeError(f"the silent-after-startup relay on port {self.port} has {left} "
+                               f"alive at its close()'s {wait:g} s deadline")
+
+    def __enter__(self) -> "SilentAfterStartup":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def silent_after_startup(target_port: int, socket_dir=None) -> SilentAfterStartup:
+    """T229c's relay in front of `target_port` on 127.0.0.1, or of the Unix
+    socket `<socket_dir>/.s.PGSQL.<target_port>`: `with
+    silent_after_startup(port) as relay:` connect to 127.0.0.1 at
+    `relay.port`; the session's cluster is
+    `silent_after_startup(pg.port, socket_dir=pg.host)`."""
+    return SilentAfterStartup(target_port, socket_dir)
 
 
 # ------------------------------------------------------------ pytest
@@ -1142,8 +1894,8 @@ def pytest_terminal_summary(terminalreporter) -> None:
         terminalreporter.write_line(f"real-engine: {IMPORTED} holds {what}")
 
 
-def _started(found: Probe, template_sql, imported: bool = False) -> Cluster:
-    cluster = Cluster(found.bindir, template_sql, imported)
+def _started(found: Probe, template_sql, imported: bool = False, kind=None, **options) -> Cluster:
+    cluster = (kind or Cluster)(found.bindir, template_sql, imported, **options)
     try:
         cluster.start()
     except (ClusterError, OSError, subprocess.SubprocessError) as exc:
@@ -1224,11 +1976,43 @@ def stoppable_cluster(pg_engine, pg_template_sql):
         cluster.destroy()
 
 
+def _own_cluster(found: Probe, template_sql, kind, **options):
+    """A started cluster of `kind` for one test, its tools first on `PATH`
+    while it is up, destroyed at the end."""
+    cluster = _started(found, template_sql, kind=kind, **options)
+    patch = pytest.MonkeyPatch()
+    patch.setenv("PATH", _engine_first(found.bindir, os.environ.get("PATH", os.defpath)))
+    try:
+        yield cluster
+    finally:
+        patch.undo()
+        cluster.destroy()
+
+
+@_fixture()
+def tls_cluster(pg_engine, pg_template_sql, request):
+    """Section 5.6's TLS cluster (T229), the test's own: a `TLSCluster` built
+    like the session's. `@pytest.mark.parametrize("tls_cluster",
+    [{"leaf_only": True}], indirect=True)` starts it serving the leaf
+    alone."""
+    options = dict(getattr(request, "param", None) or {})
+    yield from _own_cluster(pg_engine, pg_template_sql, TLSCluster,
+                            leaf_only=bool(options.get("leaf_only")))
+
+
+@_fixture()
+def counting_cluster(pg_engine, pg_template_sql):
+    """Section 5.6's counting cluster (T229), the test's own: a
+    `CountingCluster` built like the session's."""
+    yield from _own_cluster(pg_engine, pg_template_sql, CountingCluster)
+
+
 # ------------------------------------------------------------ the smoke
 def _select_1(cluster: Cluster, dbname: str = "postgres") -> None:
-    said = cluster.psql("SELECT 1;", dbname=dbname).stdout.strip()
-    if said != "1":
-        raise ClusterError(f"SELECT 1 on {dbname} answered {said!r}")
+    answer = cluster.psql("SELECT 1;", dbname=dbname).stdout
+    if answer.strip() != "1":
+        raise ClusterError(f"SELECT 1 on {dbname} did not answer 1: "
+                           f"{len(answer.splitlines())} line(s), none shown")
 
 
 def _smoke_session(found: Probe) -> str:
@@ -1258,7 +2042,59 @@ def _smoke_stoppable(found: Probe) -> str:
         cluster.destroy()
 
 
-SMOKES = {"session": _smoke_session, "stoppable": _smoke_stoppable}
+def _smoke_tls(found: Probe) -> str:
+    """A `verify-full` connect to the TLS cluster, the root alone as
+    `sslrootcert=`, by SCRAM, whose `pg_stat_ssl` row says TLSv1.3; and the
+    same connect without TLS, refused by the `hostnossl` line."""
+    import secrets
+    cluster = TLSCluster(found.bindir)
+    try:
+        cluster.start()
+        password = secrets.token_urlsafe(24)
+        cluster.psql(f"CREATE ROLE fx_smoke LOGIN PASSWORD '{scram_verifier(password)}';")
+        cluster.passwords["fx_smoke"] = password
+        env = dict(cluster.client_env("fx_smoke"), PGREQUIREAUTH="scram-sha-256")
+        argv = [cluster.tool("psql"), "-X", "-A", "-t", "-F", "|", "-c",
+                "SELECT ssl, version FROM pg_stat_ssl WHERE pid = pg_backend_pid()"]
+        said = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=60, check=False)
+        tls13 = said.returncode == 0 and said.stdout.strip() == "t|TLSv1.3"
+        if not tls13:
+            raise ClusterError(f"the verify-full connect did not answer t|TLSv1.3: {_counted(said)}")
+        plain = subprocess.run(argv, capture_output=True, text=True, timeout=60, check=False,
+                               env=dict(env, PGSSLMODE="disable"))
+        if plain.returncode == 0:
+            raise ClusterError("a connect without TLS was let in: the hostnossl line did not reject it")
+        return (f"verify-full by SCRAM on 127.0.0.1:{cluster.port} answered t|TLSv1.3, and "
+                f"sslmode=disable was refused")
+    finally:
+        cluster.destroy()
+
+
+def _smoke_counting(found: Probe) -> str:
+    """Two connects and a query on the counting cluster, whose log holds
+    their `connection authorized` lines and the query's `statement:` line."""
+    import uuid
+    cluster = CountingCluster(found.bindir)
+    try:
+        cluster.start()
+        name = cluster.new_database()
+        offset = cluster.log().stat().st_size
+        marker = f"counting-smoke-{uuid.uuid4().hex[:8]}"
+        _select_1(cluster, name)
+        cluster.psql(f"SELECT '{marker}';", dbname=name)
+        time.sleep(0.2)                       # the logger's last line
+        text = cluster.log().read_bytes()[offset:].decode("utf-8", "replace")
+        connections = len(re.findall(r"connection authorized", text))
+        if connections < 2 or f"statement: SELECT '{marker}';" not in text:
+            raise ClusterError(f"the counting cluster's log holds {connections} connection(s) and "
+                               f"{'a' if marker in text else 'no'} statement line for the query")
+        return f"{connections} connection lines and the query's statement line in {cluster.log()}"
+    finally:
+        cluster.destroy()
+
+
+SMOKES = {"session": _smoke_session, "stoppable": _smoke_stoppable, "tls": _smoke_tls,
+          "counting": _smoke_counting}
 
 
 def main(argv: List[str]) -> int:
