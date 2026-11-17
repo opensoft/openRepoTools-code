@@ -692,6 +692,11 @@ class StartupRelay:
     goes silent, holding both ends open."""
 
     READY = re.compile(rb"Z\x00\x00\x00\x05[ITE]")
+    #: The bound on each upstream connect (T215p). With a timeout set, a Unix
+    #: socket's connect never waits: a full backlog fails it at once.
+    CONNECT_WAIT = 5.0
+    #: `close()`'s one deadline for every join (T215p).
+    CLOSE_WAIT = 10.0
 
     def __init__(self, unix_path: str):
         self.unix_path, self.held, self.done = unix_path, [], False
@@ -710,19 +715,37 @@ class StartupRelay:
                 conn, _ = self.sock.accept()
             except OSError:
                 continue
-            upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            try:
-                upstream.connect(self.unix_path)
-            except OSError:
+            self._relay(conn)
+
+    def _relay(self, conn):
+        """`conn` relayed to the cluster's socket (T215p): its upstream is
+        tracked with it under `close()`'s lock before a bounded connect, so
+        `close()` shuts both down whatever the connect is doing; a connect
+        that fails untracks and closes both, unless `close()` has begun,
+        which then owns them; and the pump is listed and started under that
+        lock, or not at all once `done` is set (T215n)."""
+        upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        with self.lock:
+            if self.done:
                 conn.close()
                 upstream.close()
-                continue
-            with self.lock:                 # registered and started under close()'s lock (T215n)
+                return
+            self.held += [conn, upstream]
+        try:
+            upstream.settimeout(self.CONNECT_WAIT)
+            upstream.connect(self.unix_path)
+            upstream.settimeout(None)
+        except OSError:
+            with self.lock:
                 if self.done:
-                    conn.close()
-                    upstream.close()
                     return
-                self.held += [conn, upstream]
+                self.held.remove(conn)
+                self.held.remove(upstream)
+            conn.close()
+            upstream.close()
+            return
+        with self.lock:
+            if not self.done:
                 pump = threading.Thread(target=self._pump, args=(conn, upstream), daemon=True)
                 self.pumps.append(pump)
                 pump.start()
@@ -730,7 +753,10 @@ class StartupRelay:
     def _pump(self, client, server):
         seen, silent = b"", False
         while not self.done:
-            ready, _, _ = select.select([client, server], [], [], 0.2)
+            try:
+                ready, _, _ = select.select([client, server], [], [], 0.2)
+            except (OSError, ValueError):   # a socket `close()` has closed (T215p)
+                return
             for end in ready:
                 try:
                     data = end.recv(65536)
@@ -740,27 +766,185 @@ class StartupRelay:
                     return
                 if silent:
                     continue
-                if end is server:
-                    seen = (seen + data)[-64:]
-                    client.sendall(data)
-                    if self.READY.search(seen):
-                        silent = True
-                else:
-                    server.sendall(data)
+                try:                        # `close()`'s shutdown ends a blocked sendall() (T215p)
+                    if end is server:
+                        seen = (seen + data)[-64:]
+                        client.sendall(data)
+                        if self.READY.search(seen):
+                            silent = True
+                    else:
+                        server.sendall(data)
+                except OSError:
+                    return
 
     def close(self):
-        """No new connection, every pump joined, then every held socket closed
-        (T215n): the snapshot is taken under the lock each accept registers
-        under, so nothing registered after it is left open or unjoined."""
+        """No new connection; every held socket shut down, a pair whose
+        upstream connect is under way among them, so that a pump blocked in
+        `sendall()` ends at once; the accept thread and every pump joined by
+        one deadline, CLOSE_WAIT from now; every socket and the listener
+        closed; and then a thread still alive raised as a RuntimeError that
+        names it (T215p; Codex's SHOULD 3 on P09 at `21dd3642`). The snapshot
+        is taken under the lock each accept registers under, so nothing
+        registered after it is left open or unjoined (T215n)."""
         with self.lock:
             self.done = True
-            held, pumps = list(self.held), list(self.pumps)
-        self.thread.join(5)                 # each loop sees `done` within its 0.2 s
-        for pump in pumps:
-            pump.join(5)
+            held, threads = list(self.held), [self.thread] + self.pumps
+        for conn in held:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        end_by = time.monotonic() + self.CLOSE_WAIT
+        for thread in threads:              # each loop sees `done` within its 0.2 s
+            thread.join(max(0.0, end_by - time.monotonic()))
+        left = [thread.name for thread in threads if thread.is_alive()]
         for conn in held:
             conn.close()
         self.sock.close()
+        if left:
+            raise RuntimeError(f"AT-F7's relay on port {self.port} has {left} alive at its "
+                               f"close()'s {self.CLOSE_WAIT:g} s deadline")
+
+
+#: T215p's cases (Codex's SHOULD 3 on P09 at `21dd3642`), and the bound on each
+#: of their waits, which only a failure waits out.
+RELAY_CASES, RELAY_WAIT = ["full-backlog", "blocked-pump", "thread-left"], 10.0
+
+
+class _Accepting:
+    """A relay's listener, as its accept thread reads it (T215p): `waiting`
+    is set once an accept waits through it, so a client that connects after
+    that is accepted through it; `accepted`, once an accept returns, so the
+    relay has its client and goes on to its upstream connect, which `done`
+    does not stop."""
+
+    def __init__(self, sock):
+        self.sock, self.waiting, self.accepted = sock, threading.Event(), threading.Event()
+
+    def accept(self):
+        self.waiting.set()
+        pair = self.sock.accept()
+        self.accepted.set()
+        return pair
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
+
+
+def _cluster_stand_in(backlog: int) -> tuple:
+    """A Unix listener of the standard library in place of the cluster's
+    socket, in Linux's abstract namespace, so that no path's length or file
+    is in play: (the listener, the name a relay connects to). With a backlog
+    of 0, one connection queued fills it."""
+    name = f"\0t215p-{uuid.uuid4().hex}"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(name)
+    listener.listen(backlog)
+    return listener, name
+
+
+def _relay_threads_left(relay) -> list:
+    """The names of the relay's threads still alive: its accept thread and each pump."""
+    return [t.name for t in [relay.thread] + list(relay.pumps) if t.is_alive()]
+
+
+def _peer_closed(sock, wait: float) -> bool:
+    """Whether `sock`'s peer closed it within `wait` seconds, by EOF or by a
+    reset, after whatever it had sent."""
+    sock.settimeout(wait)
+    try:
+        while sock.recv(65536):
+            pass
+        return True
+    except socket.timeout:
+        return False
+    except OSError:
+        return True
+
+
+def _stalls(sock) -> bool:
+    """Send `sock` zeros, which hold no ReadyForQuery, until a send waits a
+    second: the relay reading from it has stopped, its pump blocked in
+    `sendall()` to a client that never reads. False if 512 MiB went first."""
+    sock.settimeout(1.0)
+    chunk, sent = bytes(65536), 0
+    while sent < (512 << 20):
+        try:
+            sent += sock.send(chunk)
+        except socket.timeout:
+            return True
+    return False
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="T215p's stand-in for the cluster is in Linux's abstract Unix namespace")
+@pytest.mark.parametrize("case", RELAY_CASES)
+def test_the_relays_close_ends_a_connect_and_a_blocked_pump_and_fails_on_a_thread_left(case):
+    """T215p (Codex's SHOULD 3 on P09 at `21dd3642`), with no engine: a Unix
+    listener of the standard library stands in for the cluster's socket, in
+    front of AT-F7's `StartupRelay`. `[full-backlog]`: the stand-in's
+    backlog is full, so a connect to it would wait; the relay's has a bound,
+    its client's end is closed, and `close()` leaves no thread.
+    `[blocked-pump]`: the stand-in sends to a client that never reads until
+    the pump blocks in `sendall()`; `close()` shuts the sockets down before
+    it joins, so the pump ends and no thread is left. `[thread-left]`: a
+    pump that never ends; `close()` fails at its deadline, naming it and
+    only it. Before T215p the connect came before the sockets were tracked
+    and had no bound, the pumps were joined before the sockets were shut
+    down, and a join that timed out passed unchecked."""
+    stand_in, name = _cluster_stand_in(0 if case == "full-backlog" else 16)
+    relay = StartupRelay(name)
+    opened, release, raised, label = [stand_in], threading.Event(), None, "t215p-stuck-pump"
+    listener = relay.sock = _Accepting(relay.sock)
+    try:
+        waiting = listener.waiting.wait(RELAY_WAIT)
+        assert waiting, f"[{case}] the relay's accept thread never waited through its listener"
+        if case == "full-backlog":                  # the backlog's one place taken
+            opened.append(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM))
+            opened[-1].connect(name)
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        opened.append(client)
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        client.settimeout(RELAY_WAIT)
+        client.connect(("127.0.0.1", relay.port))
+        accepted = listener.accepted.wait(RELAY_WAIT)
+        assert accepted, f"[{case}] the relay never accepted its client"
+        if case == "blocked-pump":
+            stand_in.settimeout(RELAY_WAIT)
+            server, _ = stand_in.accept()
+            opened.append(server)
+            stalled = _stalls(server)
+            pumping = bool(relay.pumps) and relay.pumps[0].is_alive()
+            assert stalled and pumping, f"[{case}] no pump blocked in sendall(): {stalled}, {pumping}"
+        if case == "thread-left":
+            stuck = threading.Thread(target=release.wait, args=(RELAY_WAIT,), daemon=True,
+                                     name=label)
+            stuck.start()
+            with relay.lock:
+                relay.pumps.append(stuck)
+            relay.CLOSE_WAIT = 0.5
+        try:
+            relay.close()
+        except RuntimeError as error:
+            raised = error
+        left, closed = _relay_threads_left(relay), _peer_closed(client, 5.0)
+    finally:
+        release.set()
+        for sock in opened:
+            sock.close()
+        try:
+            relay.close()
+        except RuntimeError:
+            pass
+    if case == "thread-left":
+        named = raised is not None and label in str(raised)
+        assert named and left == [label], (
+            f"[{case}] close() did not fail on the one pump left alive, and only on it: "
+            f"{raised!r}, {left}")
+    else:
+        assert raised is None and left == [] and closed, (
+            f"[{case}] close() left {left} alive (raised {raised!r}), or the client's end open "
+            f"({closed})")
 
 
 def test_under_a_declaration_a_silent_database_is_capped_and_the_mirror_answers_inside_the_budget(
