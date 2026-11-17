@@ -307,14 +307,15 @@ class Estate:
         return os.pathsep.join([str(d) for d in dirs] + [self.env["PATH"]])
 
 
-def _case_row(table: list, ident: str) -> tuple:
-    """A parametrized case's row by its id (lane 2's SHOULD 1 of
-    opensoft/openRepoTools-code#89 comment 6956694290, IN by lane 3's 6956711531): the case
-    takes the id alone as its argument, so no planted secret is a frame argument that a
-    failure's traceback prints."""
-    rows = [row[1:] for row in table if row[0] == ident]
-    assert len(rows) == 1, ident
-    return rows[0]
+def _duplicate_ids(name: str, ids: list) -> str:
+    """The import-time message of a parametrized table whose ids repeat (lane 2's F-1 of
+    opensoft/openRepoTools-code#89 comment 6957946822, IN by lane 3's 6958469496). Each case
+    takes the id alone as its argument and its row from a dict built once at import, in
+    `PSQL_QUOTE_ROWS`'s form; a dict keeps one row per id, so each table's assert beside its
+    dict fails at import when an id repeats, and its message is this: the table's name and the
+    repeated ids alone. It is given the ids and never a row, so no planted value is in its
+    frame or its message."""
+    return f"{name}: duplicate ids {sorted({i for i in ids if ids.count(i) > 1})}"
 
 
 @pytest.fixture
@@ -1151,6 +1152,9 @@ NO_ECHO_REFUSALS = [
     ("R6-passfile", f"passfile={CONFIG_URI}\n", 2, "(`passfile=`)"),
     ("R6-reader_passfile", f"reader_passfile={CONFIG_URI}\n", 2, "(`reader_passfile=`)"),
 ]
+NO_ECHO_REFUSAL_ROWS = {row[0]: row[1:] for row in NO_ECHO_REFUSALS}
+assert len(NO_ECHO_REFUSAL_ROWS) == len(NO_ECHO_REFUSALS), _duplicate_ids(
+    "NO_ECHO_REFUSALS", [row[0] for row in NO_ECHO_REFUSALS])
 
 
 @pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in NO_ECHO_REFUSALS])
@@ -1159,7 +1163,7 @@ def test_no_configuration_refusal_echoes_a_value(estate, ident):
     fake secret, in a URL or alone, in each family's value, is refused by
     `lanes-index mode` with the family's code and words, nothing on stdout,
     and the secret on neither stream, nor R14's negative number's digits."""
-    text, code, words = _case_row(NO_ECHO_REFUSALS, ident)
+    text, code, words = NO_ECHO_REFUSAL_ROWS[ident]
     estate.write_config(text)
     res = estate.index("mode")
     said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
@@ -1199,6 +1203,9 @@ SQLITE_IN_A_WORK_TREE = [
     ("sqlite-path", "lanes-index.sqlite", "lanes-index.sqlite would be inside the git work "
      "tree", True),
 ]
+SQLITE_IN_A_WORK_TREE_ROWS = {row[0]: row[1:] for row in SQLITE_IN_A_WORK_TREE}
+assert len(SQLITE_IN_A_WORK_TREE_ROWS) == len(SQLITE_IN_A_WORK_TREE), _duplicate_ids(
+    "SQLITE_IN_A_WORK_TREE", [row[0] for row in SQLITE_IN_A_WORK_TREE])
 
 
 @pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in SQLITE_IN_A_WORK_TREE])
@@ -1208,7 +1215,7 @@ def test_the_sqlite_work_tree_refusal_names_no_url(estate, ident):
     its password, or a `password=` value, is named by its key alone, with neither
     the password nor the URL's host on either stream; a plain path is still
     named."""
-    value, words, named = _case_row(SQLITE_IN_A_WORK_TREE, ident)
+    value, words, named = SQLITE_IN_A_WORK_TREE_ROWS[ident]
     estate.write_config(f"sqlite={value}\n")
     child = dict(estate.env, LANES_EDIT=str(LANES_EDIT))
     res = subprocess.run([sys.executable, str(INDEXER), "mode"], capture_output=True, text=True,
@@ -1273,6 +1280,9 @@ NO_ARGUMENT_USAGES = [
     ("classify-key-value", ("register", "classify", f"password={CONFIG_SECRET}"),
      CLASSIFY_USAGE),
 ]
+NO_ARGUMENT_USAGE_ROWS = {row[0]: row[1:] for row in NO_ARGUMENT_USAGES}
+assert len(NO_ARGUMENT_USAGE_ROWS) == len(NO_ARGUMENT_USAGES), _duplicate_ids(
+    "NO_ARGUMENT_USAGES", [row[0] for row in NO_ARGUMENT_USAGES])
 
 
 @pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in NO_ARGUMENT_USAGES])
@@ -1283,7 +1293,7 @@ def test_mode_and_register_classify_echo_no_argument(estate, ident):
     configuration, which would be refused with 2 since its line is not
     `key=value`, is never reached; the register line on stdin is not
     classified; and no `psql` runs."""
-    argv, usage = _case_row(NO_ARGUMENT_USAGES, ident)
+    argv, usage = NO_ARGUMENT_USAGE_ROWS[ident]
     estate.write_config("this line is not a key and its value\n")
     fake = estate.root / "pgfake"
     fake.mkdir()
@@ -1341,6 +1351,9 @@ NO_ECHO_WORDS = [
      "lanes-index: unknown argument that is not one of its flags for status - see "
      "lanes-index --help\n"),
 ]
+NO_ECHO_WORD_ROWS = {row[0]: row[1:] for row in NO_ECHO_WORDS}
+assert len(NO_ECHO_WORD_ROWS) == len(NO_ECHO_WORDS), _duplicate_ids(
+    "NO_ECHO_WORDS", [row[0] for row in NO_ECHO_WORDS])
 
 
 @pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in NO_ECHO_WORDS])
@@ -1351,7 +1364,7 @@ def test_an_unknown_subcommand_or_argument_is_named_in_readys_form(estate, ident
     word that matches the pattern, `--frob`, is still quoted, and so is a bare
     subcommand, `sycn`, while a bare argument is not. Nothing is read: no `psql`
     runs."""
-    argv, usage = _case_row(NO_ECHO_WORDS, ident)
+    argv, usage = NO_ECHO_WORD_ROWS[ident]
     fake = estate.root / "pgfake"
     fake.mkdir()
     ran = estate.root / "psql-ran.txt"
@@ -1379,6 +1392,9 @@ NO_ECHO_SCHEMAS = [
     ("schema-reserved", SCHEMA_SENTINEL,
      "bootstrap: register_schema= is the index half's schema or a name PostgreSQL reserves"),
 ]
+NO_ECHO_SCHEMA_ROWS = {row[0]: row[1:] for row in NO_ECHO_SCHEMAS}
+assert len(NO_ECHO_SCHEMA_ROWS) == len(NO_ECHO_SCHEMAS), _duplicate_ids(
+    "NO_ECHO_SCHEMAS", [row[0] for row in NO_ECHO_SCHEMAS])
 
 
 @pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in NO_ECHO_SCHEMAS])
@@ -1388,7 +1404,7 @@ def test_the_bootstrap_names_a_refused_register_schema_by_its_key(estate, ident)
     `load_config`'s R12, and a reserved name, `pg_...`, by the bootstrap's own
     check; each names `register_schema=` and shows no value, prints nothing on
     stdout, and runs no `psql`."""
-    value, words = _case_row(NO_ECHO_SCHEMAS, ident)
+    value, words = NO_ECHO_SCHEMA_ROWS[ident]
     estate.write_config(f"register_schema={value}\n")
     fake = estate.root / "pgfake"
     fake.mkdir()
@@ -1460,6 +1476,9 @@ NO_ECHO_SOURCES = [
      ("export", "--out", OUT_DIR, "--source", f"inventory:password={CONFIG_SECRET}"), 2,
      SOURCE_AN_INVENTORY, "why"),
 ]
+NO_ECHO_SOURCE_ROWS = {row[0]: row[1:] for row in NO_ECHO_SOURCES}
+assert len(NO_ECHO_SOURCE_ROWS) == len(NO_ECHO_SOURCES), _duplicate_ids(
+    "NO_ECHO_SOURCES", [row[0] for row in NO_ECHO_SOURCES])
 
 
 @pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in NO_ECHO_SOURCES])
@@ -1470,7 +1489,7 @@ def test_a_source_or_out_value_is_never_echoed(estate, ident):
     `export`'s `--out`, it is usage, 64; as `export`'s `--source`, it is refused with 2
     in the `why` file. Each names the flag, or the source's kind: the value is on
     neither stream nor in `why`, stdout is empty, no `psql` runs and no store is made."""
-    argv, code, words, where = _case_row(NO_ECHO_SOURCES, ident)
+    argv, code, words, where = NO_ECHO_SOURCE_ROWS[ident]
     out = estate.root / "exp"
     out.mkdir()
     fake = estate.root / "pgfake"
@@ -1516,6 +1535,9 @@ UNRESOLVED_SOURCES = [
     ("reconcile-inventory", ("reconcile", "--source", f"inventory:{CONFIG_URI}"),
      "inventory:?"),
 ]
+UNRESOLVED_SOURCE_ROWS = {row[0]: row[1:] for row in UNRESOLVED_SOURCES}
+assert len(UNRESOLVED_SOURCE_ROWS) == len(UNRESOLVED_SOURCES), _duplicate_ids(
+    "UNRESOLVED_SOURCES", [row[0] for row in UNRESOLVED_SOURCES])
 
 
 @pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in UNRESOLVED_SOURCES])
@@ -1525,7 +1547,7 @@ def test_an_unresolved_source_is_filed_without_its_value(estate, ident):
     `password=` value cannot resolve it and fails with 1, nothing written; the attempt is
     filed under `register:?` or `inventory:?`, which a later `status` names. The value is
     in neither the status file nor either stream of either run."""
-    argv, filed = _case_row(UNRESOLVED_SOURCES, ident)
+    argv, filed = UNRESOLVED_SOURCE_ROWS[ident]
     stub = estate.root / "no-workspace" / "lanes-edit.sh"
     stub.parent.mkdir()
     stub.write_text("#!/bin/sh\necho 'no workspace here' >&2\nexit 3\n")
@@ -1564,6 +1586,9 @@ REGISTER_FROM_A_URL = [
     ("workspace-yaml-url", None,
      f"https://u:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r"),
 ]
+REGISTER_FROM_A_URL_ROWS = {row[0]: row[1:] for row in REGISTER_FROM_A_URL}
+assert len(REGISTER_FROM_A_URL_ROWS) == len(REGISTER_FROM_A_URL), _duplicate_ids(
+    "REGISTER_FROM_A_URL", [row[0] for row in REGISTER_FROM_A_URL])
 
 
 @pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in REGISTER_FROM_A_URL])
@@ -1574,7 +1599,7 @@ def test_the_register_is_named_by_its_remote_and_no_url(estate, ident):
     another `--source` only by where it is read. The refusal's words and its exit, 2,
     are kept; stdout is empty, and none of the userinfo, the host and the path is on
     either stream."""
-    origin, repository = _case_row(REGISTER_FROM_A_URL, ident)
+    origin, repository = REGISTER_FROM_A_URL_ROWS[ident]
     root = estate.root / "credentialed"
     subprocess.run(["git", "init", "-q", str(root)], check=True, env=estate.env,
                    capture_output=True)
@@ -1639,6 +1664,9 @@ REGISTER_KEYS = [
     ("https-upper-token", f"HTTPS://{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r",
      f"register:HTTPS://{REGISTER_HOST}/{REGISTER_PATH}/r"),
 ]
+REGISTER_KEY_ROWS = {row[0]: row[1:] for row in REGISTER_KEYS}
+assert len(REGISTER_KEY_ROWS) == len(REGISTER_KEYS), _duplicate_ids(
+    "REGISTER_KEYS", [row[0] for row in REGISTER_KEYS])
 
 
 @pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in REGISTER_KEYS])
@@ -1652,7 +1680,7 @@ def test_a_credentialed_register_is_keyed_and_shown_without_it(estate, monkeypat
     it.
     The fake secret is on no stream and not in `meta`. A source with no credential
     keeps today's key."""
-    repository, key = _case_row(REGISTER_KEYS, ident)
+    repository, key = REGISTER_KEY_ROWS[ident]
     agents = estate.root / "agents-c12"
     agents.mkdir()
     (agents / "workspace.yaml").write_text(f"repository: {repository}\npath: {estate.ws}\n",
@@ -1699,6 +1727,9 @@ CAS_KEYS = [
     ("cas-owner-repo", "register:opensoft/t104-fake-repo", True),
     ("cas-inventory", "inventory:Eagle", True),
 ]
+CAS_KEY_ROWS = {row[0]: row[1:] for row in CAS_KEYS}
+assert len(CAS_KEY_ROWS) == len(CAS_KEYS), _duplicate_ids(
+    "CAS_KEYS", [row[0] for row in CAS_KEYS])
 
 
 @pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in CAS_KEYS])
@@ -1708,7 +1739,7 @@ def test_the_compare_and_swap_refusal_names_no_url(estate, ident):
     plain `register:` or `inventory:` key is named as before, and a key that is a URL
     in any form, with or without a credential, is not: none of its credential, host
     and path is in the text."""
-    key, named = _case_row(CAS_KEYS, ident)
+    key, named = CAS_KEY_ROWS[ident]
     mod = load_indexer()
     store = mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"})
     store.open_write()
@@ -1747,6 +1778,9 @@ SYNCED_SOURCES = [
      f"https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r.git",
      f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"),
 ]
+SYNCED_SOURCE_ROWS = {row[0]: row[1:] for row in SYNCED_SOURCES}
+assert len(SYNCED_SOURCE_ROWS) == len(SYNCED_SOURCES), _duplicate_ids(
+    "SYNCED_SOURCES", [row[0] for row in SYNCED_SOURCES])
 
 
 @pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in SYNCED_SOURCES])
@@ -1762,7 +1796,7 @@ def test_an_identified_register_is_synced_and_filed_under_its_key(estate, ident)
     source identified files its error under the key in the status file, not as
     `register:?`; and `status` names the key once. The credential is on no stream, in no
     file of the state folder and in no row of the store."""
-    repository, key = _case_row(SYNCED_SOURCES, ident)
+    repository, key = SYNCED_SOURCE_ROWS[ident]
     agents = estate.root / "agents-synced"
     agents.mkdir()
     (agents / "workspace.yaml").write_text(f"repository: {repository}\npath: {estate.ws}\n",
@@ -3242,7 +3276,8 @@ def test_the_register_path_keeps_verbosity_verbose():
     pairs = list(zip(args, args[1:]))
     assert ("-v", "VERBOSITY=verbose") in pairs, args
     assert not any(a.startswith("VERBOSITY=") and a != "VERBOSITY=verbose" for a in args), args
-    assert ("-v", "VERBOSITY=sqlstate") in list(zip(mod.INDEX_PSQL_ARGS, mod.INDEX_PSQL_ARGS[1:]))
+    assert ("-v", "VERBOSITY=sqlstate") in list(
+        zip(mod.INDEX_PSQL_ARGS, mod.INDEX_PSQL_ARGS[1:])), mod.INDEX_PSQL_ARGS
 
 
 def test_a_failed_status_replace_leaves_no_copy_behind(estate, monkeypatch):
