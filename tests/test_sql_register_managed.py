@@ -94,6 +94,7 @@ from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQ
                                   guard_strip_env)
 from test_sql_register_bounds import _said_safely  # the one helper for a failure's output (T258l)
 from test_sql_register_bounds import _whole  # a number from output, quoting none of it (T258n)
+from test_sql_register_bounds import _reported  # pytest's own report of a failure (T258r)
 
 pytestmark = [WINDOWS_SKIP]
 
@@ -831,6 +832,36 @@ def test_a_failure_message_keeps_no_password_of_a_password_file_line():
         none_printed(found)
     kept = secret in str(failed.value)
     assert not kept, "a failed assertion whose operand holds the line reports its password"
+
+
+@pytest.mark.parametrize("case", ["passwords", "no-clear-text"])
+def test_pytests_own_report_of_a_password_check_shows_no_password(request, case):
+    """T258r (lane 3's ruling 6949488277 on lane 2's pre-review RV9-38 of
+    P09 at `3f9fcac4`, B1), with no engine and no process: T224j's checks
+    fail with a password-file line's password as their frames' arguments,
+    and pytest's own report of the failure, rendered as pytest renders a
+    failed test under the suite's own settings (bounds' `_reported`), holds
+    no password. T224j checked `str()` alone, and its "a bool, so pytest's
+    report never shows the secret" held for the assert's operand, not for
+    the frame's arguments, which pytest's default `--tb=auto` prints:
+      - `passwords`: `_passwords(text)`, a line printed twice, where `text`
+        is a login's stdout holding the line (RV9-38: managed :413);
+      - `no-clear-text`: `_no_clear_text(log, lines)`, a server log that
+        holds the password in clear text, where `log` and `lines` both hold
+        it (RV9-38: managed :795).
+    T205e's short style prints no frame's arguments. An explicit
+    `--tb=long` or `--fulltrace` is not secret-safe. The password is a
+    fresh uuid, no credential of any login."""
+    secret = uuid.uuid4().hex
+    line = ":".join(("*", "*", "t224_reg", "lanes_w_t224", secret))
+    with pytest.raises(AssertionError) as failed:
+        if case == "passwords":
+            _passwords(f"{line}\n{line}\n")
+        else:
+            _no_clear_text(f"LOG:  statement: ALTER ROLE lanes_w_t224 PASSWORD '{secret}'\n",
+                           {"lanes_w_t224": line})
+    shown = secret in _reported(request, failed)
+    assert not shown, f"[{case}] the password is in pytest's report"
 
 
 # ============================================================ one deadline (T224o)
