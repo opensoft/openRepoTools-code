@@ -376,11 +376,16 @@ CONNECT_TIMEOUT_MIN = 2
 CONNECT_TIMEOUT_DEFAULT = 2
 
 #: R16'S CEILING (lane 3's ruling on lane 5's question 7, #165 6932653746;
-#: contracts/config.md R16): `N_a` times `c`, `register_addresses=` times the
-#: larger of the register's two URLs' `connect_timeout=`, is at most 30 s, and
-#: `register_rtt_ms=` is at most 5000, so that every timer derived from them is
-#: bounded: `T_r` at most 34 s, `C` at most 36 s and `bound_s` at most 1380 s.
-REGISTER_CONNECT_MAX_S = 30
+#: contracts/config.md R16), taken from 30 to 19 by lane 3's ruling on
+#: openRepoTools issue 364, comment 6962911577: `N_a` times `c`,
+#: `register_addresses=` times the larger of the register's two URLs'
+#: `connect_timeout=`, is at most 19 s, so that `T_write` stays under 120 s
+#: (design.md :5066, as that ruling cites it), and `register_rtt_ms=` is at most
+#: 5000, so that every timer derived from them is bounded: `T_r` at most 23 s
+#: and `C` at most 25 s. `bound_s` is bounded with them; R16's text gives its
+#: maximum, which depends on the sum in force where it is computed, so no number
+#: for it is written here.
+REGISTER_CONNECT_MAX_S = 19
 REGISTER_RTT_MS_MAX = 5000
 
 
@@ -681,7 +686,7 @@ def load_config(text: str | None = None) -> dict:
     `register_schema=` that is not a plain lower-case SQL identifier; a
     `register_addresses=` or `register_rtt_ms=` that is not a whole number; R16's
     ceiling, a `register_addresses=` whose product with the larger URL
-    `connect_timeout=` is above 30, or a `register_rtt_ms=` above 5000; a
+    `connect_timeout=` is above 19, or a `register_rtt_ms=` above 5000; a
     `register_passfile=` or `render_key=` that is not a private regular file;
     and, where `register_url=` is set, R09's TLS refusal of it and of
     `reader_url=`. A file with no `register_url=` is #160's, and loads as it
