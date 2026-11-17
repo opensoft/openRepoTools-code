@@ -338,7 +338,9 @@ STALLED_GIT = ("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STALLED_GIT_LOG\"\n"
                "exec sleep 30\n")
 
 #: The longest a cut call may take: far below the stall's 30 s, far above the
-#: 1 s each case leaves before its deadline.
+#: 1 s each case leaves before its deadline. It catches a call that waits out
+#: the stall and a cleanup that hangs; the 1 s itself is held by the
+#: `timeout=` each call is given, which the case records.
 STALL_BOUND_S = 10
 
 #: Form C's tip read, as `tip_of` and `register_guard_tip` give it, at the
@@ -382,11 +384,23 @@ def test_form_cs_tip_read_is_cut_at_the_mirror_paths_start_line(tmp_path, monkey
     `register_guard_outage`, form C itself, with 1 s left before `T0` + 3.75
     s, returns inside the bound, notes why, and writes no `.outage` and no
     temporary beside `--cache`, so the guard refuses with S3's outage text.
+    Each of the two calls launched is given a `timeout=` above 0 and at most
+    the 1 s left (lane 3's Codex review of chain 2 at `d0bac791`, SHOULD 1):
+    `subprocess.run` is wrapped to record it, and still runs the call.
 
     It fails on the tip read through `tip_of`, which has no timeout and waits
-    out the stall's 30 s."""
+    out the stall's 30 s, and on a tip read given a timeout longer than the
+    time left, which the 10 s bound alone lets through."""
     mod = _indexer()
     log = _stall_git(tmp_path, monkeypatch)
+    real_run = mod.subprocess.run
+    given = []
+
+    def recording_run(argv, *args, **kwargs):
+        given.append((list(argv), kwargs.get("timeout")))
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(mod.subprocess, "run", recording_run)
     repo = tmp_path / "mirror"
     repo.mkdir()
     began = time.monotonic()
@@ -420,6 +434,10 @@ def test_form_cs_tip_read_is_cut_at_the_mirror_paths_start_line(tmp_path, monkey
     assert "ran out of time" in err and "so no .outage was written" in err, err
     calls = log.read_text(encoding="utf-8").splitlines()
     assert len(calls) == 2 and calls[1].endswith(TIP_READ), calls
+    assert len(given) == 2 and all("rev-parse" in argv for argv, _ in given), given
+    for argv, timeout in given:
+        assert isinstance(timeout, (int, float)) and not isinstance(timeout, bool) \
+            and 0 < timeout <= 1.0, f"a tip read was given timeout={timeout!r}: {argv}"
 
 
 #: The guard's reader URL: a user and a query parameter, both kept out of the
