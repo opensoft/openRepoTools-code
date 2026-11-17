@@ -641,7 +641,13 @@ class Managed:
         run is `_added`'s, so this frame, whose `*engineers` makes pytest
         8.3.4 print its locals as arguments in a long entry, holds no printed
         password line (T258w; lane 2's pre-review RV9-41 of P09 at
-        `4895579`, B1)."""
+        `4895579`, B1). That is this frame only (T258x; lane 2's pre-review
+        RV9-42 of P09 at `857a41d2`, N6): where `_passwords` raises, its
+        frame, `_passwords(text)`, and `passfiles(self, text, ...)`'s hold
+        the printed lines as their genuine argument `text`, which an explicit
+        `--tb=long`, `--fulltrace` or `--showlocals` prints on every pytest
+        version; the suite's default, `--tb=short` (T205e), prints no
+        frame's arguments."""
         files: dict = {}
         for who in [*engineers, *([DUMP] if dump else [])]:
             files.update(self.passfiles(self._added(who, service), folder))
