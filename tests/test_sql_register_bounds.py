@@ -468,8 +468,8 @@ class StartupRelay(SilentListener):
     went silent."""
 
     READY = re.compile(rb"Z\x00\x00\x00\x05[ITE]")
-    #: The bound on each upstream connect (T220p). With a timeout set, a Unix
-    #: socket's connect never waits: a full backlog fails it at once.
+    #: The bound on each upstream connect (T220p). A Unix socket's connect can
+    #: wait on a full backlog until it completes or times out: `CONNECT_WAIT` bounds it.
     CONNECT_WAIT = 5.0
 
     def __init__(self, unix_path: str, armed=None):
