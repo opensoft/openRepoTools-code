@@ -213,6 +213,12 @@ SQL_REGISTER_GATE_TABLE = {
     "test_the_session_start_block_makes_no_register_call_on_primary": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_the_session_start_block_reads_the_mirror_and_only_starts_the_service": ("T512", "T513"),  # T237; tasks:2302
     "test_the_socket_directory_is_a_0700_directory_of_this_uid_and_never_a_symlink": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_start_sweep_keeps_a_fresh_stamp_temporary": ("T512", "T513"),  # T237zzu; P23 (#165 6934655836)
+    "test_the_start_sweep_keeps_a_stamp_temporary_name_that_is_not_the_form": ("T512", "T513"),  # T237zzu; P23 (#165 6934655836)
+    "test_the_start_sweep_keeps_what_is_not_a_regular_file_of_the_form": ("T512", "T513"),  # T237zzu; P23 (#165 6934655836)
+    "test_the_start_sweep_removes_a_stamp_temporary_over_ten_minutes_old": ("T512", "T513"),  # T237zzu; P23 (#165 6934655836)
+    "test_the_sweep_keeps_a_stamp_temporary_exactly_ten_minutes_old_and_removes_one_a_second_older": ("T512", "T513"),  # T237zzu; P23 (#165 6934655836)
+    "test_the_sweep_passes_over_an_entry_gone_logs_one_it_cannot_date_or_remove_and_goes_on": ("T512", "T513"),  # T237zzu; P23 (#165 6934655836)
     "test_the_stale_row_copies_a_dead_outers_pending_call_and_the_next_2_looks_it_up": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
     "test_todays_direct_guard_is_timed_in_its_four_parts": ("T111", "T112", "T507"),  # T226; tasks:2177
     "test_two_sessions_binding_one_lane_in_files_mode_both_binds_land": ("T502",),  # T214; tasks:2013
@@ -8370,3 +8376,398 @@ def test_a_start_that_returns_at_a_live_socket_or_a_failed_bind_lets_register_lo
     assert not seen["fds"] and refused is None, (
         f"serve returned {seen['code']} ({case}) with register.lock still open on its "
         f"descriptor(s) {seen['fds']}, and a fresh open's flock(LOCK_EX | LOCK_NB): {got}")
+
+
+# THE START'S SWEEP OF STAMP TEMPORARIES (T237zzu), T512's commit 15,
+# `1c7a4aa0`. THE ORACLE is lane 3's ruling on lane 5's question 6 (#165
+# 6932653746), "yes, with a 10-minute age floor", in the words of q5's
+# section 2.4 NEW (lane 3's analyst report `q5-report-1116r.md`, sha256
+# `2a4e3c47...`, "Q6. T512's NIT 4"): the starter that holds `register.lock`
+# and has found no live service removes, just before its own bind, "each
+# regular file in `run/` of this uid whose name is `register.owner.tmp-` or
+# `register.failed.tmp-`, then a decimal pid, `-` and eight lower-case hex
+# digits, and whose mtime is more than 10 minutes old ..., each checked by
+# `lstat`. It logs one it cannot remove, and leaves it, keeps one it cannot
+# date, and leaves any other name, or any file of such a name that is not
+# this uid's socket or regular file." Spec main `f2098c21` still has the
+# sweep's old set (socket API :190); lane 5's T511 PR carries the new words,
+# and commit 15 rides P23's real cut only after it lands (lane 3's
+# 6934655836). The cases are those of Codex's review of `1c7a4aa0` (its
+# SHOULD 3, in 6934655836) and lane 5's four (`T512Q6-REPORT-1117a.md`).
+#
+# UNDER LANE 5'S COMING COMMIT 17 TOO (lane 3's ruling in 6934655836): each
+# case makes `run/` this uid's at 0700, and none resolves `run/` again
+# while the sweep runs: the held clock's seam hands each call the sweep's
+# own arguments, a path or a name beside `dir_fd`, and counts its own
+# `listdir`, `lstat` and `unlink` among `os.supports_fd` and
+# `os.supports_dir_fd`, which commit 17 asks before it sweeps (lane 5's
+# `8f6cb76b`; its fail-closed line goes to standard error at `b3e30ca3`).
+
+#: THE AGES, in seconds back from the clock (T237zzu): a leftover, 11
+#: minutes; nine minutes; and an hour ahead of the clock, negative.
+SWEEP_AGED_S = 660
+SWEEP_NINE_MINUTES_S = 540
+SWEEP_AHEAD_S = -3600
+#: The aged temporary that each keeping case plants beside what it keeps:
+#: the sweep's removal of it shows the sweep of temporaries ran.
+SWEEP_CONTROL = "register.failed.tmp-2-0123abcd"
+#: `run/`'s five files (socket API section 2.3), the only names a start
+#: leaves once its sweep has removed every leftover.
+RUN_FILES = frozenset({"register.sock", "register.lock", "register.owner", "register.failed",
+                       "register.log"})
+#: Lane 5's names not of the form (T512Q6's case 4) and Codex's upper-case
+#: one, and a regular file at a socket's temporary name, `s.` and four hex
+#: digits, which is no socket: each a regular file of this uid, aged.
+SWEEP_NOT_THE_FORM = ("register.owner.tmp-1-deadbee", "register.owner.tmp-1-deadbeef0",
+                      "register.owner.tmp-x-deadbeef", "register.owner.tmp-1-DEADBEEF",
+                      "register.owner.tmp-1-deadbeef.x", "register.lock.tmp-1-deadbeef",
+                      "register.failed.tmp--deadbeef", "s.beef")
+
+
+def _plant(run: Path, name: str, kind: str = "file", age: float = SWEEP_AGED_S,
+           target: Path = None, clock: float = None) -> Path:
+    """`kind` at `run/<name>`, with its mtime `age` seconds before `clock`
+    (now, where it is None): a regular file of this uid at 0600, a FIFO, a
+    directory, a symbolic link to `target`, whose own mtime is set, or a
+    socket, bound and closed, as a killed start leaves one. `run/` is made
+    this uid's at 0700 (socket API section 2.2)."""
+    import socket as _socket
+    run.mkdir(parents=True, exist_ok=True, mode=0o700)
+    run.chmod(0o700)
+    path = run / name
+    if kind == "file":
+        path.write_text("pid=1\n", encoding="ascii")
+        path.chmod(0o600)
+    elif kind == "fifo":
+        os.mkfifo(path, 0o600)
+    elif kind == "directory":
+        path.mkdir(mode=0o700)
+    elif kind == "link":
+        path.symlink_to(target)
+    else:
+        sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        try:
+            sock.bind(str(path))
+        finally:
+            sock.close()
+    if kind != "socket":
+        when = int(((time.time() if clock is None else clock) - age) * 1_000_000_000)
+        os.utime(path, ns=(when, when), follow_symlinks=False)
+    return path
+
+
+def _swept(est: Estate, *planted: Path) -> tuple:
+    """A start on primary (`_Service`), which sweeps `run/` just before its
+    bind (`register_serve_sweep`), stopped once it listens: then the names
+    of `planted` it removed, `run/`'s names, and `register.log`'s
+    phrases."""
+    svc = _Service(est)
+    try:
+        gone = [p.name for p in planted if not os.path.lexists(p)]
+        names = {p.name for p in _run_dir(est).iterdir()}
+        said = _log_phrases(est)
+    finally:
+        svc.stop()
+    return gone, names, said
+
+
+@pytest.mark.parametrize("which", ["owner", "failed"])
+def test_the_start_sweep_removes_a_stamp_temporary_over_ten_minutes_old(estate, which):
+    """T237zzu, lane 5's case 1 and Codex's "both names": a regular file of
+    this uid at `register.<which>.tmp-1-deadbeef`, 11 minutes old, is gone
+    once the next start listens, and `run/` holds only its five files'
+    names (socket API section 2.3, with q5's NEW: the two temporary names
+    stay only "while a killed write's leftover stays"). A leftover socket
+    at `s.abcd`, this uid's, is gone too: the socket sweep is unchanged
+    (section 2.4, :190). Before commit 15 the temporary was left."""
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    aged = _plant(run, f"register.{which}.tmp-1-deadbeef")
+    sock = _plant(run, "s.abcd", kind="socket")
+    gone, names, said = _swept(est, aged, sock)
+    assert aged.name in gone, \
+        f"the start's sweep left {aged.name}, {SWEEP_AGED_S} s old: {sorted(names)} {said}"
+    assert sock.name in gone, f"the start's sweep left the leftover socket {sock.name}"
+    assert names <= RUN_FILES and {"register.sock", "register.lock", "register.owner"} <= names, \
+        f"run/ holds more or less than its five files once the start listens: {sorted(names)}"
+
+
+@pytest.mark.parametrize("age", ["fresh", "nine-minutes", "ahead"])
+def test_the_start_sweep_keeps_a_fresh_stamp_temporary(estate, age):
+    """T237zzu, lane 5's case 2 and Codex's "fresh, nine-minute and future
+    files": both temporaries, `register.owner.tmp-1-deadbeef` and
+    `register.failed.tmp-1-deadbeef`, regular and this uid's, dated now,
+    nine minutes back, or an hour ahead of the clock, are kept, with no line
+    for them in `register.log`: only "more than 10 minutes old" is a
+    leftover, and a file dated ahead is younger than the floor. The aged
+    `SWEEP_CONTROL` beside them is removed, so the sweep ran: before commit
+    15 it was left, and the case fails there on it."""
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    back = {"fresh": 0, "nine-minutes": SWEEP_NINE_MINUTES_S, "ahead": SWEEP_AHEAD_S}[age]
+    kept = [_plant(run, f"register.{which}.tmp-1-deadbeef", age=back)
+            for which in ("owner", "failed")]
+    control = _plant(run, SWEEP_CONTROL)
+    gone, names, said = _swept(est, control, *kept)
+    assert control.name in gone, \
+        f"the start's sweep left {control.name}, {SWEEP_AGED_S} s old: {sorted(names)}"
+    assert not [p.name for p in kept if p.name in gone], \
+        f"the start's sweep removed a temporary dated {age}: {gone}"
+    assert not [p for p in said if any(k.name in p for k in kept)], said
+
+
+@pytest.mark.parametrize("kind", ["fifo", "link", "directory"])
+def test_the_start_sweep_keeps_what_is_not_a_regular_file_of_the_form(estate, kind):
+    """T237zzu, lane 5's case 3 and Codex's "a FIFO, a symlink, a
+    directory": at `register.owner.tmp-1-deadbeef`, 11 minutes old, a FIFO,
+    a symbolic link to a regular file 11 minutes old outside `run/`, or a
+    directory is kept, of the same type, with no line in `register.log`
+    ("any file of such a name that is not this uid's socket or regular
+    file"); the link's target is left as it was. `lstat` gives the type, so
+    the link is never followed. The aged `SWEEP_CONTROL` beside it is
+    removed, so the sweep ran: before commit 15 it was left."""
+    import stat as stat_mod
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    target = None
+    if kind == "link":
+        target = est.root / "t" / "sweep-link-target"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("pid=1\n", encoding="ascii")
+        old = time.time() - SWEEP_AGED_S
+        os.utime(target, (old, old))
+    kept = _plant(run, "register.owner.tmp-1-deadbeef", kind=kind, target=target)
+    control = _plant(run, SWEEP_CONTROL)
+    mode = stat_mod.S_IFMT(os.lstat(kept).st_mode)
+    gone, names, said = _swept(est, control, kept)
+    assert control.name in gone, \
+        f"the start's sweep left {control.name}, {SWEEP_AGED_S} s old: {sorted(names)}"
+    assert os.path.lexists(kept) and stat_mod.S_IFMT(os.lstat(kept).st_mode) == mode, \
+        f"the start's sweep removed or replaced the {kind} at {kept.name}"
+    if target is not None:
+        assert target.read_text(encoding="ascii") == "pid=1\n", "the link's target was changed"
+    assert not [p for p in said if kept.name in p], said
+
+
+def test_the_start_sweep_keeps_a_stamp_temporary_name_that_is_not_the_form(estate):
+    """T237zzu, lane 5's case 4 and Codex's "malformed and upper-case names"
+    and "ordinary `s.####` files": each name of `SWEEP_NOT_THE_FORM`, a
+    regular file of this uid 11 minutes old, is kept, with no line in
+    `register.log`. The name must be the form whole: seven or nine hex
+    digits, a pid that is not decimal or is empty, upper-case hex, a
+    suffix, or another file's name is not; and `s.beef` is a socket's name
+    whose file is no socket ("leaves ... any file of such a name that is
+    not this uid's socket"). The aged `SWEEP_CONTROL` beside them is
+    removed, so the sweep ran: before commit 15 it was left."""
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    kept = [_plant(run, name) for name in SWEEP_NOT_THE_FORM]
+    control = _plant(run, SWEEP_CONTROL)
+    gone, names, said = _swept(est, control, *kept)
+    assert control.name in gone, \
+        f"the start's sweep left {control.name}, {SWEEP_AGED_S} s old: {sorted(names)}"
+    assert gone == [control.name], f"the start's sweep removed a name not of the form: {gone}"
+    assert not [p for p in said if any(k.name in p for k in kept)], said
+
+
+#: A STAND-IN THAT RUNS THE SWEEP ALONE AT A HELD CLOCK (T237zzu; Codex's
+#: "controlled-clock test"): it loads @INDEX@ as `_OTHER_UID_SERVE` does
+#: and calls `register_serve_sweep` on `register_serve_paths()`, the
+#: estate's `run/`, with two seams in the module, from the JSON in argv:
+#: its `time`, whose `time()` (and `time_ns()`) answers `clock`; and its
+#: `os`, which passes every call on as it was made, but lists `first`'s
+#: names first, then the rest sorted; makes the entry named in `lstat` or
+#: `unlink` with `ENOENT` gone just before that call, as a race leaves it,
+#: or fails that call with the errno named; and answers `lstat` for a name
+#: in `other_uid` with the uid one above this one's (no second uid without
+#: root). Its `supports_fd` and `supports_dir_fd` hold its own three calls
+#: beside the real ones, so a sweep that asks them first (lane 5's commit
+#: 17) takes the seam's calls as descriptor-relative ones, which they are.
+#: It prints the names it was asked to `lstat`, in order.
+_SWEEP_AT_A_HELD_CLOCK = r'''import errno, importlib.machinery, importlib.util, json, os, sys, time
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("lanes_index_held_clock", @INDEX@)
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+sys.modules[loader.name] = module
+loader.exec_module(module)
+spec = json.loads(sys.argv[1])
+paths = module.register_serve_paths()
+run = paths["run"]
+real_os, real_time, asked = os, time, []
+
+
+def name_of(path):
+    return real_os.path.basename(real_os.fsdecode(path)) if isinstance(path, (str, bytes)) else None
+
+
+def seam(call, path):
+    name = name_of(path)
+    what = spec.get(call, {}).get(name)
+    if what == "ENOENT":
+        real_os.unlink(real_os.path.join(run, name))
+    elif what:
+        code = getattr(errno, what)
+        raise OSError(code, real_os.strerror(code), path)
+    return name
+
+
+class OsSeam:
+    def __getattr__(self, attr):
+        return getattr(real_os, attr)
+
+    @property
+    def supports_fd(self):
+        return real_os.supports_fd | {self.listdir}
+
+    @property
+    def supports_dir_fd(self):
+        return real_os.supports_dir_fd | {self.lstat, self.unlink}
+
+    def listdir(self, *args, **kwargs):
+        names = real_os.listdir(*args, **kwargs)
+        first = [n for n in spec.get("first", []) if n in names]
+        return first + sorted(n for n in names if n not in first)
+
+    def lstat(self, path, *args, **kwargs):
+        asked.append(name_of(path))
+        name = seam("lstat", path)
+        st = real_os.lstat(path, *args, **kwargs)
+        if name in spec.get("other_uid", []):
+            fields = list(st[:10])
+            fields[4] = st.st_uid + 1
+            st = real_os.stat_result(fields)
+        return st
+
+    def unlink(self, path, *args, **kwargs):
+        seam("unlink", path)
+        return real_os.unlink(path, *args, **kwargs)
+
+
+class TimeSeam:
+    def __getattr__(self, attr):
+        return getattr(real_time, attr)
+
+    def time(self):
+        return float(spec["clock"])
+
+    def time_ns(self):
+        return int(spec["clock"]) * 1000000000
+
+
+module.os = OsSeam()
+module.time = TimeSeam()
+module.register_serve_sweep(paths)
+print(json.dumps({"lstat": asked}))
+'''
+
+#: The held clock, in whole seconds, so that a file's mtime set in whole
+#: seconds back from it gives its age exactly, as a float.
+SWEEP_CLOCK = 1_800_000_000
+
+
+def _sweep_at_held_clock(est: Estate, **spec) -> dict:
+    """`_SWEEP_AT_A_HELD_CLOCK` run on the estate's `run/` at `SWEEP_CLOCK`,
+    with `spec`'s seams; its JSON line."""
+    stand_in = est.root / "t" / "sweep-at-a-held-clock.py"
+    stand_in.parent.mkdir(parents=True, exist_ok=True)
+    stand_in.write_text(_SWEEP_AT_A_HELD_CLOCK.replace("@INDEX@", _q(est.index)),
+                        encoding="utf-8")
+    done = subprocess.run([sys.executable, str(stand_in),
+                           json.dumps(dict(spec, clock=SWEEP_CLOCK))],
+                          capture_output=True, text=True, env=est.env(), cwd=str(est.wip),
+                          timeout=60)
+    lines = done.stdout.strip().splitlines()
+    assert done.returncode == 0 and lines, done
+    return json.loads(lines[-1])
+
+
+def test_the_sweep_keeps_a_stamp_temporary_exactly_ten_minutes_old_and_removes_one_a_second_older(
+        estate):
+    """T237zzu, Codex's "exactly 600 seconds", at a held clock (its
+    "controlled-clock test"): "more than 10 minutes old" is strict, so both
+    temporaries dated exactly 600 s before the clock are kept, with no line
+    in `register.log`, and both dated 601 s before it are removed. As built
+    at `1c7a4aa0`, `now - st.st_mtime > REGISTER_SERVE_TEMP_FLOOR_S`, one
+    `time.time()` for the sweep. The sweep runs alone in a stand-in
+    (`_SWEEP_AT_A_HELD_CLOCK`), whose `time.time()` answers `SWEEP_CLOCK`,
+    in files mode, since the sweep reads no configuration. Before commit 15
+    the 601 s files were left."""
+    est = estate()
+    run = _run_dir(est)
+    kept = [_plant(run, f"register.{w}.tmp-1-deadbeef", age=600, clock=SWEEP_CLOCK)
+            for w in ("owner", "failed")]
+    aged = [_plant(run, f"register.{w}.tmp-2-0123abcd", age=601, clock=SWEEP_CLOCK)
+            for w in ("owner", "failed")]
+    _sweep_at_held_clock(est)
+    left = {p.name for p in run.iterdir()}
+    assert not [p.name for p in aged if p.name in left], \
+        f"the sweep left a temporary 601 s old at its held clock: {sorted(left)}"
+    assert all(p.name in left for p in kept), \
+        f"the sweep removed a temporary exactly 600 s old at its held clock: {sorted(left)}"
+    assert not [p for p in _log_phrases(est) if "tmp-1-deadbeef" in p], _log_phrases(est)
+
+
+def test_the_sweep_passes_over_an_entry_gone_logs_one_it_cannot_date_or_remove_and_goes_on(
+        estate):
+    """T237zzu, Codex's "silent `ENOENT`" and "exact logging plus
+    continuation on other failures", lane 5's optional case 5 (the line
+    names "temporary file") and its case 6 (another uid's file), at a held
+    clock with failures put in by the stand-in's `os` seam, since this uid
+    can remove any entry of its own 0700 `run/` and owns every file it
+    makes (`_SWEEP_AT_A_HELD_CLOCK`). Every entry is 11 minutes old; the
+    first seven are listed first, in this order:
+
+    - gone before its `lstat`, and gone before its `unlink` (`ENOENT`):
+      passed over, with no line (`register_serve_sweep`'s docstring at
+      `1c7a4aa0`, "An entry gone before it is reached (`ENOENT`, at the
+      `lstat` or at the removal) is passed over");
+    - an `unlink` that fails `EPERM`: kept, with the line "the leftover
+      temporary file <name> could not be removed (EPERM)" (q5's NEW, "It
+      logs one it cannot remove, and leaves it"; the line's words are the
+      code's, "a temporary file's line says 'temporary file' where a
+      socket's says 'temporary socket'");
+    - an `lstat` that fails `EACCES`, a file it cannot date: kept ("keeps
+      one it cannot date"), with the same line and `EACCES`;
+    - another uid's regular file, by the seam: kept, with no line;
+    - a leftover socket at `s.abcd` whose `unlink` fails `EPERM`: kept, with
+      the socket's line, unchanged by commit 15.
+
+    Then the two plain temporaries after them are removed, so the sweep goes
+    on past each failure, and no other line is written. Before commit 15
+    the sweep asked no temporary file's `lstat`, and both were left."""
+    est = estate()
+    run = _run_dir(est)
+    names = {"gone-at-lstat": "register.owner.tmp-11-0000000a",
+             "gone-at-unlink": "register.owner.tmp-12-0000000b",
+             "unlink-eperm": "register.owner.tmp-13-0000000c",
+             "lstat-eacces": "register.failed.tmp-14-0000000d",
+             "other-uid": "register.failed.tmp-15-0000000e",
+             "socket-eperm": "s.abcd",
+             "plain-1": "register.failed.tmp-16-0000000f",
+             "plain-2": "register.owner.tmp-17-00000010"}
+    for key, name in names.items():
+        _plant(run, name, kind="socket" if key == "socket-eperm" else "file",
+               clock=SWEEP_CLOCK)
+    order = [names[k] for k in ("gone-at-lstat", "gone-at-unlink", "unlink-eperm",
+                                "lstat-eacces", "other-uid", "socket-eperm")]
+    seen = _sweep_at_held_clock(
+        est, first=order,
+        lstat={names["gone-at-lstat"]: "ENOENT", names["lstat-eacces"]: "EACCES"},
+        unlink={names["gone-at-unlink"]: "ENOENT", names["unlink-eperm"]: "EPERM",
+                names["socket-eperm"]: "EPERM"},
+        other_uid=[names["other-uid"]])
+    left = {p.name for p in run.iterdir()}
+    said = [p for p in _log_phrases(est) if p.startswith("the leftover temporary ")]
+    plain = [names["plain-1"], names["plain-2"]]
+    assert not [n for n in plain if n in left], \
+        f"the sweep did not go on to remove the plain temporaries after its failures: {sorted(left)}"
+    asked = seen["lstat"]
+    assert all(asked.index(n) > asked.index(names["socket-eperm"]) for n in plain), asked
+    assert names["gone-at-lstat"] not in left and names["gone-at-unlink"] not in left, sorted(left)
+    for key in ("unlink-eperm", "lstat-eacces", "other-uid", "socket-eperm"):
+        assert names[key] in left, f"the sweep removed {names[key]} ({key}): {sorted(left)}"
+    assert sorted(said) == sorted([
+        f"the leftover temporary file {names['unlink-eperm']} could not be removed (EPERM)",
+        f"the leftover temporary file {names['lstat-eacces']} could not be removed (EACCES)",
+        f"the leftover temporary socket {names['socket-eperm']} could not be removed (EPERM)",
+    ]), said
