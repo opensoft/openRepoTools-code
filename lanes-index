@@ -7795,8 +7795,9 @@ def register_serve_note(text: str) -> None:
     """ONE LINE OF `serve`'S START ON ITS STANDARD ERROR, BEFORE THE HANDOFF
     (lane 3's ruling, #165 6937934447, BLOCKING 1; commits 27 and 30):
     `note`'s line, with its write errors passed over. Until
-    `register_serve_run` hands standard error to `register.log` at its
-    handoff to the service (`register_serve_handoff`), that standard error
+    `register_serve_run` hands standard error to `register.log`, or to
+    `/dev/null` where no log is open, at its handoff to the service
+    (`register_serve_handoff`), that standard error
     is the starter's, inherited from the launcher
     (`register_serve_launch`), or the terminal's where `serve` is run by hand,
     and the starter may have gone by then: a pipe whose reader has gone gives
@@ -7903,7 +7904,9 @@ def register_serve_launch(paths: dict) -> str | None:
     and opens `register.log` itself, relative to the `run/` it has checked,
     only once that check has passed; from then until its handoff to the
     service each line of the start goes to both, and at the handoff its
-    standard error becomes `register.log` (`register_serve_run`, commit 30).
+    standard error becomes `register.log` (`register_serve_run`, commit 30);
+    where the log cannot be opened, `serve` says so, runs without it, and at
+    the handoff its standard error becomes `/dev/null` (commit 32).
     Where the starter has gone by then, a line to its pipe or terminal fails,
     and is passed over (`register_serve_note`); `lanes-edit.sh`'s start
     sends it to `/dev/null`.
@@ -7920,8 +7923,10 @@ def register_serve_launch(paths: dict) -> str | None:
     between the `lstat` and `serve`'s own open. The race is harmless, since
     `serve`'s open of `register.log` relative to its checked `run/`
     descriptor is the authority (`register_serve_log_open`): a log that has
-    since become unusable ends that start at 69 with nothing made, and one
-    that has since become usable lets it run.
+    since become unusable is dropped by that start, which says so on the
+    starter's standard error and serves without it, its standard error on
+    `/dev/null` from the handoff (commit 32), and one that has since become
+    usable is used.
 
     THE LAUNCHER IS STARTED BY `__file__` AS PYTHON GIVES IT, NEVER
     NORMALIZED (lane 3's ruling, #165 6894116246, which closes this line;
@@ -9799,8 +9804,15 @@ def register_serve_log_open(run_fd: int, paths: dict) -> tuple:
     (`_register_serve_open_regular`). Returns (the descriptor, None), for the
     caller to close, or (None, why). Where `os.open` takes no `dir_fd`
     (`os.supports_dir_fd`), it is opened by its path, only after the check,
-    as the lock is. A log that cannot be opened ends the start
-    (`register_serve_run`, 69): the service never runs without its log."""
+    as the lock is.
+
+    THE LOG IS OPTIONAL TO THE SERVICE (lane 5's decision on T512R6's
+    finding, BRIEF-T512C32-1117b.md; commit 32): where it cannot be opened,
+    the start says so on the starter's standard error and goes on without
+    it, and nothing is made for it, as T237zzs `[serve]` asks ("the service
+    drops its log lines and answers"); `register_serve_log`'s own by-path
+    lines are dropped where their open fails, as at commit 13 (`badba70f`).
+    No exit comes from the log."""
     at = os.open in os.supports_dir_fd
     try:
         fd = _register_serve_open_regular(
@@ -9832,24 +9844,38 @@ def register_serve_start_note(log_fd: int | None, text: str) -> None:
         pass
 
 
-def register_serve_handoff(log_fd: int) -> str | None:
+def register_serve_handoff(log_fd: int | None) -> str | None:
     """THE HANDOFF OF STANDARD ERROR TO `register.log` (lane 5's re-review of
     b3e5f0fe, its decision 3; commit 30): `os.dup2` puts the log's descriptor
     on descriptor 2, so the service's lines, `note`'s and those of a child
     that inherits descriptor 2, go to `register.log` alone, and the service
     holds no descriptor of the starter's stream; a caller that reads that
-    stream through a pipe then reaches its end once the start is done. Where
+    stream through a pipe then reaches its end once the start is done.
+    WHERE NO LOG WAS OPENED (`log_fd` None; commit 32), `/dev/null` is put
+    on descriptor 2 instead, so the starter's stream is released all the
+    same, and the service's lines are dropped, as its log's are. Where
     Python started with no standard error (`sys.stderr` None), one is made
-    on descriptor 2. Returns None, or why not."""
+    on descriptor 2. Returns None, or why not; no exit depends on it."""
     if sys.stderr is not None:
         try:
             sys.stderr.flush()
         except (OSError, ValueError):
             pass
     try:
-        os.dup2(log_fd, 2)
+        if log_fd is not None:
+            os.dup2(log_fd, 2)
+        else:
+            null = os.open(os.devnull, os.O_WRONLY | os.O_CLOEXEC)
+            try:
+                if null != 2:
+                    os.dup2(null, 2)
+            finally:
+                if null != 2:
+                    os.close(null)
+                else:
+                    os.set_inheritable(2, True)
     except OSError as exc:
-        return f"standard error could not be handed to register.log ({exc.strerror or exc})"
+        return f"standard error could not be handed over ({exc.strerror or exc})"
     if sys.stderr is None:
         sys.stderr = open(2, "w", buffering=1, errors="backslashreplace", closefd=False)
     return None
@@ -9864,12 +9890,14 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     opened or made in `run/` (lane 3's rulings, #165 6935289154 and
     6935871785) and the refusal on the starter's standard error; then
     `register.log`, opened relative to that descriptor
-    (`register_serve_log_open`), where a log that cannot be opened ends the
-    start at 69 with nothing made; until the handoff to the service, each
-    line of the start goes to the starter's standard error and to
-    `register.log`, once each, and at the handoff standard error becomes
-    `register.log` (`register_serve_handoff`; #165 6937934447, and lane 5's
-    re-review of b3e5f0fe); then
+    (`register_serve_log_open`), where a log that cannot be opened is
+    dropped, said on the starter's standard error, and the start goes on
+    without it (commit 32); until the handoff to the service, each line of
+    the start goes to the starter's standard error, and to `register.log`
+    where it is open, once each, and at the handoff standard error becomes
+    `register.log`, or `/dev/null` where no log is open
+    (`register_serve_handoff`; #165 6937934447, and lane 5's re-review of
+    b3e5f0fe); then
     `register.lock`, opened relative to that descriptor
     (by its path where `os.open` takes no `dir_fd`), by `flock`, taken
     without blocking, tried five times over 100 ms (NIT-B), and held
@@ -9943,12 +9971,13 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
             f"API §2.2)")
         return EXIT_REFUSED
     # WHAT THE DESCRIPTOR ANCHORS, AND WHAT IT DOES NOT: `register.log` is
-    # opened relative to it, first, and checked to be a regular file, and a
-    # log that cannot be opened ends the start at 69, with one line on the
-    # starter's standard error and nothing made (`register_serve_log_open`;
-    # lane 5's re-review of b3e5f0fe, decision 1; commit 30); each later line
-    # of the start goes to the starter's standard error and to it, once each,
-    # until the handoff, where standard error becomes it (decision 3);
+    # opened relative to it, first, and checked to be a regular file; a log
+    # that cannot be opened is dropped, with one line on the starter's
+    # standard error, and nothing made for it, and the start goes on: the
+    # log is optional to the service (`register_serve_log_open`; commits 30
+    # and 32); each later line of the start goes to the starter's standard
+    # error and to the log where it is open, once each, until the handoff,
+    # where standard error becomes the log, or `/dev/null` (decision 3);
     # `register.lock` is opened relative to it, then checked by
     # `fstat` to be a regular file
     # (`_register_serve_open_regular`), then taken by `flock`; and the sweep,
@@ -9983,12 +10012,12 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
         try:
             log_fd, why = register_serve_log_open(run_fd, paths)
             if why:
-                # A LOG THAT CANNOT BE OPENED ENDS THE START (lane 5's re-review of
-                # b3e5f0fe, decision 1; commit 30): one line to the starter,
-                # nothing made, 69, as a lock that cannot be opened ends it.
-                register_serve_note(f"serve: REFUSED: {why}, so the service is not started "
-                                    f"and nothing is made in {paths['run']}")
-                return EXIT_UNAVAILABLE
+                # A LOG THAT CANNOT BE OPENED IS DROPPED, AND THE START GOES ON
+                # (lane 5's decision, BRIEF-T512C32-1117b.md; commit 32): the log
+                # is optional to the service, as T237zzs `[serve]` and commit
+                # 13 have it. One line to the starter; nothing made for it.
+                register_serve_note(f"serve: {why}; the service runs without its log, "
+                                    f"and nothing is made for it")
             lock_at = os.open in os.supports_dir_fd
             try:
                 lock = _register_serve_open_regular(
@@ -10107,17 +10136,20 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
         # THE HANDOFF, THE ONE TRANSFER: from here the service's run uses the
         # lock and the listening socket, still owned by the outer `finally`,
         # which closes each once when `serve()` returns or raises; and its
-        # standard error becomes `register.log`, so it holds no descriptor of
-        # the starter's stream (`register_serve_handoff`, commit 30).
+        # standard error becomes `register.log`, or `/dev/null` where no log
+        # is open, so it holds no descriptor of the starter's stream
+        # (`register_serve_handoff`, commits 30 and 32). A handoff that fails
+        # is said, and the service runs all the same: no exit comes from
+        # descriptor 2's state.
         why = register_serve_handoff(log_fd)
         if why:
             register_serve_start_note(log_fd, f"serve: {why}")
-            return EXIT_UNAVAILABLE
-        try:
-            os.close(log_fd)            # descriptor 2 holds the log from here
-        except OSError:
-            pass
-        log_fd = None
+        if log_fd is not None:
+            try:
+                os.close(log_fd)        # descriptor 2 holds the log from here
+            except OSError:
+                pass
+            log_fd = None
         return RegisterService(cfg, store, paths, server, bound, stamps).serve()
     finally:
         if log_fd is not None:
