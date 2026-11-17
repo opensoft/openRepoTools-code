@@ -6,7 +6,10 @@
 T270 writes 25 tests: AT-5's 23 and AT-C8's one are here (TP:1016-1246,
 TP:3173-3196, at the test plan `8702b70a`). Its 25th, test 1's part G,
 `test_the_mirror_on_origin_equals_a_full_render_after_each_write`, is in
-`test_sql_register_render.py`, which line W4b owns; it is not here.
+`test_sql_register_render.py`, which line W4b owns; it is not here. Four
+more, at the end, test no AT case: they are the fault-path regressions of
+this module's own clean-up (lane 3's Codex review of code PR 97 at
+`6d479418`, SHOULDs 1, 3 and 4; the coordinator's #165 6934112467).
 
 THE ESTATE (AT-5, "Fixture"; AT-C8, "Fixture"). Each case's database is
 `pg_imported` (T227b): test 7's register imported at seq 0, the switch at
@@ -289,25 +292,48 @@ def _open_when_held(fifo: Path, proc: subprocess.Popen, seconds: float = 120):
     return None
 
 
-def _end_session(proc: subprocess.Popen, grace: float = 10, fifo: Path | None = None) -> str:
+def _let_go(fifo: Path, fd: int | None = None) -> None:
+    """A FIFO'S LAST RELEASE, in its owner's outer `finally` (and on the path
+    that succeeds), with no moment at which a reader can open it and be left
+    on it (lane 3's Codex review of code PR 97 at `6d479418`, SHOULD 1).
+    Where the owner still holds its write end `fd`, the FIFO is unlinked
+    first and `fd` closed after: a reader that holds it open reads EOF, and
+    none can open it once it is unlinked. Where the owner holds none, the
+    FIFO is opened once with `O_RDWR | O_NONBLOCK`, which on Linux neither
+    blocks nor fails for want of a reader, unlinked while that end is held,
+    and the end closed: a reader blocked in its `open()` is let go by that
+    open and reads EOF at the close, and one that comes later finds no FIFO
+    (ENOENT) and exits. A FIFO already gone is left so. T320's
+    `_run_bounded` (line R) runs each git call in a session of its own, so a
+    wrapper held on a FIFO is in no group a case signals: only this lets it
+    go (lane 2's RV7-30, N1)."""
+    if fd is None:
+        try:
+            fd = os.open(str(fifo), os.O_RDWR | os.O_NONBLOCK)
+        except FileNotFoundError:
+            return
+    try:
+        fifo.unlink(missing_ok=True)
+    finally:
+        os.close(fd)
+
+
+def _end_session(proc: subprocess.Popen, grace: float = 10) -> str:
     """A child that leads a session of its own (`popen_render`'s
     `start_new_session`) ended with its process group, and reaped, with no
     wait unbounded: SIGTERM to the group and a `communicate()` of at most
     `grace` s, then SIGKILL to the group and another. The group is signalled
     only while the child is unreaped, so its pid is still the group's id.
-    Then, in a `finally`, the hold `fifo` is let go, its write end opened and
-    closed, and unlinked, so a wrapper that reaches it later finds none and
-    exits; where both waits timed out, the child's pipes are closed; and the
-    last wait for the child is bounded too. T320's
-    `_run_bounded` (line R) runs each git call in a session of its own, so a
-    wrapper parked on the FIFO is in no group signalled here, and without
-    the let-go would wait there for ever. Returns what the child said
-    (`_said`). `_open_when_held` gives None with the child still running
-    once its time runs out, where a `communicate()` with no timeout waited
-    for ever, and a renderer that reaches its push only after that parks
-    on a FIFO no one opens (lane 3's Codex review of code PR 97 at
-    `4e9821ab`, BLOCKING 2; lane 3's check v97 of it; lane 2's RV7-30, N1
-    and N3)."""
+    Where both waits timed out, the child's pipes are closed, in a
+    `finally`, and it is waited for once more, at most `grace` s; where that
+    times out too it raises (`RuntimeError`), so it never returns with the
+    child unreaped (lane 3's Codex review of code PR 97 at `6d479418`,
+    SHOULD 4). Returns what the child said (`_said`). `_open_when_held`
+    gives None with the child still running once its time runs out, where a
+    `communicate()` with no timeout waited for ever (lane 3's Codex review
+    of code PR 97 at `4e9821ab`, BLOCKING 2; lane 3's check v97 of it; lane
+    2's RV7-30, N3). The hold FIFO is not this call's: its owner lets it go
+    in its own outer `finally` (`_let_go`, `_end_hold`)."""
     said = None
     try:
         for sig in (signal.SIGTERM, signal.SIGKILL):
@@ -323,23 +349,34 @@ def _end_session(proc: subprocess.Popen, grace: float = 10, fifo: Path | None = 
             said = _said(SimpleNamespace(returncode=proc.returncode, stdout=out, stderr=err))
             break
     finally:
-        if fifo is not None:
-            try:
-                os.close(os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK))
-            except OSError:
-                pass
-            fifo.unlink(missing_ok=True)
         if said is None:
             for pipe in (proc.stdout, proc.stderr):
                 if pipe is not None:
                     pipe.close()
-        if proc.returncode is None:
-            try:
-                proc.wait(timeout=grace)
-            except subprocess.TimeoutExpired:
-                pass
+            if proc.returncode is None:
+                try:
+                    proc.wait(timeout=grace)
+                except subprocess.TimeoutExpired as exc:
+                    raise RuntimeError(f"pid {proc.pid} is still unreaped {grace:g} s after its "
+                                       f"pipes were closed, SIGTERM and SIGKILL having gone to "
+                                       f"its process group") from exc
     return said or (f"exit {proc.returncode}: its output was still open {2 * grace:g} s after "
                     f"SIGTERM and SIGKILL to its process group")
+
+
+def _end_hold(proc, fifo: Path, fd: int | None) -> None:
+    """A HOLD SITE'S OUTER `finally`, from the FIFO's making to the end:
+    `proc`, the renderer held at its push, where there is one and it is
+    still unreaped, ended with its session (`_end_session`, which raises
+    where it cannot reap it); then, whatever that raised, the hold FIFO let
+    go and unlinked (`_let_go`), with the write end `fd` where the case
+    still holds one (lane 2's RV7-30, S1; lane 3's Codex review of code PR
+    97 at `6d479418`, SHOULDs 1 and 4)."""
+    try:
+        if proc is not None and proc.returncode is None:
+            _end_session(proc)
+    finally:
+        _let_go(fifo, fd)
 
 
 def _lock_is_free(path: Path) -> bool:
@@ -947,13 +984,18 @@ class RenderEstate:
         """Test 4's barrier (TP:886-888, TP:1083): one renderer per checkout,
         each launched blocking on a FIFO of its own, released together once
         all are waiting. Returns each one's (returncode, stdout, stderr).
-        The `finally` owns every child and FIFO end: where anything fails, each
-        child not yet reaped has its session ended (`_end_session`, in a `try`
-        of its own), and only then is each FIFO end still open closed, so no
-        launcher is released into a render the case has given up on. A
-        launcher that never waited is ended and drained into that failure
-        (lane 3's Codex review of code PR 97 at `4e9821ab`, SHOULD 4; lane 2's
-        RV7-30, N4)."""
+        By then each launcher holds its FIFO open, so every FIFO is unlinked
+        before the release and none can be opened after it. The `finally`
+        owns every child and FIFO: where anything fails, each child not yet
+        reaped has its session ended (`_end_session`), each in a `try` of its
+        own that keeps its error; only then is each FIFO let go and unlinked
+        (`_let_go`) and each write end still open closed, so no launcher is
+        released into a render the case has given up on, or left on an
+        unlinked FIFO; then the first error kept is raised, or, where a child
+        is still unreaped, that is (lane 3's Codex reviews of code PR 97 at
+        `4e9821ab`, SHOULD 4, and at `6d479418`, SHOULDs 1 and 4; lane 2's
+        RV7-30, N4). A launcher that never waited is ended and drained into
+        that failure."""
         procs, fifos, fds = [], [], []
         try:
             for lc in checkouts:
@@ -967,6 +1009,8 @@ class RenderEstate:
                 fd = _open_when_held(fifo, proc)
                 assert fd is not None, f"a launcher never waited on {fifo}:\n{_end_session(proc)}"
                 fds.append(fd)
+            for fifo in fifos:
+                fifo.unlink()
             while fds:
                 os.close(fds.pop(0))
             ended = []
@@ -975,16 +1019,25 @@ class RenderEstate:
                 ended.append(SimpleNamespace(returncode=proc.returncode, stdout=out, stderr=err))
             return ended
         finally:
-            try:
-                for proc in procs:
-                    if proc.returncode is None:
-                        try:
-                            _end_session(proc)
-                        except OSError:
-                            pass  # one that cannot be signalled or read leaves the rest to end
-            finally:
-                for fd in fds:
-                    os.close(fd)
+            errors = []
+            for proc in procs:
+                if proc.returncode is None:
+                    try:
+                        _end_session(proc)
+                    except Exception as exc:  # every child is tried; the first error is raised
+                        errors.append(exc)
+            for fifo in fifos:
+                try:
+                    _let_go(fifo)
+                except OSError as exc:
+                    errors.append(exc)
+            while fds:
+                os.close(fds.pop(0))
+            unreaped = [proc.pid for proc in procs if proc.returncode is None]
+            if errors:
+                raise errors[0]
+            if unreaped:
+                raise RuntimeError(f"launcher pids {unreaped} are still unreaped")
 
     # ------------------------------------------------------------ writes that fork
     def rearm(self, arms=()) -> None:
@@ -1146,6 +1199,60 @@ def _kth_held_fd(est: RenderEstate, fifo: Path, k: int, what: str,
     return _held_fd(fifo, what, seconds)
 
 
+def _end_renders(est: RenderEstate, after: int, grace: float = 10) -> None:
+    """EVERY RENDERER LOGGED AFTER THE MARK `after` ENDED, with no wait
+    unbounded (lane 3's Codex review of code PR 97 at `6d479418`, SHOULD 3).
+    A write's renderer is a detached fork (lane 4's T416), no child of this
+    process, leading a group of its own, so it is known only by the pid and
+    start time the wrapper logged with its calls, and `_exited` reads it gone
+    by both: a pid whose start time no longer matches is never signalled.
+    Each one still there gets SIGTERM to the group it leads, then, where it
+    is still there `grace` s on, SIGKILL, the log read again before each
+    round, so a fork that called git meanwhile is ended too. One still there
+    `grace` s after its SIGKILL raises (`RuntimeError`). Where the case
+    passed, every renderer has exited (`wait_renders_exit`), and none is
+    signalled."""
+    seen: dict = {}
+    for sig in (signal.SIGTERM, signal.SIGKILL, None):
+        for call in est.render_calls(after):
+            seen.setdefault(call["renderer"], call["renderer_start"])
+        live = [pid for pid, start in seen.items() if not _exited(pid, start)]
+        if not live:
+            return
+        if sig is None:
+            raise RuntimeError(f"renderer pids {live} are still there {grace:g} s after SIGKILL "
+                               f"to the groups they lead")
+        for pid in live:
+            try:
+                if os.getpgid(pid) == pid:
+                    os.killpg(pid, sig)
+                else:
+                    os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + grace
+        while (time.monotonic() < deadline
+               and not all(_exited(pid, seen[pid]) for pid in live)):
+            time.sleep(POLL)
+
+
+def _end_held_renders(est: RenderEstate, fifo: Path, fd: int | None, after: int) -> None:
+    """A HOLD ON FORKED RENDERS, ENDED: the outer `finally` of a case that
+    holds a write's render on `fifo`, from the FIFO's making to the end. The
+    wrapper's hold is disarmed (`rearm`), the FIFO let go and unlinked
+    (`_let_go`, with the write end `fd` where the case still holds one), and
+    every renderer logged after the mark `after` ended (`_end_renders`), each
+    step tried whatever the one before it raised (lane 3's Codex review of
+    code PR 97 at `6d479418`, SHOULDs 1 and 3)."""
+    try:
+        try:
+            est.rearm()
+        finally:
+            _let_go(fifo, fd)
+    finally:
+        _end_renders(est, after)
+
+
 def _wrote(proc, what: str) -> None:
     assert proc.returncode == 0, (
         f"{what} on primary did not exit 0 (lane 4's T415 and T416, L4-B13):\n{_said(proc)}")
@@ -1271,28 +1378,27 @@ def test_two_renderers_racing_push_one_commit_per_seq_in_order(request, tmp_path
 def _held_and_rendered(est: RenderEstate, one, two, seqs: list) -> tuple:
     """`two`'s renderer held at its first push, `one`'s run to its end, then
     `two` released: returns (the commit `two` had built for its push,
-    origin's commits for `seqs`, `two`'s exit)."""
+    origin's commits for `seqs`, `two`'s exit). `held` and the FIFO are
+    owned from the FIFO's making to the end (`_end_hold`)."""
     fifo = est.root / f"hold-{two.name}.fifo"
     os.mkfifo(str(fifo), 0o600)
-    old = est.origin_tip()
-    est.arm([{"sub": "push", "do": "hold", "fifo": str(fifo), "where": str(two.clone),
-              "times": 1}])
-    held = est.popen_render(two)
-    fd = _open_when_held(fifo, held)
+    held = fd = None
     try:
-        try:
-            if fd is None:
-                pytest.fail(f"{two.name}'s renderer never reached its push:\n"
-                            f"{_end_session(held, fifo=fifo)}", pytrace=False)
-            proc = est.render(one)
-            assert proc.returncode == 0, f"{one.name}'s renderer:\n{_said(proc)}"
-        finally:
-            if fd is not None:
-                os.close(fd)
+        old = est.origin_tip()
+        est.arm([{"sub": "push", "do": "hold", "fifo": str(fifo), "where": str(two.clone),
+                  "times": 1}])
+        held = est.popen_render(two)
+        fd = _open_when_held(fifo, held)
+        if fd is None:
+            pytest.fail(f"{two.name}'s renderer never reached its push:\n{_end_session(held)}",
+                        pytrace=False)
+        proc = est.render(one)
+        assert proc.returncode == 0, f"{one.name}'s renderer:\n{_said(proc)}"
+        end, fd = fd, None
+        _let_go(fifo, end)  # `two` released: its FIFO unlinked, then the write end closed
         out, err = held.communicate(timeout=300)
     finally:
-        if held.returncode is None:  # `held` owned to the end (lane 2's RV7-30, S1)
-            _end_session(held, fifo=fifo)
+        _end_hold(held, fifo, fd)
     first = next(c for c in est.calls("push", two))
     commits = _assert_rendered(est, old, seqs)
     return _push_tip(first), commits, SimpleNamespace(returncode=held.returncode, stdout=out,
@@ -1384,26 +1490,24 @@ def test_a_lost_push_race_never_rebases_a_render(request, tmp_path):
     before = est.snapshot(one)
     fifo = est.root / "hold.fifo"
     os.mkfifo(str(fifo), 0o600)
-    est.arm([{"sub": "push", "do": "hold", "fifo": str(fifo), "where": str(one.clone),
-              "times": 1}])
-    held = est.popen_render(one)
-    fd = _open_when_held(fifo, held)
-    try:
-        try:
-            if fd is None:
-                pytest.fail(f"the renderer never reached its push:\n"
-                            f"{_end_session(held, fifo=fifo)}", pytrace=False)
-            handoff = est.commit_in_origin(est.origin_tip(), {
-                f"handoffs/{L2}.md": b"# a handoff pushed while the render was held\n"},
-                "a handoff commit, pushed during the render's push")
-            est.push_by_hand(handoff)
-        finally:
-            if fd is not None:
-                os.close(fd)
+    held = fd = None
+    try:  # `held` and the FIFO owned to the end (`_end_hold`)
+        est.arm([{"sub": "push", "do": "hold", "fifo": str(fifo), "where": str(one.clone),
+                  "times": 1}])
+        held = est.popen_render(one)
+        fd = _open_when_held(fifo, held)
+        if fd is None:
+            pytest.fail(f"the renderer never reached its push:\n{_end_session(held)}",
+                        pytrace=False)
+        handoff = est.commit_in_origin(est.origin_tip(), {
+            f"handoffs/{L2}.md": b"# a handoff pushed while the render was held\n"},
+            "a handoff commit, pushed during the render's push")
+        est.push_by_hand(handoff)
+        end, fd = fd, None
+        _let_go(fifo, end)  # the render released: its FIFO unlinked, then the write end closed
         out, err = held.communicate(timeout=300)
     finally:
-        if held.returncode is None:  # `held` owned to the end (lane 2's RV7-30, S1)
-            _end_session(held, fifo=fifo)
+        _end_hold(held, fifo, fd)
     assert held.returncode == 0, _said(SimpleNamespace(returncode=held.returncode, stdout=out,
                                                        stderr=err))
     _assert_rendered(est, handoff, seqs)
@@ -1678,24 +1782,22 @@ def test_form_c_reads_the_trailer_from_each_message_shape(request, tmp_path, sha
     (k,) = est.write_sql([f"form C, {shape}"], messages=[message])
     fifo = est.root / "hold.fifo"
     os.mkfifo(str(fifo), 0o600)
-    est.arm([{"sub": "push", "do": "hold", "fifo": str(fifo), "where": str(two.clone),
-              "times": 1}])
-    held = est.popen_render(two)
-    fd = _open_when_held(fifo, held)
-    try:
-        try:
-            if fd is None:
-                pytest.fail(f"L2's renderer never reached its push:\n"
-                            f"{_end_session(held, fifo=fifo)}", pytrace=False)
-            proc = est.render(one)
-            assert proc.returncode == 0, f"L1's renderer:\n{_said(proc)}"
-        finally:
-            if fd is not None:
-                os.close(fd)
+    held = fd = None
+    try:  # `held` and the FIFO owned to the end (`_end_hold`)
+        est.arm([{"sub": "push", "do": "hold", "fifo": str(fifo), "where": str(two.clone),
+                  "times": 1}])
+        held = est.popen_render(two)
+        fd = _open_when_held(fifo, held)
+        if fd is None:
+            pytest.fail(f"L2's renderer never reached its push:\n{_end_session(held)}",
+                        pytrace=False)
+        proc = est.render(one)
+        assert proc.returncode == 0, f"L1's renderer:\n{_said(proc)}"
+        end, fd = fd, None
+        _let_go(fifo, end)  # L2's render released: its FIFO unlinked, then the write end closed
         held.communicate(timeout=300)
     finally:
-        if held.returncode is None:  # `held` owned to the end (lane 2's RV7-30, S1)
-            _end_session(held, fifo=fifo)
+        _end_hold(held, fifo, fd)
     assert held.returncode == 0, "L2's renderer after the release"
     gained = est.commits_after(old)
     assert [carried for _s, carried, _m in gained] == [[k]], gained
@@ -1885,17 +1987,23 @@ def _held_burst(est: RenderEstate, one) -> SimpleNamespace:
     """AT-5's HELD RENDERER (TP:1116-1125): `L1`'s render held at its push
     (the hold re-armed for each push) while four more writes from `L1` each
     exit 0; then the hold is disarmed and released, and both of open point
-    8's waits run. Returns what the case reads."""
+    8's waits run. Returns what the case reads. The hold, the FIFO and every
+    renderer are owned from the FIFO's making to the end: the outer
+    `finally` disarms the hold, lets the FIFO go and unlinks it, and ends
+    every renderer logged (`_end_held_renders`); the four forks' result,
+    saved while the hold stood, is asserted only after it (lane 3's Codex
+    review of code PR 97 at `6d479418`, SHOULD 3)."""
     fifo = est.root / "held.fifo"
     os.mkfifo(str(fifo), 0o600)
-    old = est.origin_tip()
-    est.arm([{"sub": "push", "do": "hold", "render_only": True, "fifo": str(fifo),
-              "where": str(one.own.clone)}])
-    mark = est.entries()
-    _wrote(est.write(one, "the first write of a burst"), "log NOTED")
-    fd = _held_fd(fifo, "the first write's render, at its push")
+    fd, mark = None, est.entries()
     rerun = one.own.git_dir / "lanes-render.rerun"
     try:
+        old = est.origin_tip()
+        est.arm([{"sub": "push", "do": "hold", "render_only": True, "fifo": str(fifo),
+                  "where": str(one.own.clone)}])
+        mark = est.entries()
+        _wrote(est.write(one, "the first write of a burst"), "log NOTED")
+        fd = _held_fd(fifo, "the first write's render, at its push")
         holder = {c["renderer"] for c in est.render_calls(mark) if c["outcome"] == "held"}
         waited = []
         for n in range(2, 6):
@@ -1917,15 +2025,19 @@ def _held_burst(est: RenderEstate, one) -> SimpleNamespace:
         held_forks = forks()
         forks_live = [pid for pid, start in held_forks.items() if not _exited(pid, start)]
         marked = rerun.exists()
+        four = settled and len(held_forks) >= 4
         est.rearm()
-        assert settled and len(held_forks) >= 4, (
-            f"with the render held, {len(held_forks)} renderers besides the holder ran "
-            f"`render --checkout`, not at least four, one per write, all exited within "
-            f"{CEILING:g} s: {sorted(held_forks)}, still live {forks_live}")
+        end, fd = fd, None
+        _let_go(fifo, end)  # the hold released: its FIFO unlinked, then the write end closed
+        if four:  # where they were not seen, the case fails below, after the clean-up
+            est.wait_lag_0(one, "the burst's last write")
+            est.wait_renders_exit(mark, "the burst's renders")
     finally:
-        os.close(fd)
-    est.wait_lag_0(one, "the burst's last write")
-    est.wait_renders_exit(mark, "the burst's renders")
+        _end_held_renders(est, fifo, fd, mark)
+    assert four, (
+        f"with the render held, {len(held_forks)} renderers besides the holder ran "
+        f"`render --checkout`, not at least four, one per write, all exited within "
+        f"{CEILING:g} s: {sorted(held_forks)}, still live {forks_live}")
     assert _lock_is_free(one.own.git_dir / "lanes-render.lock"), "the render lock is still held"
     pushes = [c for c in est.render_calls(mark) if c["sub"] == "push" and c["outcome"] == "ran"]
     return SimpleNamespace(old=old, holder=holder, marked=marked, forks=forks(),
@@ -2032,24 +2144,28 @@ def test_a_renderer_hands_over_once_after_16_passes(request, tmp_path):
     old = est.origin_tip()
     fifo = est.root / "pass.fifo"
     os.mkfifo(str(fifo), 0o600)
-    est.arm([{"sub": "push", "do": "hold", "render_only": True, "fifo": str(fifo),
-              "where": str(one.own.clone)}])
-    _wrote(est.write(one, "stream write 1"), "write 1")
-    # Write n waits for pass n-1's push, the (n-1)-th held line in the raw
-    # log (lane 3's #38, #165 6859801732). `_held_fd` alone could reopen the
-    # FIFO onto the push just released, before its wrapper saw EOF: that
-    # push stayed held through write n, and the next pass rendered two seqs.
-    for n in range(2, 18):
-        fd = _kth_held_fd(est, fifo, n - 1, f"pass {n - 1}'s push")
-        try:
+    fd = None
+    try:  # the hold, the FIFO and the renders owned to the end (`_end_held_renders`)
+        est.arm([{"sub": "push", "do": "hold", "render_only": True, "fifo": str(fifo),
+                  "where": str(one.own.clone)}])
+        _wrote(est.write(one, "stream write 1"), "write 1")
+        # Write n waits for pass n-1's push, the (n-1)-th held line in the raw
+        # log (lane 3's #38, #165 6859801732). `_held_fd` alone could reopen the
+        # FIFO onto the push just released, before its wrapper saw EOF: that
+        # push stayed held through write n, and the next pass rendered two seqs.
+        for n in range(2, 18):
+            fd = _kth_held_fd(est, fifo, n - 1, f"pass {n - 1}'s push")
             _wrote(est.write(one, f"stream write {n}", timeout=120), f"write {n}")
-        finally:
-            os.close(fd)
-    fd = _kth_held_fd(est, fifo, 17, "the last pass's push")
-    est.rearm()
-    os.close(fd)
-    est.wait_lag_0(one, "the stream's last write")
-    est.wait_renders_exit(0, "the stream's renders")
+            end, fd = fd, None
+            os.close(end)  # pass n-1's push let go; the FIFO stays, for pass n's
+        fd = _kth_held_fd(est, fifo, 17, "the last pass's push")
+        est.rearm()
+        end, fd = fd, None
+        _let_go(fifo, end)  # the last push let go: the FIFO unlinked, then the write end closed
+        est.wait_lag_0(one, "the stream's last write")
+        est.wait_renders_exit(0, "the stream's renders")
+    finally:
+        _end_held_renders(est, fifo, fd, 0)
     # Each pass renders one write and pushes it once (nothing rejects here),
     # so a renderer's pushes count its passes that made progress.
     passes: dict = {}
@@ -2103,20 +2219,23 @@ def test_a_write_that_commits_as_the_render_lets_go_is_rendered_with_no_later_wr
     old = est.origin_tip()
     fifo = est.root / "lets-go.fifo"
     os.mkfifo(str(fifo), 0o600)
-    est.arm(shim_arms=[{"mode": "timer", "fifo": str(fifo),
-                        "match": "FROM register_head h, register_switch s", "call": 2}])
-    mark = est.entries()
-    _wrote(est.write(one, "the first write; its render lets go"), "write 1")
-    fd = _held_fd(fifo, "the render's second pass, after its read of the head")
-    try:
+    fd, mark = None, est.entries()
+    try:  # the hold, the FIFO and the renders owned to the end (`_end_held_renders`)
+        est.arm(shim_arms=[{"mode": "timer", "fifo": str(fifo),
+                            "match": "FROM register_head h, register_switch s", "call": 2}])
+        mark = est.entries()
+        _wrote(est.write(one, "the first write; its render lets go"), "write 1")
+        fd = _held_fd(fifo, "the render's second pass, after its read of the head")
         _wrote(est.write(one, "the write that commits as the render lets go", timeout=120),
                "write 2")
         assert _until(lambda: (one.own.git_dir / "lanes-render.rerun").exists(), CEILING), (
             "the second write's fork found the lock held and left no lanes-render.rerun")
+        end, fd = fd, None
+        _let_go(fifo, end)  # the render let go: its FIFO unlinked, then the write end closed
+        est.wait_lag_0(one, "the write that commits as the render lets go")
+        est.wait_renders_exit(mark, "the renders")
     finally:
-        os.close(fd)
-    est.wait_lag_0(one, "the write that commits as the render lets go")
-    est.wait_renders_exit(mark, "the renders")
+        _end_held_renders(est, fifo, fd, mark)
     _assert_rendered(est, old, [est.n + 1, est.n + 2])
     assert not (one.own.git_dir / "lanes-render.rerun").exists(), "lanes-render.rerun is left"
 
@@ -2145,3 +2264,223 @@ def test_a_render_forked_from_a_no_fetch_verb_still_renders(request, tmp_path):
         f"{[(c['argv'], c['env']['LANES_NO_FETCH']) for c in fetches]}")
     assert not [c["argv"] for c in renders if c["env"]["LANES_NO_FETCH"] is not None], (
         "a render's git call inherited LANES_NO_FETCH")
+
+
+# =================================================================== the clean-up's own faults
+#: The fault-path regressions of this module's own clean-up (lane 3's Codex
+#: review of code PR 97 at `6d479418`, SHOULDs 1, 3 and 4; the coordinator's
+#: reproductions, #165 6934112467). They need no engine and no task, but the
+#: module's `"*"` row gates them with the rest. Each child they start is
+#: theirs, ended and reaped in their own `finally`; no real process group of
+#: anyone else's is signalled, and `os.killpg` is stubbed where a stub child
+#: stands for a renderer.
+LINUX_ONLY = pytest.mark.skipif(not sys.platform.startswith("linux"),
+                                reason="a FIFO opened O_RDWR, and /proc, are Linux's")
+
+#: A reader of one byte from a FIFO, as a held wrapper or a launcher reads it.
+READ_ONE = "import os, sys; os.read(os.open(sys.argv[1], os.O_RDONLY), 1)"
+
+
+class _Pipe:
+    """A child's pipe, which only records that it was closed."""
+
+    def __init__(self):
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _Stuck:
+    """A child that never ends: each `communicate()` and `wait()` times
+    out, and nothing ever sets its `returncode`. Its pid is never
+    signalled: the cases that use it stub `os.killpg`."""
+
+    pid = 4194304 + 7  # above Linux's pid_max ceiling, so no process has it
+
+    def __init__(self):
+        self.returncode = None
+        self.stdout, self.stderr = _Pipe(), _Pipe()
+        self.calls: list = []
+
+    def communicate(self, input=None, timeout=None):
+        self.calls.append("communicate")
+        raise subprocess.TimeoutExpired("stuck", timeout)
+
+    def wait(self, timeout=None):
+        self.calls.append("wait")
+        raise subprocess.TimeoutExpired("stuck", timeout)
+
+    def poll(self):
+        return None
+
+
+def _fifo_reader(path) -> subprocess.Popen:
+    """A child that reads one byte from the FIFO at `path`."""
+    return subprocess.Popen([sys.executable, "-I", "-c", READ_ONE, str(path)],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE, text=True)
+
+
+def _on_fifo(proc: subprocess.Popen, seconds: float = 5) -> bool:
+    """Whether `proc` is seen asleep on a FIFO, in its `open()`
+    (`wait_for_partner`) or its `read()`, within `seconds`: False where it
+    ends first, the time runs out, or its `/proc` cannot be read."""
+    deadline = time.monotonic() + seconds
+    while proc.poll() is None and time.monotonic() < deadline:
+        try:
+            wchan = Path(f"/proc/{proc.pid}/wchan").read_text(encoding="utf-8")
+        except OSError:
+            return False
+        if any(word in wchan for word in ("partner", "pipe", "fifo")):
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def _ended(proc: subprocess.Popen, seconds: float = 5) -> bool:
+    """Whether `proc` ends within `seconds`."""
+    try:
+        proc.wait(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        return False
+    return True
+
+
+def _reap_all(procs: list) -> list:
+    """Each child a case started, killed by its pid where it still runs, and
+    reaped, bounded. Returns what each wrote to its stderr, where it had one."""
+    said = []
+    for proc in procs:
+        if proc.poll() is None:
+            proc.kill()
+        said.append(proc.communicate(timeout=30)[1])
+    return said
+
+
+class _GapFifo:
+    """A FIFO's path whose `unlink()` first starts a reader on it and waits
+    until that reader is on the FIFO: a reader that comes in the gap just
+    before the unlink (the coordinator's `GapPath`, #165 6934112467)."""
+
+    def __init__(self, path: Path, readers: list):
+        self.path, self.readers, self.on = path, readers, False
+
+    def __str__(self) -> str:
+        return str(self.path)
+
+    def unlink(self, missing_ok: bool = False) -> None:
+        self.readers.append(_fifo_reader(self.path))
+        self.on = _on_fifo(self.readers[-1])
+        self.path.unlink(missing_ok=missing_ok)
+
+
+def test_end_session_raises_rather_than_return_with_its_child_unreaped(monkeypatch):
+    """SHOULD 4 at `6d479418`: `_end_session`, on a child whose every
+    `communicate()` and `wait()` times out, signals its group SIGTERM, then
+    SIGKILL (stubbed), closes the child's pipes, waits once more, bounded,
+    and then raises: it never returns with `returncode` None."""
+    signals = []
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+    stuck = _Stuck()
+    with pytest.raises(RuntimeError, match="still unreaped"):
+        _end_session(stuck, grace=0)
+    assert signals == [(stuck.pid, signal.SIGTERM), (stuck.pid, signal.SIGKILL)], signals
+    assert stuck.calls == ["communicate", "communicate", "wait"], stuck.calls
+    assert stuck.stdout.closed and stuck.stderr.closed, "the child's pipes were left open"
+
+
+def test_race_raises_its_clean_up_error_and_leaves_no_barrier_fifo(monkeypatch, tmp_path):
+    """SHOULDs 4 and 1 at `6d479418`, `RenderEstate.race`: where a launcher
+    never waits and cannot be reaped, the case fails with the clean-up's own
+    error, not with the launcher left unreaped behind an assertion, and its
+    barrier FIFO is gone. Stubbed: the launcher (`_Stuck`), `os.killpg`, and
+    `_open_when_held`, which gives None at once."""
+    signals = []
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(sys.modules[__name__], "_open_when_held", lambda fifo, proc: None)
+    stuck = _Stuck()
+    estate = SimpleNamespace(root=tmp_path, bin=tmp_path / "bin",
+                             popen_render=lambda lc, conf=None, argv=None: stuck,
+                             render_argv=lambda lc: ["render"])
+    with pytest.raises(RuntimeError, match="still unreaped"):
+        RenderEstate.race(estate, [SimpleNamespace(name="L1")])
+    assert not (tmp_path / "barrier-L1.fifo").exists(), "race() left its barrier FIFO"
+    assert signals and set(signals) <= {(stuck.pid, signal.SIGTERM),
+                                        (stuck.pid, signal.SIGKILL)}, signals
+
+
+@LINUX_ONLY
+def test_a_fifo_let_go_leaves_no_reader_blocked(tmp_path):
+    """SHOULD 1 at `6d479418`: `_let_go`, the owner's last release, leaves
+    no reader blocked on its FIFO. With no write end held, a reader that
+    comes in the gap just before the unlink is let go. With the write end
+    held, as a hold site holds it, the reader already on the FIFO and one
+    that comes in that gap both read EOF. Either way the FIFO is gone, and a
+    reader that comes after finds none (ENOENT) and ends."""
+    fifo = tmp_path / "held.fifo"
+    readers: list = []
+    try:
+        os.mkfifo(str(fifo), 0o600)
+        first = _GapFifo(fifo, readers)
+        _let_go(first)
+        assert _ended(readers[0]), (
+            "with no write end held, a reader that came in the gap before the unlink is left "
+            "blocked on the unlinked FIFO")
+        os.mkfifo(str(fifo), 0o600)
+        readers.append(_fifo_reader(fifo))
+        fd = _held_fd(fifo, "the reader already on the FIFO", 10)
+        second = _GapFifo(fifo, readers)
+        _let_go(second, fd)
+        assert not fifo.exists(), "the FIFO is still there after its let-go"
+        readers.append(_fifo_reader(fifo))
+        left = [n for n, proc in enumerate(readers) if not _ended(proc)]
+        assert not left, f"readers {left} of {len(readers)} are left blocked"
+    finally:
+        said = _reap_all(readers)
+    on = [first.on, True, second.on]  # each reader seen on the FIFO before its let-go
+    assert all(proc.returncode == 0 for proc, seen in zip(readers, on) if seen), (
+        [proc.returncode for proc in readers], on, said)
+    assert readers[3].returncode != 0 and "FileNotFoundError" in said[3], (
+        f"a reader that came after the let-go found a FIFO: {said[3]}")
+
+
+@LINUX_ONLY
+def test_a_held_burst_ends_its_renders_before_its_assertion_fails(monkeypatch, tmp_path):
+    """SHOULD 3 at `6d479418`: where the four forks are not seen while the
+    hold stands, `_held_burst` fails only after its clean-up: the hold
+    disarmed, the held call let go, the FIFO unlinked, and the renderer the
+    wrapper logged ended, by its pid and start time. Stubbed: the estate and
+    its writes, and `CEILING`, 1 s; the held call is a FIFO reader of this
+    case's, the renderer a child of this case's in a session of its own."""
+    monkeypatch.setattr(sys.modules[__name__], "CEILING", 1.0)
+    fifo = tmp_path / "held.fifo"
+    held, renderers, arms = [], [], []
+    try:
+        renderers.append(subprocess.Popen(
+            [sys.executable, "-I", "-c", "import time; time.sleep(300)"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True))
+        start = subprocess.run(["ps", "-o", "lstart=", "-p", str(renderers[0].pid)],
+                               capture_output=True, text=True, check=False).stdout
+        logged = [{"renderer": renderers[0].pid, "renderer_start": " ".join(start.split()),
+                   "sub": "push", "outcome": "held", "render": True}]
+
+        def write(lc, text, env=None, timeout=300):
+            if not held:  # the first write's render, held at its push
+                held.append(_fifo_reader(fifo))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        est = SimpleNamespace(root=tmp_path, origin_tip=lambda: "0" * 40, entries=lambda: 0,
+                              arm=arms.append, rearm=lambda new=(): arms.append(list(new)),
+                              write=write, render_calls=lambda after=0: logged)
+        one = SimpleNamespace(own=SimpleNamespace(git_dir=tmp_path, clone=tmp_path))
+        with pytest.raises(AssertionError, match="not at least four"):
+            _held_burst(est, one)
+        assert arms[-1] == [], f"the hold was not disarmed: {arms}"
+        assert not fifo.exists(), "the hold FIFO is still there"
+        assert held and _ended(held[0]), "the held call was not let go"
+        assert _ended(renderers[0]), "the renderer was not ended"
+    finally:
+        _reap_all(held + renderers)
+    assert renderers[0].returncode == -signal.SIGTERM, renderers[0].returncode
