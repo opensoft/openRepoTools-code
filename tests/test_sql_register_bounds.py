@@ -4307,6 +4307,42 @@ def test_a_failed_psqls_cluster_error_shows_no_line_of_its_stderr(monkeypatch):
                                      f"of it is shown"), f"the error says: {failed.value}"
 
 
+def test_a_failed_psql_given_a_password_shows_it_in_no_failure_output(monkeypatch, request):
+    """T257zu (lane 2's pre-review RV9-38 of P09 at `3f9fcac4`, S2; lane 3's
+    rulings 6947252648, S4, and 6949488277, B1), with no engine and no
+    process: `Cluster.psql` is given a role statement whose password is a
+    planted value, as managed sends one (`CREATE ROLE ... LOGIN PASSWORD
+    '...'`), and psql, a stand-in, fails on it and echoes the statement it
+    was given, as psql does (`LINE 1: ...`). T257zk's case gave psql
+    `SELECT 1` and echoed a statement never sent. The `ClusterError` holds
+    the planted value in none of its `str`, `repr`, `args` or formatted
+    traceback, nor does pytest's own report of the failure (`_reported`),
+    where the statement is the raising frame's argument `sql`. The planted
+    value is no credential of any login."""
+    import traceback
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+    cluster = object.__new__(pgcluster.Cluster)
+    cluster.root, cluster.bindir, cluster.port = Path("/nonexistent"), Path("/nonexistent/bin"), 5432
+    echoed = []
+
+    def psql(argv, input=None, **kwargs):
+        first = (input or "").splitlines()[0]
+        echoed.append(first)
+        return subprocess.CompletedProcess(argv, 3, "", (f"psql:<stdin>:1: ERROR:  syntax error at or near \"x\"\n"
+                                                         f"LINE 1: {first}\n        ^\n"))
+    monkeypatch.setattr(pgcluster.subprocess, "run", psql)
+    with pytest.raises(pgcluster.ClusterError) as failed:
+        cluster.psql(f"CREATE ROLE lanes_w_bare LOGIN PASSWORD '{planted}' x;\n", dbname="register",
+                     user="lanes_admin")
+    assert echoed and planted in echoed[0], "psql was not given the planted statement, so this proves nothing"
+    error = failed.value
+    shown = "".join(traceback.format_exception(type(error), error, failed.tb))
+    for where, said in (("its str", str(error)), ("its repr", repr(error)), ("its args", repr(error.args)),
+                        ("its formatted traceback", shown), ("pytest's report", _reported(request, failed))):
+        assert planted not in said, f"the planted value is in {where}"
+
+
 # ============================== D9's rollback and cutover rows (T278), real engine
 
 #: The `git` wrapper that fails each push (TP:3633-3634, "a cutover whose push
