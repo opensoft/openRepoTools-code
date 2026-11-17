@@ -919,8 +919,15 @@ def test_under_a_declaration_a_direct_read_left_under_0_5_s_does_not_start(tmp_p
     try:
         proc, end = estate.client(config, standin.pid)
     finally:
+        # Kill it, then a reap bounded at 10 s, as `GuardSession.close()` does: a
+        # stand-in that a kill does not take fails the case and never hangs the
+        # run (T215o).
         standin.kill()
-        standin.wait()
+        try:
+            standin.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            standin.kill()
+            standin.wait(timeout=10)
     starts = estate.psql_starts()
     if case in ("floor", "clamp"):
         assert proc.returncode == 2, f"{case}: the client exited {proc.returncode}: {proc.stderr}"
@@ -973,8 +980,13 @@ def test_without_a_declaration_the_same_age_still_starts_the_direct_read(tmp_pat
     try:
         proc, _ = estate.client(config, standin.pid)
     finally:
+        # Bounded, as the floor case's reap is (T215o).
         standin.kill()
-        standin.wait()
+        try:
+            standin.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            standin.kill()
+            standin.wait(timeout=10)
     starts = estate.psql_starts()
     if starts:
         _record("the client's start, from its launch to its direct read",
