@@ -3458,7 +3458,19 @@ def _reported(request, failed) -> str:
     ExceptionInfo, as the running test's item renders a failed test under
     the suite's own settings (T257zr; lane 3's ruling 6949488277 on lane 2's
     pre-review RV9-38 of P09 at `3f9fcac4`, B1): the terminal's text, which
-    is also --junitxml's failure body, then --junitxml's failure message."""
+    is also --junitxml's failure body, then --junitxml's failure message.
+    Under an explicit `--tb=long`, `--fulltrace` (which forces long) or
+    `--showlocals`, which print frames' arguments or locals, it fails at
+    once, naming the run's style: an explicit override is not secret-safe,
+    and the suite's protection holds only under its default (T257zzi; lane
+    2's pre-review RV9-40 of P09 at `161c3087`, N3). It never skips."""
+    style = request.config.getoption("tbstyle", "auto")
+    shown = request.config.getoption("showlocals", False)
+    full = request.config.getoption("fulltrace", False)
+    assert style != "long" and not shown and not full, (
+        f"this run's --tb={style}, showlocals={shown}, fulltrace={full} prints frames' arguments or "
+        f"locals: an explicit override is not secret-safe, and this suite's protection of a failure's "
+        f"report holds only under its default, --tb=short (T205e), so this case cannot pass here")
     longrepr = request.node.repr_failure(failed)
     return f"{longrepr}\n{longrepr.reprcrash.message}"
 
