@@ -436,6 +436,31 @@ def _tail(proc: subprocess.CompletedProcess, size: int = 800) -> str:
     return said[-size:] or "<nothing>"
 
 
+#: An error line of psql's stderr, after psql's own `psql:<stdin>:1: ` where
+#: it is there, and its SQLSTATE where psql prints one (`ERROR:  42P01: ...`,
+#: at `VERBOSITY` verbose; at the default, psql prints none).
+_PSQL_ERROR = re.compile(r"^(?:psql:\S*: )?(?:ERROR|FATAL|PANIC):", re.M)
+_SQLSTATE = re.compile(r"^(?:psql:\S*: )?(?:ERROR|FATAL|PANIC):\s+([0-9A-Z]{5}):", re.M)
+
+
+def _psql_failed(user: str, dbname: str, proc: subprocess.CompletedProcess) -> str:
+    """What `Cluster.psql`'s `ClusterError` says when psql fails (T229k;
+    lane 3's ruling 6947252648 on lane 2's pre-review RV9-37 of P09 at
+    `d9a1f2bf`, S4): psql's exit, the SQLSTATE where its text has one, and
+    its stderr's counts. No line of psql's text is shown, since psql echoes
+    a failed statement (`LINE 1: ...`), and a role's statement can hold its
+    password. Nothing of the text is kept on the exception: no caller needs
+    it (CX-36's scan of every caller on `main` and at P09's head)."""
+    text = proc.stderr if isinstance(proc.stderr, str) else ""
+    lines = text.splitlines()
+    states = sorted(set(_SQLSTATE.findall(text)))
+    errors = len(_PSQL_ERROR.findall(text))
+    return (f"psql as {user} on {dbname} exited {proc.returncode}: "
+            f"{'SQLSTATE ' + ', '.join(states) if states else 'no SQLSTATE in its text'}; "
+            f"stderr: {len(lines)} line(s), {errors} of them ERROR, FATAL or PANIC lines; "
+            f"no line of it is shown")
+
+
 def _client_env(host: Path, user: str, dbname: str, appname: str, bindir: Path,
                 port: int = PORT) -> dict:
     env = _without_pg()
@@ -502,7 +527,7 @@ class Cluster:
                                                            self.bindir, self.port),
                               check=False)
         if check and proc.returncode != 0:
-            raise ClusterError(f"psql as {user} on {dbname} exited {proc.returncode}: {proc.stderr.strip()}")
+            raise ClusterError(_psql_failed(user, dbname, proc))
         return proc
 
     def log_tail(self) -> str:
