@@ -6487,3 +6487,32 @@ def test_a_failed_tools_raising_frame_in_pgcluster_keeps_no_text_of_its_run(monk
     assert want in ours, f"{site}: {want} is not in the error's traceback, only {ours}"
     assert not held, f"{site}: a frame of pgcluster's keeps the planted value in: {held}"
     assert planted not in str(failed.value), f"{site}: the planted value is in the error's text"
+
+
+@pytest.mark.parametrize("prefix", ["none", "default", "pid"])
+def test_a_server_logs_severe_lines_are_counted_under_each_prefix_the_fixture_uses(tmp_path, prefix):
+    """T257zzzk (lane 2's targeted check RV9-43 of P09 at `94a40564`, NIT
+    C; T229v; T229x), with no engine and no process: `Cluster.log_tail`
+    counts a server log's lines at ERROR, FATAL or PANIC, and shows none of
+    them, under each `log_line_prefix` the fixture's clusters write: none,
+    the default `%m [%p] ` (`[default]`), and `%p ` (`[pid]`), which
+    managed sets on its clusters. The planted log has 7 lines, 4 of them
+    truly severe (ERROR, FATAL, PANIC, and a verbose `ERROR:  42601:`); a
+    logged statement holding `ERROR:  `, a `STATEMENT:` echo of a role's
+    password and a connection line are not. Before T229x a `%p ` line was
+    never counted. The planted value is no credential of any login."""
+    import pgcluster
+    planted = f"fake-{uuid.uuid4().hex}"
+    lead = {"none": "", "default": "2026-11-17 14:48:04.123 UTC [1234] ", "pid": "1234 "}[prefix]
+    lines = [f"LOG:  statement: SELECT 'ERROR:  {planted}'", "ERROR:  relation \"t\" does not exist",
+             f"STATEMENT:  ALTER ROLE r PASSWORD '{planted}'",
+             "FATAL:  password authentication failed for user \"x\"",
+             "LOG:  connection received: host=[local]", "PANIC:  could not write to file",
+             "ERROR:  42601: syntax error at or near \"x\""]
+    (tmp_path / "server.log").write_text("".join(f"{lead}{line}\n" for line in lines), encoding="utf-8")
+    cluster = object.__new__(pgcluster.Cluster)
+    cluster.root = tmp_path
+    said = cluster.log_tail()
+    assert planted not in said, f"[{prefix}] the planted value is in log_tail's text"
+    assert said == ("server.log: 7 line(s), 4 of them ERROR, FATAL or PANIC lines; no line of it "
+                    "is shown"), f"[{prefix}] log_tail says: {said}"
