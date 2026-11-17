@@ -1216,14 +1216,14 @@ class Bench:
                               env=self.env, capture_output=True, text=True,
                               check=True).stdout.strip()
         _to_primary(self.pg, SimpleNamespace(c=self.c, tree=lambda sha: tree), load_indexer())
-        rows = self.pg.psql(f"SELECT text FROM {SCHEMA}.doc_lines WHERE path = 'lanes/STORE' "
-                            f"ORDER BY line_no;").stdout
+        read = self.pg.psql(f"SELECT text FROM {SCHEMA}.doc_lines WHERE path = 'lanes/STORE' "
+                            f"ORDER BY line_no;")
+        rows = read.stdout
         digest = self.pg.psql(f"SELECT sha256 FROM {SCHEMA}.files WHERE path = 'lanes/STORE' "
                               f"AND final_newline;").stdout.strip()
         assert hashlib.sha256(rows.encode("utf-8")).hexdigest() == digest, (
             f"lanes/STORE as the register holds it does not hash to the sha256 it holds for it "
-            f"(psql exit 0 for both; the text's {_said_safely(rows, stream='stdout')}; the sha256 "
-            f"read has {len(digest)} characters)")
+            f"(the text's read: {_said_safely(read)}; the sha256 read has {len(digest)} characters)")
         # A clone of its own, so the bench's checkout and W keep their last fetch.
         marker = self.root / "marker"
         subprocess.run(["git", "clone", "-q", str(self.origin), str(marker)], check=True,
