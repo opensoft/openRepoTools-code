@@ -84,6 +84,13 @@ waits for lane 4's L4-B9 and lane 5's L5-A1 and L5-B1. `lanes-index` runs as T20
 so `mode=primary` loads (open point 3), and connects as two logins of this
 module's own, members of the writer and the reader groups, by the cluster's
 trust.
+
+NO WRITER'S TEXT IN A FAILURE (T255t; lane 2's pre-review RV9-37 of P09 at
+`d9a1f2bf`, B1): this module is PYTEST_DONT_REWRITE, as managed is, since
+pytest's assertion rewriting would add each tested operand's value to a
+failure's message, a writer's raw stream or a whole `CompletedProcess` with
+its stderr among them, so an assertion here reports its own message, made
+through `_said_safely`, and nothing else.
 """
 
 from __future__ import annotations
