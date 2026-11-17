@@ -563,7 +563,12 @@ class Cluster:
                                                            self.bindir, self.port),
                               check=False)
         if check and proc.returncode != 0:
-            raise ClusterError(_psql_failed(user, dbname, proc))
+            # T229q (lane 2's pre-review RV9-38 of P09, N2): the message is
+            # made, then psql's run is dropped, so no stream of it stays in
+            # this frame, which the raise's traceback keeps (`--showlocals`).
+            failed = _psql_failed(user, dbname, proc)
+            del proc
+            raise ClusterError(failed)
         return proc
 
     def log_tail(self) -> str:
