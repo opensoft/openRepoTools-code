@@ -4030,6 +4030,11 @@ _REPORTERS = ("terminalreporter", "tr", "reporter", "tw", "_tw")
 #: N4): in pgcluster's `pytest_terminal_summary`, the module list `_DATACL`,
 #: which holds psql's raw answer for a clone's `pg_database.datacl`, its
 #: access list, and which the run's foot prints, as open point 12 requires.
+#: It exempts every use of the name in that function, a second write, a loop
+#: over it, a name bound from it and a function nested in it among them, not
+#: the one foot line, in any module whose file is named pgcluster.py
+#: (T257zzzn; lane 2's targeted check RV9-44 of P09 at `3faf9453`, N-1).
+#: Today the foot line is its one use there.
 _EXEMPT = (("pgcluster.py", "pytest_terminal_summary", "_DATACL"),)
 #: A logging call (T257zy): `logging.<method>`, or `<name>.<method>` where the
 #: name is `log` or `logger`, in any case.
@@ -4168,7 +4173,12 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
     arguments: pytest's own report of a failed test, a fixture or a
     teardown prints no frame's arguments only at the short style T205e makes
     the default, and an explicit `--tb=long`, `--fulltrace` or
-    `--showlocals` prints them; the words of `_NO_EXIT`, taken as true; and
+    `--showlocals` prints them; the words of `_NO_EXIT`, taken as true; a
+    name bound more than once, whose every binding is read as one and
+    whose exit evidence in any binding counts for all, since neither the
+    order of statements nor a branch is read (`shown =
+    _said_safely(copied)`, then `if flag: shown = f"exit
+    {proc.returncode}"`; T257zzzn; RV9-44, N-3); and
     output that a test's process writes itself, a child's output on an
     inherited stream among them.
 
@@ -4180,7 +4190,8 @@ def _raw_streams_in(path: Path, only: tuple = ()) -> list:
     `pg_database.datacl`, its access list, as open point 12 requires. The
     check follows that answer from `new_database`'s `_DATACL.append(...)` to
     the foot line, and `_EXEMPT` makes `_DATACL` no stream in that one
-    function. Before T257zzzd no terminal reporter's write was a sink, so a
+    function: every use of it there, not only the foot line (T257zzzn;
+    RV9-44, N-1). Before T257zzzd no terminal reporter's write was a sink, so a
     raw stream written there directly passed too."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found = []
