@@ -1363,8 +1363,10 @@ def _seam(relay, point: str, name: str = "") -> None:
     calls it where a concurrent `close()` can meet one of its threads, and it
     does nothing unless a test has set the relay's `seam` to a callable
     `seam(point, name)`. The points: "accepted", in `_accept`, with a client
-    and its upstream in hand and neither registered; "listed", as `_spawn`
-    leaves the lock with the thread `name` listed; "snapshot", in `close()`,
+    and its upstream connected, neither registered in `DelayedLoopback`, both
+    registered before the connect in `SilentAfterStartup` (T229i); "listed",
+    as the thread `name`, listed and started, leaves the lock it was started
+    under; "snapshot", in `close()`,
     once it has taken its snapshot. A test's hook holds a thread at a point
     on an event, so a window that only the scheduler would open is open every
     time."""
@@ -1558,27 +1560,38 @@ class SilentAfterStartup:
         self.port = self.listener.getsockname()[1]
         self._spawn(self._accept, "accept")
 
-    def _spawn(self, target, name: str, *args) -> None:
+    #: The bound on each upstream connect (T229i). With a timeout set, a Unix
+    #: socket's connect never waits: a full backlog fails it at once.
+    CONNECT_WAIT = 10.0
+
+    def _start(self, target, name: str, *args) -> None:
+        """Under `self.lock`, list the thread and start it (T229f, T229i):
+        `close()` snapshots under the same lock, so it never joins a thread
+        not yet started, and no thread starts after its snapshot."""
         thread = threading.Thread(target=target, args=args, daemon=True,
                                   name=f"silent-after-startup-{self.port}-{name}")
+        self.threads = [t for t in self.threads if t.is_alive()] + [thread]
+        thread.start()
+
+    def _spawn(self, target, name: str, *args) -> None:
         with self.lock:                     # T229f: listed and started under `close()`'s lock
-            self.threads = [t for t in self.threads if t.is_alive()] + [thread]
-            thread.start()
+            self._start(target, name, *args)
         _seam(self, "listed", name)
 
     def _upstream(self) -> socket.socket:
+        """A socket for the target, not yet connected (T229i)."""
+        family = socket.AF_INET if self.socket_dir is None else socket.AF_UNIX
+        return socket.socket(family, socket.SOCK_STREAM)
+
+    def _connect(self, upstream: socket.socket) -> None:
+        """`upstream`'s connect to the target, bounded by CONNECT_WAIT; a
+        shutdown by `close()` ends a TCP connect under way at once (T229i)."""
+        upstream.settimeout(self.CONNECT_WAIT)
         if self.socket_dir is None:
-            upstream = socket.create_connection(("127.0.0.1", self.target_port), timeout=10)
+            upstream.connect(("127.0.0.1", self.target_port))
         else:
-            upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            upstream.settimeout(10)
-            try:
-                upstream.connect(f"{self.socket_dir}/.s.PGSQL.{self.target_port}")
-            except OSError:
-                upstream.close()
-                raise
+            upstream.connect(f"{self.socket_dir}/.s.PGSQL.{self.target_port}")
         upstream.settimeout(None)
-        return upstream
 
     def _accept(self) -> None:
         while True:
@@ -1591,14 +1604,29 @@ class SilentAfterStartup:
             except OSError:
                 client.close()
                 continue
-            _seam(self, "accepted")
-            with self.lock:
+            pair = (client, upstream)
+            with self.lock:                 # T229i: tracked before the connect, so `close()` shuts both
                 if self.done:
                     client.close()
                     upstream.close()
                     return
-                self.sockets.update((client, upstream))
-            self._spawn(self._pump, "pump", client, upstream)
+                self.sockets.update(pair)
+            try:
+                self._connect(upstream)
+            except OSError:
+                with self.lock:             # untracked and closed here, or left to `close()`
+                    if self.done:
+                        return
+                    self.sockets.difference_update(pair)
+                client.close()
+                upstream.close()
+                continue
+            _seam(self, "accepted")
+            with self.lock:                 # T229i: `done` read, and the pump listed and started, in one act
+                if self.done:
+                    return
+                self._start(self._pump, "pump", client, upstream)
+            _seam(self, "listed", "pump")
 
     def _pump(self, client: socket.socket, server: socket.socket) -> None:
         seen, silent, ends = b"", False, [client, server]
@@ -1649,7 +1677,14 @@ class SilentAfterStartup:
             return [t.name for t in self.threads if t.is_alive()]
 
     def close(self, wait: float = 10.0) -> None:
-        """End the relay: no new connection, and every held socket closed."""
+        """End the relay: no new connection; every socket it tracks, a pair
+        whose upstream connect is under way among them, shut down before any
+        join, so that no pump waits in `sendall()` and no TCP connect goes
+        on; every thread joined by one deadline, `wait` from now; every held
+        socket closed; and then, with `wait` above 0, a thread still alive
+        raised as a RuntimeError that names it (T229i; Codex's SHOULD 3 on
+        P09 at `21dd3642`). `close(wait=0)`, T229f's own case, joins without
+        waiting and raises nothing: its caller asks `alive()`."""
         with self.lock:
             self.done = True
             ends, threads = list(self.sockets), list(self.threads)
@@ -1664,6 +1699,10 @@ class SilentAfterStartup:
             thread.join(max(0.0, end_by - time.monotonic()))
         for end in ends:
             end.close()
+        left = [thread.name for thread in threads if thread.is_alive()]
+        if left and wait > 0:
+            raise RuntimeError(f"the silent-after-startup relay on port {self.port} has {left} "
+                               f"alive at its close()'s {wait:g} s deadline")
 
     def __enter__(self) -> "SilentAfterStartup":
         return self
