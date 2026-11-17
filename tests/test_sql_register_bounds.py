@@ -3508,12 +3508,17 @@ def test_the_burst_report_prints_each_warning_whole_and_no_credential():
     exited 69 (`cs_marker_refuse`, :3971-3972); its 300-character tail kept
     only the warning's last 18 characters, `feature 007, D3).`, so why the
     question failed was lost. The report must carry each writer's exit and its
-    WARNING line whole, and no other line of any writer's stderr (T257x;
-    Codex's review of P09 at `b8f9e35a`, BLOCKING 1): not the refusal's lines,
-    and none of the credential forms planted here, a password-file line bare
-    and prefixed, `password=` and `PGPASSWORD=` values, a URL's secret, a
-    dict's repr, a value on the line after its key, and a SCRAM verifier. The
-    planted value is no credential of any login."""
+    WARNING line as the line's template shows it, and no other line of any
+    writer's stderr (T257x; Codex's review of P09 at `b8f9e35a`, BLOCKING 1;
+    T257zc): not the refusal's lines, and none of the credential forms
+    planted here, a password-file line bare and prefixed, `password=` and
+    `PGPASSWORD=` values, a URL's secret, a dict's repr, a value on the line
+    after its key, and a SCRAM verifier. This warning's template has no part
+    that is withheld, so here the shown line equals the line. The name still
+    says "whole", from T257v, since a new name would be a new node id; a
+    WARNING line is shown only through its template (`_shown_warning`,
+    T257zc), and never whole (T257zg; lane 2's pre-review RV9-36 of P09 at
+    `2407ea06`, N4). The planted value is no credential of any login."""
     planted = "planted-not-a-password"
     warning = ("lanes-edit: WARNING: `lanes-index mode` did not answer within 2 s, and was "
                "stopped (exit 124), so `set-row-state` runs in files mode, as on a "
@@ -3562,7 +3567,13 @@ def test_the_burst_report_shows_no_credential_a_warning_line_holds(capsys, form)
     the text a failed `lanes-index mode` printed, inside `reg_mode_files`'
     WARNING (`exited 2 (...)`), which matches that template and is shown with
     `[withheld]` in that text's place. The planted value is no credential of
-    any login."""
+    any login.
+
+    `_burst_report` returns its text and prints nothing, at `fb359e64` as
+    here, so the `capsys` half cannot fail today: it guards only against a
+    print added to `_burst_report` later. The failure-message half is the
+    one that fails at `fb359e64` (T257zg; lane 2's pre-review RV9-36 of P09
+    at `2407ea06`, N1)."""
     planted = f"fake-{uuid.uuid4().hex}"
     held = {"pgpassword": f"PGPASSWORD={planted}",
             "password-file": f"lanes-edit: 127.0.0.1:5432:register:lanes_w_fx:{planted}",
