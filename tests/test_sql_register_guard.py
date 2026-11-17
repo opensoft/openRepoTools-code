@@ -126,6 +126,8 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: 6935289154, 6936069476 and 6937934447; lane 5, 6937684143), are T237's other service
 #: rows, T512 and T513, the two tasks P23 lands. No task is common to every
 #: row, so there is no "*" row.
+#: T237zzzb's row, for T512's commit 37's SHOULD (lane 3, #364 6954760292
+#: and 6956512573; lane 5, 6955229319), is the same pair.
 SQL_REGISTER_GATE_TABLE = {
     "test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither": ("T512", "T513"),  # T237; tasks:2302
     "test_a_bind_body_past_its_bound_ends_with_the_bounds_code_and_leaves_no_process": ("T502",),  # T214; tasks:2013
@@ -146,6 +148,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_fifo_at_register_log_never_holds_a_start_or_the_service": ("T512", "T513"),  # T237zzs; P23 (#165 6934144108)
     "test_a_guard_that_starts_too_late_refuses_2_without_a_read": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_a_launched_start_refused_for_no_psql_where_run_fails_the_stamps_own_check_leaves_register_log_as_it_was": ("T512", "T513"),  # T237zzz; P23 (#165 6937934447)
+    "test_a_launched_start_refusing_a_bare_url_line_with_a_query_keeps_its_password_out_of_register_log": ("T512", "T513"),  # T237zzzb; P23 (#364 6954760292, 6956512573)
     "test_a_launched_start_whose_run_directory_fails_its_own_check_leaves_register_log_as_it_was": ("T512", "T513"),  # T237zzz; P23 (#165 6937934447)
     "test_a_live_bind_past_its_bound_that_timeout_has_not_ended_answers_2_and_names_the_pid_to_kill": ("T502",),  # T214; tasks:2013
     "test_a_malformed_bind_pid_waits_for_the_deadline_then_is_stale": ("T502",),  # T214; tasks:2013
@@ -9384,3 +9387,153 @@ def test_a_launched_start_refused_for_no_psql_where_run_fails_the_stamps_own_che
     commits 22 to 24) it fails first on `register.lock`, with
     `register.failed` written beside it."""
     _launched_and_left_as_it_was(estate(mode="primary"), change, fail=True)
+
+
+# T237zzzb: A BARE URL LINE WITH A QUERY, REFUSED BY A LAUNCHED `serve`,
+# LEAVES ITS PASSWORD OUT OF `register.log` (lane 3's ruling at T512's
+# `cd58ba24`, #364 6954760292, SHOULD: "A bare URL line whose query holds an
+# `=`, such as one ending in `?sslmode=require`, is refused as an unknown key
+# instead (:709-711). The key it quotes is the URL up to the `=`, userinfo
+# and all", and a launched `serve` writes it whole into `register.log`; its
+# case, 6956512573: "a planted URL line with a query and a password, where
+# `register.log` does not hold the password", a committed test in lane 2's
+# T237 module). Lane 5's commit 37 `4c80bc8c` writes every configuration
+# refusal of a launched `serve` in fixed words, the file and the line's
+# number (`register_serve_config_words`, :8112 there; 6955229319), and
+# commits 38 `f14f2d5d` and 39 `59ce5344` keep those words.
+#
+# THE WINDOW. `serve --start` loads the configuration itself and refuses a
+# refused one to its own caller, starting nothing (`register_serve_start_only`,
+# :8078 at `cd58ba24`), so the line is planted after the starter's load and
+# before the launched `serve`'s. `load_config` runs `git`
+# (`git_work_tree_of`, of the configuration's directory, :675) after the
+# file's own checks and before it reads the file (:691), and the launched
+# `serve` runs in `/` (`register_serve_launch`, `cwd="/"`, :8044-8047), where
+# the starter runs in the case's working directory and changes it nowhere. So
+# a stand-in `git` that plants the line at its first call made from `/`
+# plants it for the launched `serve` alone, every time.
+#
+# NOTHING OF THE LINE IS PRINTED (lane 2's rule for planted secrets): a
+# failure gives counts and fixed words, never the password, the URL or the
+# log's text; the log is read and counted in `_url_line_counts`, which keeps
+# no copy of it; and the starter's own standard error is dropped unread.
+
+#: THE PLANTED LINE (T237zzzb): a bare URL whose userinfo holds a FAKE
+#: password and whose query holds an `=`, so `load_config` takes all of it up
+#: to that `=` as a key it does not know. Each part is found nowhere else in
+#: the estate, so its count in `register.log` is a count of the line's text
+#: there.
+URL_LINE_USER = "t237zzzb-user"
+URL_LINE_PASSWORD = "t237zzzb-planted-fake-password"
+URL_LINE_HOST = "t237zzzb-host.invalid"
+URL_LINE = (f"postgresql://{URL_LINE_USER}:{URL_LINE_PASSWORD}@{URL_LINE_HOST}/register"
+            f"?sslmode=require")
+#: The parts counted in `register.log`, by the names a failure gives: the
+#: password, the userinfo's user and its `:`, and the host.
+URL_LINE_PARTS = {"password": URL_LINE_PASSWORD, "userinfo": URL_LINE_USER + ":",
+                  "host": URL_LINE_HOST}
+
+#: THE STAND-IN `git` (T237zzzb), first on the launch's `PATH`: every call
+#: goes on to the real `git` (`@REAL@`); at its first call made from `/`,
+#: the working directory only the launched `serve` has, it first appends
+#: `config-plant.json`'s line to the configuration that file names and
+#: records `config-plant.done`.
+_CONFIG_PLANTING_GIT = r'''#!@PY@ -I
+import json, os, sys
+HERE = @HERE@
+REAL = @REAL@
+done = os.path.join(HERE, "config-plant.done")
+if os.getcwd() == "/" and not os.path.exists(done):
+    with open(os.path.join(HERE, "config-plant.json"), encoding="utf-8") as handle:
+        spec = json.load(handle)
+    with open(spec["conf"], "a", encoding="utf-8") as handle:
+        handle.write(spec["line"] + "\n")
+    with open(done, "x", encoding="utf-8") as handle:
+        handle.write("planted\n")
+os.execv(REAL, [REAL] + sys.argv[1:])
+'''
+
+
+def _config_planting_git(est: Estate, conf: Path) -> Path:
+    """`_CONFIG_PLANTING_GIT` as `git` in a directory of its own, in front of
+    the real one, set to append `URL_LINE` to `conf`. The directory is
+    returned; `_with_path` puts it first on a `PATH`."""
+    where = est.root / "config-plant-bin"
+    where.mkdir(parents=True, exist_ok=True)
+    _script(where / "git", _CONFIG_PLANTING_GIT, PY=sys.executable, HERE=_q(where),
+            REAL=_q(shutil.which("git")))
+    (where / "config-plant.json").write_text(json.dumps({"conf": str(conf), "line": URL_LINE}),
+                                             encoding="utf-8")
+    return where
+
+
+def _url_line_counts(log: Path, words: str) -> dict:
+    """How many times each of `URL_LINE_PARTS`, and `words`, stands in `log`
+    (0 each where there is no log), by name, `words` as "words". The log's
+    text is dropped before this returns, and no part's text is held in a
+    name here, so no frame keeps either when a check after it fails."""
+    try:
+        data = log.read_bytes()
+    except FileNotFoundError:
+        return dict.fromkeys([*URL_LINE_PARTS, "words"], 0)
+    counts = {name: data.count(URL_LINE_PARTS[name].encode("utf-8")) for name in URL_LINE_PARTS}
+    counts["words"] = data.count(words.encode("utf-8"))
+    del data
+    return counts
+
+
+def test_a_launched_start_refusing_a_bare_url_line_with_a_query_keeps_its_password_out_of_register_log(
+        estate):
+    """T237zzzb, lane 3's case for its SHOULD at `cd58ba24` (#364 6954760292
+    and 6956512573): a launched `serve` whose configuration holds a bare URL
+    line with a query `=` and a planted, fake password refuses it, and
+    `register.log` holds neither the password, nor the userinfo's user, nor
+    the host, and names the file and the line's number in fixed words.
+
+    `lanes-index serve --start` (`register_serve_start_only`, then
+    `register_serve_launch`) loads the estate's configuration, which passes,
+    and launches `serve` under `_LAUNCH_REAPER`. The launched `serve` hands
+    its standard error to `register.log` (`register_serve_early`), and its
+    `load_config` runs the stand-in `git` from `/`, which appends the line
+    (`_CONFIG_PLANTING_GIT`), so the line it reads next is refused as a key
+    it does not know, stamped `config-refused`, exit 2. Asserted: the line
+    was planted; the starter ended with 0; the service ended with 2, alone;
+    `register.log` holds no part of the line (`URL_LINE_PARTS`); and it holds
+    "the configuration <file> is refused at its line <N>; the refusal's text
+    is left out of the log", the words commits 37 to 39 share.
+
+    At `cd58ba24` (commit 36) the refusal (:709-711) has no `unquoted`, so
+    `cmd_serve` writes it whole (:8183): the key, the URL up to its `=`,
+    password and all, stands in `register.log`, and the case fails on the
+    password's count. It passes at `4c80bc8c` (commit 37), `f14f2d5d`
+    (commit 38) and `59ce5344` (commit 39), where the refusal carries its
+    line's number and a launched `serve` writes only
+    `register_serve_config_words`'s fixed words. Linux only: it skips where
+    there is no child subreaper."""
+    est = estate(mode="primary")
+    conf = Path(est.extra["LANES_INDEX_CONFIG"])
+    number = len(conf.read_text(encoding="utf-8").splitlines()) + 1
+    where = _config_planting_git(est, conf)
+    got = _launch_until_the_service_ends(est, where)
+    got.pop("err", None)
+    if not (where / "config-plant.done").exists():
+        pytest.fail("the stand-in git was never called from /, so no launched serve read the "
+                    "planted line")
+    if got["start"] != 0:
+        pytest.fail(f"serve --start ended with {got['start']}, not 0, so no serve was launched")
+    codes = [code for _pid, code in got["ended"]]
+    if got["timed_out"] or codes != [2]:
+        pytest.fail(f"the launched service did not end with 2 alone: exit codes {codes}, "
+                    f"timed out {got['timed_out']}")
+    words = (f"the configuration {conf} is refused at its line {number}; the refusal's text "
+             f"is left out of the log")
+    counts = _url_line_counts(_run_dir(est) / "register.log", words)
+    leaked = [f"its {name} {counts[name]} time(s)" for name in URL_LINE_PARTS if counts[name]]
+    if leaked:
+        pytest.fail(f"register.log holds the planted URL line's text, {', '.join(leaked)} (lane "
+                    f"3's SHOULD, #364 6954760292): a launched serve writes a configuration "
+                    f"refusal in fixed words only")
+    if not counts["words"]:
+        pytest.fail(f"register.log does not name the configuration and its line {number} in "
+                    f"fixed words (\"the configuration <file> is refused at its line "
+                    f"{number}; ...\")")
