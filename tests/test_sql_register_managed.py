@@ -104,7 +104,7 @@ pytestmark = [WINDOWS_SKIP]
 #: (tasks:2156), T230's (tasks:2220, with its As built at :2219) and T258's
 #: (tasks:2464), tasks.md at lane 3's commit 17 `204145ae`. No task is common
 #: to all 27 functions, so there is no "*" row. T224j's, T224n's, T224o's,
-#: T224p's, T258e's, T258f's and T258g's cases, which run on synthetic text
+#: T224p's, T258e's, T258f's, T258g's and T258h's cases, which run on synthetic text
 #: and stand-ins with no database, have no row: they run ungated.
 SQL_REGISTER_GATE_TABLE = {
     # T224: until L1-A7 (T109), L1-A8 (T110), L1-A17 (T119, T120) and T229.
@@ -234,6 +234,10 @@ def _private(path: Path, text: str) -> Path:
 #: wait for its exit after TERM and its reap after KILL, and the join of a phase-W
 #: writer's reader after them (T258e).
 END_S = 10.0
+
+#: How long a phase-W writer's reader waits on its pipes at a time, so a cut
+#: reaches it (T258h).
+READ_POLL_S = 0.1
 
 
 def _end_process(proc: subprocess.Popen, *, group: bool, wait: float = 10.0) -> None:
@@ -2011,6 +2015,8 @@ class W258Writer:
         self.who, self.proc, self.psql_dir, self.state = who, proc, psql_dir, state
         self.ended = None
         self.out = self.err = ""
+        self.cut = False
+        self._cancel = threading.Event()
         self._thread = threading.Thread(target=self._read, daemon=True)
         self._thread.start()
 
@@ -2018,26 +2024,46 @@ class W258Writer:
         """Both pipes read to their ends together, as `communicate()` reads
         them, and decoded as its text mode decodes them; then closed, and
         `ended` set. No wait and no reap: those are the main thread's (T258e;
-        Codex's review of P09 at `21dd3642`, SHOULD 6 in lane 3's numbering)."""
+        Codex's review of P09 at `21dd3642`, SHOULD 6 in lane 3's numbering).
+        It waits `READ_POLL_S` at a time, so it always ends once `_cancel` is
+        set, `cut` then naming pipes left before their ends; and it closes
+        both pipes itself, in a `finally`, whichever way it ends (T258h;
+        Codex's review of P09 at `b8f9e35a`, SHOULD 4)."""
         pipes = (self.proc.stdout, self.proc.stderr)
         got = {pipe.fileno(): bytearray() for pipe in pipes}
         live = list(got)
-        while live:
-            ready, _, _ = select.select(live, [], [])
-            for fd in ready:
-                try:
-                    chunk = os.read(fd, 65536)
-                except OSError:
-                    chunk = b""
-                if chunk:
-                    got[fd] += chunk
-                else:
-                    live.remove(fd)
-        self.out, self.err = (bytes(data).decode("utf-8", "replace").replace("\r\n", "\n")
-                              .replace("\r", "\n") for data in got.values())
-        for pipe in pipes:
-            pipe.close()
-        self.ended = time.monotonic()
+        try:
+            while live and not self._cancel.is_set():
+                ready, _, _ = select.select(live, [], [], READ_POLL_S)
+                for fd in ready:
+                    try:
+                        chunk = os.read(fd, 65536)
+                    except OSError:
+                        chunk = b""
+                    if chunk:
+                        got[fd] += chunk
+                    else:
+                        live.remove(fd)
+        finally:
+            self.cut = bool(live)
+            self.out, self.err = (bytes(data).decode("utf-8", "replace").replace("\r\n", "\n")
+                                  .replace("\r", "\n") for data in got.values())
+            for pipe in pipes:
+                pipe.close()
+            if not live:
+                self.ended = time.monotonic()
+
+    def _cut_reader(self) -> None:
+        """The reader joined within `END_S`; one still reading then, a process
+        outside the group holding a pipe, is cut, `_cancel` set, and joined
+        again: it ends within one `READ_POLL_S`, its pipes closed by itself.
+        One still alive after that is raised here, so no reap follows it
+        (T258h)."""
+        self._thread.join(END_S)
+        self._cancel.set()
+        self._thread.join(END_S)
+        if self._thread.is_alive():
+            raise RuntimeError(f"{self.who}'s reader did not end {END_S} s after its cut")
 
     def _exited(self, end: float) -> bool:
         """Whether the run has exited by the monotonic `end`, as
@@ -2061,14 +2087,14 @@ class W258Writer:
         raises (`os.waitid`'s `ChildProcessError`, where something else reaped
         the run) still has the reader joined and the pipes closed before its
         error goes on, with no reap after it (T258g; Codex's review of P09 at
-        `d3a2fd5c`, SHOULD 3's last point)."""
+        `d3a2fd5c`, SHOULD 3's last point). The reader is not left alive: a
+        pipe still held is cut, by `_cut_reader`, and the reader closes both
+        before it ends, so the reap always comes after the reader's end and
+        its closes (T258h; Codex's review of P09 at `b8f9e35a`, SHOULD 4)."""
         try:
             _signal_unreaped(self.proc, group=True, wait=END_S)
         finally:
-            self._thread.join(END_S)
-            if not self._thread.is_alive():
-                for pipe in (self.proc.stdout, self.proc.stderr):
-                    pipe.close()
+            self._cut_reader()
         self.proc.wait(END_S)
 
     def wait(self, timeout: float = 150) -> int:
@@ -2105,8 +2131,8 @@ class W258Writer:
         if self.proc.returncode is None:
             self._end_unreaped()
         else:
-            self._thread.join(END_S)
-        if self._thread.is_alive():
+            self._cut_reader()
+        if self.cut:
             raise RuntimeError(f"{self.who}'s run is reaped, but its pipes did not end in {END_S} s: "
                                f"a process outside its group holds them")
 
@@ -2571,6 +2597,50 @@ def test_a_phase_w_writers_stop_joins_its_reader_and_closes_its_pipes_when_its_s
             f"stop()'s signal step raised, and the reader alive, stdout closed and stderr "
             f"closed are {state}, not (False, True, True)")
     finally:
+        Phase.writers = [writer] if writer.proc.returncode is None else []
+        PhaseW._stop(Phase)
+        writer._thread.join(15)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="T258h's case reads Linux's /proc and pins by a pidfd")
+def test_a_phase_w_writers_reader_cut_by_a_pipe_held_outside_its_group_ends_and_closes_before_the_reap(
+        tmp_path, monkeypatch):
+    """T258h (Codex's review of P09 at `b8f9e35a`, SHOULD 4), no database: a
+    stand-in writer, started as `launch` starts one, exits 0 and leaves a
+    descendant in a session of its own, outside the writer's group, holding
+    its stdout; T258f's stand-in run under `setsid`. Its `stop()` ends the
+    group, which does not reach the holder, and the reader cannot reach the
+    pipe's end: it must be cut, end and close both pipes itself before the
+    one reap, and `stop()` must raise the held pipe. Before T258h the reader
+    blocked with no timeout: the writer was reaped with its reader alive and
+    both pipes open, and they stayed so."""
+    monkeypatch.setitem(globals(), "END_S", 2.0)
+    mark = tmp_path / "descendant"
+    writer = _w_stand_in("w-outside", f"setsid {T258F_STAND_IN}", str(mark), sys.executable, "2")
+
+    class Phase:
+        writers = [writer]
+    events: list = []
+    pid = started = None
+    try:
+        end = time.monotonic() + 10
+        while os.waitid(os.P_PID, writer.proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+            assert time.monotonic() < end, "the stand-in writer did not exit in 10 s"
+            time.sleep(0.05)
+        pid, started = mark.read_text().split()
+        assert os.getsid(int(pid)) != writer.proc.pid, "the holder is in the writer's session"
+        _t258f_recorded(monkeypatch, writer, events)
+        with pytest.raises(RuntimeError, match="a process outside its group holds them"):
+            writer.stop()
+        reaps = [event for event in events if event[0] == "reap"]
+        state = (reaps, writer._thread.is_alive())
+        assert state == ([("reap", False, True, True)], False), (
+            f"with its stdout held outside its group, the writer's reaps (reader alive, stdout "
+            f"closed, stderr closed at each) and its reader alive are {state}")
+    finally:
+        if pid is not None:
+            _end_if_left(int(pid), started)
         Phase.writers = [writer] if writer.proc.returncode is None else []
         PhaseW._stop(Phase)
         writer._thread.join(15)
