@@ -1418,10 +1418,12 @@ def test_answer_2_exits_2_binding_before_t0_plus_1_s_and_the_runner_sees_eof(est
     asserted at twice it (section 4's rule 2), while the stand-in `lane-start`
     holds; the runner sees EOF on both pipes at once, before the stand-in
     ends; the hook itself writes nothing to the register. Under the default
-    bound the record holds `bound_s=500`, `bounded=yes` and a
-    `deadline_epoch` 505 s after `started_utc`, "BINDING" says "bounded at
-    500 s" and to send the work again in a minute or so, and the body runs as
-    `timeout -k 10 490 ... guard-bind --body <uuid>`."""
+    bound the record holds `bound_s=520`, `bounded=yes` and a
+    `deadline_epoch` 525 s after `started_utc`, "BINDING" says "bounded at
+    520 s" and to send the work again in a minute or so, and the body runs as
+    `timeout -k 10 510 ... guard-bind --body <uuid>`. Those are the bind's
+    457 sum at the defaults (T214zd; lane 3, code PR 103 6955175178); at
+    437 they were `bound_s=500`, 505 s, 500 s and 490."""
     est = estate(mode=mode)
     est.set("hold", 60)
     est.make_offer()
@@ -1433,20 +1435,20 @@ def test_answer_2_exits_2_binding_before_t0_plus_1_s_and_the_runner_sees_eof(est
     assert took < 2.0, f"answer 2 exited {took:.2f} s after T0, past T0 + 2 s: {hook!r}"
     assert set(hook.eof) == {"out", "err"}, f"the runner saw no EOF on {hook.eof}: {hook!r}"
     assert max(hook.eof.values()) - hook.t_exit < 0.5, f"EOF came late: {hook.eof}"
-    assert "bounded at 500 s" in hook.err and "send your work again in a minute or so" \
+    assert "bounded at 520 s" in hook.err and "send your work again in a minute or so" \
         in hook.err, hook.err
     assert est.origin_head() == head, "the hook's own process wrote to the register"
     record = est.outer()
     assert not [e for e in est.log("lane-start.log") if e["event"] == "end"], \
         "the stand-in lane-start ended before the runner's EOF was asserted"
-    assert record["mode"] == "binding" and record["bound_s"] == "500" \
+    assert record["mode"] == "binding" and record["bound_s"] == "520" \
         and record["bounded"] == "yes", record
-    assert int(record["deadline_epoch"]) == _epoch(record["started_utc"]) + 505, record
+    assert int(record["deadline_epoch"]) == _epoch(record["started_utc"]) + 525, record
     assert re.search(rf"pid {record['pid']}\b", hook.err), hook.err
     found = _until(lambda: _timeout_argv(int(record["pid"]), est.sid), 5)
     assert found, f"no timeout in the outer's session: {_members('sid', int(record['pid']))}"
     argv = found[1]
-    assert argv[1:4] == ["-k", "10", "490"] and argv[-3:] == ["guard-bind", "--body", est.sid], argv
+    assert argv[1:4] == ["-k", "10", "510"] and argv[-3:] == ["guard-bind", "--body", est.sid], argv
 
 
 @pytest.mark.parametrize("mode", ["files", "primary"])
@@ -2248,47 +2250,53 @@ def _record_with(est: Estate, keys) -> None:
 #: Case 22's configurations: `c`, `n_a` and `w_s_ms` (300, or
 #: `register_rtt_ms` + 200 where it is over 100, with the service's socket;
 #: 0 without), and the `bound_s` each gives (Y:5459, Y:5462; contract
-#: section 4).
+#: section 4), at the bind's 457 sum: `bound_s = (433000 + 3 * M_ms + 28000
+#: * n_a * c + 19 * w_s_ms + 9999) // 10000 * 10`, with `M_ms` 8000, which
+#: is 457000 (lane 3's ruling, code PR 103 6955175178). Every value is the
+#: 437 sum's plus 20 s and no edge moves, so every id keeps its name and its
+#: meaning (T214zd, which rides T502 in P13; lane 3, code PR 103
+#: 6955695384).
 #:
-#: THE 540 s BAND (T214m; the follow-up's commit 24, Z3, from Codex's
+#: THE 560 s BAND (T214m; the follow-up's commit 24, Z3, from Codex's
 #: re-review of spec#47 at `746e931c`, its SHOULD 8; tasks:2008, TP:6409,
-#: map row 442): with one address and `c` = 3, `w_s_ms` 473 gives 530 s and
-#: 474 gives 540 s, (437000 + 84000 + 19 * w_s_ms + 9999) // 10000 * 10, so
-#: a bound clamped to 530 fails `[c3-w474]` (`bind-record.md` section 4 at
-#: draft 13 `cd578400`). The two ids are lane 3's names from that fold.
+#: map row 442): with one address and `c` = 3, `w_s_ms` 473 gives 550 s and
+#: 474 gives 560 s, (457000 + 84000 + 19 * w_s_ms + 9999) // 10000 * 10, so
+#: a bound clamped to 550 fails `[c3-w474]` (`bind-record.md` section 4 at
+#: draft 13 `cd578400`). The two ids are lane 3's names from that fold. At
+#: 437 the band was 540 s, from 530 s.
 #:
-#: THE 510 s BAND AT `c` = 2 (T214p; Codex's r8 of spec#17 at commit 25
-#: `d1a66b2e`, its BLOCKING: `register-cli.md` draft 4.31's K12, :303, gives
-#: 510 s at `c` = 2 where `w_s_ms` passes 368; lane 3's fix for its commit
-#: 26, #165 6882323446, at TP:6258-6265 and :6408-6409, tasks:2008 and map
-#: row 442; lane 2 confirmed it, 6882513333): with one address and `c` = 2,
-#: `w_s_ms` 368 gives 500 s and 369 gives 510 s,
-#: (437000 + 56000 + 19 * w_s_ms + 9999) // 10000 * 10, so a bound clamped
-#: to 500 at `c` = 2 fails `[c2-w369]`. The two ids are lane 3's names, on
-#: the `[c3-w473]` pattern.
+#: THE 530 s BAND AT `c` = 2 (T214p; Codex's r8 of spec#17 at commit 25
+#: `d1a66b2e`, its BLOCKING: `register-cli.md` draft 4.31's K12, :303, gave
+#: 510 s, at 437, at `c` = 2 where `w_s_ms` passes 368; lane 3's fix for its
+#: commit 26, #165 6882323446, at TP:6258-6265 and :6408-6409, tasks:2008
+#: and map row 442; lane 2 confirmed it, 6882513333): with one address and
+#: `c` = 2, `w_s_ms` 368 gives 520 s and 369 gives 530 s,
+#: (457000 + 56000 + 19 * w_s_ms + 9999) // 10000 * 10, so a bound clamped
+#: to 520 at `c` = 2 fails `[c2-w369]`. The two ids are lane 3's names, on
+#: the `[c3-w473]` pattern. At 437 the band was 510 s, from 500 s.
 BOUND_CASES = {
-    "c2": ({"c": 2, "n_a": 1, "w_s_ms": 0}, 500),
-    "c3": ({"c": 3, "n_a": 1, "w_s_ms": 0}, 530),
-    "c2-socket": ({"c": 2, "n_a": 1, "w_s_ms": 300}, 500),
-    "c3-socket": ({"c": 3, "n_a": 1, "w_s_ms": 300}, 530),
-    "a2-c2": ({"c": 2, "n_a": 2, "w_s_ms": 0}, 550),
-    "a2-c3": ({"c": 3, "n_a": 2, "w_s_ms": 0}, 610),
-    "a2-c2-socket": ({"c": 2, "n_a": 2, "w_s_ms": 300}, 560),
-    "a2-c3-socket": ({"c": 3, "n_a": 2, "w_s_ms": 300}, 620),
-    "c2-rtt120": ({"c": 2, "n_a": 1, "w_s_ms": 320}, 500),
-    "c3-rtt270": ({"c": 3, "n_a": 1, "w_s_ms": 470}, 530),
-    "c3-w473": ({"c": 3, "n_a": 1, "w_s_ms": 473}, 530),
-    "c3-w474": ({"c": 3, "n_a": 1, "w_s_ms": 474}, 540),
-    "c2-w368": ({"c": 2, "n_a": 1, "w_s_ms": 368}, 500),
-    "c2-w369": ({"c": 2, "n_a": 1, "w_s_ms": 369}, 510),
+    "c2": ({"c": 2, "n_a": 1, "w_s_ms": 0}, 520),
+    "c3": ({"c": 3, "n_a": 1, "w_s_ms": 0}, 550),
+    "c2-socket": ({"c": 2, "n_a": 1, "w_s_ms": 300}, 520),
+    "c3-socket": ({"c": 3, "n_a": 1, "w_s_ms": 300}, 550),
+    "a2-c2": ({"c": 2, "n_a": 2, "w_s_ms": 0}, 570),
+    "a2-c3": ({"c": 3, "n_a": 2, "w_s_ms": 0}, 630),
+    "a2-c2-socket": ({"c": 2, "n_a": 2, "w_s_ms": 300}, 580),
+    "a2-c3-socket": ({"c": 3, "n_a": 2, "w_s_ms": 300}, 640),
+    "c2-rtt120": ({"c": 2, "n_a": 1, "w_s_ms": 320}, 520),
+    "c3-rtt270": ({"c": 3, "n_a": 1, "w_s_ms": 470}, 550),
+    "c3-w473": ({"c": 3, "n_a": 1, "w_s_ms": 473}, 550),
+    "c3-w474": ({"c": 3, "n_a": 1, "w_s_ms": 474}, 560),
+    "c2-w368": ({"c": 2, "n_a": 1, "w_s_ms": 368}, 520),
+    "c2-w369": ({"c": 2, "n_a": 1, "w_s_ms": 369}, 530),
 }
 
 #: Case 22's `[answer-2]`: the contract stub's constants line as T207 writes
 #: it (section 2.4's defaults, `sql_register_helpers.py`'s `_CONTRACT_STUB`),
 #: and the line this case's own copy of the stub carries instead, so that its
 #: `.head` gives `c=3`, `n_a=2` and `w_s_ms=300`: `BOUND_CASES["a2-c3-socket"]`,
-#: 620 s. A record missing any one of the three gives another bound: 560
-#: without `c` (`"a2-c2-socket"`), 530 without `n_a` (`"c3-socket"`) and 610
+#: 640 s. A record missing any one of the three gives another bound: 580
+#: without `c` (`"a2-c2-socket"`), 550 without `n_a` (`"c3-socket"`) and 630
 #: without `w_s_ms` (`"a2-c3"`).
 ANSWER_2 = "answer-2"
 STUB_HEAD_LINE = "C, N_A, W_S_MS, SCHEMA = 2, 1, 0, 1"
@@ -2324,8 +2332,8 @@ def _bound_through_answer_2_on_the_stub(estate, tmp_path) -> None:
     assert record["mode"] == "binding", record
     assert (record.get("c"), record.get("n_a"), record.get("w_s_ms")) == ("3", "2", "300"), \
         f"the record does not hold .head's c=3, n_a=2 and w_s_ms=300: {record}"
-    assert record["bound_s"] == "620", record
-    assert int(record["deadline_epoch"]) == _epoch(record["started_utc"]) + 625, record
+    assert record["bound_s"] == "640", record
+    assert int(record["deadline_epoch"]) == _epoch(record["started_utc"]) + 645, record
 
 
 @pytest.mark.parametrize("configuration", sorted(BOUND_CASES) + [ANSWER_2])
@@ -2339,7 +2347,7 @@ def test_guard_bind_computes_bound_s_from_c_n_a_and_the_service(estate, tmp_path
     `[answer-2]` writes no record of its own: it reaches `guard-bind` through
     answer 2 on the contract stub (T207), its `.head` set to `c=3`, `n_a=2`
     and `w_s_ms=300`, and the record at `mode=binding` holds the three as
-    `.head` gives them, with `bound_s=620` and a `deadline_epoch` 625 s after
+    `.head` gives them, with `bound_s=640` and a `deadline_epoch` 645 s after
     `started_utc`. It fails until L5-A3 (lane 5's T507), which copies them."""
     if configuration == ANSWER_2:
         _bound_through_answer_2_on_the_stub(estate, tmp_path)
@@ -4351,7 +4359,7 @@ def test_the_bind_records_grammar_as_every_reader_takes_it(estate, case):
     - `[key-twice]`: a key given twice is read by its first line, by each
       reader: the guard's site (`mode=binding` then `mode=bound`, and a
       `deadline_epoch` ahead then one past: "BINDING IN PROGRESS", the record
-      unchanged); the outer's bound (`c=3` then `c=2`: `bound_s=530`); and
+      unchanged); the outer's bound (`c=3` then `c=2`: `bound_s=550`); and
       the hook's answer 2 (`bind=1` then `bind=7`: attempt 2).
     - `[unknown-key]`: a line no reader knows survives every rewrite of the
       record: the hook's and the outer's start, the outcome, the guard's
@@ -4378,7 +4386,7 @@ def test_the_bind_records_grammar_as_every_reader_takes_it(estate, case):
         write_record(est.offer, lines + ["c=3", "n_a=1", "w_s_ms=0", "c=2"])
         proc = _guard_bind(est, est.sid, LANES_BIND_BODY=str(est.body))
         record = est.record()
-        assert proc.returncode == 0 and record.get("bound_s") == "530", \
+        assert proc.returncode == 0 and record.get("bound_s") == "550", \
             f"the outer's bound took c's second line: {record}\n{proc.stderr}"
         hook = est.hook("the next prompt")
         assert hook.code == 2 and "MOVED" in hook.err, repr(hook)
@@ -5127,12 +5135,18 @@ def test_a_bind_whose_write_id_no_pending_record_holds_makes_no_lookup(estate, c
 def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, request):
     """AT-F6 case 21 (R-P23): on the primary fixture behind T229's delayed
     loopback, 75 ms each way with TLS on, and `connect_timeout=3` with one
-    address: `guard-bind` records `bound_s=530`, the bind ends `bound`, its
-    `ended_utc` less `started_utc` recorded beside the 530 s, and the
+    address: `guard-bind` records `bound_s=550`, the bind ends `bound`, its
+    `ended_utc` less `started_utc` recorded beside the 550 s, and the
     guard's register read is the hook's last database call in the shim's
     log. The relay is T229's `delayed_loopback`, which FX's
     `tests/pgcluster.py` holds (`a048fddb:tests/pgcluster.py:1400`), and
     which the case asserts is there (T254zq; lane 2's review RV23, NIT 5).
+
+    THE ID KEEPS ITS 530 (T214zd; lane 3, code PR 103 6955695384): 530
+    names the bound at 437. The bind's 457 sum (lane 3, code PR 103
+    6955175178) makes it 550 s, so the assertion and the wait ceiling below
+    say 550; the test's id and its gate key keep their names, so no
+    selector, gate table or call list moves.
 
     THE LINK IS ROUTED (T254za; lane 5, #165 6841545201): the estate
     reads and writes T229's TLS cluster, which listens on 127.0.0.1 (the
@@ -5141,7 +5155,7 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
     (`TLSCluster.configuration`, its two logins and their password files)
     with each URL's port the relay's and `connect_timeout=3`, one address
     and no `register_addresses=`. So the prefetch's `.head` says `c=3`,
-    and `guard-bind` sums 530 s (TP:6183-6187 at a6497d00).
+    and `guard-bind` sums 550 s (TP:6183-6187 at a6497d00 gives 530 s, at 437).
 
     THE IMAGE CACHE IS FILLED FIRST (T254zg; lane 5, #165 6852197902): a
     cold prompt reads form 2 and then fetches the whole files in a second
@@ -5227,8 +5241,8 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
         exited = time.time() - (time.monotonic() - hook.t_exit)
         calls = est.shim_calls()[len(offered):]
         record = est.outer()
-        assert record["bound_s"] == "530", record
-        record = est.ended(530)
+        assert record["bound_s"] == "550", record
+        record = est.ended(550)
         port = str(relay.port)
     seen = [(c.get("call"), c.get("pg", {}).get("PGPORT"), c.get("pg", {}).get("PGCONNECT_TIMEOUT"),
              c.get("pg", {}).get("PGOPTIONS")) for c in calls]
@@ -5251,7 +5265,7 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
     assert not unended, f"call(s) {unended} never ended: cut at a timer, or still held"
     assert record["mode"] == "bound", record
     print(f"T254 case 21: ended_utc - started_utc = "
-          f"{_epoch(record['ended_utc']) - _epoch(record['started_utc'])} s beside 530 s")
+          f"{_epoch(record['ended_utc']) - _epoch(record['started_utc'])} s beside 550 s")
     assert hook.code == 2
 
 
