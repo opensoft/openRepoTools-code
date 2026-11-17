@@ -3184,7 +3184,10 @@ def test_an_estate_whose_construction_fails_ends_what_it_started(monkeypatch, tm
         assert carried and carried[0] != outer, "the cutover host was built without the nonce"
         assert os.environ.get(IDENTITY) == outer, "the estate's nonce was left in the environment"
         until = time.monotonic() + 5
-        while (_stat(left) or {}).get("start") == start and _stat(left)["state"] not in ("Z", "X"):
+        while True:  # one read of its stat a pass: it can be reaped between two (Codex at 5a120647)
+            now = _stat(left)
+            if now is None or now["start"] != start or now["state"] in ("Z", "X"):
+                break
             assert time.monotonic() < until, (
                 f"pid {left}, which the failed construction left, is still there")
             time.sleep(0.02)
