@@ -2797,6 +2797,9 @@ def test_each_writer_leads_a_session_of_its_own_and_its_end_reaches_its_descenda
     assert closed == [True] * 4, f"_end_writers left a writer's pipe open: {closed}"
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="the stand-in names its descendant by /proc/<pid>/stat field 22, "
+                           "and the case finds it gone through /proc: Linux only (T257z)")
 def test_a_writer_whose_communicate_times_out_is_ended_with_its_group_and_its_pipes_closed(
         tmp_path, monkeypatch):
     """T257w (Codex's review of P09 at `d3a2fd5c`, SHOULD 4: the lookup-wait
@@ -2814,7 +2817,10 @@ def test_a_writer_whose_communicate_times_out_is_ended_with_its_group_and_its_pi
     a stand-in that exits before its mark ends it at once, each one's exit
     named; one `finally` passes every writer started to `_end_writers`
     (T257y; Codex's review of P09 at `b8f9e35a`, BLOCKING 2: the wait had no
-    deadline, and its failures ended `first` alone)."""
+    deadline, and its failures ended `first` alone). It runs on Linux alone:
+    the stand-in names its descendant by `/proc/<pid>/stat`, which the oracle
+    reads too (T257z; Codex's review of P09 at `b8f9e35a`, SHOULD 9, as
+    T224q)."""
     late = _signals_kept_to_unreaped(monkeypatch)
     monkeypatch.setitem(globals(), "WRITER_DRAIN_S", 1.0)
     mark = tmp_path / "descendant"
