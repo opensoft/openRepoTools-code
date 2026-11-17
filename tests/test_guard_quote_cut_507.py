@@ -25,13 +25,19 @@ skip quotes bash's warning (lane 5's Claude pre-review of P19, NIT 6). The
 cases whose 1000th byte splits a character are red on the cut before the
 NIT round; the others are its controls, green before and after.
 
-The last case, at the end of the file, holds S3's outage text to the
-register-service spec's SHALL, "The guard fails closed during a database
-outage": the refusal names the store, the cause and the two ways out, and
-the first of them is to wait for the database (lane 5's answer to spec#58's
-disagreement 2). It runs `reg_guard_s3` as the file writes it, cut out and
-run in `bash` with the same stand-ins, and is red on the text that named
-the status and rollback commands alone.
+The next case holds S3's outage text to the register-service spec's SHALL,
+"The guard fails closed during a database outage": the refusal names the
+store, the cause and the two ways out, and the first of them is to wait for
+the database (lane 5's answer to spec#58's disagreement 2). It runs
+`reg_guard_s3` as the file writes it, cut out and run in `bash` with the
+same stand-ins, and is red on the text that named the status and rollback
+commands alone.
+
+The cases after it are lane 3's Codex review of T507's chain 2 at
+`4801cb83` (#165 6933947760), each held in this module where its fixtures
+reach: the too-late refusal's words (SHOULD 5), run through
+`reg_guard_prefetch` as the file writes it, with a stand-in `lanes-index`
+that ends 2.
 """
 
 from __future__ import annotations
@@ -258,3 +264,58 @@ def test_the_guards_outage_refusal_names_waiting_for_the_database_first(tmp_path
                       "procedure in the manual's runbook, \"The database lost for good\"")
     assert word < needs < lost < where, ways
     assert ways.endswith(f"session. {S3_BYPASS}"), ways
+
+
+#: What form 2 says where it is too late to verify (contract 3.6's exits
+#: table, 2; `cmd_register_read`): its mode line on stdout, then the cause on
+#: stderr, and exit 2.
+TOO_LATE_STUB = ("#!/bin/sh\nprintf 'mode primary\\n'\n"
+                 "printf 'lanes-index: too late to verify\\n' >&2\nexit 2\n")
+
+
+def _figure(name: str, pattern: str) -> str:
+    """One figure as the file `name` writes it, on a line of its own."""
+    match = re.search(pattern, (REPO / name).read_text(encoding="utf-8"), re.M)
+    assert match, f"{pattern!r} is no longer in {name}"
+    return match.group(1)
+
+
+def test_the_guards_too_late_refusal_names_the_declared_outages_floor_and_cap(tmp_path):
+    """Form 2's 2, "too late to verify", is refused 2 by `reg_guard_prefetch`,
+    and the refusal gives, in this order: the start line, `T0` + 3750 ms; under
+    a declared outage, less than 0.5 s left before the earlier cap, `T0` +
+    3650 ms; "or was cut there"; then form 2's own words. Each figure is the
+    one the code holds: `GUARD_BUDGET_START_MS` in `lanes-edit.sh`, and
+    `REGISTER_GUARD_CUT_S`, `REGISTER_GUARD_DECLARED_CUT_S` and
+    `REGISTER_GUARD_FLOOR_S` in `lanes-index` (lane 5's Claude pre-review of
+    P19, NIT 4, `87408c5a`; lane 3's Codex review of chain 2, SHOULD 5).
+
+    It fails on the refusal that named the start line alone."""
+    start_ms = _figure("lanes-edit.sh", r"^GUARD_BUDGET_START_MS=([0-9]+)$")
+    cut_s = _figure("lanes-index", r"^REGISTER_GUARD_CUT_S = ([0-9.]+)$")
+    declared_s = _figure("lanes-index", r"^REGISTER_GUARD_DECLARED_CUT_S = ([0-9.]+)$")
+    floor_s = _figure("lanes-index", r"^REGISTER_GUARD_FLOOR_S = ([0-9.]+)$")
+    assert start_ms == str(round(float(cut_s) * 1000)), (start_ms, cut_s)
+    declared_ms = round(float(declared_s) * 1000)
+    stub = tmp_path / "lanes-index"
+    stub.write_text(TOO_LATE_STUB, encoding="utf-8")
+    stub.chmod(0o755)
+    warn = tmp_path / "refusal"
+    script = (STANDINS + f"GUARD_BUDGET_START_MS={start_ms}\n" + _function("reg_guard_prefetch")
+              + 'reg_guard_prefetch\nexit "$?"\n')
+    res = subprocess.run(["bash", "-c", script, "bash", str(stub), str(warn),
+                          str(tmp_path / "quote"), str(tmp_path / "cache")],
+                         capture_output=True, env={"PATH": os.environ["PATH"], "LC_ALL": "C"},
+                         timeout=60, check=False)
+    assert res.returncode == 2, (res.returncode, res.stderr)
+    text = warn.read_text(encoding="utf-8")
+    assert text.startswith("it is too late in the hook's 5 s to verify the triple: the guard's "
+                           "register read would have started at or past "), text
+    start = text.index(f"its start line, T0 + {start_ms} ms")
+    floor = text.index(f"(under a declared outage, with less than {floor_s} s left before its "
+                       f"cap, T0 + {declared_ms} ms)")
+    cut = text.index(", or was cut there")
+    said = text.index("(`lanes-index register read --for guard --prefetch` exited 2: "
+                      "lanes-index: too late to verify)")
+    assert start < floor < cut < said, text
+    assert text.endswith("(Amendment 12(d); feature 007, SVC-8)."), text
