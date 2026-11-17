@@ -2810,7 +2810,11 @@ def test_a_writer_whose_communicate_times_out_is_ended_with_its_group_and_its_pi
     reaped. Then two writers, the first one's end made to raise: `_end_writers`
     must still end the second, close all four pipes within its drain bound,
     and raise the first one's error. Before T257w both pipes of each writer
-    were left open."""
+    were left open. The wait for the two marks has a monotonic deadline, and
+    a stand-in that exits before its mark ends it at once, each one's exit
+    named; one `finally` passes every writer started to `_end_writers`
+    (T257y; Codex's review of P09 at `b8f9e35a`, BLOCKING 2: the wait had no
+    deadline, and its failures ended `first` alone)."""
     late = _signals_kept_to_unreaped(monkeypatch)
     monkeypatch.setitem(globals(), "WRITER_DRAIN_S", 1.0)
     mark = tmp_path / "descendant"
@@ -2833,29 +2837,39 @@ def test_a_writer_whose_communicate_times_out_is_ended_with_its_group_and_its_pi
         except OSError:
             return True
         return fields[19] != started or fields[0] in ("Z", "X")
-    conf = tmp_path / "lanes-index.conf"
-    writer = _writer(Stand, conf, "one")
-    with pytest.raises(subprocess.TimeoutExpired):
-        try:
-            writer.communicate(timeout=1.0)
-        finally:
-            _end_writers([writer])
-    end = time.monotonic() + 5
-    while not gone("one") and time.monotonic() < end:
-        time.sleep(0.05)
-    said = (writer.returncode, writer.stdout.closed, writer.stderr.closed, gone("one"))
-    assert said == (-signal.SIGTERM, True, True, True), (
-        f"after a timeout the writer's exit, stdout closed, stderr closed and descendant gone "
-        f"are {said}, not ({-signal.SIGTERM}, True, True, True)")
-    first, second = _writer(Stand, conf, "two-a"), _writer(Stand, conf, "two-b")
-    real = _end_process
+    conf, real, started = tmp_path / "lanes-index.conf", _end_process, []
 
     def first_fails(proc, *, group, wait=10.0):
         if proc is first:
             raise ChildProcessError("T257w's stand-in: the first writer was reaped elsewhere")
         real(proc, group=group, wait=wait)
     try:
-        while not all(Path(f"{mark}.{state}").exists() for state in ("two-a", "two-b")):
+        writer = _writer(Stand, conf, "one")
+        started.append(writer)
+        with pytest.raises(subprocess.TimeoutExpired):
+            try:
+                writer.communicate(timeout=1.0)
+            finally:
+                _end_writers([writer])
+        end = time.monotonic() + 5
+        while not gone("one") and time.monotonic() < end:
+            time.sleep(0.05)
+        said = (writer.returncode, writer.stdout.closed, writer.stderr.closed, gone("one"))
+        assert said == (-signal.SIGTERM, True, True, True), (
+            f"after a timeout the writer's exit, stdout closed, stderr closed and descendant gone "
+            f"are {said}, not ({-signal.SIGTERM}, True, True, True)")
+        for state in ("two-a", "two-b"):
+            started.append(_writer(Stand, conf, state))
+        first, second = started[1:]
+        end = time.monotonic() + 10
+        while True:
+            exits = [proc.poll() for proc in (first, second)]
+            marked = [Path(f"{mark}.{state}").exists() for state in ("two-a", "two-b")]
+            if all(marked):
+                break
+            assert exits == [None, None] and time.monotonic() < end, (
+                f"the stand-ins two-a and two-b have marked {marked}, their exits {exits}: each "
+                f"must mark within 10 s and keep running")
             time.sleep(0.05)
         monkeypatch.setitem(globals(), "_end_process", first_fails)
         start = time.monotonic()
@@ -2868,7 +2882,7 @@ def test_a_writer_whose_communicate_times_out_is_ended_with_its_group_and_its_pi
             f"the pipes closed are {pipes}, after {took:.1f} s")
     finally:
         monkeypatch.setitem(globals(), "_end_process", real)
-        _end_process(first, group=True)
+        _end_writers(started)
     assert late == [], f"a writer was signalled once it was reaped: {late}"
 
 
