@@ -3273,9 +3273,18 @@ def test_over_a_delayed_tls_link_no_healthy_call_meets_its_timer(tls_cluster, tm
 #: rename comment" and "the GitHub comment", and four `printf` lines to
 #: stdout, "could not be read", two "superseded transcript" and "this window
 #: is lane"), and the eleven more of line R's `lanes-edit.sh` at `548b8f2e`,
-#: against which the burst case's writers run (hosted run 44016287671): the
+#: against which the burst case's writers ran (hosted run 44016287671): the
 #: three files-mode questions, with each `<why>` their callers pass, the stale
 #: pending record, a write already in the register, and the six rename moves.
+#: At `548b8f2e` the mode question's 124 and 137 whys said "within 2 s" and "by
+#: its 2 s timer". The two `<why>` rows here are T409's words, as line R's
+#: `df349fb5` hands them to `reg_mode_files` at `rmq_s` 5: "did not answer
+#: within its 5 s timer, and was stopped (exit 124)" and "was killed (exit
+#: 137): by its 5 s timer after it ignored the stop, or by a signal". The two
+#: fixtures that quote the 124 line say T409's words too: the burst test's
+#: line came from that run's writer 3, in the 2 s words, the other test's
+#: quotes the same line, and both moved to T409's words when this form was
+#: recut onto `df349fb5` (lane 3's ruling 6958920736).
 #: A variable part is shown only in a form that cannot hold a secret: `{n}`, a
 #: number of at most ten digits; `{id}`, a write id, a UUID; `{cmd}`, one of
 #: the product's own verbs. Every other variable part, `{…}`, may be any text,
@@ -3299,8 +3308,8 @@ _FILES_WHY = ("could not be run: there is no lanes-index beside {…}/lanes-edit
               "could not be asked: no cache file could be made under {…} to hold its answer",
               "exited 0 without answering one line, index or primary",
               "exited 0 without answering one line, mode index or mode primary",
-              "did not answer within 2 s, and was stopped (exit 124)",
-              "was killed (exit 137): by its 2 s timer after it ignored the stop, or by a signal",
+              "did not answer within its 5 s timer, and was stopped (exit 124)",
+              "was killed (exit 137): by its 5 s timer after it ignored the stop, or by a signal",
               "was killed by a signal (exit 137)",
               "exited {n}", "exited {n} ({…})")
 _RENAME_OWED = " The move is owed: {…}."
@@ -3607,7 +3616,7 @@ def _burst_report(logins: str, writers: list, ends: list, rows: list, calls: lis
     `_shown_warning` shows it, the others only counted, and no other line of
     its stderr (T257x, T257zc, `_warnings_of`): a writer whose `lanes-index
     mode` question failed says why in a WARNING (`reg_mode_files`, line R's
-    `lanes-edit.sh`:6415), of which a 300-character tail kept only the last
+    `lanes-edit.sh`:6415 at `548b8f2e`), of which a 300-character tail kept only the last
     18 characters (run 44016287671, writer 3). A writer's time is when the
     collection, which reads the writers in order, reached its end, so a writer
     that ended early shows a later writer's time."""
@@ -3735,9 +3744,18 @@ def test_the_burst_report_prints_each_warning_whole_and_no_credential():
     """`_burst_report` (T257v, T257x), with no engine, on run 44016287671's
     writer 3: `lanes-edit.sh` warned that its `lanes-index mode` question
     failed (`reg_mode_files`, :6415), ran in files mode, met the marker and
-    exited 69 (`cs_marker_refuse`, :3971-3972); its 300-character tail kept
-    only the warning's last 18 characters, `feature 007, D3).`, so why the
-    question failed was lost. The report must carry each writer's exit and its
+    exited 69 (`cs_marker_refuse`, :3971-3972; both line numbers are those of
+    `lanes-edit.sh` at `548b8f2e`, which that run's writers ran against); its
+    300-character tail kept only the warning's last 18 characters,
+    `feature 007, D3).`, so why the question failed was lost. That run's
+    product said the 124 why as "did not answer within 2 s, and was stopped
+    (exit 124)". This case's `warning` line came from the run's writer 3 and
+    now says T409's words in place of those, "did not answer within its 5 s
+    timer, and was stopped (exit 124)", which `reg_mode_query` hands to
+    `reg_mode_files` at `rmq_s` 5 on line R's `df349fb5` (lane 3's ruling
+    6958920736 on the recut of this form); the other fixture that quotes the
+    124 line says the same. The tail assert measures from the warning's end,
+    so it holds at either timer. The report must carry each writer's exit and its
     WARNING line as the line's template shows it, and no other line of any
     writer's stderr (T257x; Codex's review of P09 at `b8f9e35a`, BLOCKING 1;
     T257zc): not the refusal's lines, and none of the credential forms
@@ -3750,7 +3768,7 @@ def test_the_burst_report_prints_each_warning_whole_and_no_credential():
     T257zc), and never whole (T257zg; lane 2's pre-review RV9-36 of P09 at
     `2407ea06`, N4). The planted value is no credential of any login."""
     planted = "planted-not-a-password"
-    warning = ("lanes-edit: WARNING: `lanes-index mode` did not answer within 2 s, and was "
+    warning = ("lanes-edit: WARNING: `lanes-index mode` did not answer within its 5 s timer, and was "
                "stopped (exit 124), so `set-row-state` runs in files mode, as on a "
                "workstation with no lanes-index configuration (feature 007, D3).")
     refusal = ("lanes-edit: lanes/STORE is on origin/main at 17ceb1c26f81, the tip this "
@@ -3906,7 +3924,7 @@ def test_a_failure_message_shows_no_line_of_a_writers_output_that_no_template_ma
     value. Before T257zh the message held the writer's whole stderr. The
     planted value is no credential of any login."""
     planted = f"fake-{uuid.uuid4().hex}"
-    warning = ("lanes-edit: WARNING: `lanes-index mode` did not answer within 2 s, and was stopped "
+    warning = ("lanes-edit: WARNING: `lanes-index mode` did not answer within its 5 s timer, and was stopped "
                "(exit 124), so `set-row-state` runs in files mode, as on a workstation with no "
                "lanes-index configuration (feature 007, D3).")
     proc = subprocess.CompletedProcess(
