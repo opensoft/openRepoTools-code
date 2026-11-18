@@ -38,7 +38,9 @@ until T514, T502's parts 8 to 63, S6 also until T510 (table below). Case 22's
 `test_guard_bind_computes_bound_s_from_c_n_a_and_the_service` and lane 5's
 `test_the_post_bind_refill_is_one_register_read_and_never_git` also fail until
 L5-A3, lane 5's T507, which copies `c`, `n_a` and `w_s_ms` from `.head` and
-makes the post-bind refill. Of the `[files]` cases that run the real
+makes the post-bind refill; so does T214zc's whole bind off primary (lane 5's
+CXC12B, S4), red before T507's `7b5cad67` makes that refill once there too.
+Of the `[files]` cases that run the real
 `lane-start`, only `test_the_bind_child_records_bind_failed_with_the_code_and_binds_nothing`
 also fails until lane 4's `start-record` (L4-B9, T427 and T428), whose calls it
 asserts; case 17 and row (d) need nothing more, and pass on lane 5's `6050581`
@@ -76,7 +78,7 @@ from conftest import REPO, WINDOWS_SKIP
 from sql_register_helpers import (ARGV_LOG, GUARD_PANE, GUARD_WINDOW, PSQL_SHIM,
                                   PSQL_SHIM_CONTROL, PSQL_SHIM_ENDS, PSQL_SHIM_LOG,
                                   contract_stub,
-                                  guard_session, guard_strip_env)
+                                  guard_session, guard_strip_env, stub_outcome)
 
 pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None
@@ -121,7 +123,10 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: check of the server's uid, is the row of SVC-2's other case,
 #: `test_a_client_of_another_uid_is_closed_by_so_peercred`: tasks:2278 at
 #: lane 3's commit 31 `8f50d105` says it fails until L5-S1, lane 5's T512,
-#: under the same Order (tasks:2302 there). No task is common to every row,
+#: under the same Order (tasks:2302 there). T214zc's row, the whole bind off
+#: primary (lane 5's CXC12B, S4; lane 3's Codex review of chain 2, SHOULD 4,
+#: #165 6933947760), is the post-bind refill case's own, T502 and T507, under
+#: T214's Order (tasks:2013). No task is common to every row,
 #: so there is no "*" row.
 SQL_REGISTER_GATE_TABLE = {
     "test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither": ("T512", "T513"),  # T237; tasks:2302
@@ -168,6 +173,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_guard_bind_exits_as_section_7_gives": ("T502",),  # T214; tasks:2013
     "test_kill_of_the_bind_outer_ends_the_record_with_the_signals_code": ("T502",),  # T214; tasks:2013
     "test_no_session_environment_carries_a_database_url_or_password": ("T103", "T113", "T502", "T507", "T512"),  # T213; tasks:1992, and T512 (T213r)
+    "test_off_primary_a_whole_bind_refills_once_and_reads_the_files_afresh_after_lane_start": ("T502", "T507"),  # T214; tasks:2013 (T214zc)
     "test_one_instance_holds_register_lock_and_a_second_starter_exits_0": ("T512", "T513"),  # T237; tasks:2302
     "test_pid_start_of_answers_live_dead_and_unreadable": ("T502",),  # T214; tasks:2013
     "test_serve_refuses_unless_the_mode_answer_is_primary": ("T512", "T513"),  # T237; tasks:2302
@@ -2507,6 +2513,95 @@ def test_the_post_bind_refill_is_one_register_read_and_never_git(estate, tmp_pat
     after = [line for line in logged if float(line.split(" ", 1)[0]) > done_at]
     assert not after, f"git was called after lane-start's end, by the refill: {after}"
     assert stub.exists()
+
+
+#: THE REFILL OFF PRIMARY (T214zc; lane 5's CXC12B, S4): what the contract
+#: stub answers every `register read` and every `mode` with, by id. `index`
+#: is a configured workstation in `mode index`; `files-mode-fallback` is a
+#: refused configuration's 1, which `reg_prefetch` reads as a failed question,
+#: files mode with one warning. Then the warnings the attempt's out file holds.
+REFUSED_CONFIG = {"exit": 1, "stderr": "lanes-index: REFUSED: a refused configuration\n"}
+OFF_PRIMARY = {
+    "index": ({"exit": 0, "stdout": "mode index\n"}, {"exit": 0, "stdout": "index\n"}, 0),
+    "files-mode-fallback": (REFUSED_CONFIG, REFUSED_CONFIG, 1),
+}
+#: The refill's warning, as `reg_read_files` words it for a call that exited 1.
+REFILL_WARNING = "WARNING: `lanes-index register read --prefetch` exited 1"
+#: The bound check's register read in files mode: `register_text_checked`'s
+#: `git show` of the published register.
+FILES_READ = " show origin/main:lanes/LANES.md"
+
+
+@pytest.mark.parametrize("case", list(OFF_PRIMARY))
+def test_off_primary_a_whole_bind_refills_once_and_reads_the_files_afresh_after_lane_start(
+        estate, tmp_path, case):
+    """AT-F6 off primary (T214zc; lane 5's CXC12B, S4, the whole-bind half of
+    its `test_the_post_bind_refill_asks_once_and_off_primary_later_only_flushes`;
+    lane 3's Codex review of chain 2, SHOULD 4). A whole bind, the offer, the
+    `2` and the detached child, on a configured workstation that is not on
+    primary, through the contract's stub `lanes-index` (T207) beside a copy of
+    `lanes-edit.sh`, as `test_the_post_bind_refill_is_one_register_read_and_never_git`
+    runs it on primary, and through both of the refill's real call sites,
+    `guard_bind_body`'s after `lane-start` and `guard_bound_check`'s. Under
+    `[index]` the stub answers `mode index`; under `[files-mode-fallback]`
+    it refuses with 1, so each question falls to files mode with a warning.
+    Either way the bind ends `bound`, with exactly one form-1 request that is
+    not the hooks' own `--for guard` read, `register read --prefetch --cache
+    <file> --files register,aliases`; the attempt's out file holds the
+    refill's warning once under `[files-mode-fallback]` and never under
+    `[index]`, and the bound check's words; and after `lane-start`, past the
+    bind's own `set-row-state`, the bound check reads the register's files
+    afresh, a `git show` of it, since the refill's flush dropped the copy
+    read before that write.
+
+    It fails on the refill that left `GB_REFILLED` at 0 off primary
+    (`lanes-edit.sh` at `7f226784`), which asked `lanes-index` a second time
+    from `guard_bound_check` and warned a second time. Lane 5's `7b5cad67`
+    records `GB_REFILLED=2` there, after which a call only flushes (lane 5's
+    Claude pre-review of P19, NIT 5). No engine."""
+    read, mode, warnings = OFF_PRIMARY[case]
+    code = tmp_path / "code"
+    code.mkdir()
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        shutil.copy2(REPO / name, code / name)
+    est = estate(guard=code / "lanes-edit.sh")
+    contract_stub(code)
+    stub_outcome(code, "register read", **read)
+    stub_outcome(code, "mode", **mode)
+    git_log = est.ctl / "git.log"
+    _script(est.bin / "git", "#!/bin/sh\nprintf '%s %s\\n' \"$(date +%s.%N)\" \"$*\" >> @LOG@\n"
+            "exec @GIT@ \"$@\"\n", LOG=repr(str(git_log)), GIT=repr(shutil.which("git")))
+    conf = tmp_path / "lanes-index.conf"
+    conf.write_text(f"register_url=postgresql:///register?host={tmp_path}/sock\n",
+                    encoding="utf-8")
+    est.extra["LANES_INDEX_CONFIG"] = str(conf)
+    est.make_offer()
+    est.answer_2()
+    end = est.ended()
+    assert end["mode"] == "bound", end
+    calls = [json.loads(line) for line in (code / ARGV_LOG).read_text(
+        encoding="utf-8").splitlines()] if (code / ARGV_LOG).exists() else []
+    assert [c for c in calls if "--for" in c], f"no hook asked lanes-index its form 2: {calls}"
+    refills = [c for c in calls if c[:2] == ["register", "read"] and "--prefetch" in c
+               and "--for" not in c]
+    assert len(refills) == 1, f"{len(refills)} non-guard form-1 requests, not one: {calls}"
+    refill = refills[0]
+    assert "--cache" in refill and "--files" in refill and "--all" not in refill \
+        and refill[refill.index("--files") + 1] == "register,aliases", refill
+    out = Path(end["out"]).read_text(encoding="utf-8", errors="replace")
+    assert out.count(REFILL_WARNING) == warnings, (
+        f"the attempt's out file holds the refill's warning {out.count(REFILL_WARNING)} "
+        f"times, not {warnings}: {out[-1500:]}")
+    assert f"{TO}'s session cell" in out, f"the bound check said nothing: {out[-1500:]}"
+    lane_start_end = [e["t"] for e in est.log("lane-start.log") if e["event"] == "end"][0]
+    marks = [e["t"] for e in est.log("lanes-edit.log") if e["argv"][:1] == ["set-row-state"]]
+    assert len(marks) == 1 and marks[0] > lane_start_end, (
+        f"the bind did not mark the lane it left once, after lane-start: {marks}")
+    logged = git_log.read_text(encoding="utf-8").splitlines() if git_log.exists() else []
+    fresh = [line for line in logged
+             if float(line.split(" ", 1)[0]) > marks[0] and FILES_READ in line]
+    assert fresh, ("after the bind's own write the bound check read no register file afresh: "
+                   f"{[line for line in logged if float(line.split(' ', 1)[0]) > lane_start_end]}")
 
 
 # ------------------------------------------------ T214: lane 5's five of section 8
