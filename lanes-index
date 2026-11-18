@@ -1210,7 +1210,7 @@ def _set_mode_write(real: str, before: bytes, after: bytes, st: os.stat_result,
             break
         else:
             raise FileExistsError(f"no free temp file name beside {real}")
-        os.fchmod(fd, st.st_mode & 0o777)
+        os.fchmod(fd, 0o600)
         own = os.fstat(fd)
         if (own.st_uid, own.st_gid) != (st.st_uid, st.st_gid):
             os.fchown(fd, st.st_uid, st.st_gid)
