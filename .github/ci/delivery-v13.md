@@ -152,3 +152,7 @@ Rollback is a normal reviewed false policy. Assembly pins, composed acceptance,
 SAFE-gated shared-checkout adoption, tools, sessions and releases remain separate.
 Passing this first pair is initial test-only acceptance, not blanket v1.3
 adoption. Wider task-set profiles require the next reviewed stage and its proof.
+
+The next P07/P09 cohort is documented in [disabled expansion preparation](v13-expansion.md).
+That separate manifest/inspector grants no live omission, foundation transition
+or queue admission and leaves this active initial-pair contract unchanged.

@@ -1,0 +1,89 @@
+# P07/P09: disabled CI expansion preparation
+
+This is preparation, not activation. `v13-prepared-cohort.json` is deliberately
+separate from the active P05/P06 projection and delivery policy. No workflow,
+live verifier or Mergify queue consumes this file. Merging this preparation
+alone cannot grant skipping, a green review receipt or queue admission.
+
+The source PRs are P07/code#97 and P09/code#103. The manifest records their
+owner-confirmed histories and fresh exact-head local Codex review references.
+Coordination starts at opensoft/openRepoTools#165 comment6927765450. Old public
+heads are observations only. A null source binding is pending, not a wildcard.
+P08/code#106 stays held, including `.github/workflows/release.yml`.
+
+Renewed owner consent (issue165 comments6938017311 and6938099557) requires
+P07 before P09. The disabled inspector therefore accepts only that order and
+previews P07 first with the original foundation, followed by P09's declared
+helper transition. Reversed order refuses; this does not change any live queue
+or grant consent to a moved product head.
+
+The resolved cut includes P09's T237zzi (one trailing empty line removed;
+unchanged AST), per lane2 comment6930368576 and lane3 ruling6930389021.
+Lane1 published P07 `4e9821ab` and P09 `f4f0ebce`; their declared histories
+start at P01 `7f1141be` and landed P03 `6aa8b5c0`, respectively. Each anchor
+must contain the common prerequisite and already be in frozen main. This does
+not permit rebasing, skipped commits or widening an inventory. Consent6928862535
+is conditional; review links remain pending until actual exact-head reviews.
+
+Those old cuts are superseded. Owner handoff6947653181 supplies P07's completed
+CX-37 cutcab8fcfd, with clean review6948304918 and remaining consent conditions.
+Owner handoff6956070097 supplies P09's final165-commit cut1d16c0cc; lane3 agrees
+it in6956738431 and the fresh local Codex review6958093018 is clean. The prior
+P09fb359e64 remains rejected; its review is not reused.
+The disabled manifest binds these exact heads, complete ordered histories, and
+their own review and conditional owner-consent references. The first fresh
+fast runs on base `804a97be` passed: P07 44382695364 and P09 44388864691.
+P09's full preparation run 44380683647 also passed. These are preparation inputs,
+not fast-only canary evidence or admission. The helper `tests/sql_register_cleanup.py` is an
+exact added regular-file inventory entry, per P07 handoff6940832411 and lane3
+agreement6940947493. Its final T270 ownership record is now in normally merged
+spec80 at c245bc3726bfd80aea8ddbe4b8d167c64916e0c9; declaring this path does not
+accept the helper's code or broaden live scopes.
+
+The proposed preparation ceilings are P07 40 commits and P09 165 commits,
+counted from their respective declared anchors. P07's complete40-commit CX-37
+chain is owner-confirmed in code97 comment6947653181; P09's complete165-commit
+CX-36 chain is owner-confirmed in code103 comment6956070097. These are not automatic
+bindings of unpublished heads. Exact bundles, complete ordered SHAs, current
+review/consent and validation are still required. Larger or different chains
+need explicit reviewed changes; never truncate history or restack a lane to
+fit. Live policy limits and all fallback behavior remain unchanged.
+
+This update retains the exact 40/165 bounds without accepting any other product
+head. The prior P09 ceiling of 24 no longer fits its completed chain. Any replacement count needs
+explicit boundary/prefix validation and independent review, never truncation.
+
+Historically, P07's exported CX-31 tip18529e5a had a complete16-commit chain whose
+prefixes and exact inventory were checked independently. The ceiling update
+does not bind that head or satisfy its conditional consent: the genuine
+exact-head review, new33-node hosted verification, fresh full CI and landed
+spec80 notes remain separate gates. The observed P09 CX-31 chain has29 commits;
+structural acquisition alone does not raise its ceiling or accept that cut.
+
+With acquired immutable objects in an isolated checkout, inspect a bound cohort:
+
+```sh
+python3 .github/ci/v13_expansion.py --main OBSERVED_MAIN_SHA
+```
+
+The inspector makes no network calls, changes no ref/index/worktree, and can
+write only private immutable merge-preview objects. It rejects stale main,
+unsupported histories, mixed paths, unsafe modes, nonempty markers, dependent
+members and conflicts. A valid preview still requires **full CI** and grants
+**no admission**. Review/consent links are context, not authenticated authority.
+
+P09's exact inventory includes modified regular files `tests/conftest.py` and
+`tests/pgcluster.py`, both frozen-foundation paths. Their before/after blobs must receive a
+separate explicit foundation/landing review before any future activation; do
+not broaden the live verifier or copy a new digest merely to clear a refusal.
+Activation also needs current-main/source/review proofs, reviewed queue and
+admission support, complete coverage parity and separate live-batch authority.
+No single flag in this manifest can perform those steps.
+
+The original preparation left both PRs open. Subsequent owner authority permits
+checked preparation merges only after spec#80, fresh exact-head product reviews
+and CI pass. Neither preparation merge activates delivery or authorizes a queue
+command. The separately approved narrow live rollout still requires reviewed
+live support and the complete canary gates above. P08 stays held; no ruleset
+change/bypass, app grant, paid upgrade, release edit/tag, tool installation,
+assembly-pin advance, shared-checkout refresh or lane/session change follows.
