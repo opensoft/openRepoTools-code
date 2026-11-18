@@ -28,11 +28,18 @@ the Postgres path is a fake `psql` that records what it was asked; every remote
 is a bare repository in a temporary directory and every `$HOME` is temporary.
 The real `~/.local/bin` is taken OFF `PATH` wherever it carries a `lanes-index`,
 so an installed indexer is never what a case runs.
+
+PYTEST_DONT_REWRITE: pytest does not rewrite this module's asserts (lane 2's SHOULD 1 of
+opensoft/openRepoTools-code#89 comment 6955285249, IN by lane 3's 6955397261), so a failing
+assert prints its own message, which each case scrubs of the planted secret, and never its
+operands; the cases that hold a secret take their rows by id.
 """
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import io
 import json
 import os
 import re
@@ -44,6 +51,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import unicodedata
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -297,6 +305,17 @@ class Estate:
 
     def path_with(self, *dirs: Path) -> str:
         return os.pathsep.join([str(d) for d in dirs] + [self.env["PATH"]])
+
+
+def _duplicate_ids(name: str, ids: list) -> str:
+    """The import-time message of a parametrized table whose ids repeat (lane 2's F-1 of
+    opensoft/openRepoTools-code#89 comment 6957946822, IN by lane 3's 6958469496). Each case
+    takes the id alone as its argument and its row from a dict built once at import, in
+    `PSQL_QUOTE_ROWS`'s form; a dict keeps one row per id, so each table's assert beside its
+    dict fails at import when an id repeats, and its message is this: the table's name and the
+    repeated ids alone. It is given the ids and never a row, so no planted value is in its
+    frame or its message."""
+    return f"{name}: duplicate ids {sorted({i for i in ids if ids.count(i) > 1})}"
 
 
 @pytest.fixture
@@ -933,8 +952,13 @@ def test_offline_no_read_every_act_is_byte_identical_against_an_unreachable_inde
     fake = indexed.root / "pgfake"
     fake.mkdir()
     psql_log = indexed.root / "psql.log"
+    # THE STORE IT REACHED FOR, rebuilt from the `PG*` variables as FAKE_PSQL
+    # rebuilds it (Question 11; L2-0c), so `lanes_writer` below can only have
+    # come from `PGUSER`, never from an argument.
     (fake / "psql").write_text(
-        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {psql_log}\n"
+        "#!/bin/sh\n"
+        "printf 'postgresql://%s@%s%s/%s\\n' \"$PGUSER\" \"$PGHOST\" \"${PGPORT:+:$PGPORT}\" "
+        f"\"$PGDATABASE\" >> {psql_log}\n"
         "echo 'psql: error: connection to server at \"lanes-index.invalid\" failed' >&2\nexit 2\n")
     (fake / "psql").chmod(0o755)
     pw = indexed.config / "pgpass"
@@ -1061,10 +1085,2282 @@ def test_a_named_configuration_that_is_not_there_and_a_store_in_a_work_tree_refu
     assert loose.returncode == 2 and "password file" in loose.stderr
 
 
+# ======================================================== no refusal echoes a value
+#
+# T104's follow-up, on Codex's exact-head review of P10 at 079a34d8 (BLOCKING
+# lanes-index:549, with :551 and :560): contracts/config.md section 4 (:119) has
+# each refusal name the file, the line or the key, and what is wrong, and print no
+# URL and no password, but a value in the wrong key, such as a URL with its password
+# in `mode=`, was printed whole. One row for each refusal family a line's value
+# reaches, each value the fake secret, in a URL or alone. `lanes-index mode` reads
+# only the configuration (T105), so each is refused before anything connects.
+
+#: The fake secret, as a URL's password and alone. Neither is real.
+CONFIG_SECRET = "t104-FAKE-not-a-secret"
+CONFIG_HOST = "h.invalid"
+CONFIG_URI = f"postgresql://u:{CONFIG_SECRET}@{CONFIG_HOST}/d"
+#: A negative whole number, which R14 refuses as under 2 and which a misplaced
+#: password could be: its digits are on neither stream (round 4, Codex's BLOCKING 1,
+#: lane 3's ruling, opensoft/openRepoTools#165 6938005990). Not a secret.
+CONFIG_NUMBER = "-900000001"
+
+#: (id, the configuration, the exit, words its refusal holds)
+NO_ECHO_REFUSALS = [
+    ("R5-url", f"url={CONFIG_URI}\n", 2, "`url=`"),
+    ("R5-register_url", f"register_url={CONFIG_URI}\n", 2, "`register_url=`"),
+    ("R5-query-password",
+     f"register_url=postgresql://u@h.invalid/d?password={CONFIG_SECRET}\n", 2,
+     "carries a password"),
+    ("R7-mode", f"mode={CONFIG_URI}\n", 2, "`mode=`"),
+    ("R10-no-reader",
+     f"register_url=postgresql://u@h.invalid/d\nregister_label={CONFIG_SECRET}\n", 2,
+     "has no `reader_url=`"),
+    ("R11-register_passfile", f"register_passfile={CONFIG_URI}\n", 2,
+     "(`register_passfile=`)"),
+    ("R11-render_key", f"render_key=password={CONFIG_SECRET}\n", 2, "(`render_key=`)"),
+    ("R12-register_schema", f"register_schema={CONFIG_URI}\n", 2, "`register_schema=`"),
+    ("R13-parameter-name", f"register_url=postgresql://u@h.invalid/d?{CONFIG_SECRET}=x\n", 2,
+     "a name that is not a libpq keyword"),
+    ("R13-parameter-value",
+     f"register_url=postgresql://u@h.invalid/d?application_name={CONFIG_SECRET}\n", 2,
+     "`application_name=`"),
+    ("R14-connect_timeout",
+     f"register_url=postgresql://u@h.invalid/d?connect_timeout={CONFIG_SECRET}\n", 2,
+     "`connect_timeout=`"),
+    ("R14-connect_timeout-negative",
+     f"register_url=postgresql://u@h.invalid/d?connect_timeout={CONFIG_NUMBER}\n", 2,
+     "carries a `connect_timeout=` under 2"),
+    ("R15-host",
+     f"register_url=postgresql://u@{CONFIG_SECRET}.invalid/d\n"
+     f"reader_url=postgresql://r@h.invalid/d\n", 2, "not loopback"),
+    ("R16-register_addresses", f"register_addresses={CONFIG_URI}\n", 2,
+     "`register_addresses=`"),
+    ("R16-register_rtt_ms", f"register_rtt_ms=password={CONFIG_SECRET}\n", 2,
+     "`register_rtt_ms=`"),
+    ("R17-primary", f"mode=primary\nregister_label={CONFIG_SECRET}\n", 78,
+     "is not available in this build"),
+    # Amendment 14 act 2's own refusals (opensoft/openRepoTools#160's, R4 and R6:
+    # lanes-index:662, :665, :688 and :693 at 079a34d8), in their own follow-up,
+    # which lane 3 ruled in (opensoft/openRepoTools#165 6932114864).
+    ("R4-not-key-value", f"{CONFIG_URI}\n", 2, "is not `key=value`"),
+    ("R4-unknown-key", f"{CONFIG_URI}?sslmode=require\n", 2,
+     "names a key that is not a plain lower-case word, which this indexer does not know"),
+    ("R4-unknown-key-value", f"colour={CONFIG_URI}\n", 2,
+     "names `colour=`, which this indexer does not know"),
+    ("R6-store", f"store={CONFIG_URI}\n", 2, "`store=`"),
+    ("R6-schema", f"schema=password={CONFIG_SECRET}\n", 2, "`schema=`"),
+    ("R6-passfile", f"passfile={CONFIG_URI}\n", 2, "(`passfile=`)"),
+    ("R6-reader_passfile", f"reader_passfile={CONFIG_URI}\n", 2, "(`reader_passfile=`)"),
+]
+NO_ECHO_REFUSAL_ROWS = {row[0]: row[1:] for row in NO_ECHO_REFUSALS}
+assert len(NO_ECHO_REFUSAL_ROWS) == len(NO_ECHO_REFUSALS), _duplicate_ids(
+    "NO_ECHO_REFUSALS", [row[0] for row in NO_ECHO_REFUSALS])
+
+
+@pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in NO_ECHO_REFUSALS])
+def test_no_configuration_refusal_echoes_a_value(estate, ident):
+    """NO REFUSAL ECHOES A VALUE (contracts/config.md section 4, :119): the
+    fake secret, in a URL or alone, in each family's value, is refused by
+    `lanes-index mode` with the family's code and words, nothing on stdout,
+    and the secret on neither stream, nor R14's negative number's digits."""
+    text, code, words = NO_ECHO_REFUSAL_ROWS[ident]
+    estate.write_config(text)
+    res = estate.index("mode")
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+            .replace(CONFIG_SECRET, "<the secret>")
+            .replace(CONFIG_NUMBER.lstrip("-"), "<the number>"))
+    assert res.returncode == code, f"exit {res.returncode}, not {code}:\n{said}"
+    assert CONFIG_SECRET not in res.stdout + res.stderr, f"the value was echoed:\n{said}"
+    # R14's number, with or without its sign (round 4, Codex's BLOCKING 1)
+    assert CONFIG_NUMBER.lstrip("-") not in res.stdout + res.stderr, (
+        f"the number was echoed:\n{said}")
+    # no URL either (config.md:119): the sentinel URL's host is on neither stream
+    # (lane 2's note 2, opensoft/openRepoTools#165 6932953810).
+    assert CONFIG_HOST not in res.stdout + res.stderr, f"the URL's host was echoed:\n{said}"
+    assert words in res.stderr, said
+    assert res.stdout == "", said
+
+
+# =========================================== the SQLite store and a key's private file
+#
+# Round 3's commit 8, on lane 3's rulings (opensoft/openRepoTools#165 6933409373 and
+# 6934430226) on lane 2's note 1 (6932953810): the SQLite work-tree refusal (R6,
+# Amendment 14 act 2) printed the store's absolute path, so a URL or a `password=` value
+# typed into `sqlite=` and run inside a git work tree reached stderr whole. It names the
+# file only where `sqlite=`'s value holds no `://`, no `@` and no `=`, and otherwise the
+# key alone. Its rows run with a work-tree cwd. Lane 2's note 3 adds two ids for
+# `_check_private_file`'s other branches, which name the key.
+
+SQLITE_KEY_ALONE = "the SQLite store `sqlite=` names would be inside the git work tree"
+
+#: (id, `sqlite=`'s value, words the refusal holds, whether the store's file is named)
+SQLITE_IN_A_WORK_TREE = [
+    ("sqlite-uri", CONFIG_URI, SQLITE_KEY_ALONE, False),
+    # one row for each mark alone, so that dropping any one of the three is caught
+    ("sqlite-scheme", f"postgresql://{CONFIG_HOST}/d", SQLITE_KEY_ALONE, False),
+    ("sqlite-at", f"u:{CONFIG_SECRET}@{CONFIG_HOST}/d", SQLITE_KEY_ALONE, False),
+    ("sqlite-eq", f"password={CONFIG_SECRET}", SQLITE_KEY_ALONE, False),
+    ("sqlite-path", "lanes-index.sqlite", "lanes-index.sqlite would be inside the git work "
+     "tree", True),
+]
+SQLITE_IN_A_WORK_TREE_ROWS = {row[0]: row[1:] for row in SQLITE_IN_A_WORK_TREE}
+assert len(SQLITE_IN_A_WORK_TREE_ROWS) == len(SQLITE_IN_A_WORK_TREE), _duplicate_ids(
+    "SQLITE_IN_A_WORK_TREE", [row[0] for row in SQLITE_IN_A_WORK_TREE])
+
+
+@pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in SQLITE_IN_A_WORK_TREE])
+def test_the_sqlite_work_tree_refusal_names_no_url(estate, ident):
+    """THE STORE'S FILE, OR ITS KEY (config.md section 4, R6 and :119): run from
+    inside a git work tree, `sqlite=` relative to it is refused with 2. A URL with
+    its password, or a `password=` value, is named by its key alone, with neither
+    the password nor the URL's host on either stream; a plain path is still
+    named."""
+    value, words, named = SQLITE_IN_A_WORK_TREE_ROWS[ident]
+    estate.write_config(f"sqlite={value}\n")
+    child = dict(estate.env, LANES_EDIT=str(LANES_EDIT))
+    res = subprocess.run([sys.executable, str(INDEXER), "mode"], capture_output=True, text=True,
+                         env=child, cwd=str(estate.wip), timeout=120,
+                         stdin=subprocess.DEVNULL)
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert res.returncode == 2, f"exit {res.returncode}, not 2:\n{said}"
+    assert words in res.stderr, said
+    stored = os.path.abspath(os.path.join(os.path.realpath(estate.wip), value))
+    assert (stored in res.stderr) == named, said
+    assert CONFIG_SECRET not in res.stdout + res.stderr, f"the value was echoed:\n{said}"
+    assert CONFIG_HOST not in res.stdout + res.stderr, f"the URL's host was echoed:\n{said}"
+    assert res.stdout == "", said
+
+
+@pytest.mark.parametrize("kind, words", [
+    pytest.param("mode", "(`register_passfile=`) is mode 644", id="mode"),
+    pytest.param("not-regular", "(`register_passfile=`) is not a regular file",
+                 id="not-regular")])
+def test_a_private_file_refusal_names_the_key_not_the_path(estate, kind, words):
+    """THE KEY, NOT THE PATH (R11; `_check_private_file`'s `shown=False`): a
+    `register_passfile=` whose path holds the fake URL, a file with mode 644 or a
+    directory, is refused with 2, naming the key and what is wrong, with neither
+    the password nor the URL's host on either stream (lane 2's note 3)."""
+    target = estate.root / "postgresql:" / f"u:{CONFIG_SECRET}@{CONFIG_HOST}" / "d"
+    if kind == "mode":
+        target.parent.mkdir(parents=True)
+        target.write_text("*:*:*:*:x\n", encoding="utf-8")
+        target.chmod(0o644)
+    else:
+        target.mkdir(parents=True)
+    estate.write_config(f"register_passfile={target}\n")
+    res = estate.index("mode")
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert res.returncode == 2, f"exit {res.returncode}, not 2:\n{said}"
+    assert words in res.stderr, said
+    assert CONFIG_SECRET not in res.stdout + res.stderr, f"the path was echoed:\n{said}"
+    assert CONFIG_HOST not in res.stdout + res.stderr, f"the path was echoed:\n{said}"
+    assert res.stdout == "", said
+
+
+# ================================================= mode and classify echo no argument
+#
+# T105's and T122's follow-up, on Codex's exact-head review of P10 at 079a34d8
+# (BLOCKING lanes-index:736 and :1263): neither command takes an argument, and its
+# usage line quoted the one it was given, so a misplaced URL or `password=` value
+# reached stderr. Nothing secret reaches stderr (register-cli.md section 2.6): the
+# line now names no argument, and the exit stays 64.
+
+#: The usage lines, whole.
+MODE_USAGE = "lanes-index: mode takes no argument - see lanes-index --help\n"
+CLASSIFY_USAGE = ("lanes-index: register classify takes no argument: it reads register lines "
+                  "on stdin - see lanes-index --help\n")
+
+#: (id, the arguments after `lanes-index`, the usage line)
+NO_ARGUMENT_USAGES = [
+    ("mode-uri", ("mode", CONFIG_URI), MODE_USAGE),
+    ("mode-key-value", ("mode", f"password={CONFIG_SECRET}"), MODE_USAGE),
+    ("classify-uri", ("register", "classify", CONFIG_URI), CLASSIFY_USAGE),
+    ("classify-key-value", ("register", "classify", f"password={CONFIG_SECRET}"),
+     CLASSIFY_USAGE),
+]
+NO_ARGUMENT_USAGE_ROWS = {row[0]: row[1:] for row in NO_ARGUMENT_USAGES}
+assert len(NO_ARGUMENT_USAGE_ROWS) == len(NO_ARGUMENT_USAGES), _duplicate_ids(
+    "NO_ARGUMENT_USAGES", [row[0] for row in NO_ARGUMENT_USAGES])
+
+
+@pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in NO_ARGUMENT_USAGES])
+def test_mode_and_register_classify_echo_no_argument(estate, ident):
+    """USAGE, WITH NOTHING READ (contract sections 3.1 and 3.5): given a URL or
+    a `password=` value, each exits 64 with its usage line alone, and the
+    value is on neither stream. Nothing is read or connected: the
+    configuration, which would be refused with 2 since its line is not
+    `key=value`, is never reached; the register line on stdin is not
+    classified; and no `psql` runs."""
+    argv, usage = NO_ARGUMENT_USAGE_ROWS[ident]
+    estate.write_config("this line is not a key and its value\n")
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    ran = estate.root / "psql-ran.txt"
+    (fake / "psql").write_text(f"#!/bin/sh\necho ran >> {shlex.quote(str(ran))}\nexit 1\n")
+    (fake / "psql").chmod(0o755)
+    line = (f"LANDING — lane repoA-1, session {UUID_A1}@Eagle, 2026-10-01T02:00:00Z, PR #7 "
+            f"into opensoft/repoA main\n")
+    res = estate.index(*argv, env={"PATH": estate.path_with(fake)}, input_text=line)
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert res.returncode == 64, f"exit {res.returncode}, not 64:\n{said}"
+    assert CONFIG_SECRET not in res.stdout + res.stderr, f"the argument was echoed:\n{said}"
+    assert res.stderr == usage, said
+    assert res.stdout == "", said
+    assert not ran.exists(), f"psql was run:\n{said}"
+
+
+# ======================================== an unknown word, and the bootstrap's schema
+#
+# Round 3's commit 7, on lane 3's ruling (opensoft/openRepoTools#165 6932662633): the
+# three echoes left after Codex's exact-head review of P10 at 079a34d8, under its rule
+# for every subcommand (exit-codes.md:57, nothing secret on stderr). An unknown
+# subcommand (T105) or argument (Amendment 14 act 2) is named in exit-codes.md section
+# 3.3's form (lane 3's ruling 6894208108): quoted only where all of it matches
+# `--?[A-Za-z][A-Za-z-]{0,30}`, else as not one of the tool's subcommands or flags. A
+# subcommand is also quoted where all of it matches `[a-z][a-z-]{0,30}`, so `sycn` is
+# named back, and an argument is not (lane 3's ruling 6933409373).
+# The bootstrap's own refusal of a reserved `register_schema=` (T109) names the key
+# alone, as `load_config`'s R12 now does.
+
+#: (id, the arguments after `lanes-index`, the usage line, whole)
+NO_ECHO_WORDS = [
+    ("subcommand-uri", (CONFIG_URI,),
+     "lanes-index: unknown subcommand that is not one of its subcommands: this build does "
+     "not have it - see lanes-index --help\n"),
+    ("subcommand-key-value", (f"password={CONFIG_SECRET}",),
+     "lanes-index: unknown subcommand that is not one of its subcommands: this build does "
+     "not have it - see lanes-index --help\n"),
+    ("subcommand-bare-word", ("sycn",),
+     "lanes-index: unknown subcommand 'sycn': this build does not have it - see "
+     "lanes-index --help\n"),
+    ("subcommand-word", ("--frob",),
+     "lanes-index: unknown subcommand '--frob': this build does not have it - see "
+     "lanes-index --help\n"),
+    ("argument-uri", ("status", CONFIG_URI),
+     "lanes-index: unknown argument that is not one of its flags for status - see "
+     "lanes-index --help\n"),
+    ("argument-key-value", ("status", f"password={CONFIG_SECRET}"),
+     "lanes-index: unknown argument that is not one of its flags for status - see "
+     "lanes-index --help\n"),
+    ("argument-word", ("status", "--frob"),
+     "lanes-index: unknown argument '--frob' for status - see lanes-index --help\n"),
+    ("argument-bare-word", ("status", "sycn"),
+     "lanes-index: unknown argument that is not one of its flags for status - see "
+     "lanes-index --help\n"),
+]
+NO_ECHO_WORD_ROWS = {row[0]: row[1:] for row in NO_ECHO_WORDS}
+assert len(NO_ECHO_WORD_ROWS) == len(NO_ECHO_WORDS), _duplicate_ids(
+    "NO_ECHO_WORDS", [row[0] for row in NO_ECHO_WORDS])
+
+
+@pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in NO_ECHO_WORDS])
+def test_an_unknown_subcommand_or_argument_is_named_in_readys_form(estate, ident):
+    """READY'S FORM FOR AN UNKNOWN WORD (exit-codes.md section 3.3): a URL or a
+    `password=` value as the subcommand, or as an unknown argument of `status`,
+    is usage (64), with the usage line whole and the value on neither stream; a
+    word that matches the pattern, `--frob`, is still quoted, and so is a bare
+    subcommand, `sycn`, while a bare argument is not. Nothing is read: no `psql`
+    runs."""
+    argv, usage = NO_ECHO_WORD_ROWS[ident]
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    ran = estate.root / "psql-ran.txt"
+    (fake / "psql").write_text(f"#!/bin/sh\necho ran >> {shlex.quote(str(ran))}\nexit 1\n")
+    (fake / "psql").chmod(0o755)
+    res = estate.index(*argv, env={"PATH": estate.path_with(fake)})
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert res.returncode == 64, f"exit {res.returncode}, not 64:\n{said}"
+    assert CONFIG_SECRET not in res.stdout + res.stderr, f"the word was echoed:\n{said}"
+    assert res.stderr == usage, said
+    assert res.stdout == "", said
+    assert not ran.exists(), f"psql was run:\n{said}"
+
+
+#: A reserved schema name that the bootstrap's own check refuses: a plain identifier,
+#: which `load_config`'s R12 lets through, standing in for a value the refusal must
+#: not show.
+SCHEMA_SENTINEL = "pg_t109_fake_not_a_secret"
+
+#: (id, the `register_schema=` value, words the refusal holds)
+NO_ECHO_SCHEMAS = [
+    ("schema-uri", CONFIG_URI, "`register_schema=` in"),
+    ("schema-key-value", f"password={CONFIG_SECRET}", "`register_schema=` in"),
+    ("schema-reserved", SCHEMA_SENTINEL,
+     "bootstrap: register_schema= is the index half's schema or a name PostgreSQL reserves"),
+]
+NO_ECHO_SCHEMA_ROWS = {row[0]: row[1:] for row in NO_ECHO_SCHEMAS}
+assert len(NO_ECHO_SCHEMA_ROWS) == len(NO_ECHO_SCHEMAS), _duplicate_ids(
+    "NO_ECHO_SCHEMAS", [row[0] for row in NO_ECHO_SCHEMAS])
+
+
+@pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in NO_ECHO_SCHEMAS])
+def test_the_bootstrap_names_a_refused_register_schema_by_its_key(estate, ident):
+    """THE SCHEMA'S KEY, NOT ITS VALUE: with every flag in order, a
+    `register_schema=` that is a URL or a `password=` value is refused with 2 by
+    `load_config`'s R12, and a reserved name, `pg_...`, by the bootstrap's own
+    check; each names `register_schema=` and shows no value, prints nothing on
+    stdout, and runs no `psql`."""
+    value, words = NO_ECHO_SCHEMA_ROWS[ident]
+    estate.write_config(f"register_schema={value}\n")
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    ran = estate.root / "psql-ran.txt"
+    (fake / "psql").write_text(f"#!/bin/sh\necho ran >> {shlex.quote(str(ran))}\nexit 1\n")
+    (fake / "psql").chmod(0o755)
+    res = estate.index("bootstrap", "--admin-service", "t109admin", "--label", "t109-label",
+                       "--repository", "opensoft/t109-workspace", "--lane", "t109-operator",
+                       "--no-passwords", env={"PATH": estate.path_with(fake)})
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+            .replace(CONFIG_SECRET, "<the secret>").replace(SCHEMA_SENTINEL, "<the name>"))
+    assert res.returncode == 2, f"exit {res.returncode}, not 2:\n{said}"
+    shown = res.stdout + res.stderr
+    assert CONFIG_SECRET not in shown and SCHEMA_SENTINEL not in shown, (
+        f"the value was echoed:\n{said}")
+    assert words in res.stderr, said
+    assert res.stdout == "", said
+    assert not ran.exists(), f"psql was run:\n{said}"
+
+
+# ================================== a `--source` or an `--out` value, never echoed
+#
+# Round 4's commit 10, on lane 3's ruling (opensoft/openRepoTools#165 6938005990) of
+# Codex's BLOCKING 2 in its exact-head review of P10 at 2d9247f7: `resolve_source`'s
+# three refusals, `inventory_source`'s and `export`'s line for an `--out` that is not a
+# directory (Amendment 14 act 2's, and opensoft/openRepoTools#171's for the inventory)
+# printed the value given, so a URL or a `password=` value reached stderr, or `export`'s
+# `why` file. Each names the flag, or the source's kind, and no value (exit-codes.md:57;
+# register-cli.md section 2.6). Every exit is kept.
+
+#: Where an `export` row's `--out` directory goes in its arguments.
+OUT_DIR = "<the out directory>"
+
+#: The words of each refusal, whole where they name no path.
+SOURCE_NOT_THIS_REGISTER = "not the source `--source` names"
+SOURCE_NOT_THIS_INVENTORY = ("this workstation's inventory is inventory:Eagle, not the "
+                             "inventory `--source` names")
+SOURCE_A_LEDGER = "`--source` names the managed ledger's half"
+SOURCE_AN_INVENTORY = "`--source` names a worktree inventory"
+OUT_NOT_A_DIRECTORY = "lanes-index: --out is not a directory\n"
+
+#: (id, the arguments after `lanes-index`, the exit, the words, and where they are:
+#: stderr, or `export`'s `why` file)
+NO_ECHO_SOURCES = [
+    ("sync-uri", ("sync", "--source", CONFIG_URI), 2, SOURCE_NOT_THIS_REGISTER, "stderr"),
+    ("sync-key-value", ("sync", "--source", f"password={CONFIG_SECRET}"), 2,
+     SOURCE_NOT_THIS_REGISTER, "stderr"),
+    ("sync-inventory-key-value", ("sync", "--source", f"inventory:password={CONFIG_SECRET}"),
+     2, SOURCE_NOT_THIS_INVENTORY, "stderr"),
+    ("sync-ledger-key-value", ("sync", "--source", f"ledger:password={CONFIG_SECRET}"), 2,
+     SOURCE_A_LEDGER, "stderr"),
+    ("reconcile-uri", ("reconcile", "--source", CONFIG_URI), 2, SOURCE_NOT_THIS_REGISTER,
+     "stderr"),
+    ("reconcile-key-value", ("reconcile", "--source", f"password={CONFIG_SECRET}"), 2,
+     SOURCE_NOT_THIS_REGISTER, "stderr"),
+    ("reconcile-inventory-uri", ("reconcile", "--source", f"inventory:{CONFIG_URI}"), 2,
+     SOURCE_NOT_THIS_INVENTORY, "stderr"),
+    ("reconcile-ledger-uri", ("reconcile", "--source", f"ledger:{CONFIG_URI}"), 2,
+     SOURCE_A_LEDGER, "stderr"),
+    ("export-out-uri", ("export", "--out", CONFIG_URI), 64, OUT_NOT_A_DIRECTORY, "stderr"),
+    ("export-out-key-value", ("export", "--out", f"password={CONFIG_SECRET}"), 64,
+     OUT_NOT_A_DIRECTORY, "stderr"),
+    ("export-source-uri", ("export", "--out", OUT_DIR, "--source", CONFIG_URI), 2,
+     SOURCE_NOT_THIS_REGISTER, "why"),
+    ("export-source-key-value",
+     ("export", "--out", OUT_DIR, "--source", f"password={CONFIG_SECRET}"), 2,
+     SOURCE_NOT_THIS_REGISTER, "why"),
+    ("export-source-inventory-key-value",
+     ("export", "--out", OUT_DIR, "--source", f"inventory:password={CONFIG_SECRET}"), 2,
+     SOURCE_AN_INVENTORY, "why"),
+]
+NO_ECHO_SOURCE_ROWS = {row[0]: row[1:] for row in NO_ECHO_SOURCES}
+assert len(NO_ECHO_SOURCE_ROWS) == len(NO_ECHO_SOURCES), _duplicate_ids(
+    "NO_ECHO_SOURCES", [row[0] for row in NO_ECHO_SOURCES])
+
+
+@pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in NO_ECHO_SOURCES])
+def test_a_source_or_out_value_is_never_echoed(estate, ident):
+    """THE FLAG OR THE SOURCE'S KIND, NEVER THE VALUE (exit-codes.md:57): a URL or a
+    `password=` value given to `sync` or `reconcile` as `--source`, plain or after
+    `inventory:` or `ledger:`, is refused with 2 before anything is read or written; as
+    `export`'s `--out`, it is usage, 64; as `export`'s `--source`, it is refused with 2
+    in the `why` file. Each names the flag, or the source's kind: the value is on
+    neither stream nor in `why`, stdout is empty, no `psql` runs and no store is made."""
+    argv, code, words, where = NO_ECHO_SOURCE_ROWS[ident]
+    out = estate.root / "exp"
+    out.mkdir()
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    ran = estate.root / "psql-ran.txt"
+    (fake / "psql").write_text(f"#!/bin/sh\necho ran >> {shlex.quote(str(ran))}\nexit 1\n")
+    (fake / "psql").chmod(0o755)
+    res = estate.index(*[str(out) if a == OUT_DIR else a for a in argv],
+                       env={"PATH": estate.path_with(fake)})
+    why = (out / "why").read_text(encoding="utf-8") if (out / "why").exists() else ""
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}\nwhy:\n{why}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert res.returncode == code, f"exit {res.returncode}, not {code}:\n{said}"
+    for shown in (res.stdout, res.stderr, why):
+        assert CONFIG_SECRET not in shown, f"the value was echoed:\n{said}"
+        assert CONFIG_HOST not in shown, f"the URL's host was echoed:\n{said}"
+    if where == "why":
+        assert words in why and res.stderr == "", said
+    elif words.endswith("\n"):
+        assert res.stderr == words, said
+    else:
+        assert words in res.stderr, said
+    assert res.stdout == "", said
+    assert not ran.exists(), f"psql was run:\n{said}"
+    assert not estate.sqlite.exists(), f"a store was made:\n{said}"
+
+
+# ============================ an unresolved source, and this workstation's own register
+#
+# Round 4's commit 11, on lane 3's ruling (opensoft/openRepoTools-code#89 comment
+# 6939379549) of lane 1's two residual points: `_record_error` filed a `--source` it
+# could not resolve under the value given, which `status` then printed on stdout; and the
+# refusal that names this workstation's own register named it as `workspace.yaml` or
+# `origin` spells it, a user, a password or a token included (Amendment 14 act 2's code,
+# and opensoft/openRepoTools#171's for the inventory).
+
+#: (id, the arguments after `lanes-index`, what the unresolved source is filed as)
+UNRESOLVED_SOURCES = [
+    ("sync-register", ("sync", "--source", f"password={CONFIG_SECRET}"), "register:?"),
+    ("sync-inventory", ("sync", "--source", f"inventory:password={CONFIG_SECRET}"),
+     "inventory:?"),
+    ("reconcile-register", ("reconcile", "--source", CONFIG_URI), "register:?"),
+    ("reconcile-inventory", ("reconcile", "--source", f"inventory:{CONFIG_URI}"),
+     "inventory:?"),
+]
+UNRESOLVED_SOURCE_ROWS = {row[0]: row[1:] for row in UNRESOLVED_SOURCES}
+assert len(UNRESOLVED_SOURCE_ROWS) == len(UNRESOLVED_SOURCES), _duplicate_ids(
+    "UNRESOLVED_SOURCES", [row[0] for row in UNRESOLVED_SOURCES])
+
+
+@pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in UNRESOLVED_SOURCES])
+def test_an_unresolved_source_is_filed_without_its_value(estate, ident):
+    """FILED AS `register:?` OR `inventory:?` (lane 3's ruling): with a `lanes-edit.sh`
+    that cannot answer, a `sync` or `reconcile` whose `--source` holds a URL or a
+    `password=` value cannot resolve it and fails with 1, nothing written; the attempt is
+    filed under `register:?` or `inventory:?`, which a later `status` names. The value is
+    in neither the status file nor either stream of either run."""
+    argv, filed = UNRESOLVED_SOURCE_ROWS[ident]
+    stub = estate.root / "no-workspace" / "lanes-edit.sh"
+    stub.parent.mkdir()
+    stub.write_text("#!/bin/sh\necho 'no workspace here' >&2\nexit 3\n")
+    stub.chmod(0o755)
+    first = estate.index(*argv, env={"LANES_EDIT": str(stub)})
+    status = estate.index("status", env={"LANES_EDIT": str(stub)})
+    kept = estate.state / "openRepoTools" / "lanes-index.status.json"
+    text = kept.read_text(encoding="utf-8") if kept.exists() else ""
+    said = (f"{' '.join(argv[:1])} exit {first.returncode}:\nstdout:\n{first.stdout}\n"
+            f"stderr:\n{first.stderr}\nstatus exit {status.returncode}:\nstdout:\n"
+            f"{status.stdout}\nstderr:\n{status.stderr}\nstatus file:\n{text}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert first.returncode == 1, said
+    assert status.returncode == 1, said
+    for shown in (first.stdout, first.stderr, status.stdout, status.stderr, text):
+        assert CONFIG_SECRET not in shown, f"the value was kept or shown:\n{said}"
+        assert CONFIG_HOST not in shown, f"the URL's host was kept or shown:\n{said}"
+    assert f'"{filed}"' in text, said
+    assert f"source {filed}\n" in status.stdout, said
+
+
+#: Sentinels for the host and the path of the URLs below; neither is real.
+REGISTER_HOST = "t104-fake-host.invalid"
+REGISTER_PATH = "t104-fake-path"
+
+#: The refusal's words, whole.
+REGISTER_BY_ITS_REMOTE = ("this workstation's register is the one `workspace.yaml` or the "
+                          "checkout's `origin` names, not the source `--source` names")
+
+#: (id, `origin`'s URL or None, `workspace.yaml`'s `repository:` or None)
+REGISTER_FROM_A_URL = [
+    ("origin-userinfo",
+     f"https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r.git", None),
+    ("origin-token", f"https://{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r.git", None),
+    ("origin-scp", f"{CONFIG_SECRET}@{REGISTER_HOST}:{REGISTER_PATH}/r.git", None),
+    ("workspace-yaml-url", None,
+     f"https://u:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r"),
+]
+REGISTER_FROM_A_URL_ROWS = {row[0]: row[1:] for row in REGISTER_FROM_A_URL}
+assert len(REGISTER_FROM_A_URL_ROWS) == len(REGISTER_FROM_A_URL), _duplicate_ids(
+    "REGISTER_FROM_A_URL", [row[0] for row in REGISTER_FROM_A_URL])
+
+
+@pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in REGISTER_FROM_A_URL])
+def test_the_register_is_named_by_its_remote_and_no_url(estate, ident):
+    """THE REMOTE'S NAME, NO URL IN ANY FORM (lane 3's rulings): this workstation's
+    register, read from `origin` or from `workspace.yaml`'s `repository:`, a URL with
+    a user and a password, or a token, a host and a path, is named in the refusal of
+    another `--source` only by where it is read. The refusal's words and its exit, 2,
+    are kept; stdout is empty, and none of the userinfo, the host and the path is on
+    either stream."""
+    origin, repository = REGISTER_FROM_A_URL_ROWS[ident]
+    root = estate.root / "credentialed"
+    subprocess.run(["git", "init", "-q", str(root)], check=True, env=estate.env,
+                   capture_output=True)
+    if origin is not None:
+        subprocess.run(["git", "-C", str(root), "remote", "add", "origin", origin],
+                       check=True, env=estate.env, capture_output=True)
+    agents = estate.root / "agents-credentialed"
+    agents.mkdir()
+    (agents / "workspace.yaml").write_text(
+        (f"repository: {repository}\n" if repository else "") + f"path: {root}\n",
+        encoding="utf-8")
+    stub = estate.root / "credentialed-edit" / "lanes-edit.sh"
+    stub.parent.mkdir()
+    stub.write_text(f"#!/bin/sh\n[ \"$1\" = workspace-root ] && echo {shlex.quote(str(root))} "
+                    f"&& exit 0\nexit 3\n")
+    stub.chmod(0o755)
+    res = estate.index("sync", "--source", "register:someone/else",
+                       env={"LANES_EDIT": str(stub), "AGENT_PROTOCOL_ROOT": str(agents)})
+    said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert res.returncode == 2, f"exit {res.returncode}, not 2:\n{said}"
+    for part, what in ((CONFIG_SECRET, "userinfo"), (REGISTER_HOST, "host"),
+                       (REGISTER_PATH, "path")):
+        assert part not in res.stdout + res.stderr, f"the URL's {what} was shown:\n{said}"
+    assert REGISTER_BY_ITS_REMOTE in res.stderr, said
+    assert res.stdout == "", said
+
+
+# ===================================== a credentialed register: its key, its status, CasLost
+#
+# Round 4's commit 12, on lane 3's ruling (opensoft/openRepoTools-code#89 comment
+# 6940341452) of lane 1's sites 1 to 4: no credential reaches `status`'s "source" line,
+# `export`'s `source=`, the store's key or the status file's key, and `CasLost`'s stderr
+# text carries no URL in any form. A source with no credential keeps today's key.
+# Codex's two further sites of the class (comment 6940769355), the `sync` and
+# `reconcile` label on stdout and `export`'s `why` for a source with no provenance,
+# print the same key; and an identified register is filed under it, never as
+# `register:?` (lane 2's note 2 on commit 11, comment 6940663109).
+
+#: (id, `workspace.yaml`'s `repository:`, the index's key for it)
+REGISTER_KEYS = [
+    ("https-userinfo", f"https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r",
+     f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"),
+    ("https-token", f"https://{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r",
+     f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"),
+    ("ssh-password", f"ssh://u:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r",
+     f"register:ssh://{REGISTER_HOST}/{REGISTER_PATH}/r"),
+    # controls: no credential, so today's key exactly; the last one's `@` stands past
+    # the end of its authority (its `?`), so it has no userinfo
+    ("https-plain", f"https://{REGISTER_HOST}/{REGISTER_PATH}/r",
+     f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"),
+    ("ssh-login", f"ssh://git@{REGISTER_HOST}/{REGISTER_PATH}/r",
+     f"register:ssh://git@{REGISTER_HOST}/{REGISTER_PATH}/r"),
+    ("owner-repo", "opensoft/t104-fake-repo", "register:opensoft/t104-fake-repo"),
+    ("https-query-at", f"https://{REGISTER_HOST}?{REGISTER_PATH}@x/r",
+     f"register:https://{REGISTER_HOST}?{REGISTER_PATH}@x/r"),
+    # lane 2's two rows (opensoft/openRepoTools-code#89 comment 6944553219): a password
+    # holding a raw `@`, where the authority's LAST `@` ends the userinfo; and a token
+    # under an upper-case scheme
+    ("https-raw-at", f"https://u:p@{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r",
+     f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"),
+    ("https-upper-token", f"HTTPS://{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r",
+     f"register:HTTPS://{REGISTER_HOST}/{REGISTER_PATH}/r"),
+]
+REGISTER_KEY_ROWS = {row[0]: row[1:] for row in REGISTER_KEYS}
+assert len(REGISTER_KEY_ROWS) == len(REGISTER_KEYS), _duplicate_ids(
+    "REGISTER_KEYS", [row[0] for row in REGISTER_KEYS])
+
+
+@pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in REGISTER_KEYS])
+def test_a_credentialed_register_is_keyed_and_shown_without_it(estate, monkeypatch, ident):
+    """NO CREDENTIAL IN A KEY OR A NAME (lane 3's ruling): with `workspace.yaml`'s
+    `repository:` a URL with a user and a password, a token, or an ssh password, the
+    index's key - the store's and the status file's, as `resolve_source` gives it - is
+    the URL without its credential; a provenance under it is exported with that
+    `source=`, and no file of the state folder holds the credential. `status` names the
+    key so, once, and names a name an earlier build filed with the credential without
+    it.
+    The fake secret is on no stream and not in `meta`. A source with no credential
+    keeps today's key."""
+    repository, key = REGISTER_KEY_ROWS[ident]
+    agents = estate.root / "agents-c12"
+    agents.mkdir()
+    (agents / "workspace.yaml").write_text(f"repository: {repository}\npath: {estate.ws}\n",
+                                           encoding="utf-8")
+    env = {"AGENT_PROTOCOL_ROOT": str(agents), "LANES_WORKSPACE_ROOT": str(estate.ws)}
+    monkeypatch.setenv("AGENT_PROTOCOL_ROOT", str(agents))
+    monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
+    mod = load_indexer()
+    assert mod.resolve_source(None, str(estate.ws)) == key
+    store = mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"})
+    store.open_write()
+    store.apply(key, None, "1" * 40, {}, {})
+    out = estate.root / "exp"
+    out.mkdir()
+    ex = estate.index("export", "--out", out, env=env)
+    for path in sorted(estate.state.rglob("*")):
+        if path.is_file():
+            assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path} keeps it"
+    st = estate.index("status", env=env)
+    # an entry an earlier build filed under the credentialed name, for `status` to show
+    mod.write_status(f"register:{repository}", last_error="an earlier build's entry")
+    again = estate.index("status", env=env)
+    meta = (out / "meta").read_text(encoding="utf-8") if (out / "meta").exists() else ""
+    why = (out / "why").read_text(encoding="utf-8") if (out / "why").exists() else ""
+    said = (f"status:\n{st.stdout}{st.stderr}\nagain:\n{again.stdout}{again.stderr}\n"
+            f"export {ex.returncode}:\n{ex.stdout}{ex.stderr}\nmeta:\n{meta}\nwhy:\n{why}"
+            .replace(CONFIG_SECRET, "<the secret>"))
+    assert ex.returncode == 0, said
+    assert f"source={key}" in meta.splitlines(), said
+    # this workstation's key, once: the store's and `status`'s own are one key
+    assert st.stdout.count(f"source {key}\n") == 1, said
+    assert f"source {key}\n" in again.stdout, said
+    for shown in (st.stdout, st.stderr, again.stdout, again.stderr, ex.stdout, ex.stderr,
+                  meta, why):
+        assert CONFIG_SECRET not in shown, f"the credential was shown:\n{said}"
+
+
+#: (id, the key a sync passes to `SqliteStore.apply`, whether `CasLost` names it)
+CAS_KEYS = [
+    ("cas-legacy-key", f"register:https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}"
+                       f"/{REGISTER_PATH}/r", False),
+    ("cas-url-key", f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r", False),
+    ("cas-scp-key", f"register:git@{REGISTER_HOST}:{REGISTER_PATH}/r", False),
+    ("cas-owner-repo", "register:opensoft/t104-fake-repo", True),
+    ("cas-inventory", "inventory:Eagle", True),
+]
+CAS_KEY_ROWS = {row[0]: row[1:] for row in CAS_KEYS}
+assert len(CAS_KEY_ROWS) == len(CAS_KEYS), _duplicate_ids(
+    "CAS_KEYS", [row[0] for row in CAS_KEYS])
+
+
+@pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in CAS_KEYS])
+def test_the_compare_and_swap_refusal_names_no_url(estate, ident):
+    """`CasLost` NAMES NO URL (exit-codes.md:57; lane 3's ruling): a compare-and-swap
+    that finds the provenance moved is refused, nothing written, with its words; a
+    plain `register:` or `inventory:` key is named as before, and a key that is a URL
+    in any form, with or without a credential, is not: none of its credential, host
+    and path is in the text."""
+    key, named = CAS_KEY_ROWS[ident]
+    mod = load_indexer()
+    store = mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"})
+    store.open_write()
+    with pytest.raises(mod.CasLost) as caught:
+        store.apply(key, {"commit_sha": "0" * 40}, "1" * 40, {}, {})
+    text = str(caught.value)
+    said = text.replace(CONFIG_SECRET, "<the secret>")
+    assert "moved under this sync" in text and "nothing was written" in text, said
+    assert (key in text) == named, said
+    for part in (CONFIG_SECRET, REGISTER_HOST, REGISTER_PATH):
+        assert part not in text, text.replace(CONFIG_SECRET, "<the secret>")
+
+
+def _store_keys(db: Path) -> set:
+    """The `source` of every row of every table of the store that has the column."""
+    conn = sqlite3.connect(str(db))
+    try:
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()]
+        keys: set = set()
+        for table in tables:
+            if "source" in [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]:
+                keys |= {r[0] for r in conn.execute(f"SELECT DISTINCT source FROM {table}")}
+        return keys
+    finally:
+        conn.close()
+
+
+#: (id, `workspace.yaml`'s `repository:`, its key: today's, `register:` and the repository
+#: less its `.git`, where it has no userinfo; that less its credential where it has one)
+SYNCED_SOURCES = [
+    ("https-host-path", f"https://{REGISTER_HOST}/{REGISTER_PATH}/r.git",
+     f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"),
+    ("owner-repo", "opensoft/t104-fake-repo", "register:opensoft/t104-fake-repo"),
+    ("https-userinfo",
+     f"https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r.git",
+     f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"),
+]
+SYNCED_SOURCE_ROWS = {row[0]: row[1:] for row in SYNCED_SOURCES}
+assert len(SYNCED_SOURCE_ROWS) == len(SYNCED_SOURCES), _duplicate_ids(
+    "SYNCED_SOURCES", [row[0] for row in SYNCED_SOURCES])
+
+
+@pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in SYNCED_SOURCES])
+def test_an_identified_register_is_synced_and_filed_under_its_key(estate, ident):
+    """AN IDENTIFIED SOURCE IS FILED AS BEFORE, AND NO CREDENTIAL IS PRINTED (lane 2's
+    note 2 on commit 11, opensoft/openRepoTools-code#89 comment 6940663109; lane 3's
+    ruling and its limit 2, comment 6940341452; Codex's two further sites, comment
+    6940769355): with `workspace.yaml`'s `repository:` a URL with no userinfo, GitHub's
+    `owner/repo` or a URL with a token, `export` before any sync says in `why` that the
+    key has no provenance; `sync` files every row of the store under the key - today's
+    key exactly where the source has no userinfo - and names it in its label, as a
+    second `sync` and a `reconcile --dry-run` do; a `reconcile` that then fails with its
+    source identified files its error under the key in the status file, not as
+    `register:?`; and `status` names the key once. The credential is on no stream, in no
+    file of the state folder and in no row of the store."""
+    repository, key = SYNCED_SOURCE_ROWS[ident]
+    agents = estate.root / "agents-synced"
+    agents.mkdir()
+    (agents / "workspace.yaml").write_text(f"repository: {repository}\npath: {estate.ws}\n",
+                                           encoding="utf-8")
+    env = {"AGENT_PROTOCOL_ROOT": str(agents), "LANES_WORKSPACE_ROOT": str(estate.ws)}
+    # a store with no provenance in it, for `export`'s `why`
+    load_indexer().SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"}).open_write()
+    out = estate.root / "exp-none"
+    out.mkdir()
+    none = estate.index("export", "--out", out, env=env)
+    why = (out / "why").read_text(encoding="utf-8") if (out / "why").exists() else ""
+    first = estate.index("sync", env=env)
+    keys = _store_keys(estate.sqlite)
+    again = estate.index("sync", env=env)
+    dry = estate.index("reconcile", "--dry-run", env=env)
+    # the register's tree unreadable: the source resolves, and the read after it fails
+    with _unreadable(estate, "origin/main:lanes"):
+        failed = estate.index("reconcile", env=env)
+    status = estate.index("status", env=env)
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    kept = json.loads(filed.read_text(encoding="utf-8")) if filed.exists() else {}
+    runs = {"export": none, "sync": first, "sync again": again, "reconcile --dry-run": dry,
+            "reconcile": failed, "status": status}
+    said = ("\n".join(f"{name} exit {res.returncode}:\n{res.stdout}{res.stderr}"
+                      for name, res in runs.items())
+            + f"\nwhy: {why}\nstore keys: {sorted(keys)}\nstatus file: {sorted(kept)}"
+            ).replace(CONFIG_SECRET, "<the secret>")
+    assert none.returncode == 3 and f"no provenance for {key} in the " in why, said
+    assert first.returncode == 0 and f"sync: {key} at register@" in first.stdout, said
+    assert keys == {key}, said
+    assert again.returncode == 0 and f"sync: {key} at register@" in again.stdout, said
+    assert "nothing to write" in again.stdout, said
+    assert dry.returncode == 0 and f"reconcile: {key} at register@" in dry.stdout, said
+    assert failed.returncode == 1, said
+    assert sorted(kept) == [key] and kept[key].get("last_error"), said
+    assert status.stdout.count(f"source {key}\n") == 1, said
+    assert _store_keys(estate.sqlite) == {key}, said
+    for name, res in runs.items():
+        assert CONFIG_SECRET not in res.stdout + res.stderr, f"{name} showed it:\n{said}"
+    assert CONFIG_SECRET not in why, said
+    for path in sorted(estate.state.rglob("*")):
+        if path.is_file():
+            assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path} keeps it:\n{said}"
+
+
+# ============== a legacy source: a key an earlier build filed with a credential in it
+#
+# Round 4's commit 13, on lane 3's ruling (opensoft/openRepoTools-code#89 comment
+# 6941833120) of BLOCKING 1 in its Codex review of ac4e0935. v1.1.0 and v1.2.0 keyed a
+# source as `source_of` read it, a credential included, in both stores and in the
+# status file, and SQLite's `CasLost` put that key in the `last_error` that
+# `_record_error` saved. `status` never prints such an entry's error, and the first
+# `sync` or `reconcile` removes the source from every table and from the status file.
+
+#: What `status` prints in place of a whole entry whose key no form of this build files.
+LEGACY_SOURCE_LINE_WORDS = ("source not shown: an earlier build filed an entry under a key "
+                            "this build does not file, which may hold a credential; the next "
+                            "sync or reconcile removes it")
+#: What `status` prints in place of a legacy entry's last error, whole.
+LEGACY_ENTRY_WORDS = ("not shown: an earlier build filed this entry under a key that held "
+                      "a credential, and the next sync or reconcile removes it")
+#: The key v1.2.0 filed for `workspace.yaml`'s `repository:` as an https URL with a
+#: token, and the key this build files for it.
+LEGACY_KEY = (f"register:https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}/"
+              f"{REGISTER_PATH}/r")
+CLEAN_KEY = f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/r"
+#: A source with no userinfo that no sync here touches: the control, kept byte for byte.
+CONTROL_KEY = f"register:https://{REGISTER_HOST}/{REGISTER_PATH}/control"
+#: The raw `--source` values v1.1.0 and v1.2.0 `_record_error` filed as status keys
+#: (BLOCKING 1 of opensoft/openRepoTools-code#89 comment 6944416906): a URL with a
+#: token, a `password=` value, the inventory's `password=` form, a bare token, and an
+#: inventory key holding a URL's userinfo. The URL is in the store's every table too, as
+#: a key no form of this build files.
+RAW_URL_KEY = f"https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r"
+RAW_KEYS = [RAW_URL_KEY, f"password={CONFIG_SECRET}", f"inventory:password={CONFIG_SECRET}",
+            f"tok-{CONFIG_SECRET}", f"inventory:https://{CONFIG_SECRET}@{REGISTER_HOST}/x"]
+#: A clean key of EVERY form this build files (lane 3's ruling, comment 6944673181), none of
+#: them this workstation's: each stays, in the store and the status file, byte for byte.
+CLEAN_FORMS = ["register:opensoft/t104-other-repo",
+               f"register:ssh://git@{REGISTER_HOST}/{REGISTER_PATH}/other",
+               f"register:git@{REGISTER_HOST}:{REGISTER_PATH}/other",
+               f"register:HTTPS://{REGISTER_HOST}/{REGISTER_PATH}/other",
+               f"register:https://{REGISTER_HOST}?{REGISTER_PATH}@x/other",
+               "register:/srv/t104/other", "register:?", "inventory:Heron", "inventory:?",
+               "ledger:Heron"]
+
+
+class _IndexTables:
+    """The index's store behind `lanes-index`'s back, as an upgrade case seeds and
+    reads it: SQLite's file, or the cluster's `t109_db` as its superuser, in the
+    schema `lanes_index`. Every value here is the test's own, so it goes into the SQL
+    as a literal."""
+
+    def __init__(self, estate: Estate, cluster=None):
+        self.estate, self.cluster = estate, cluster
+
+    def sql(self, *statements: str) -> list:
+        """The statements in one connection; the rows they answer, as text."""
+        if self.cluster is None:
+            conn = sqlite3.connect(str(self.estate.sqlite))
+            try:
+                # AS A BUILD WITHOUT `SQLITE_SECURE_DELETE` WRITES: what an update moves
+                # stays in the file's free space
+                conn.execute("PRAGMA secure_delete = OFF")
+                out = []
+                for statement in statements:
+                    out += ["|".join("" if v is None else str(v) for v in row)
+                            for row in conn.execute(statement).fetchall()]
+                conn.commit()
+                return out
+            finally:
+                conn.close()
+        text = self.cluster.psql("SET search_path TO lanes_index;\n" +
+                                 "".join(f"{s};\n" for s in statements), dbname="t109_db").stdout
+        return [line for line in text.splitlines() if line]
+
+    def tables(self) -> list:
+        """Every table of the store with a `source` column, as the store has them, not
+        as `lanes-index` lists them."""
+        if self.cluster is None:
+            return [t for t in self.sql("SELECT name FROM sqlite_master WHERE type = 'table' "
+                                        "ORDER BY name")
+                    if "source" in self.sql(f"SELECT name FROM pragma_table_info('{t}')")]
+        return self.sql("SELECT c.table_name FROM information_schema.columns c "
+                        "JOIN information_schema.tables t USING (table_schema, table_name) "
+                        "WHERE c.table_schema = 'lanes_index' AND c.column_name = 'source' "
+                        "AND t.table_type = 'BASE TABLE' ORDER BY 1")
+
+    def copy(self, tables: list, old: str, new: str) -> None:
+        """Every row of `old`, filed again under `new`."""
+        for t in tables:
+            self.sql(f"CREATE TEMP TABLE copy_{t} AS SELECT * FROM {t} WHERE source = '{old}'",
+                     f"UPDATE copy_{t} SET source = '{new}'",
+                     f"INSERT INTO {t} SELECT * FROM copy_{t}")
+
+    def rename(self, tables: list, old: str, new: str) -> None:
+        """Every row of `old`, filed under `new` in its place."""
+        for t in tables:
+            self.sql(f"UPDATE {t} SET source = '{new}' WHERE source = '{old}'")
+
+    def touch(self, tables: list, source: str) -> None:
+        """Every row of `source` written again, longer, as a later v1.2.0 sync wrote
+        it: the copies the old rows leave in SQLite's free space hold the key too."""
+        for t in tables:
+            self.sql(f"UPDATE {t} SET indexed_utc = indexed_utc || ' (v1.2.0)' "
+                     f"WHERE source = '{source}'")
+
+    def rows(self, tables: list, source: str) -> list:
+        """Every row of `source`, table by table, as text, in a fixed order."""
+        return [(t, self.sql(f"SELECT * FROM {t} WHERE source = '{source}' ORDER BY 1, 2"))
+                for t in tables]
+
+    def text(self, tables: list) -> str:
+        """Every row of every table, as text."""
+        return "\n".join(line for t in tables for line in self.sql(f"SELECT * FROM {t}"))
+
+    def seed_every(self, tables: list, source: str) -> None:
+        """A row of `source` in each table that has none of it, so that `source` is in
+        EVERY table that keys on a source (lane 3's SHOULD, comment 6944606779)."""
+        for t in tables:
+            if t != "provenance":
+                self.sql(f"INSERT INTO {t} (source, record_id, digest, indexed_utc, "
+                         f"schema_version) SELECT '{source}', 't104-seed', 'd', "
+                         f"'2026-11-01T00:00:00Z', 1 WHERE NOT EXISTS "
+                         f"(SELECT 1 FROM {t} WHERE source = '{source}')")
+
+    def leave_in_free_space(self, text: str) -> None:
+        """`text` in a page of SQLite's free list, which no DELETE of a row touches, as
+        an earlier build's own writes leave a page: a table filled and dropped with
+        `secure_delete` off. Only a VACUUM takes it out of the file."""
+        self.sql("CREATE TABLE t104_gone (x TEXT)", f"INSERT INTO t104_gone VALUES ('{text}')",
+                 "DROP TABLE t104_gone")
+
+
+def _an_upgrade(estate: Estate, store: _IndexTables, env: dict, first: str) -> None:
+    """THE UPGRADE CASE, on either store. This build's first `sync` files the clean
+    key; the case then leaves the store and the status file as v1.2.0 would have:
+    those rows under the credentialed key too (`beside-clean`) or in place of the
+    clean key's (`legacy-only`), the status entry under the credentialed key with
+    SQLite's `CasLost` text as `_record_error` saved it, the key whole in it, and a
+    control with no userinfo. `status` prints the fixed line in place of that error;
+    `first`, `reconcile` or `sync`, removes the credentialed key from every table and
+    from the status file. `sync` keeps the clean key's own rows and entry, and
+    `reconcile` rebuilds its rows. The control is as it was, byte for byte, and the
+    secret is on no stream, in the status file and in no row of the store. On
+    SQLite the case seeds with `secure_delete` off and rewrites the credentialed
+    rows once, so that copies of the key sit in the file's free space, and no file of
+    the state folder may hold it afterwards."""
+    agents = estate.root / "agents-upgrade"
+    agents.mkdir()
+    (agents / "workspace.yaml").write_text(
+        f"repository: https://{REGISTER_HOST}/{REGISTER_PATH}/r.git\npath: {estate.ws}\n",
+        encoding="utf-8")
+    env = dict(env, AGENT_PROTOCOL_ROOT=str(agents), LANES_WORKSPACE_ROOT=str(estate.ws))
+    seeded = estate.index("sync", env=env)
+    assert seeded.returncode == 0, seeded.stdout + seeded.stderr
+    tables = store.tables()
+    assert "provenance" in tables and "lanes" in tables, tables
+    assert len(tables) == 10, tables
+    beside = first != "reconcile"
+    store.copy(tables, CLEAN_KEY, CONTROL_KEY)
+    for form in CLEAN_FORMS:
+        store.copy(tables, CLEAN_KEY, form)
+    if beside:
+        store.copy(tables, CLEAN_KEY, LEGACY_KEY)
+    else:
+        store.rename(tables, CLEAN_KEY, LEGACY_KEY)
+    store.copy(tables, CONTROL_KEY, RAW_URL_KEY)
+    for key in (LEGACY_KEY, RAW_URL_KEY):
+        store.seed_every(tables, key)
+        # IN EVERY TABLE THAT KEYS ON A SOURCE (lane 3's SHOULD, comment 6944606779)
+        assert all(rows for _t, rows in store.rows(tables, key)), [
+            (table, len(rows)) for table, rows in store.rows(tables, key)]
+    store.touch(tables, LEGACY_KEY)
+    if store.cluster is None:
+        store.leave_in_free_space(LEGACY_KEY)
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    status = json.loads(filed.read_text(encoding="utf-8"))
+    clean_entry = status.pop(CLEAN_KEY)
+    status[LEGACY_KEY] = dict(clean_entry, last_error=(
+        f"2026-11-01T00:00:00Z the provenance of {LEGACY_KEY} moved under this sync (it read "
+        f"111111111111, the store now holds 000000000000); nothing was written"))
+    status[CONTROL_KEY] = {"last_attempt_utc": "2026-11-01T00:00:00Z",
+                           "last_error": "2026-11-01T00:00:00Z the control's own error"}
+    # v1.2.0's raw `--source` keys, each with the error `_record_error` saved naming it
+    for key in RAW_KEYS:
+        status[key] = {"last_attempt_utc": "2026-11-01T00:00:00Z",
+                       "last_error": f"2026-11-01T00:00:00Z unreachable: {key} - nothing written"}
+    for form in CLEAN_FORMS:
+        status[form] = {"last_attempt_utc": "2026-11-01T00:00:00Z",
+                        "last_error": f"2026-11-01T00:00:00Z the clean form {form}'s own error"}
+    if beside:
+        status[CLEAN_KEY] = dict(clean_entry, t104="the clean key's own entry")
+    filed.write_text(json.dumps(status, indent=1, sort_keys=True), encoding="utf-8")
+    control = store.rows(tables, CONTROL_KEY)
+    forms = [store.rows(tables, form) for form in CLEAN_FORMS]
+    clean_rows = store.rows(tables, CLEAN_KEY) if beside else None
+    control_entry = json.dumps(status[CONTROL_KEY], sort_keys=True)
+    form_entries = [json.dumps(status[form], sort_keys=True) for form in CLEAN_FORMS]
+    assert CONFIG_SECRET in store.text(tables), "the seed holds no secret: the case is vacuous"
+    before = estate.index("status", env=env)
+
+    def files() -> dict:
+        return {str(p.relative_to(estate.state)): p.read_bytes()
+                for p in sorted(estate.state.rglob("*")) if p.is_file()}
+    # SHOULD 6 (comment 6944416906): a DRY RUN on the legacy state removes nothing and
+    # prints nothing raw - every table, the status file and the state folder as they were
+    rows_then, files_then = store.text(tables), files()
+    dry = estate.index("reconcile", "--dry-run", env=env)
+    assert store.text(tables) == rows_then and files() == files_then, (
+        "the dry run changed the store, the status file or the state folder")
+    assert dry.returncode == 0 and "source(s) from the index" not in dry.stdout, (
+        dry.stdout + dry.stderr).replace(CONFIG_SECRET, "<the secret>")
+    # AND THE INVENTORY'S DRY RUN (lane 2's SHOULD 3 of comment 6947728883, IN by lane 3's
+    # comment 6947826234): no status file replaced, no store row, no legacy key printed
+    dry_inventory = estate.index("reconcile", "--source", "inventory", "--dry-run", env=env)
+    assert store.text(tables) == rows_then and files() == files_then, (
+        "the inventory's dry run changed the store, the status file or the state folder")
+    assert (dry_inventory.returncode == 0 and
+            "source(s) from the index" not in dry_inventory.stdout), (
+        dry_inventory.stdout + dry_inventory.stderr).replace(CONFIG_SECRET, "<the secret>")
+    act = {"inventory-sync": ("sync", "--source", "inventory"),
+           "inventory-reconcile": ("reconcile", "--source", "inventory")}.get(first, (first,))
+    run = estate.index(*act, env=env)
+    after = estate.index("status", env=env)
+    kept = json.loads(filed.read_text(encoding="utf-8"))
+    said = (f"status before, exit {before.returncode}:\n{before.stdout}{before.stderr}\n"
+            f"{first}, exit {run.returncode}:\n{run.stdout}{run.stderr}\n"
+            f"status after, exit {after.returncode}:\n{after.stdout}{after.stderr}\n"
+            f"status file: {sorted(kept)}").replace(CONFIG_SECRET, "<the secret>")
+    assert f"  last error:  {LEGACY_ENTRY_WORDS}\n" in before.stdout, said
+    # A KEY NO FORM OF THIS BUILD FILES: one fixed line in place of its whole entry, for
+    # each raw key (the URL's store rows and status entry are one name)
+    assert before.stdout.count(LEGACY_SOURCE_LINE_WORDS + "\n") == len(RAW_KEYS), said
+    assert run.returncode == 0, said
+    assert (f"removed 2 source(s) from the index and {1 + len(RAW_KEYS)} entry(s) from the "
+            f"status file" in run.stdout), said
+    own = ["inventory:Eagle"] if first.startswith("inventory") else []
+    assert sorted(kept) == sorted([CLEAN_KEY, CONTROL_KEY] + CLEAN_FORMS + own), said
+    for key in (LEGACY_KEY, RAW_URL_KEY):
+        assert all(rows == [] for _table, rows in store.rows(tables, key)), said
+    # EVERY CLEAN FORM STAYS, BYTE FOR BYTE (lane 3's ruling, comment 6944673181)
+    assert [store.rows(tables, form) for form in CLEAN_FORMS] == forms, said
+    assert [json.dumps(kept[form], sort_keys=True) for form in CLEAN_FORMS] == form_entries, said
+    assert LEGACY_SOURCE_LINE_WORDS not in after.stdout, said
+    if beside:
+        # THE CLEAN KEY'S OWN ROWS AND ENTRY ARE KEPT: the sync finds its rows at the
+        # tip, its rows are as they were, byte for byte, and its status entry keeps a
+        # field of its own; the inventory's acts leave the register's rows alone
+        if first == "sync":
+            assert "the index is at the tip; nothing to write" in run.stdout, said
+        assert store.rows(tables, CLEAN_KEY) == clean_rows, (
+            f"the clean key's rows moved:\n{said}")
+        assert kept[CLEAN_KEY].get("t104") == "the clean key's own entry", said
+    else:
+        # REBUILT UNDER THE CLEAN KEY: as many rows in each table as the control's, a
+        # copy of what the first sync filed
+        assert f"reconcile: {CLEAN_KEY} at register@" in run.stdout, said
+        assert ([(t, len(rows)) for t, rows in store.rows(tables, CLEAN_KEY)] ==
+                [(t, len(rows)) for t, rows in control]), said
+    assert store.rows(tables, CONTROL_KEY) == control, f"the control moved:\n{said}"
+    assert json.dumps(kept[CONTROL_KEY], sort_keys=True) == control_entry, said
+    assert LEGACY_ENTRY_WORDS not in after.stdout, said
+    for shown in (before.stdout, before.stderr, dry.stdout, dry.stderr, dry_inventory.stdout,
+                  dry_inventory.stderr, run.stdout, run.stderr, after.stdout, after.stderr):
+        assert CONFIG_SECRET not in shown, f"the secret was shown:\n{said}"
+    assert CONFIG_SECRET.encode() not in filed.read_bytes(), said
+    assert CONFIG_SECRET not in store.text(tables), f"a row keeps the secret:\n{said}"
+    if store.cluster is None:
+        # NOR IN THE FILE'S FREE SPACE: no file of the state folder holds it
+        for path in sorted(estate.state.rglob("*")):
+            if path.is_file():
+                assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path}:\n{said}"
+
+
+@pytest.mark.parametrize("first", ["reconcile", "sync", "inventory-sync", "inventory-reconcile"],
+                         ids=["legacy-only", "beside-clean", "inventory-sync", "inventory-reconcile"])
+def test_an_upgrade_removes_a_legacy_credentialed_source(estate, first):
+    """AN UPGRADE FROM v1.2.0 LEAVES NO CREDENTIAL, ON SQLITE (lane 3's ruling,
+    opensoft/openRepoTools-code#89 comment 6941833120): `_an_upgrade`'s case, and no
+    file of the state folder holds the secret afterwards."""
+    _an_upgrade(estate, _IndexTables(estate), {}, first)
+
+
+@pytest.mark.parametrize("first", ["reconcile", "sync", "inventory-sync", "inventory-reconcile"],
+                         ids=["legacy-only", "beside-clean", "inventory-sync", "inventory-reconcile"])
+def test_an_upgrade_removes_a_legacy_credentialed_source_from_postgres(t109_engine, tmp_path,
+                                                                      first):
+    """THE SAME UPGRADE ON POSTGRESQL 16: `url=` and `reader_url=` name the cluster's
+    `t109_db` as its superuser. The schema `lanes_index` is made first, as the bootstrap
+    makes it, since the index's own DDL makes its tables and not its schema."""
+    import pgcluster
+    cluster, _bootstrap = t109_engine
+    estate = Estate(tmp_path / "up")
+    cluster.psql("CREATE SCHEMA lanes_index;", dbname="t109_db")
+    url = pgcluster.Database(cluster, "t109_db").url()
+    estate.write_config(f"url={url}\nreader_url={url}\n")
+    env = {"PATH": os.pathsep.join([str(cluster.bindir), estate.env["PATH"]])}
+    _an_upgrade(estate, _IndexTables(estate, cluster), env, first)
+
+
+def _sql_text(script: str) -> str:
+    """`script` less the rows of each `COPY ... FROM STDIN`, which are data: its SQL."""
+    out, data = [], False
+    for line in script.splitlines():
+        if data:
+            data = line != "\\."
+            continue
+        data = bool(re.fullmatch(r"COPY [a-z_]+ \([a-z_, ]+\) FROM STDIN;", line))
+        out.append(line)
+    return "\n".join(out)
+
+
+@pytest.mark.parametrize("case", ["empty-schema", "legacy-held", "cas-lost"])
+def test_a_postgres_sync_reads_its_sources_in_the_provenance_call(estate, case):
+    """A LEGACY SOURCE COSTS A POSTGRESQL SYNC NO psql CALL OF ITS OWN, on FAKE_PSQL
+    (lane 1's hosted run 44046351293 of commit 13's previous build): the store's sources
+    are read in the provenance's one call, and a DELETE goes only for a source to
+    remove. [empty-schema]: the schema is as the bootstrap leaves it, with no table,
+    and the version read fails as psql 16 says it under `VERBOSITY=sqlstate`, one
+    located line of severity and SQLSTATE; the sync fills the schema, writes, and sends
+    no DELETE. [legacy-held]: the store answers a legacy source and a control; ONE
+    transaction takes the legacy source from every table that keys on a source, the
+    control stays, and the secret is on no stream; and the removal comes BEFORE the
+    label, the write and the compare-and-swap (SHOULD 7 of comment 6944416906).
+    [cas-lost]: the write after the removal fails as the compare-and-swap's RAISE does,
+    and the removal - the store's and the status file's - had already happened, which
+    the run says, with no "nothing was written". NO SOURCE KEY IS IN ANY SQL TEXT
+    (lane 3's ruling, comment 6944673181): every key reaches psql as COPY data alone,
+    and a legacy key's rows are chosen by the server's rule, with no digest of it."""
+    held = case != "empty-schema"
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    (fake / "psql").write_text(FAKE_PSQL)
+    (fake / "psql").chmod(0o755)
+    log, vfile = estate.root / "psql.jsonl", estate.root / "version"
+    vfile.write_text("1\n" if held else "")
+    estate.write_config("url=postgresql://lanes_writer@db.invalid/qa\n"
+                        "reader_url=postgresql://lanes_reader@db.invalid/qa\n")
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    if case == "cas-lost":
+        filed.parent.mkdir(parents=True, exist_ok=True)
+        filed.write_text(json.dumps({LEGACY_KEY: {"last_error": f"t {LEGACY_KEY} moved"}}),
+                         encoding="utf-8")
+    env = {"PATH": estate.path_with(fake), "FAKE_PSQL_LOG": str(log),
+           "FAKE_PSQL_VERSION_FILE": str(vfile), "FAKE_PSQL_NO_TABLE": "1",
+           "FAKE_PSQL_SOURCES": f"{CONTROL_KEY}\n{LEGACY_KEY}\n" if held else "",
+           "FAKE_PSQL_CAS_LOST": "1" if case == "cas-lost" else ""}
+    res = estate.index("sync", env=env)
+    said = (res.stdout + res.stderr).replace(CONFIG_SECRET, "<the secret>")
+    assert res.returncode == (1 if case == "cas-lost" else 0), said
+    assert CONFIG_SECRET not in res.stdout + res.stderr, said
+    calls = [json.loads(line)["stdin"] for line in log.read_text().splitlines()]
+    legacy_digest = hashlib.sha256(LEGACY_KEY.encode("utf-8")).hexdigest()
+    rule = load_indexer().PG_LEGACY_SQL
+    for call in calls:
+        # the removal's rule names the filed prefixes, and no key
+        sql = _sql_text(call).replace(rule, "<the rule>")
+        for mark in ("register:", "inventory:", "ledger:", CONFIG_SECRET, legacy_digest):
+            assert mark not in sql, f"a key in the SQL:\n{call}".replace(
+                CONFIG_SECRET, "<the secret>")
+    assert any("CREATE TABLE IF NOT EXISTS" in c for c in calls) != held, said
+    writes = [c for c in calls if "INSERT INTO lanes" in c]
+    assert len(writes) == 1 and "lanes_index_cas" in writes[0], said
+    reads = [c for c in calls if "UNION SELECT source FROM" in c]
+    assert len(reads) == 1 and ("FROM provenance WHERE encode(sha256(convert_to(source, "
+                                "'UTF8')), 'hex') = '") in reads[0], said
+    drops = [c for c in calls if "DELETE FROM provenance WHERE" in c]
+    if not held:
+        assert drops == [] and "source(s) from the index" not in res.stdout, said
+        return
+    # THE REMOVAL FIRST: after the one read, before the write and its compare-and-swap,
+    # and its line before the label
+    assert len(drops) == 1, said
+    assert calls.index(reads[0]) < calls.index(drops[0]) < calls.index(writes[0]), said
+    filed_entries = 1 if case == "cas-lost" else 0
+    removed = f"removed 1 source(s) from the index and {filed_entries} entry(s)"
+    assert removed in res.stdout, said
+    lines = drops[0].splitlines()
+    tables = ["provenance", "source_files", "lanes", "log_lines", "register_lines",
+              "lane_aliases", "transcript_pointers", "swap_states", "job_summaries", "worktrees"]
+    assert lines[:3] == ["SET standard_conforming_strings = on;", "BEGIN;",
+                         'SET LOCAL search_path TO "lanes_index";'], said
+    assert lines[-1] == "COMMIT;", said
+    # CHOSEN BY THE SERVER'S RULE, with no value made from a legacy key in the script
+    assert sorted(lines[3:-1]) == sorted(f"DELETE FROM {t} WHERE {rule};" for t in tables), said
+    if case == "legacy-held":
+        assert res.stdout.index(removed) < res.stdout.index(" at register@"), said
+        return
+    # [cas-lost]: the compare-and-swap failed AFTER the removal, which stands
+    kept = json.loads(filed.read_text(encoding="utf-8"))
+    assert LEGACY_KEY not in kept, said
+    assert ("provenance of this workstation's source moved under this sync; nothing more "
+            "written; the removal said above stands") in res.stderr, said
+    assert "nothing was written" not in res.stderr and "nothing written" not in res.stderr, said
+    for entry in kept.values():
+        assert CONFIG_SECRET not in json.dumps(entry), said
+
+
+def _stopped(sqlstate: str) -> str:
+    return f"psql stopped the index's script with SQLSTATE {sqlstate} (exit 3)"
+
+
+#: (id, the call that fails - the provenance's `read` or the compare-and-swap's `write` -,
+#: psql's exit, its stderr as psql 16 says it under VERBOSITY=sqlstate - each message one
+#: located line, its severity and SQLSTATE alone (lane 3's ruling, question 1 of
+#: opensoft/openRepoTools-code#89 comment 6955397261) -, the fixed words the run says). The
+#: LAST located line decides.
+PSQL_QUOTES = [
+    # a localized NOTICE, then a localized error 42601: the last line, not the first
+    ("localized", "read", 3,
+     "psql:<stdin>:2: HINWEIS:  42P07\npsql:<stdin>:4: FEHLER:  42601\n", _stopped("42601")),
+    # 42P01 read as `wiped`, after a NOTICE
+    ("localized-42p01", "read", 3,
+     "psql:<stdin>:2: HINWEIS:  42P07\npsql:<stdin>:3: FEHLER:  42P01\n",
+     "psql: a table or schema the index needs does not exist (SQLSTATE 42P01)"),
+    # P0001 and 23505 in the compare-and-swap's write: `CasLost`
+    ("localized-cas-write", "write", 3, "psql:<stdin>:5: FEHLER:  P0001\n",
+     "the provenance of this workstation's source moved under this sync; nothing written"),
+    ("cas-23505-write", "write", 3, "psql:<stdin>:5: ERROR:  23505\n",
+     "the provenance of this workstation's source moved under this sync; nothing written"),
+    # any other code by its five characters, on a write
+    ("copy-row-write", "write", 3, "psql:<stdin>:9: ERROR:  22P04\n", _stopped("22P04")),
+    # lane 2's SHOULD 6b: the exit-2 and no-SQLSTATE branches
+    ("exit-2", "read", 2,
+     'psql: error: connection to server at "db.invalid" (192.0.2.1), port 5432 failed: '
+     f'FATAL:  28P01: password authentication failed for user "{CONFIG_SECRET}"\n',
+     "psql could not connect to the index's database, or lost its connection (exit 2); "
+     "psql's own words are not shown"),
+    ("no-sqlstate", "read", 3,
+     f'psql:<stdin>:4: ERROR:  syntax error at or near "{CONFIG_SECRET}"\n',
+     "psql exited 3 with no SQLSTATE; psql's own words are not shown, since they can quote "
+     "the script"),
+    # a located psql-side error, with no code, after a NOTICE: no SQLSTATE, not the NOTICE's
+    ("psql-error-after-notice", "read", 3,
+     "psql:<stdin>:2: NOTICE:  42P07\npsql:<stdin>:3: error: invalid command \\t104\n",
+     "psql exited 3 with no SQLSTATE; psql's own words are not shown, since they can quote "
+     "the script"),
+    # the LAST LOCATED line, not the last line (lane 2's N3 of comment 6956694290): a located
+    # line with a code, then a line with no locus, reads the located line's code
+    ("unlocated-last-line", "read", 3,
+     "psql:<stdin>:3: ERROR:  42P01\na line psql says with no locus\n",
+     "psql: a table or schema the index needs does not exist (SQLSTATE 42P01)"),
+    # a line in the verbose form, code then text: no SQLSTATE
+    ("verbose-form", "read", 3,
+     f'psql:<stdin>:4: ERROR:  42P01: relation "{CONFIG_SECRET}" does not exist\n'
+     f'LINE 1: SELECT 1 FROM "{CONFIG_SECRET}"\n',
+     "psql exited 3 with no SQLSTATE; psql's own words are not shown, since they can quote "
+     "the script"),
+]
+PSQL_QUOTE_ROWS = {row[0]: row[1:] for row in PSQL_QUOTES}
+
+
+@pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in PSQL_QUOTES])
+def test_no_line_of_psqls_text_is_said_or_filed(estate, ident):
+    """A FAILED INDEX CALL IS SAID IN FIXED WORDS (BLOCKING 5 of
+    opensoft/openRepoTools-code#89 comment 6944416906): under `VERBOSITY=sqlstate` (lane
+    3's ruling on comment 6955397261) psql's stderr is located lines of severity and
+    SQLSTATE, and the LAST located line decides, not the last line; the sync fails with
+    that SQLSTATE alone. No stream, no `last_error`, no file of the state folder and no
+    line `status` prints holds the secret, and no stream and no `last_error` holds psql's
+    locus (lane 2's N4 of comment 6956694290); the exit-2 and no-SQLSTATE branches say
+    their own fixed words. The row is taken by its id, so no argument holds the secret
+    (lane 2's SHOULD 1)."""
+    on, code, stderr, words = PSQL_QUOTE_ROWS[ident]
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    (fake / "psql").write_text(FAKE_PSQL)
+    (fake / "psql").chmod(0o755)
+    quoted = estate.root / "quoted-stderr"
+    quoted.write_text(stderr, encoding="utf-8")
+    estate.write_config("url=postgresql://lanes_writer@db.invalid/qa\n"
+                        "reader_url=postgresql://lanes_reader@db.invalid/qa\n")
+    env = {"PATH": estate.path_with(fake), "FAKE_PSQL_LOG": str(estate.root / "psql.jsonl"),
+           "FAKE_PSQL_STDERR_FILE": str(quoted), "FAKE_PSQL_STDERR_ON": on,
+           "FAKE_PSQL_STDERR_EXIT": str(code)}
+    res = estate.index("sync", env=env)
+    st = estate.index("status", env=env)
+    said = (f"{res.stdout}{res.stderr}\nstatus:\n{st.stdout}{st.stderr}"
+            ).replace(CONFIG_SECRET, "<the secret>")
+    assert res.returncode == 1, said
+    assert words in res.stderr, said
+    for shown in (res.stdout, res.stderr, st.stdout, st.stderr):
+        assert CONFIG_SECRET not in shown and "ERROR:" not in shown, said
+        # NO STREAM HOLDS psql's LOCUS (lane 2's N4 of comment 6956694290), so the checks are
+        # not vacuous for the rows that carry a code
+        assert "psql:<stdin>" not in shown, said
+    kept = json.loads((estate.state / "openRepoTools" / "lanes-index.status.json")
+                      .read_text(encoding="utf-8"))
+    assert any(words in e.get("last_error", "") for e in kept.values()), said
+    assert "psql:<stdin>" not in json.dumps(kept), said
+    for path in sorted(estate.state.rglob("*")):
+        if path.is_file():
+            assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path}:\n{said}"
+
+
+@pytest.mark.parametrize("case", ["unreadable", "unparseable", "unparseable-dry-run",
+                                  "unparseable-first-write", "dangling-symlink", "symlink",
+                                  "fifo", "wrong-shape-list", "wrong-shape-entry",
+                                  "unparseable-inventory", "dry-run-then-failure",
+                                  "preflight-failure", "dry-run-then-failure-inventory",
+                                  "unreplaceable"])
+def test_the_status_file_is_read_strictly(estate, case):
+    """THE STATUS FILE, STRICTLY (lane 3's ruling on item 3, opensoft/openRepoTools-code#89
+    comment 6944673181). [unreadable]: a status file that cannot be read fails the run
+    with fixed words, and no store is made. [unparseable]: one that can be read and not
+    parsed, a credential in its bytes, is replaced with an empty one as the run's first
+    write, with one fixed WARNING line, and the sync goes on. [unparseable-dry-run]: a
+    dry run says the same line, writes nothing and leaves the file as it is.
+    [unparseable-first-write]: the store cannot be opened, so the sync fails at its next
+    step; the file is already replaced, and the store's path is as it was. No byte of the
+    file is printed. NOTHING BUT A REGULAR FILE, A DRY RUN THAT FILES NOTHING, AND THE ONE
+    WARNING ON EVERY REPLACE (lane 3's ruling, B4 of comment 6947619546):
+    [dangling-symlink], [symlink] and [fifo]: a path that is not a regular file fails the
+    run as [unreadable] does and is left as it is, the symlink's target, which holds the
+    key, too; a FIFO never holds the run. [wrong-shape-list] and [wrong-shape-entry]
+    (lane 2's SHOULD 5a of comment 6947728883, IN by lane 3's 6947826234): JSON that is
+    not an object of objects is replaced as [unparseable] is. [unparseable-inventory]
+    (5b): the inventory's own sync replaces it so, its own check the first. [dry-run-then-
+    failure]: a dry run that then fails at the store files nothing, its error included:
+    the file's bytes are as they were, and the WARNING is said once. [preflight-failure]:
+    a run that fails before its check (its `origin/<branch>` unread) files its error over
+    the file with the one WARNING, never silently. W116's pre-review of commit 15:
+    [dry-run-then-failure-inventory], the inventory's dry run that fails at the store files
+    nothing either; [unreplaceable], a file the run cannot replace (its folder 0500) fails
+    the run with fixed words, and the WARNING is said once, though both the cleanup and
+    `_record_error` meet the file."""
+    mod = load_indexer()
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    filed.parent.mkdir(parents=True, exist_ok=True)
+    garbage = ('{"' + LEGACY_KEY + '": {"last_error": "' + CONFIG_SECRET + '"').encode("utf-8")
+    target = estate.root / "t104-status-target.json"
+    target_text = json.dumps({LEGACY_KEY: {"last_error": CONFIG_SECRET}})
+    if case == "wrong-shape-list":
+        garbage = json.dumps([LEGACY_KEY, {"last_error": CONFIG_SECRET}]).encode("utf-8")
+    if case == "wrong-shape-entry":
+        garbage = json.dumps({LEGACY_KEY: CONFIG_SECRET, "register:?": {}}).encode("utf-8")
+    if case == "unreadable":
+        filed.mkdir()
+    elif case == "dangling-symlink":
+        filed.symlink_to(estate.root / "t104-no-such-status.json")
+    elif case == "symlink":
+        target.write_text(target_text, encoding="utf-8")
+        filed.symlink_to(target)
+    elif case == "fifo":
+        os.mkfifo(filed)
+    else:
+        filed.write_bytes(garbage)
+    if case in ("unparseable-first-write", "dry-run-then-failure",
+                "dry-run-then-failure-inventory"):
+        estate.sqlite.mkdir(parents=True)
+    act = {"unparseable-dry-run": ("reconcile", "--dry-run"),
+           "dry-run-then-failure": ("reconcile", "--dry-run"),
+           "dry-run-then-failure-inventory": ("reconcile", "--source", "inventory", "--dry-run"),
+           "unparseable-inventory": ("sync", "--source", "inventory")}.get(case, ("sync",))
+    env = {"LANES_BRANCH": "t104-no-such-branch"} if case == "preflight-failure" else {}
+    if case == "unreplaceable":
+        if os.geteuid() == 0:
+            pytest.skip("root writes into a 0500 folder")
+        (filed.parent / "lanes-index.lock").write_text("", encoding="utf-8")
+        filed.parent.chmod(0o500)
+    try:
+        res = estate.index(*act, env=env, timeout=60)
+    finally:
+        if case == "unreplaceable":
+            filed.parent.chmod(0o700)
+    said = (res.stdout + res.stderr).replace(CONFIG_SECRET, "<the secret>")
+    assert CONFIG_SECRET not in res.stdout + res.stderr, said
+    if case in ("unreadable", "dangling-symlink", "symlink", "fifo"):
+        assert res.returncode == 1, said
+        assert f"unreachable: {mod.STATUS_UNREADABLE} - nothing written" in res.stderr, said
+        assert not estate.sqlite.exists(), said
+        if case in ("dangling-symlink", "symlink"):
+            assert filed.is_symlink(), said
+        if case == "symlink":
+            assert target.read_text(encoding="utf-8") == target_text, said
+        if case == "fifo":
+            assert stat.S_ISFIFO(os.lstat(filed).st_mode), said
+        return
+    if case == "unreplaceable":
+        # THE ONE WARNING, ONCE; the file as it was, and no copy of it left beside it
+        assert res.returncode == 1 and res.stderr.count(mod.STATUS_UNPARSEABLE_WARNING) == 1, said
+        assert f"unreachable: {mod.STATUS_UNREPLACEABLE} - nothing written" in res.stderr, said
+        assert filed.read_bytes() == garbage, said
+        assert sorted(p.name for p in filed.parent.iterdir()) == [
+            "lanes-index.lock", "lanes-index.status.json"], said
+        return
+    if case.startswith("dry-run-then-failure"):
+        # A DRY RUN FILES NOTHING, ITS ERROR INCLUDED: no `_record_error` over the file
+        assert res.returncode == 1 and res.stderr.count(mod.STATUS_UNPARSEABLE_WARNING) == 1, said
+        assert filed.read_bytes() == garbage, said
+        assert estate.sqlite.is_dir() and list(estate.sqlite.iterdir()) == [], said
+        return
+    if case == "preflight-failure":
+        # REPLACED BY `_record_error`, WITH THE ONE WARNING: only the error's own entry
+        assert res.returncode == 1 and res.stderr.count(mod.STATUS_UNPARSEABLE_WARNING) == 1, said
+        kept = json.loads(filed.read_text(encoding="utf-8"))
+        assert LEGACY_KEY not in kept and len(kept) == 1, said
+        assert all(name.startswith("register:") for name in kept), said
+        for path in sorted(estate.state.rglob("*")):
+            if path.is_file():
+                assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path}:\n{said}"
+        return
+    if case == "unparseable-first-write":
+        # THE RUN'S FIRST WRITE: replaced before the store was opened, which then failed
+        assert res.returncode == 1 and res.stderr.count(mod.STATUS_UNPARSEABLE_WARNING) == 1, said
+        assert estate.sqlite.is_dir() and list(estate.sqlite.iterdir()) == [], said
+        kept = json.loads(filed.read_text(encoding="utf-8"))
+        assert LEGACY_KEY not in kept and CONFIG_SECRET not in json.dumps(kept), said
+        return
+    assert res.returncode == 0, said
+    assert res.stderr.count(mod.STATUS_UNPARSEABLE_WARNING) == 1, said
+    if case == "unparseable-dry-run":
+        assert filed.read_bytes() == garbage, said
+        return
+    kept = json.loads(filed.read_text(encoding="utf-8"))
+    assert LEGACY_KEY not in kept and len(kept) == 1, said
+    if case == "unparseable-inventory":
+        assert list(kept) == ["inventory:Eagle"], said
+    for path in sorted(estate.state.rglob("*")):
+        if path.is_file():
+            assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path}:\n{said}"
+
+
+def _pg_rule(sql: str):
+    """`PG_LEGACY_SQL` as Python reads it, for the shapes it holds: `source LIKE 'x%'` as a
+    prefix, `~` and `!~` as a regex search (PostgreSQL's ARE and Python's re agree on these
+    bracket classes, anchors and backslash-u escapes), and NOT, AND and OR. No `~*` is read:
+    the rule holds none, and one would be a split this reading must not hide (lane 3's
+    ruling on comment 6955397261)."""
+    ops = {"~": "bool(re.search({0!r}, s))", "!~": "(not re.search({0!r}, s))"}
+    py = re.sub(r"source LIKE '([^'%]*)%'", lambda m: f"s.startswith({m.group(1)!r})", sql)
+    py = re.sub(r"source (!~|~\*|~) '([^']*)'", lambda m: ops[m.group(1)].format(m.group(2)), py)
+    py = py.replace("NOT ", "not ").replace(" OR ", " or ").replace(" AND ", " and ")
+    assert "source" not in py, py
+    return lambda s: eval(py, {"re": re, "s": s})
+
+
+def _rule_keys() -> list:
+    """Every key the cases here file or seed, legacy and clean, and a few more shapes."""
+    return ([LEGACY_KEY, CLEAN_KEY, CONTROL_KEY] + RAW_KEYS + CLEAN_FORMS +
+            [f"register:{repository}" for _i, repository, _k in REGISTER_KEYS] +
+            [key for _i, key, _k in REGISTER_KEYS] + [key for _i, key, _n in CAS_KEYS] +
+            ["REGISTER:opensoft/x", "register:ssh://u:p@h/x", "register:git+https://t@h/x",
+             "ledger:https://u@h/x", "inventory:Eagle", "ledger:Eagle", "register:x?Password=1",
+             "register:https://h/p@x", "register:ssh://h:22/x", "",
+             # B1'S EDGES (lane 3's ruling, comment 6947619546): a control character, and
+             # `password`, optional spaces, then `=` or `%3D`, in any case; and near misses.
+             # PostgreSQL's text holds no NUL, so the server's class begins at 0x01.
+             "register:h/x\x1by", "inventory:Eagle\x7f", "ledger:a\nb", "register:a\tb",
+             "register:h/x?PassWord  %3Dz", "inventory:password %3d1", "register:x?PASSWORD=1",
+             "inventory:Pass Word=1", "register:x?passwordX=1", "register:x?password-=1",
+             "register:x?password%3E1", "inventory:Eagle-password", "register:h/x#password",
+             # C1 control characters (W116's pre-review of commit 15), and a no-break space,
+             # which is none
+             "register:h/x\x85y", "inventory:Eagle\x9b", "register:h/x\xa0y"] +
+            # question 2 of lane 3's ruling on comment 6955397261, and its table
+            [key for key, _legacy in PASSWORD_RULE_TABLE])
+
+
+#: The characters `str.isspace()` holds that are not control characters: the 19 of the
+#: ruling's 29 that the control-character term does not already refuse.
+NON_CONTROL_SPACES = [c for c in range(sys.maxunicode + 1)
+                      if chr(c).isspace() and not unicodedata.category(chr(c)).startswith("C")]
+#: (key, legacy) - lane 3's ruling, question 2 of opensoft/openRepoTools-code#89 comment
+#: 6955397261, and lane 2's SHOULD 3 of 6955285249: each separator before `=`, `+` and
+#: percent-escapes legacy; the word itself literal, so its near misses stay clean
+PASSWORD_RULE_TABLE = (
+    [(f"register:x?password{chr(c)}=1", True) for c in NON_CONTROL_SPACES] +
+    [("register:x?password+=1", True), ("register:x?password%20=1", True),
+     ("register:x?password%09=1", True), ("register:x?password%2B=1", True),
+     ("register:x?password%20%3d1", True), ("register:x?PASSWORD + %3D1", True),
+     ("register:x?p%61ssword=1", False), ("register:x?pa\u017fsword=1", False)])
+
+
+def test_the_key_rules_password_term_is_the_rulings():
+    """THE KEY RULE'S `password` TERM, BY ITS ANSWERS (lane 3's ruling, question 2 of
+    opensoft/openRepoTools-code#89 comment 6955397261; lane 2's SHOULD 3): each of the 19
+    non-control separators before `=`, `+`, `%20`, `%09`, `%2B`, `%20%3d` and
+    `PASSWORD + %3D` are legacy, and `p%61ssword=` and `pa` U+017F `sword=` are clean. THE
+    CONSTANT: one ASCII raw text with no backslash-x, whose separator bracket holds exactly
+    `+` and the characters `str.isspace()` holds, 29, written as backslash-u escapes."""
+    mod = load_indexer()
+    assert len(NON_CONTROL_SPACES) == 19, NON_CONTROL_SPACES
+    wrong = [key for key, legacy in PASSWORD_RULE_TABLE if mod._is_legacy(key) is not legacy]
+    assert wrong == [], [k.encode("unicode_escape").decode() for k in wrong]
+    text = mod.PASSWORD_RULE
+    assert text.isascii() and "\\x" not in text and "(?i" not in text, text
+    head = "[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd](["
+    assert text.startswith(head) and text.endswith("+]|%[0-9A-Fa-f]{2})*(=|%3[Dd])"), text
+    bracket = text[len(head):text.index("+]|")]
+    assert re.fullmatch(r"(\\u[0-9a-f]{4})+", bracket), bracket
+    chars = {int(bracket[n + 2:n + 6], 16) for n in range(0, len(bracket), 6)}
+    spaces = {c for c in range(sys.maxunicode + 1) if chr(c).isspace()}
+    assert len(bracket) == 6 * 29 and chars == spaces and len(spaces) == 29, sorted(chars ^ spaces)
+    assert f"source ~ '{text}'" in mod.PG_LEGACY_SQL and "~*" not in mod.PG_LEGACY_SQL
+
+
+def test_the_servers_legacy_rule_is_the_indexers():
+    """THE POSTGRESQL REMOVAL'S RULE IS `_is_legacy` (lane 1's coordinator, on commit 14's
+    design): for every key the cases here file or seed, legacy and clean, and a few more
+    shapes, `PG_LEGACY_SQL` read term by term answers as `_is_legacy` does."""
+    mod = load_indexer()
+    rule = _pg_rule(mod.PG_LEGACY_SQL)
+    keys = _rule_keys()
+    differ = [k for k in keys if rule(k) != mod._is_legacy(k)]
+    assert differ == [], [k.replace(CONFIG_SECRET, "<the secret>") for k in differ]
+    assert any(mod._is_legacy(k) for k in keys) and not all(mod._is_legacy(k) for k in keys)
+
+
+def test_the_servers_legacy_rule_is_the_indexers_on_postgres(t109_engine):
+    """THE SAME KEYS, CHOSEN BY POSTGRESQL 16 ITSELF (B1's edges, lane 3's ruling on
+    opensoft/openRepoTools-code#89 comment 6947619546): each key a row of a table of its
+    own, `PG_LEGACY_SQL` chooses exactly the rows `_is_legacy` calls legacy, so the server
+    reads the rule's backslash-u escapes and its classes as Python does, with no `~*` in
+    it (lane 3's ruling on comment 6955397261). Each key reaches the server as hex, so no
+    quoting stands between the two."""
+    cluster, _bootstrap = t109_engine
+    mod = load_indexer()
+    keys = _rule_keys()
+    rows = ",\n".join(f"({n}, convert_from(decode('{key.encode('utf-8').hex()}', 'hex'), "
+                       f"'UTF8'))" for n, key in enumerate(keys))
+    script = ("CREATE TEMP TABLE t104_keys (n integer, source text);\n"
+              f"INSERT INTO t104_keys VALUES\n{rows};\n"
+              f"SELECT n FROM t104_keys WHERE {mod.PG_LEGACY_SQL} ORDER BY n;\n")
+    chosen = [int(line) for line in cluster.psql(script, dbname="t109_db").stdout.split()]
+    expected = [n for n, key in enumerate(keys) if mod._is_legacy(key)]
+    assert chosen == expected, [keys[n].replace(CONFIG_SECRET, "<the secret>")
+                                for n in sorted(set(chosen) ^ set(expected))]
+
+
+def test_a_status_file_that_cannot_be_replaced_fails_the_cleanup(estate, monkeypatch):
+    """A REPLACE THAT FAILS IS A FAILED RUN (BLOCKING 3 of
+    opensoft/openRepoTools-code#89 comment 6944416906): with the status file's replace
+    refused, the cleanup of a legacy entry raises `StoreUnusable` with fixed words, and
+    so does the replace of a file that cannot be parsed; a dry run replaces nothing."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
+    mod = load_indexer()
+    mod._replace_status({LEGACY_KEY: {"last_error": f"t {LEGACY_KEY} moved"},
+                         CLEAN_KEY: {"last_result": "current"}})
+
+    def refuse(_data):
+        raise PermissionError(13, "t104: the state folder refuses the replace")
+    monkeypatch.setattr(mod, "_replace_status", refuse)
+    with pytest.raises(mod.StoreUnusable) as caught:
+        mod.drop_legacy_status()
+    assert caught.value.detail == mod.STATUS_UNREPLACEABLE, caught.value
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    filed.write_text("{", encoding="utf-8")
+    with pytest.raises(mod.StoreUnusable) as caught:
+        mod.check_status_file(False)
+    assert caught.value.detail == mod.STATUS_UNREPLACEABLE, caught.value
+    mod.check_status_file(True)
+    assert filed.read_text(encoding="utf-8") == "{"
+
+
+class _VacuumFails:
+    """A store connection whose VACUUM fails, as a full disk or a reader's lock fails it,
+    after the removal's COMMIT: every time, or only the first `times` tries; `tries`
+    counts them."""
+
+    def __init__(self, conn, times=None):
+        self.conn, self.times, self.tries = conn, times, 0
+
+    def execute(self, sql, *args):
+        if sql.strip().upper() == "VACUUM":
+            self.tries += 1
+            if self.times is None or self.tries <= self.times:
+                raise sqlite3.OperationalError("t104: the VACUUM failed")
+        return self.conn.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self.conn, name)
+
+
+def _held_in(root: Path) -> list:
+    return [str(p) for p in sorted(root.rglob("*"))
+            if p.is_file() and CONFIG_SECRET.encode() in p.read_bytes()]
+
+
+@pytest.mark.parametrize("journal", ["delete", "wal", "persist", "wal-frames", "retried"])
+def test_a_scrub_that_fails_after_the_commit_is_finished_by_the_next_write(estate, monkeypatch,
+                                                                           journal):
+    """BLOCKING 4 of opensoft/openRepoTools-code#89 comment 6944416906: a removal whose
+    VACUUM fails after its COMMIT leaves the scrub mark, which holds no key; the status
+    file's cleanup has already happened; the run says no "nothing written"; and the next
+    writer's cleanup, which removes nothing more, finishes the scrub, so that no file of
+    the state folder holds the key.
+    [delete]: the default journal. [wal]: the store set to WAL explicitly, and a
+    reader's idle connection open through the next sync, so that only the scrub's TRUNCATE
+    checkpoint empties the WAL. [persist]: the seed's last write made in the PERSIST
+    journal, which keeps the old pages in the journal file; THE CASE SHOWS THE END STATE
+    (lane 2's SHOULD 4b of comment 6947728883, IN by lane 3's 6947826234): a PERSIST
+    journal does not outlive its connection, since a new connection reads `delete` and
+    its first commit removes the stale journal, so the scrub's journal step is not what
+    clears it here. [wal-frames] (lane 2's SHOULD 4a): a reader that has read, in a process
+    of its own, holds the WAL from before the seed through the next sync, so no
+    connection's close checkpoints it: the key is in the WAL's frames at the scrub, and
+    only the scrub's TRUNCATE checkpoint takes it out. THE BOUNDED RETRY (lane 3's ruling,
+    B2 of comment 6947619546): the failing run tries the VACUUM `SCRUB_ATTEMPTS` times,
+    more than once, and only then exits 1 saying a scrub is pending; [retried]: a VACUUM
+    that fails once is tried again in the same run, which ends 0 with the mark gone and no
+    file holding the key."""
+    assert estate.index("sync").returncode == 0
+    store = _IndexTables(estate)
+    tables = store.tables()
+    own = store.sql("SELECT source FROM provenance")
+    assert len(own) == 1, own
+    if journal in ("wal", "wal-frames"):
+        assert store.sql("PRAGMA journal_mode = WAL") == ["wal"]
+    holder = None
+    if journal == "wal-frames":
+        # A READER IN A PROCESS OF ITS OWN, WHICH HAS READ: POSIX drops a process's locks on a
+        # file at any close of it, and this case reads the store's files, so a reader in this
+        # process would stop holding the WAL at the first `_held_in`
+        holder = subprocess.Popen([sys.executable, "-I", "-c", _WAL_HOLDER, str(estate.sqlite)],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        assert holder.stdout.readline() == "ready\n"
+    try:
+        _a_scrub_that_fails(estate, monkeypatch, journal, store, tables, own)
+    finally:
+        if holder is not None:
+            holder.stdin.close()
+            holder.wait(timeout=60)
+
+
+#: A reader that opens the store, reads it once, says so, and holds it open until its stdin ends.
+_WAL_HOLDER = ("import sqlite3, sys\n"
+               "conn = sqlite3.connect(sys.argv[1])\n"
+               "conn.execute('SELECT count(*) FROM sqlite_master').fetchall()\n"
+               "print('ready', flush=True)\n"
+               "sys.stdin.read()\n"
+               "conn.close()\n")
+
+
+def _a_scrub_that_fails(estate: Estate, monkeypatch, journal: str, store: _IndexTables,
+                        tables: list, own: list) -> None:
+    store.copy(tables, own[0], LEGACY_KEY)
+    store.seed_every(tables, LEGACY_KEY)
+    store.leave_in_free_space(LEGACY_KEY)
+    if journal == "persist":
+        conn = sqlite3.connect(str(estate.sqlite))
+        conn.execute("PRAGMA secure_delete = OFF")
+        assert conn.execute("PRAGMA journal_mode = PERSIST").fetchone()[0] == "persist"
+        for t in tables:
+            conn.execute(f"UPDATE {t} SET indexed_utc = indexed_utc || ' (v1.2.0)' "
+                         f"WHERE source = ?", (LEGACY_KEY,))
+        conn.commit()
+        conn.close()
+        journal_file = Path(str(estate.sqlite) + "-journal")
+        assert CONFIG_SECRET.encode() in journal_file.read_bytes(), "the journal holds no key"
+    else:
+        store.touch(tables, LEGACY_KEY)
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    status = json.loads(filed.read_text(encoding="utf-8"))
+    status[LEGACY_KEY] = {"last_error": f"2026-11-01T00:00:00Z the provenance of {LEGACY_KEY} moved"}
+    filed.write_text(json.dumps(status), encoding="utf-8")
+    monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
+    mod = load_indexer()
+    monkeypatch.setattr(mod, "_record_error", lambda *args, **kwargs: None)
+    live = mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"})
+    live.open_write()
+    live.conn = _VacuumFails(live.conn, 1 if journal == "retried" else None)
+    _old, sources = live.provenance_and_sources(own[0])
+    out, err = io.StringIO(), io.StringIO()
+    # THE PAUSES, RECORDED (lane 2's SHOULD 2 of comment 6955285249)
+    pauses: list = []
+    real_sleep = mod.time.sleep
+    monkeypatch.setattr(mod.time, "sleep", pauses.append)
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = mod._guarded(lambda: mod._drop_legacy(live, "sync", sources), None)
+    # THE ORIGINAL, NOT THE RECORDER (lane 2's N1 of comment 6956694290; lane 1's W116 NIT)
+    monkeypatch.setattr(mod.time, "sleep", real_sleep)
+    tries = live.conn.tries
+    live.conn.close()
+    said = f"{out.getvalue()}{err.getvalue()}".replace(CONFIG_SECRET, "<the secret>")
+    mark = Path(str(estate.sqlite) + "-scrub")
+    if journal == "retried":
+        # `_guarded` hands back what the act returns, and `_drop_legacy` returns nothing
+        assert rc is None and tries == 2, f"exit {rc}, tries {tries}:\n{said}"
+        assert pauses == [0.5], pauses
+        assert "a scrub is pending" not in said and not mark.exists(), said
+        assert _held_in(estate.state) == [], said
+        return
+    assert rc == 1, said
+    # WITHIN A BOUND, MORE THAN ONCE, THEN THE FIXED LINE THAT A SCRUB IS PENDING
+    assert tries == mod.SCRUB_ATTEMPTS > 1, f"tries {tries}:\n{said}"
+    assert pauses == [0.5, 1.0], pauses
+    assert "a scrub is pending" in err.getvalue(), said
+    assert "removed 1 source(s) from the index and 1 entry(s)" in out.getvalue(), said
+    assert (f"unreachable: {mod.SCRUB_UNFINISHED} - nothing more written; the removal said "
+            f"above stands") in err.getvalue(), said
+    assert "nothing written" not in err.getvalue(), said
+    assert mark.read_text(encoding="utf-8") == mod.SCRUB_MARK_TEXT, said
+    assert LEGACY_KEY not in json.loads(filed.read_text(encoding="utf-8")), said
+    assert all(rows == [] for _t, rows in store.rows(tables, LEGACY_KEY)), said
+    # the free space still holds the key: the scrub is due, and the case is not vacuous
+    assert _held_in(estate.state), said
+    if journal == "wal-frames":
+        # IN THE WAL'S FRAMES, AT THE SCRUB
+        assert any(p.endswith("-wal") for p in _held_in(estate.state)), said
+    holder = sqlite3.connect(str(estate.sqlite)) if journal == "wal" else None
+    try:
+        again = estate.index("sync")
+        said += (f"\nthe next sync, exit {again.returncode}:\n{again.stdout}{again.stderr}"
+                 .replace(CONFIG_SECRET, "<the secret>"))
+        assert again.returncode == 0, said
+        assert not mark.exists(), said
+        assert _held_in(estate.state) == [], said
+    finally:
+        if holder is not None:
+            holder.close()
+
+
+def test_a_removal_that_fails_takes_nothing(estate):
+    """ONE TRANSACTION (lane 1's addition A2 to opensoft/openRepoTools-code#89 comment
+    6944416906): a trigger refuses the last table's DELETE of the legacy key, so the
+    whole removal goes back. Every row of the key, its provenance's among them, is
+    still there; the status file keeps its entry, since the store's removal comes first;
+    and the run says "nothing written", truthfully, with no removal line."""
+    assert estate.index("sync").returncode == 0
+    store = _IndexTables(estate)
+    tables = store.tables()
+    own = store.sql("SELECT source FROM provenance")
+    assert len(own) == 1, own
+    store.copy(tables, own[0], LEGACY_KEY)
+    store.seed_every(tables, LEGACY_KEY)
+    held = store.rows(tables, LEGACY_KEY)
+    assert all(rows for _t, rows in held), [(table, len(rows)) for table, rows in held]
+    assert "worktrees" in tables, tables
+    store.sql("CREATE TRIGGER t104_refuse BEFORE DELETE ON worktrees BEGIN "
+              "SELECT RAISE(ABORT, 't104: the last table refused'); END")
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    status = json.loads(filed.read_text(encoding="utf-8"))
+    status[LEGACY_KEY] = {"last_error": f"2026-11-01T00:00:00Z the provenance of {LEGACY_KEY} moved"}
+    filed.write_text(json.dumps(status), encoding="utf-8")
+    res = estate.index("sync")
+    said = (res.stdout + res.stderr).replace(CONFIG_SECRET, "<the secret>")
+    assert res.returncode == 1, said
+    assert store.rows(tables, LEGACY_KEY) == held, said
+    assert store.sql(f"SELECT count(*) FROM provenance WHERE source = '{LEGACY_KEY}'") == ["1"]
+    assert LEGACY_KEY in json.loads(filed.read_text(encoding="utf-8")), said
+    assert "source(s) from the index" not in res.stdout, said
+    assert "- nothing written" in res.stderr, said
+    assert CONFIG_SECRET not in res.stdout + res.stderr, said
+
+
+def _a_legacy_source_held(estate: Estate) -> tuple:
+    """A store whose own source is copied, row for row, under `LEGACY_KEY`, with a row of it
+    in every table, its copies in the file's free space, and a status entry under it: (the
+    store's tables, its own source, the status file, the legacy key's rows)."""
+    assert estate.index("sync").returncode == 0
+    store = _IndexTables(estate)
+    tables = store.tables()
+    own = store.sql("SELECT source FROM provenance")
+    assert len(own) == 1, own
+    store.copy(tables, own[0], LEGACY_KEY)
+    store.seed_every(tables, LEGACY_KEY)
+    store.leave_in_free_space(LEGACY_KEY)
+    store.touch(tables, LEGACY_KEY)
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    status = json.loads(filed.read_text(encoding="utf-8"))
+    status[LEGACY_KEY] = {"last_error": f"2026-11-01T00:00:00Z the provenance of {LEGACY_KEY} moved"}
+    filed.write_text(json.dumps(status), encoding="utf-8")
+    return store, tables, own[0], filed, store.rows(tables, LEGACY_KEY)
+
+
+def _loaded_for_a_drop(estate: Estate, monkeypatch):
+    """The indexer, loaded in this process with the estate's state folder, its
+    `_record_error` a no-op, for `_run_drop`."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
+    mod = load_indexer()
+    monkeypatch.setattr(mod, "_record_error", lambda *args, **kwargs: None)
+    return mod
+
+
+def _run_drop(mod, estate: Estate, own: str, wrap=None) -> tuple:
+    """`_drop_legacy` as a `sync` runs it, in this process, on SQLite, its connection
+    wrapped by `wrap`: (its `_guarded` exit, stdout, stderr)."""
+    live = mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"})
+    live.open_write()
+    if wrap is not None:
+        live.conn = wrap(live.conn)
+    _old, sources = live.provenance_and_sources(own)
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = mod._guarded(lambda: mod._drop_legacy(live, "sync", sources), None)
+    live.conn.close()
+    return rc, out.getvalue(), err.getvalue()
+
+
+@pytest.mark.parametrize("scrub", ["scrubbed", "mark-kept"])
+def test_a_status_file_that_cannot_be_replaced_still_scrubs(estate, monkeypatch, scrub):
+    """THE STATUS FILE DOES NOT HOLD THE SCRUB BACK (lane 3's ruling, B2 of
+    opensoft/openRepoTools-code#89 comment 6947619546, its second part): the store's
+    removal commits, the status file's replace then fails, and the run still takes the
+    scrub's steps before it exits 1 with the replace's fixed words. [scrubbed]: no file
+    of the store holds the key, and the mark is gone. [mark-kept]: a VACUUM that fails at
+    every try leaves the mark, the run also says the constant line that a scrub is
+    pending, and the next writer finishes the scrub. The status file, never replaced,
+    keeps its legacy entry until that next writer removes it."""
+    store, tables, own, filed, _held = _a_legacy_source_held(estate)
+    mod = _loaded_for_a_drop(estate, monkeypatch)
+
+    def refuse(_data):
+        raise PermissionError(13, "t104: the state folder refuses the replace")
+    monkeypatch.setattr(mod, "_replace_status", refuse)
+    rc, out, err = _run_drop(mod, estate, own, _VacuumFails if scrub == "mark-kept" else None)
+    said = f"{out}{err}".replace(CONFIG_SECRET, "<the secret>")
+    assert rc == 1, said
+    assert "removed 1 source(s) from the index" in out, said
+    assert (f"unreachable: {mod.STATUS_UNREPLACEABLE} - nothing more written; the removal "
+            f"said above stands") in err, said
+    assert LEGACY_KEY in json.loads(filed.read_text(encoding="utf-8")), said
+    assert all(rows == [] for _t, rows in store.rows(tables, LEGACY_KEY)), said
+    mark = Path(str(estate.sqlite) + "-scrub")
+    in_store = [p for p in _held_in(estate.state) if p != str(filed)]
+    if scrub == "scrubbed":
+        assert not mark.exists() and in_store == [], said
+        assert "a scrub is pending" not in err, said
+    else:
+        assert mark.read_text(encoding="utf-8") == mod.SCRUB_MARK_TEXT and in_store, said
+        # THE FIXED LINE THAT A SCRUB IS PENDING, BESIDE THE REPLACE'S ERROR
+        assert f"unreachable: {mod.SCRUB_UNFINISHED}" in err, said
+    again = estate.index("sync")
+    said += (f"\nthe next sync, exit {again.returncode}:\n{again.stdout}{again.stderr}"
+             .replace(CONFIG_SECRET, "<the secret>"))
+    assert again.returncode == 0 and not mark.exists(), said
+    assert _held_in(estate.state) == [], said
+
+
+@pytest.mark.parametrize("case", ["folder-sync", "mark-sync", "mark-file", "reused",
+                                  "mark-symlink"])
+def test_a_scrub_mark_that_cannot_be_made_removes_nothing(estate, monkeypatch, case):
+    """THE MARK AND ITS FOLDER ARE SYNCED BEFORE THE TRANSACTION BEGINS (lane 3's ruling, B3
+    of opensoft/openRepoTools-code#89 comment 6947619546; lane 2's SHOULD 4c of comment
+    6947728883, IN by lane 3's 6947826234). [folder-sync]: the folder's fsync fails;
+    [mark-file]: the mark's path is a folder, so no mark can be written. Either is the
+    fixed `SCRUB_UNMARKED`, the run exits 1 saying "nothing written", truthfully, and NO
+    REMOVAL BEGAN: every row of the legacy key is there, and the status file keeps its
+    entry. A mark that was written is 0600 and holds no key. [reused]: a mark an earlier
+    run left, 0644 and of other text, is made 0600 again and rewritten, which a VACUUM that
+    fails keeps to be seen. [mark-symlink] (W116's pre-review of commit 15): the mark's path
+    is a link to another file, which is neither written, truncated nor made 0600: the
+    mark cannot be made, as in [mark-file]. [mark-sync] (lane 2's BLOCKING 1 of comment
+    6955285249, IN as a SHOULD by lane 3's 6955397261): the mark's own fsync fails, which
+    is `SCRUB_UNMARKED` too, the rows held and the entry kept."""
+    store, tables, own, filed, held = _a_legacy_source_held(estate)
+    mark = Path(str(estate.sqlite) + "-scrub")
+    if case == "mark-file":
+        mark.mkdir()
+    if case == "reused":
+        mark.write_text("t104: an earlier run's mark\n", encoding="utf-8")
+        mark.chmod(0o644)
+    target = estate.root / "t104-mark-target"
+    if case == "mark-symlink":
+        target.write_text("t104: not the mark\n", encoding="utf-8")
+        target.chmod(0o644)
+        mark.symlink_to(target)
+    mod = _loaded_for_a_drop(estate, monkeypatch)
+    if case == "folder-sync":
+        real = os.fsync
+
+        def fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(5, "t104: the folder's fsync failed")
+            return real(fd)
+        monkeypatch.setattr(mod.os, "fsync", fsync)
+    if case == "mark-sync":
+        real_sync = os.fsync
+
+        def fsync_file(fd):
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(5, "t104: the mark's fsync failed")
+            return real_sync(fd)
+        monkeypatch.setattr(mod.os, "fsync", fsync_file)
+    rc, out, err = _run_drop(mod, estate, own, _VacuumFails if case == "reused" else None)
+    said = f"{out}{err}".replace(CONFIG_SECRET, "<the secret>")
+    assert rc == 1, said
+    if case == "reused":
+        assert stat.S_IMODE(mark.stat().st_mode) == 0o600, said
+        assert mark.read_text(encoding="utf-8") == mod.SCRUB_MARK_TEXT, said
+        assert all(rows == [] for _t, rows in store.rows(tables, LEGACY_KEY)), said
+        return
+    assert f"unreachable: {mod.SCRUB_UNMARKED} - nothing written" in err, said
+    assert "source(s) from the index" not in out, said
+    assert store.rows(tables, LEGACY_KEY) == held, said
+    assert LEGACY_KEY in json.loads(filed.read_text(encoding="utf-8")), said
+    if case == "folder-sync":
+        assert stat.S_IMODE(mark.stat().st_mode) == 0o600, said
+        assert mark.read_text(encoding="utf-8") == mod.SCRUB_MARK_TEXT, said
+    if case == "mark-symlink":
+        assert mark.is_symlink(), said
+        assert target.read_text(encoding="utf-8") == "t104: not the mark\n", said
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644, said
+
+
+#: (id, the store, the source's kind, the value given): B1's refused forms (lane 3's ruling,
+#: opensoft/openRepoTools-code#89 comment 6947619546), a register as `workspace.yaml`'s
+#: `repository:` names it and a workstation's name as `LANES_WORKSTATION` gives it to
+#: `lanes-edit.sh workstation`, which answers it as it stands
+LEGACY_INPUTS = [
+    ("register-password", "postgres", "register", f"password={CONFIG_SECRET}"),
+    ("register-spaced-encoded", "sqlite", "register",
+     f"https://{REGISTER_HOST}/{REGISTER_PATH}/r?PassWord  %3D{CONFIG_SECRET}"),
+    ("register-control", "postgres", "register",
+     f"https://{REGISTER_HOST}/{REGISTER_PATH}/r\x1b{CONFIG_SECRET}"),
+    ("inventory-password", "sqlite", "inventory", f"password={CONFIG_SECRET}"),
+    ("inventory-userinfo", "postgres", "inventory", f"https://{CONFIG_SECRET}@{REGISTER_HOST}/x"),
+    ("inventory-control", "sqlite", "inventory", f"Eagle\x7f{CONFIG_SECRET}"),
+    # C1 control characters (W116's pre-review of commit 15)
+    ("register-c1", "sqlite", "register",
+     f"https://{REGISTER_HOST}/{REGISTER_PATH}/r\x85{CONFIG_SECRET}"),
+    ("inventory-c1", "postgres", "inventory", f"Eagle\x9b{CONFIG_SECRET}"),
+]
+
+
+@pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in LEGACY_INPUTS])
+def test_a_source_this_build_would_call_legacy_is_refused(estate, ident):
+    """NOTHING TODAY'S CODE FILES IS LEGACY (lane 3's ruling, B1 of
+    opensoft/openRepoTools-code#89 comment 6947619546): a register or a workstation's name
+    that `_is_legacy` would call legacy - `password=`, `password` and spaces then `%3D` in
+    another case, a control character, an inventory name holding URL userinfo - is
+    refused with exit 2 and fixed words that do not echo it, BEFORE anything is printed,
+    filed or sent, by every act that makes the key: `sync`, `reconcile` and its dry run,
+    `export` and `status`. No stream, no file of the state folder and, on PostgreSQL (a
+    FAKE psql), no call holds the secret or the key's digest; the writers make no psql
+    call at all, and `status`'s reads name no key. The row is taken by its id, so no
+    argument holds the secret (lane 2's SHOULD 1 of comment 6955285249)."""
+    store_kind, kind, value = {row[0]: row[1:] for row in LEGACY_INPUTS}[ident]
+    mod = load_indexer()
+    env: dict = {}
+    if kind == "register":
+        # the helper finds the workspace by `LANES_WORKSPACE_ROOT`, as `_an_upgrade`'s does,
+        # so that `workspace.yaml`'s `repository:` is read by `source_of` alone
+        (estate.agents / "workspace.yaml").write_text(
+            f"repository: {value}\npath: {estate.ws}\n", encoding="utf-8")
+        env.update(LANES_WORKSPACE_ROOT=str(estate.ws))
+        words = mod.REGISTER_KEY_REFUSED
+        acts = [("sync",), ("reconcile", "--dry-run"), ("reconcile",), ("export", "--out")]
+    else:
+        env.update(LANES_WORKSTATION=value)
+        words = mod.INVENTORY_KEY_REFUSED
+        acts = [("sync", "--source", "inventory"),
+                ("reconcile", "--source", "inventory", "--dry-run"),
+                ("reconcile", "--source", "inventory")]
+    log = estate.root / "psql.jsonl"
+    if store_kind == "postgres":
+        fake = estate.root / "pgfake"
+        fake.mkdir()
+        (fake / "psql").write_text(FAKE_PSQL)
+        (fake / "psql").chmod(0o755)
+        estate.write_config("url=postgresql://lanes_writer@db.invalid/qa\n"
+                            "reader_url=postgresql://lanes_reader@db.invalid/qa\n")
+        env.update(PATH=estate.path_with(fake), FAKE_PSQL_LOG=str(log))
+    out = estate.root / "t104-out"
+    out.mkdir()
+    said = ""
+    for act in acts + [("status",)]:
+        args = act + ((out,) if act[0] == "export" else ())
+        res = estate.index(*args, env=env)
+        shown = res.stdout + res.stderr
+        said += f"\n{' '.join(act)}, exit {res.returncode}:\n{shown}".replace(
+            CONFIG_SECRET, "<the secret>")
+        assert res.returncode == 2, said
+        assert CONFIG_SECRET not in shown, said
+        if act[0] == "export":
+            assert (out / "why").read_text(encoding="utf-8") == f"refused: {words}\n", said
+        else:
+            assert words in shown, said
+        if act[0] != "status":
+            # NOTHING SENT: no psql call at all, before `status`'s own reads
+            assert not log.exists(), said
+    keys = [f"{kind}:{value}", f"register:{value}", f"inventory:{value}"]
+    digests = [hashlib.sha256(key.encode("utf-8")).hexdigest() for key in keys]
+    calls = log.read_text(encoding="utf-8") if log.exists() else ""
+    for mark in [CONFIG_SECRET] + digests:
+        assert mark not in calls, f"a psql call holds the key:\n{said}"
+    for path in sorted(estate.state.rglob("*")) + sorted(out.rglob("*")):
+        if path.is_file():
+            assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path}:\n{said}"
+    assert not estate.sqlite.exists(), said
+
+
+def test_the_workspace_helpers_words_are_not_relayed(estate):
+    """NO CREDENTIAL THROUGH THE HELPER'S WORDS (lane 1, under B1 of
+    opensoft/openRepoTools-code#89 comment 6947619546): where `workspace.yaml`'s
+    `repository:` is not the checkout's, `lanes-edit.sh workspace-root` names both as they
+    stand, and its first line went to the run's streams and, through `_record_error`, the
+    status file, before any key was made. `workspace.yaml` names a URL with a token that
+    is not this checkout's: `sync`, `status` and `export` say fixed words, and no stream,
+    no file of the state folder and no file `export` writes holds the token."""
+    (estate.agents / "workspace.yaml").write_text(
+        f"repository: https://x-access-token:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r"
+        f".git\npath: {estate.ws}\n", encoding="utf-8")
+    out = estate.root / "t104-out"
+    out.mkdir()
+    words = "`lanes-edit.sh workspace-root` exited 1: the workspace repository could not be found"
+    said = ""
+    for act in (("sync",), ("status",), ("export", "--out", out)):
+        res = estate.index(*act)
+        shown = res.stdout + res.stderr
+        said += f"\n{act[0]}, exit {res.returncode}:\n{shown}".replace(CONFIG_SECRET, "<the secret>")
+        assert res.returncode == (3 if act[0] == "export" else 1), said
+        assert CONFIG_SECRET not in shown, said
+        assert words in (shown if act[0] != "export" else
+                         (out / "why").read_text(encoding="utf-8")), said
+    for path in sorted(estate.state.rglob("*")) + sorted(out.rglob("*")):
+        if path.is_file():
+            assert CONFIG_SECRET.encode() not in path.read_bytes(), f"{path}:\n{said}"
+
+
+def test_export_reads_no_legacy_inventory_source(estate):
+    """`export --worktrees` READS NO LEGACY INVENTORY SOURCE (lane 3's ruling, S6 of
+    opensoft/openRepoTools-code#89 comment 6947619546): the store holds, beside a clean
+    `inventory:Heron`, an `inventory:password=` source and an inventory key holding URL
+    userinfo, each with a provenance row and a worktree whose path holds the secret. The
+    export writes the clean source's tree and names it, and no file it writes holds the
+    secret or the legacy sources' lane."""
+    assert estate.index("sync").returncode == 0
+    legacy = [f"inventory:password={CONFIG_SECRET}",
+              f"inventory:https://{CONFIG_SECRET}@{REGISTER_HOST}/x"]
+    conn = sqlite3.connect(str(estate.sqlite))
+    for source in legacy + ["inventory:Heron"]:
+        lane = "t104-clean" if source == "inventory:Heron" else "t104-legacy"
+        path = f"/w/{lane}" if source == "inventory:Heron" else f"/w/{lane}/{CONFIG_SECRET}"
+        conn.execute("INSERT INTO provenance (source, commit_sha, generation, indexed_utc, "
+                     "schema_version) VALUES (?, ?, 1, '2026-11-01T00:00:00Z', 1)",
+                     (source, "a" * 64))
+        conn.execute("INSERT INTO worktrees (source, record_id, workstation, lane, path, branch, "
+                     "digest, indexed_utc, schema_version) VALUES (?, ?, 'Heron', ?, ?, ?, 'd', "
+                     "'2026-11-01T00:00:00Z', 1)", (source, f"{lane}-tree", lane, path, f"lane/{lane}"))
+    conn.commit()
+    conn.close()
+    out = estate.root / "t104-exp"
+    out.mkdir()
+    exp = estate.index("export", "--out", out, "--worktrees")
+    written = {p.name: p.read_text(encoding="utf-8") for p in sorted(out.iterdir())}
+    said = f"exit {exp.returncode}:\n{exp.stdout}{exp.stderr}\n{written}".replace(
+        CONFIG_SECRET, "<the secret>")
+    assert exp.returncode == 0, said
+    text = "".join(written.values())
+    assert "t104-clean" in text and "inventory:Heron" in text, said
+    assert "t104-legacy" not in text and CONFIG_SECRET not in text, said
+    assert CONFIG_SECRET not in exp.stdout + exp.stderr, said
+
+
+@pytest.mark.parametrize("ending", ["no-change", "unknown-prior", "not-a-descendant",
+                                    "inventory-no-change"])
+def test_no_line_says_nothing_written_after_a_removal(estate, ending):
+    """NO "nothing written" AFTER A REMOVAL, ON A NORMAL EXIT EITHER (lane 3's ruling, S7 of
+    opensoft/openRepoTools-code#89 comment 6947619546): a legacy source is held, the run
+    removes it, and then ends by a path that writes nothing of its own: [no-change], a
+    `reconcile` that finds nothing differs; [unknown-prior], a `sync` whose provenance
+    names a commit this checkout lacks; [not-a-descendant], a `sync` whose provenance
+    names a commit off the branch's line, which exits 1; [inventory-no-change], the
+    inventory's `reconcile` that finds nothing differs. Each says the removal, then
+    "nothing more written; the removal said above stands", and never "nothing written",
+    on its streams or in the status file."""
+    inventory = ending.startswith("inventory")
+    first = ("sync", "--source", "inventory") if inventory else ("sync",)
+    assert estate.index(*first).returncode == 0
+    store = _IndexTables(estate)
+    tables = store.tables()
+    own = store.sql("SELECT source FROM provenance")
+    assert len(own) == 1, own
+    store.copy(tables, own[0], LEGACY_KEY)
+    store.seed_every(tables, LEGACY_KEY)
+    if ending == "unknown-prior":
+        store.sql(f"UPDATE provenance SET commit_sha = '{'f' * 40}' WHERE source = '{own[0]}'")
+    if ending == "not-a-descendant":
+        tree = estate._git("rev-parse", "HEAD^{tree}").strip()
+        orphan = estate._git("commit-tree", tree, "-m", "t104: off the branch's line").strip()
+        store.sql(f"UPDATE provenance SET commit_sha = '{orphan}' WHERE source = '{own[0]}'")
+    act = {"no-change": ("reconcile",),
+           "inventory-no-change": ("reconcile", "--source", "inventory")}.get(ending, ("sync",))
+    res = estate.index(*act)
+    filed = estate.state / "openRepoTools" / "lanes-index.status.json"
+    kept = filed.read_text(encoding="utf-8")
+    said = f"exit {res.returncode}:\n{res.stdout}{res.stderr}\nstatus file: {kept}".replace(
+        CONFIG_SECRET, "<the secret>")
+    assert res.returncode == (1 if ending == "not-a-descendant" else 0), said
+    assert "removed 1 source(s) from the index" in res.stdout, said
+    assert "nothing more written; the removal said above stands" in res.stdout, said
+    assert "nothing written" not in res.stdout + res.stderr, said
+    assert "nothing written" not in kept and LEGACY_KEY not in json.loads(kept), said
+    assert all(rows == [] for _t, rows in store.rows(tables, LEGACY_KEY)), said
+
+
+@pytest.mark.parametrize("act", ["sync", "reconcile"])
+def test_origin_moving_after_a_removal_says_nothing_more_written(estate, monkeypatch, act):
+    """S7'S CLASS WHERE origin KEEPS MOVING (W116's pre-review of commit 15): a run that
+    removed a legacy source and then reads origin moving under it at every round ends
+    saying "nothing more written; the removal said above stands", and never "nothing
+    written": [sync] after its five rounds, [reconcile] after its three reads. The run's
+    act is replaced by one that removes and then reads origin moving."""
+    helper = estate.root / "t104-helper"
+    helper.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    helper.chmod(0o755)
+    monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
+    monkeypatch.setenv("LANES_EDIT", str(helper))
+    monkeypatch.delenv("LANES_INDEX", raising=False)
+    mod = load_indexer()
+
+    def removed_then_moved(mode, requested, dry_run):
+        mod._REMOVED["any"] = True
+        raise mod.SourceMoved(f"origin/main moved from {'a' * 12} while the owners were read; "
+                              f"nothing was written from that read")
+    monkeypatch.setattr(mod, "run_index", removed_then_moved)
+    monkeypatch.setattr(mod, "_record_error", lambda *args, **kwargs: None)
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = mod.cmd_sync(None) if act == "sync" else mod.cmd_reconcile(None, False)
+    said = out.getvalue() + err.getvalue()
+    assert rc == (0 if act == "sync" else 1), said
+    assert "kept moving through" in said, said
+    assert "nothing more written; the removal said above stands" in said, said
+    assert "nothing written" not in said, said
+
+
+@pytest.mark.parametrize("case", ["lock-held", "mark-pending"])
+def test_a_legacy_register_is_refused_before_the_lock(estate, case):
+    """A PLAIN `sync` REFUSES A LEGACY REGISTER BEFORE THE LOCK (W116's pre-review of commit
+    15, under B1 of opensoft/openRepoTools-code#89 comment 6947619546): `workspace.yaml`
+    names a `password=` register, and `sync` has no `--source`. [lock-held]: another
+    process holds the lock, and the sync exits 2 with the refusal, not 0 with a mark of its
+    own left. [mark-pending]: an inventory sync's mark is on the disk, and the sync exits 2
+    with that mark where it was, for the inventory's next sync."""
+    import fcntl
+    (estate.agents / "workspace.yaml").write_text(
+        f"repository: password={CONFIG_SECRET}\npath: {estate.ws}\n", encoding="utf-8")
+    folder = estate.state / "openRepoTools"
+    folder.mkdir(parents=True, exist_ok=True)
+    mark = folder / "lanes-index.rerun-inventory"
+    holder = None
+    if case == "lock-held":
+        holder = open(folder / "lanes-index.lock", "a+")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    else:
+        mark.write_text("2026-11-17T00:00:00Z\n", encoding="utf-8")
+    try:
+        res = estate.index("sync", env={"LANES_WORKSPACE_ROOT": str(estate.ws)})
+    finally:
+        if holder is not None:
+            holder.close()
+    said = (res.stdout + res.stderr).replace(CONFIG_SECRET, "<the secret>")
+    assert res.returncode == 2 and load_indexer().REGISTER_KEY_REFUSED in res.stderr, said
+    assert "another sync holds" not in said, said
+    assert CONFIG_SECRET not in res.stdout + res.stderr, said
+    assert not (folder / "lanes-index.rerun").exists(), said
+    if case == "mark-pending":
+        assert mark.read_text(encoding="utf-8") == "2026-11-17T00:00:00Z\n", said
+
+
+def test_a_refused_register_mark_leaves_the_marks_behind_it_synced(estate):
+    """A HOLDER THAT TAKES A REFUSED REGISTER'S MARK STILL SYNCS THE MARKS BEHIND IT
+    (W116's re-check of commit 15, its exp/lock3, through the real path): `workspace.yaml`
+    names a `password=` register. An inventory sync holds the lock; while it lists the
+    worktrees, a plain `sync` whose `lanes-edit.sh workspace-root` cannot answer gets past
+    the check before the lock and leaves a register mark, and an inventory sync leaves an
+    inventory mark, each exiting 0. The holder's next round takes both, the register's
+    first: it says the refusal and exits 2, and it syncs the inventory for the mark it
+    took, so the helper lists the worktrees a second time. No mark is left, and the key is
+    on no stream."""
+    (estate.agents / "workspace.yaml").write_text(
+        f"repository: password={CONFIG_SECRET}\npath: {estate.ws}\n", encoding="utf-8")
+    log = estate.root / "helper.log"
+    spawned = estate.root / "spawned"
+    plain, inventory = estate.root / "plain.out", estate.root / "inventory.out"
+    run = f"{shlex.quote(sys.executable)} -I -B {shlex.quote(str(INDEXER))}"
+    stub = estate.root / "lock-helper" / "lanes-edit.sh"
+    stub.parent.mkdir()
+    stub.write_text(
+        "#!/bin/sh\n"
+        f'echo "$*" >> {shlex.quote(str(log))}\n'
+        'case "$1" in\n'
+        "  workspace-root)\n"
+        f'    if [ -n "${{T104_WS_OK:-}}" ]; then echo {shlex.quote(str(estate.ws))}; exit 0; fi\n'
+        "    echo 'the workspace repository could not be found' >&2; exit 1 ;;\n"
+        "  workstation) printf 'Eagle\\tseam\\n'; exit 0 ;;\n"
+        "  worktrees)\n"
+        f"    if [ ! -e {shlex.quote(str(spawned))} ]; then\n"
+        f"      : > {shlex.quote(str(spawned))}\n"
+        f"      env -u T104_WS_OK -u LANES_INDEX {run} sync > {shlex.quote(str(plain))} 2>&1\n"
+        f'      echo "exit $?" >> {shlex.quote(str(plain))}\n'
+        f"      env -u LANES_INDEX {run} sync --source inventory > "
+        f"{shlex.quote(str(inventory))} 2>&1\n"
+        f'      echo "exit $?" >> {shlex.quote(str(inventory))}\n'
+        "    fi\n"
+        "    exit 8 ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac\n", encoding="utf-8")
+    stub.chmod(0o755)
+    res = estate.index("sync", "--source", "inventory",
+                       env={"LANES_EDIT": str(stub), "T104_WS_OK": "1"})
+    later = {path.name: path.read_text(encoding="utf-8") if path.exists() else ""
+             for path in (plain, inventory)}
+    asked = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    said = (f"holder exit {res.returncode}:\n{res.stdout}{res.stderr}\n"
+            + "".join(f"{name}:\n{text}\n" for name, text in later.items())
+            + "helper:\n" + "\n".join(asked)).replace(CONFIG_SECRET, "<the secret>")
+    for text in later.values():
+        assert "another sync holds" in text and text.endswith("exit 0\n"), said
+    assert res.returncode == 2 and load_indexer().REGISTER_KEY_REFUSED in res.stderr, said
+    assert asked.count("worktrees --all") == 2, said
+    folder = estate.state / "openRepoTools"
+    assert sorted(path.name for path in folder.glob("lanes-index.rerun*")) == [], said
+    for shown in (res.stdout, res.stderr, *later.values()):
+        assert CONFIG_SECRET not in shown, said
+
+
+def test_the_index_runs_psql_with_the_rulings_arguments(estate):
+    """THE INDEX'S psql ARGUMENTS, WHOLE (lane 3's ruling, question 1 of
+    opensoft/openRepoTools-code#89 comment 6955397261): every call a sync makes on a
+    PostgreSQL store passes exactly these, `VERBOSITY=sqlstate` among them."""
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    (fake / "psql").write_text(FAKE_PSQL)
+    (fake / "psql").chmod(0o755)
+    log = estate.root / "psql.jsonl"
+    estate.write_config("url=postgresql://lanes_writer@db.invalid/qa\n"
+                        "reader_url=postgresql://lanes_reader@db.invalid/qa\n")
+    res = estate.index("sync", env={"PATH": estate.path_with(fake), "FAKE_PSQL_LOG": str(log)})
+    assert res.returncode == 0, res.stderr.replace(CONFIG_SECRET, "<the secret>")
+    calls = [json.loads(line)["args"] for line in log.read_text().splitlines()]
+    assert calls and all(args == ["--no-psqlrc", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-v",
+                                  "VERBOSITY=sqlstate", "-v", "SHOW_CONTEXT=never", "-f", "-"]
+                         for args in calls), calls
+
+
+def test_the_register_path_keeps_verbosity_verbose():
+    """THE REGISTER PATH KEEPS `VERBOSITY=verbose` (lane 3's ruling on comment 6955397261,
+    whose register contract reads DETAIL; lane 2's N3 of comment 6956694290): only the
+    index's psql takes `sqlstate`."""
+    mod = load_indexer()
+    args = list(mod.REGISTER_PSQL_ARGS)
+    pairs = list(zip(args, args[1:]))
+    assert ("-v", "VERBOSITY=verbose") in pairs, args
+    assert not any(a.startswith("VERBOSITY=") and a != "VERBOSITY=verbose" for a in args), args
+    assert ("-v", "VERBOSITY=sqlstate") in list(
+        zip(mod.INDEX_PSQL_ARGS, mod.INDEX_PSQL_ARGS[1:])), mod.INDEX_PSQL_ARGS
+
+
+def test_a_failed_status_replace_leaves_no_copy_behind(estate, monkeypatch):
+    """NO COPY OF THE STATUS FILE IS LEFT (W116's pre-review of commit 15): a replace whose
+    rename fails takes the file it made with it, which held what the replace was to write,
+    a legacy key among it."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
+    mod = load_indexer()
+
+    reached = []
+
+    def refuse(_src, dst):
+        reached.append(Path(dst).name)
+        raise PermissionError(13, "t104: the rename is refused")
+    monkeypatch.setattr(mod.os, "replace", refuse)
+    with pytest.raises(OSError):
+        mod._replace_status({LEGACY_KEY: {"last_error": f"t {LEGACY_KEY} moved"}})
+    monkeypatch.undo()
+    # THE REFUSED RENAME WAS REACHED (lane 2's NIT 3 of comment 6955285249)
+    assert reached == ["lanes-index.status.json"], reached
+    left = sorted(p.name for p in (estate.state / "openRepoTools").iterdir())
+    assert left == [], left
+
+
+#: (id, the script, the SQLSTATE `_failure` reads) on psql 16 itself, with the index's own
+#: arguments (lane 3's ruling, question 1 of opensoft/openRepoTools-code#89 comment
+#: 6955397261)
+PSQL16_CASES = {
+    "english": ("SELECT 1;\nSELECT x FROM t104_no_such_table;\n", "42P01"),
+    "german": ("SELECT 1;\nSELECT x FROM t104_no_such_table;\n", "42P01"),
+    # a NOTICE (42P07), then the error: the last located line, not the first
+    "notice-then-error": ("CREATE TEMP TABLE IF NOT EXISTS t104_n (n integer);\n"
+                          "CREATE TEMP TABLE IF NOT EXISTS t104_n (n integer);\n"
+                          "SELECT x FROM t104_no_such_table;\n", "42P01"),
+    # a value whose text holds a newline and a whole located line, cast to integer
+    "newline-value": ("SELECT (E'1\\npsql:<stdin>:1: ERROR:  42P01')::integer;\n", "22P02"),
+    # a RAISE whose message forges a located line
+    "raise-forged": ("DO $$BEGIN RAISE EXCEPTION E'x\\npsql:<stdin>:1: ERROR:  42P01'; END$$;\n",
+                     "P0001"),
+}
+
+
+@pytest.mark.parametrize("case", list(PSQL16_CASES))
+def test_the_index_reads_psql_16s_own_error_line(t109_engine, case):
+    """THE INDEX'S psql ON psql 16 ITSELF (lane 3's ruling, question 1 of
+    opensoft/openRepoTools-code#89 comment 6955397261): with `INDEX_PSQL_ARGS`
+    (`VERBOSITY=sqlstate`, the script as `-f -`), each message is one located line of
+    severity and SQLSTATE, with no text: [english]'s stderr is exactly
+    `psql:<stdin>:2: ERROR:  42P01`; [notice-then-error] reads the error's code, not the
+    NOTICE's; a value holding a newline and a whole located line reads 22P02, and a RAISE
+    forging one reads P0001. [german] keeps its skip where the cluster takes no German
+    `lc_messages`, and carries no parse of its own."""
+    import pgcluster
+    cluster, _bootstrap = t109_engine
+    mod = load_indexer()
+    script, want = PSQL16_CASES[case]
+    env = pgcluster._client_env(cluster.root, pgcluster.SUPERUSER, "t109_db", "pytest",
+                                cluster.bindir)
+    if case == "german":
+        env["PGOPTIONS"] = "-c lc_messages=de_DE.UTF-8"
+    proc = subprocess.run([cluster.tool("psql"), *mod.INDEX_PSQL_ARGS], input=script,
+                          capture_output=True, encoding="utf-8", errors="replace", env=env,
+                          timeout=120, check=False)
+    if case == "german" and proc.returncode == 2:
+        pytest.skip("not established: the cluster takes no German lc_messages")
+    assert proc.returncode == 3, proc.returncode
+    # NEVER psql 16's RAW STDERR, its line count and its codes alone (lane 2's SHOULD 2 of
+    # comment 6956694290, IN by lane 3's 6956711531)
+    said = (f"{len(proc.stderr.splitlines())} line(s), codes "
+            f"{re.findall(r':  ([0-9A-Z]{5})$', proc.stderr, re.M)}")
+    if case == "english":
+        assert proc.stderr == "psql:<stdin>:2: ERROR:  42P01\n", said
+    if case == "notice-then-error":
+        lines = proc.stderr.splitlines()
+        assert len(lines) == 2 and lines[0].endswith(":  42P07"), said
+    assert "t104_no_such_table" not in proc.stderr, said
+    assert mod.PostgresStore._failure(proc.returncode, proc.stderr, False).sqlstate == want
+
+
 FAKE_PSQL = r"""#!/usr/bin/env python3
 # A FAKE psql: it records what it was asked and answers the few queries
 # lanes-index makes as an EMPTY schema-1 store would. No database exists.
-import json, os, sys
+import json, os, re, sys
 # The schema version it answers is "1" unless FAKE_PSQL_VERSION_FILE names a
 # file holding another (empty: no row, a wiped store); the bootstrap DDL
 # writes "1" into that file, as a real one would create the row.
@@ -1072,14 +3368,73 @@ log = os.environ["FAKE_PSQL_LOG"]
 vfile = os.environ.get("FAKE_PSQL_VERSION_FILE", "")
 version = open(vfile).read().strip() if vfile else "1"
 args = sys.argv[1:]
-url = args[args.index("-d") + 1] if "-d" in args else ""
+# psql's error line carries its SQLSTATE only under VERBOSITY=verbose, as a real psql's does;
+# under VERBOSITY=sqlstate it is the severity and the SQLSTATE ALONE, with no text (lane 3's
+# ruling on opensoft/openRepoTools-code#89 comment 6955397261), which the index runs
+verbose = "VERBOSITY=verbose" in args
+sqlstate_only = "VERBOSITY=sqlstate" in args
+# psql's LOCUS, AS psql 16 PRINTS IT (W116's pre-review of commit 15; command.c's
+# process_file and logging.c): a script read through `-f -` is the file `<stdin>`, and each
+# message psql reports begins `psql:<stdin>:<line>: `; a script piped with no `-f` is logged
+# tersely, with no locus. Every stderr this fake writes is said through `said`.
+as_file = any(a == "-f" and b == "-" for a, b in zip(args, args[1:]))
+
+
+def said(text):
+    return text if as_file else re.sub(r"^psql:<stdin>:[0-9]+: ", "", text, flags=re.M)
+
+
+# THE CONNECTION IN `PG*` VARIABLES ALONE (Question 11; L2-0c): an argument
+# that is `-d` or `--dbname`, or that carries a URL, is refused with psql's own
+# fatal-error 1 before anything is recorded, since `/proc` shows a process's
+# arguments for its life. The URL recorded is rebuilt from `PGUSER`, `PGHOST`,
+# `PGPORT` and `PGDATABASE`, with no port where `PGPORT` is unset, so each URL
+# a test configures reads back unchanged.
+if any(a.startswith(("-d", "--dbname")) or "://" in a for a in args):
+    sys.stderr.write("FAKE psql: an argument carries the connection (-d, --dbname or a URL);"
+                     " psql takes it from PG* variables only (Question 11)\n")
+    sys.exit(1)
+port = os.environ.get("PGPORT", "")
+url = ("postgresql://" + os.environ.get("PGUSER", "") + "@" + os.environ.get("PGHOST", "")
+       + (":" + port if port else "") + "/" + os.environ.get("PGDATABASE", ""))
 stdin = sys.stdin.read()
 with open(log, "a") as handle:
     handle.write(json.dumps({"url": url, "passfile": os.environ.get("PGPASSFILE", ""),
-                             "pgpassword": "PGPASSWORD" in os.environ, "stdin": stdin}) + "\n")
+                             "pgpassword": "PGPASSWORD" in os.environ, "stdin": stdin,
+                             "args": args}) + "\n")
 if vfile and "CREATE TABLE IF NOT EXISTS" in stdin:
     with open(vfile, "w") as handle:
         handle.write("1\n")
+# A SCHEMA WITH NO TABLE, AS psql 16 SAYS IT (lane 1's hosted run 44046351293): with
+# FAKE_PSQL_NO_TABLE set and no version filed, the version read fails with the
+# error's line, the statement's line and a caret under the table's name, exit 3.
+if (os.environ.get("FAKE_PSQL_NO_TABLE") and vfile and not version
+        and "COPY (SELECT version" in stdin):
+    if sqlstate_only:
+        sys.stderr.write(said("psql:<stdin>:2: ERROR:  42P01\n"))
+        sys.exit(3)
+    sys.stderr.write(said('psql:<stdin>:2: ERROR:  ' + ("42P01: " if verbose else "") +
+                     'relation "lanes_index.schema_version" does '
+                     'not exist\nLINE 1: COPY (SELECT version FROM '
+                     '"lanes_index".schema_version) TO S...\n' + " " * 34 + "^\n" +
+                     ("LOCATION:  parserOpenTable, parse_relation.c:1449\n" if verbose else "")))
+    sys.exit(3)
+# THE COMPARE-AND-SWAP'S RAISE (FAKE_PSQL_CAS_LOST): the write fails as psql 16 says it
+if os.environ.get("FAKE_PSQL_CAS_LOST") and "lanes_index_cas" in stdin:
+    if sqlstate_only:
+        sys.stderr.write(said("psql:<stdin>:5: ERROR:  P0001\n"))
+        sys.exit(3)
+    sys.stderr.write(said("psql:<stdin>:5: ERROR:  " + ("P0001: " if verbose else "") +
+                          "lanes-index: provenance moved under this sync; nothing was written\n"))
+    sys.exit(3)
+# FAKE_PSQL_STDERR_FILE: the provenance's read, or with FAKE_PSQL_STDERR_ON=write the
+# compare-and-swap's write, fails with that file's text on stderr, exit
+# FAKE_PSQL_STDERR_EXIT (3 where it is unset)
+failing = ("lanes_index_cas" if os.environ.get("FAKE_PSQL_STDERR_ON") == "write"
+           else "UNION SELECT source FROM")
+if os.environ.get("FAKE_PSQL_STDERR_FILE") and failing in stdin:
+    sys.stderr.write(said(open(os.environ["FAKE_PSQL_STDERR_FILE"]).read()))
+    sys.exit(int(os.environ.get("FAKE_PSQL_STDERR_EXIT") or 3))
 
 
 def echo(text):
@@ -1123,6 +3478,10 @@ for line in stdin.splitlines():
     if line.startswith("COPY (SELECT version"):
         if version:
             print(version)
+    elif line.startswith("COPY (SELECT source FROM provenance UNION "):
+        # FAKE_PSQL_SOURCES: the sources the store answers, one a line
+        for held in os.environ.get("FAKE_PSQL_SOURCES", "").splitlines():
+            print(held)
     elif line.startswith("\\echo"):
         print(echo(line[len("\\echo"):]))
 sys.exit(0)
@@ -1143,9 +3502,10 @@ def test_the_fake_psql_decodes_echo_as_psql_does(tmp_path):
         "\\echo 'a\\tb\\x41\\101\\q'",
         "\\echo plain",
         ""])
-    res = subprocess.run([sys.executable, str(fake), "-d", "postgresql://x@db.invalid/qa"],
+    res = subprocess.run([sys.executable, str(fake)],
                          input=script, capture_output=True, text=True, check=False,
-                         env=dict(os.environ, FAKE_PSQL_LOG=str(tmp_path / "log")))
+                         env=dict(os.environ, FAKE_PSQL_LOG=str(tmp_path / "log"),
+                                  PGHOST="db.invalid", PGDATABASE="qa", PGUSER="x"))
     assert res.returncode == 0, res.stderr
     assert res.stdout.split("\n") == ["\x1eLANES-INDEX-NEXT", "it's two words", "a\tbAAq",
                                       "plain", ""], res.stdout
@@ -2148,8 +4508,12 @@ def test_offline_no_read_the_inventory_acts_are_byte_identical_against_an_unreac
         fake = indexed.root / "pgfake"
         fake.mkdir()
         psql_log = indexed.root / "psql.log"
+        # THE STORE IT REACHED FOR, from the `PG*` variables alone, as in the
+        # acts' offline test above (Question 11; L2-0c).
         (fake / "psql").write_text(
-            f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {psql_log}\n"
+            "#!/bin/sh\n"
+            "printf 'postgresql://%s@%s%s/%s\\n' \"$PGUSER\" \"$PGHOST\" \"${PGPORT:+:$PGPORT}\" "
+            f"\"$PGDATABASE\" >> {psql_log}\n"
             "echo 'psql: error: connection to server at \"lanes-index.invalid\" failed' >&2\nexit 2\n")
         (fake / "psql").chmod(0o755)
         pw = indexed.e.config / "pgpass"
@@ -2356,10 +4720,11 @@ def test_a_source_is_refused_before_the_lock_is_asked_for(estate):
         assert not list(state.glob("lanes-index.rerun*")), "a refused source left a mark"
         own = estate.index("sync", "--source", "inventory")
     assert other.returncode == 2, (other.stdout, other.stderr)
-    assert "this workstation's inventory is inventory:Eagle, not inventory:Raven" in other.stderr
+    assert ("this workstation's inventory is inventory:Eagle, not the inventory `--source` names"
+            in other.stderr)
     assert nameless.returncode == 2 and "LANES_WORKSTATION" in nameless.stderr, nameless.stderr
     assert register.returncode == 2, (register.stdout, register.stderr)
-    assert "not register:someone/else" in register.stderr
+    assert "not the source `--source` names" in register.stderr
     # NOT VACUOUS: this workstation's own source, the lock still held, marks
     assert own.returncode == 0 and "another sync holds" in own.stdout, own.stdout
     assert [p.name for p in state.glob("lanes-index.rerun*")] == ["lanes-index.rerun-inventory"]
@@ -3091,8 +5456,9 @@ def test_the_index_read_says_its_last_sync_failed(inv):
     said only that time: a table no later sync could write read as a current
     one. The read's line now carries this workstation's last error beside its
     source, as `status` does and under the name `status` gives it - a refused
-    `reconcile --dry-run` records one too (review r2's NIT-1) - until a sync
-    succeeds again."""
+    `reconcile` records one too, and a `--dry-run` none (lane 3's ruling, B4 of
+    opensoft/openRepoTools-code#89 comment 6947619546, in place of review r2's
+    NIT-1) - until a sync succeeds again."""
     _sidecar(inv.lsr, "repoZ-1", HEADS["repoZ-1"])
     assert inv.sync().returncode == 0
     with _unreadable(inv.e, "origin/main:lanes/archive/LANES-retired.md"):
@@ -3137,3 +5503,330 @@ def test_the_round_cap_hands_back_a_mark_it_took(estate, monkeypatch):
     assert os.path.exists(lock.rerun_path("register")), \
         "the register's mark was taken at the cap and never handed back"
     assert os.path.exists(lock.rerun_path("inventory"))
+
+
+# ======================================================= the bootstrap's arguments
+#
+# T109's follow-up, on Codex's exact-head review of P10 (opensoft/openRepoTools#165
+# 6889426463): `bootstrap` refused a connection string only in its four flags' values,
+# after its usage, so a positional argument or an unknown option that carried one
+# ended 64 with the whole argument echoed on stderr. Its usage texts now echo no
+# argument's value: an unknown argument is named in `ready`'s form, as `login`'s is
+# (lane 3's ruling, #165 6894208108), so a bare secret that no rule can tell from a
+# word is not echoed either.
+
+
+@pytest.mark.parametrize("where", ["positional", "unknown-option", "bare-positional",
+                                   "bare-unknown-option", "control"])
+def test_the_bootstrap_refuses_a_secret_in_any_argument_and_never_echoes_it(estate, where):
+    """NO ARGUMENT ECHOES A SECRET (operations.md section 2.4's refusals; T109):
+    an argument that carries a connection string or a password is refused with 2
+    wherever it stands, before the usage is read, as `login`'s are; and a bare
+    secret, positional or as an unknown option's value, is usage (64), named in
+    `ready`'s form, which quotes an unknown argument only where all of it is
+    letters and '-' after one or two '-', so not at all. The value reaches
+    neither stdout nor stderr, and no `psql` is run. Every other flag is in
+    order: `[control]`, with no extra argument, does run `psql` (the fake's exit
+    1 is 69), so in the other ids it is the extra argument, refused or usage,
+    that keeps `psql` from running (lane 3's NIT 1 on PR 89 at 4a8b7b8b)."""
+    secret = f"t109-FAKE-{where}-not-a-secret"
+    argument, code, words = {
+        "positional": (f"postgresql://lanes_register_admin:{secret}@db.invalid:5432/register",
+                       2, "carries a connection string or a password"),
+        "unknown-option": (f"--dsn=host=db.invalid user=lanes_register_admin password={secret}",
+                           2, "carries a connection string or a password"),
+        "bare-positional": (secret, 64,
+                            "bootstrap: unknown argument that is not one of its flags"),
+        "bare-unknown-option": (f"--dsn={secret}", 64,
+                                "bootstrap: unknown argument that is not one of its flags"),
+        "control": (None, 69, "psql exited 1"),
+    }[where]
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    ran = estate.root / "psql-ran.txt"
+    (fake / "psql").write_text(f"#!/bin/sh\necho ran >> {shlex.quote(str(ran))}\nexit 1\n")
+    (fake / "psql").chmod(0o755)
+    res = estate.index("bootstrap", "--admin-service", "t109admin", "--label", "t109-label",
+                       "--repository", "opensoft/t109-workspace", "--lane", "t109-operator",
+                       "--no-passwords", *([] if argument is None else [argument]),
+                       env={"PATH": estate.path_with(fake)})
+    said = f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}".replace(secret, "<the secret>")
+    assert res.returncode == code, f"[{where}] exit {res.returncode}, not {code}:\n{said}"
+    assert secret not in res.stdout and secret not in res.stderr, (
+        f"[{where}] the secret was echoed:\n{said}")
+    assert words in res.stderr, said
+    if where == "control":
+        assert ran.exists(), f"[control] psql was not run:\n{said}"
+    else:
+        assert not ran.exists(), f"[{where}] psql was run:\n{said}"
+
+
+# ================================================= the argument-naming form, ready's
+#
+# Lane 3's ruling (opensoft/openRepoTools#165 6894208108) on lane 1's two forms
+# (6894177366): `bootstrap` and `login` name an unknown argument as `ready` does,
+# quoted only where all of it matches `--?[A-Za-z][A-Za-z-]{0,30}`, and otherwise as
+# "unknown argument that is not one of its flags". One row for each example line of
+# lane 1's post, for each command. `login` has no `s3cret` row: a word that does not
+# start with '-' is its action or its engineer, never an unknown argument.
+
+#: (id, the argument, what the usage line shows in its place)
+UNKNOWN_ARGUMENTS = [
+    ("dash-secret", "-s3cret", "that is not one of its flags"),
+    ("flag-word", "--frob", "'--frob'"),
+    ("flag-value", "--pw=s3cret", "that is not one of its flags"),
+    ("positional", "s3cret", "that is not one of its flags"),
+    ("dash-letters", "-abcdef", "'-abcdef'"),
+]
+
+#: Each command with every other argument in order, so that only the unknown one is
+#: usage.
+UNKNOWN_ARGUMENT_COMMANDS = {
+    "bootstrap": ("bootstrap", "--admin-service", "t109admin", "--label", "t109-label",
+                  "--repository", "opensoft/t109-workspace", "--lane", "t109-operator",
+                  "--no-passwords"),
+    "login": ("login", "rotate", "--dump-job", "--admin-service", "t110admin"),
+}
+
+
+@pytest.mark.parametrize("command, argument, shown", [
+    pytest.param(command, argument, shown, id=f"{command}-{case}")
+    for command in UNKNOWN_ARGUMENT_COMMANDS
+    for case, argument, shown in UNKNOWN_ARGUMENTS
+    if not (command == "login" and case == "positional")])
+def test_bootstrap_and_login_name_an_unknown_argument_as_ready_does(estate, command,
+                                                                    argument, shown):
+    """READY'S FORM (lane 3's ruling, #165 6894208108): an unknown argument is
+    usage (64), quoted only where all of it is letters and '-' after one or two
+    '-', and otherwise not shown, so no argument that holds a digit, a symbol or
+    '=' reaches stderr. The usage line is all that is printed, and no `psql` is
+    run."""
+    fake = estate.root / "pgfake"
+    fake.mkdir()
+    ran = estate.root / "psql-ran.txt"
+    (fake / "psql").write_text(f"#!/bin/sh\necho ran >> {shlex.quote(str(ran))}\nexit 1\n")
+    (fake / "psql").chmod(0o755)
+    res = estate.index(*UNKNOWN_ARGUMENT_COMMANDS[command], argument,
+                       env={"PATH": estate.path_with(fake)})
+    said = f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+    assert res.returncode == 64, f"exit {res.returncode}, not 64:\n{said}"
+    assert res.stderr == (f"lanes-index: {command}: unknown argument {shown} - see "
+                          f"lanes-index {command} --help\n"), said
+    assert res.stdout == "", said
+    assert "s3cret" not in res.stderr, f"the argument was echoed:\n{said}"
+    assert not ran.exists(), f"psql was run:\n{said}"
+
+
+# ========================================== an existing indexer that cannot log in
+#
+# T109's follow-up 2, on Codex's SHOULD at lanes-index:4303 in the same review
+# (#165 6889426463), as lane 3 ruled it in lane 1's words (#165 6894116246): an
+# existing `lanes_indexer` that cannot log in (`rolcanlogin` false) is refused with 2
+# and named, before any write, under `--roles-only` too, and the bootstrap never
+# grants LOGIN itself. RE: roles are global to a cluster, so each case takes a
+# cluster of its own, with an empty template, from `tests/pgcluster.py` (P01's engine
+# plugin), and skips in a tree that does not carry it yet.
+
+#: What a refused bootstrap must leave as it found it: the roles whose names begin
+#: `lanes` and whether each can log in, their memberships, the schemas whose names
+#: begin `lanes`, the database's ACL, and the count of default privileges.
+T109_CATALOG = (
+    "SELECT 'role ' || rolname || ' login ' || rolcanlogin::text FROM pg_catalog.pg_roles "
+    "WHERE rolname LIKE 'lanes%' "
+    "UNION ALL SELECT 'member ' || r.rolname || ' of ' || g.rolname "
+    "FROM pg_catalog.pg_auth_members m JOIN pg_catalog.pg_roles r ON r.oid = m.member "
+    "JOIN pg_catalog.pg_roles g ON g.oid = m.roleid "
+    "WHERE r.rolname LIKE 'lanes%' OR g.rolname LIKE 'lanes%' "
+    "UNION ALL SELECT 'schema ' || nspname FROM pg_catalog.pg_namespace "
+    "WHERE nspname LIKE 'lanes%' "
+    "UNION ALL SELECT 'database ' || coalesce(datacl::text, 'default') "
+    "FROM pg_catalog.pg_database WHERE datname = current_database() "
+    "UNION ALL SELECT 'default privileges ' || count(*) FROM pg_catalog.pg_default_acl "
+    "ORDER BY 1;\n")
+
+#: The full bootstrap's three inputs.
+T109_FULL = ("--label", "t109-label", "--repository", "opensoft/t109-workspace",
+             "--lane", "t109-operator")
+
+
+@pytest.fixture
+def t109_engine(request, tmp_path):
+    """A started cluster of the case's own with an empty template, a database
+    `t109_db` made from `template0`, and an estate whose `~/.pg_service.conf`
+    names the cluster's socket and superuser as the service `t109admin`. Yields
+    `(cluster, bootstrap)`: `bootstrap(*flags)` runs `lanes-index bootstrap
+    --admin-service t109admin <flags> --no-passwords`, the cluster's tools first
+    on PATH."""
+    try:
+        import pgcluster
+    except ImportError:
+        pytest.skip("real PostgreSQL 16: tests/pgcluster.py, P01's engine plugin, is not "
+                    "in this tree")
+    found = request.getfixturevalue("pg_engine")
+    cluster = pgcluster.Cluster(found.bindir, "")
+    try:
+        cluster.start()
+        cluster.psql("CREATE DATABASE t109_db TEMPLATE template0;")
+        estate = Estate(tmp_path / "e")
+        service = estate.home / ".pg_service.conf"
+        service.write_text(f"[t109admin]\nhost={cluster.root}\nport={pgcluster.PORT}\n"
+                           f"user={pgcluster.SUPERUSER}\ndbname=t109_db\n", encoding="utf-8")
+        service.chmod(0o600)
+        path = os.pathsep.join([str(cluster.bindir), estate.env["PATH"]])
+
+        def bootstrap(*flags: str) -> subprocess.CompletedProcess:
+            return estate.index("bootstrap", "--admin-service", "t109admin", *flags,
+                                "--no-passwords", env={"PATH": path}, timeout=300)
+
+        yield cluster, bootstrap
+    finally:
+        cluster.destroy()
+
+
+@pytest.mark.parametrize("flags", [T109_FULL, ("--roles-only",)], ids=["full", "roles-only"])
+def test_the_bootstrap_refuses_an_existing_nologin_indexer_with_2_before_any_write(
+        t109_engine, flags):
+    """AN INDEXER THAT CANNOT LOG IN IS REFUSED (lane 3's ruling, #165
+    6894116246, in lane 1's words): where `lanes_indexer` exists NOLOGIN, the
+    full bootstrap and `--roles-only` each exit 2, naming `lanes_indexer` and
+    that it cannot log in, and print nothing on stdout. The catalog is as it
+    was, so nothing was written, and the role is still NOLOGIN: the bootstrap
+    never grants LOGIN."""
+    cluster, bootstrap = t109_engine
+    cluster.psql("CREATE ROLE lanes_indexer NOLOGIN;")
+    before = cluster.psql(T109_CATALOG, dbname="t109_db").stdout
+    assert "role lanes_indexer login false" in before.splitlines(), before
+    res = bootstrap(*flags)
+    said = f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+    assert res.returncode == 2, f"exit {res.returncode}, not 2:\n{said}"
+    assert ("REFUSED: bootstrap: the role lanes_indexer exists and cannot log in (NOLOGIN)"
+            in res.stderr), said
+    assert res.stdout == "", f"the refused bootstrap printed on stdout:\n{said}"
+    after = cluster.psql(T109_CATALOG, dbname="t109_db").stdout
+    assert after == before, (f"the refused bootstrap wrote:\nbefore:\n{before}\n"
+                             f"after:\n{after}\n{said}")
+
+
+@pytest.mark.parametrize("flags", [T109_FULL, ("--roles-only",)], ids=["full", "roles-only"])
+def test_the_bootstrap_takes_an_existing_indexer_that_can_log_in(t109_engine, flags):
+    """THE REFUSAL IS FOR NOLOGIN ALONE: where `lanes_indexer` exists and can
+    log in, the full bootstrap and `--roles-only` each exit 0, say `role
+    lanes_indexer: unchanged`, and make the other three roles."""
+    cluster, bootstrap = t109_engine
+    cluster.psql("CREATE ROLE lanes_indexer LOGIN;")
+    res = bootstrap(*flags)
+    said = f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+    assert res.returncode == 0, f"exit {res.returncode}, not 0:\n{said}"
+    assert "role lanes_indexer: unchanged" in res.stdout.splitlines(), said
+    after = cluster.psql(T109_CATALOG, dbname="t109_db").stdout.splitlines()
+    for line in ("role lanes_indexer login true", "role lanes_register_owner login false",
+                 "role lanes_register_reader login false",
+                 "role lanes_register_writer login false"):
+        assert line in after, f"{line!r} is not in the catalog after the run: {after}\n{said}"
+
+
+# ====================================== the writer's SELECT is on tables alone
+#
+# T109's follow-up 3, on Codex's exact-head review of P10 at 079a34d8 (BLOCKING
+# lanes-index:4360): design.md section 1.4 grants SELECT on the register's
+# sequences to READER alone, for pg_dump, and REGISTER-WRITER SELECT on its tables,
+# but the scope read let the writer hold SELECT on a sequence too. operations.md
+# section 2.4 refuses with 2 a role that holds a privilege outside its scope, named
+# and never revoked.
+
+#: Every ACL a refused bootstrap must leave as it found it: the lanes schemas', their
+#: relations' and functions', the database's, and the default privileges.
+T109_ACLS = (
+    "SELECT 'schema ' || nspname || ' ' || coalesce(nspacl::text, '-') "
+    "FROM pg_catalog.pg_namespace WHERE nspname LIKE 'lanes%' "
+    "UNION ALL SELECT 'relation ' || n.nspname || '.' || c.relname || ' ' "
+    "|| coalesce(c.relacl::text, '-') FROM pg_catalog.pg_class c "
+    "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname LIKE 'lanes%' "
+    "UNION ALL SELECT 'function ' || p.oid::regprocedure::text || ' ' "
+    "|| coalesce(p.proacl::text, '-') FROM pg_catalog.pg_proc p "
+    "JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname LIKE 'lanes%' "
+    "UNION ALL SELECT 'database ' || coalesce(datacl::text, 'default') "
+    "FROM pg_catalog.pg_database WHERE datname = current_database() "
+    "UNION ALL SELECT 'default ' || defaclrole::regrole::text || ' ' "
+    "|| defaclobjtype::text || ' ' || defaclacl::text FROM pg_catalog.pg_default_acl "
+    "ORDER BY 1;\n")
+
+
+def test_the_bootstrap_refuses_a_writer_that_holds_select_on_a_sequence(t109_engine):
+    """A WRITER'S SELECT ON A SEQUENCE IS OUTSIDE ITS SCOPE: after a full
+    bootstrap, REGISTER-WRITER is given SELECT on one of the register's
+    sequences by hand. The second full bootstrap exits 2 before any write,
+    naming the grant, prints nothing on stdout, and leaves every ACL as it
+    was. Before this change it passed both audits and exited 0."""
+    cluster, bootstrap = t109_engine
+    first = bootstrap(*T109_FULL)
+    assert first.returncode == 0, f"the first bootstrap exited {first.returncode}: {first.stderr}"
+    sequence = cluster.psql(
+        "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) "
+        "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'lanes_register' AND c.relkind = 'S' ORDER BY 1 LIMIT 1;",
+        dbname="t109_db").stdout.strip()
+    assert sequence, "the register's schema holds no sequence to grant"
+    cluster.psql(f"GRANT SELECT ON SEQUENCE {sequence} TO lanes_register_writer;",
+                 dbname="t109_db")
+    before = cluster.psql(T109_ACLS, dbname="t109_db").stdout
+    res = bootstrap(*T109_FULL)
+    said = f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+    assert res.returncode == 2, f"exit {res.returncode}, not 2:\n{said}"
+    assert f"lanes_register_writer holds SELECT on sequence {sequence}" in res.stderr, said
+    assert res.stdout == "", f"the refused bootstrap printed on stdout:\n{said}"
+    after = cluster.psql(T109_ACLS, dbname="t109_db").stdout
+    assert after == before, (f"the refused bootstrap changed an ACL:\nbefore:\n{before}\n"
+                             f"after:\n{after}\n{said}")
+
+
+# ======================================================= no group keeps a grant option
+#
+# T109's follow-up 4, on Codex's exact-head review of P10 at 079a34d8 (BLOCKING
+# lanes-index:4355): the scope read took each ACL item's privilege and not its
+# grant option, so a group could keep a privilege in its scope WITH GRANT OPTION and
+# hand it on, which design.md section 1.4's GRANTs never give. Now the writer's and
+# the reader's privileges, and the indexer's CONNECT, count as in scope only without
+# it, and the fault names it.
+
+#: The two groups, each given every row's privilege again WITH GRANT OPTION.
+GROUPS = ("lanes_register_writer", "lanes_register_reader")
+
+#: (id, the GRANT made by hand after a full bootstrap, to whom, the privilege, the
+#: object as the fault names it)
+GRANT_OPTIONS = [
+    ("connect", "GRANT CONNECT ON DATABASE t109_db", (*GROUPS, "lanes_indexer"), "CONNECT",
+     "database t109_db"),
+    ("usage", "GRANT USAGE ON SCHEMA lanes_register", GROUPS, "USAGE", "schema lanes_register"),
+    ("select", "GRANT SELECT ON TABLE lanes_register.schema_version", GROUPS, "SELECT",
+     "table lanes_register.schema_version"),
+    ("execute", "GRANT EXECUTE ON FUNCTION lanes_register.render_file(text)", GROUPS, "EXECUTE",
+     "function lanes_register.render_file(text)"),
+]
+
+
+@pytest.mark.parametrize("grant, grantees, privilege, what", [
+    pytest.param(grant, grantees, privilege, what, id=ident)
+    for ident, grant, grantees, privilege, what in GRANT_OPTIONS])
+def test_the_bootstrap_refuses_a_grant_option_on_a_privilege_in_scope(t109_engine, grant,
+                                                                      grantees, privilege, what):
+    """A GRANT OPTION IS OUTSIDE THE SCOPE: after a full bootstrap, the
+    writer and the reader (and, for CONNECT, the indexer) are each given a
+    privilege their scope holds again, WITH GRANT OPTION. The second full
+    bootstrap exits 2 before any write, naming each as `holds <privilege> WITH
+    GRANT OPTION on <object>`, prints nothing on stdout, and leaves every ACL
+    as it was. Before this change it passed both audits and exited 0."""
+    cluster, bootstrap = t109_engine
+    first = bootstrap(*T109_FULL)
+    assert first.returncode == 0, f"the first bootstrap exited {first.returncode}: {first.stderr}"
+    cluster.psql(f"{grant} TO {', '.join(grantees)} WITH GRANT OPTION;", dbname="t109_db")
+    before = cluster.psql(T109_ACLS, dbname="t109_db").stdout
+    res = bootstrap(*T109_FULL)
+    said = f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+    assert res.returncode == 2, f"exit {res.returncode}, not 2:\n{said}"
+    for grantee in grantees:
+        assert f"{grantee} holds {privilege} WITH GRANT OPTION on {what}" in res.stderr, said
+    assert res.stdout == "", f"the refused bootstrap printed on stdout:\n{said}"
+    after = cluster.psql(T109_ACLS, dbname="t109_db").stdout
+    assert after == before, (f"the refused bootstrap changed an ACL:\nbefore:\n{before}\n"
+                             f"after:\n{after}\n{said}")
