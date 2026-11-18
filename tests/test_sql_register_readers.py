@@ -135,99 +135,6 @@ __all__ = ["estate"]  # the fixture, imported so that pytest finds it here
 pytestmark = [pytest.mark.skipif(shutil.which("bash") is None or shutil.which("git") is None,
                                  reason="the lane tooling is bash over git")]
 
-#: THE LANDING GATE'S TABLE (T280; task sets version 12b's rule 11, #165
-#: 6877673742), TEMPORARY: T281 removes it. The gate in `tests/conftest.py`
-#: skips each id until every task its row names has landed (the reader is
-#: `tests/sql_register_gate.py`). Written from T217's Order (tasks:2055 at
-#: lane 3's commit 17, `204145ae`), T235's (:2267) and T259's (:2469), as
-#: lane 2's plan GP-24 v2 gives it, with lane 3's ruling on T217's lane 5
-#: clause (#165 6877365776): each id of the 19 functions a lane 5 verify
-#: selects waits for the tasks that lane 2's per-id verdict rows give it
-#: (AN11a's and AN13a's), and for T504, T505, T506 and T509 where it has
-#: none. T504 to T506 are in the Order's own list too (L5-A5), so those rows
-#: drop T509 where they do not name it, and add T502 to the listing callers'
-#: two ids and T507 to the reader table's `[guard]`. T217zzc's three ids of
-#: the other callers' arms' test, lane 2's cases of 69-11 (lane 3, spec PR 80
-#: 6968549834), take id rows of their own, T401 with T402 (`lane-start-1591-69`)
-#: or T403 (`lane-end-1744-69` and `lane-end-1744-2`) alone, since each runs the
-#: one arm that task built, and the function's row would hold them for T404 to
-#: T408, T504 to T506 and T508 too (lane 4, 6968533942).
-SQL_REGISTER_GATE_TABLE = {
-    "test_69_refuses_at_canon_lane_and_session_lane_and_stays_a_note_at_the_other_four_arms": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_75_and_3_refuse_the_launch_at_each_lane_start_arm": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_a_caller_that_acts_on_a_listings_answer_refuses_69_where_the_store_is_unreachable": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T502", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
-    "test_a_carry_on_act_names_lane_start_no_launch_on_a_69_or_75_under_a_seq_base": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_a_none_class_arm_makes_no_register_call_with_the_store_unreachable": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
-    "test_a_primary_reader_makes_one_prefetch_and_every_read_site_reads_its_cache_at_one_n": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
-    "test_a_read_site_with_no_prefetched_file_makes_one_more_register_read_and_never_a_git_read": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
-    "test_a_register_name_that_is_not_the_render_sets_lowers_a_mirror_read_to_the_mirror_on_primary": ("T505",),  # T217zzb; tasks:746; lane 5's reg_names_ok, lane 3's 6933947760
-    "test_a_register_name_that_is_not_the_render_sets_refuses_a_decide_read_with_69_on_primary": ("T505",),  # T217zzb; tasks:746; lane 5's reg_names_ok, lane 3's 6933947760
-    "test_an_expectation_2_at_lane_starts_last_write_dies": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_an_expectation_2_at_lane_starts_last_write_that_makes_a_row_under_an_at_files_base_dies": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; ERR-56's row-making 2, its twin's row
-    "test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_notes_stamps_and_launches": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_whose_reread_answers_a_seq_base_dies": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; ERR-56's second case, its twin's row (T217zu)
-    "test_each_mirror_read_prints_its_line_and_keeps_its_exit": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
-    "test_each_reader_follows_the_table_when_the_store_is_unreachable": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
-    "test_every_dispatcher_arm_is_classified_for_the_read_door": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
-    "test_guard_second_read_at_its_head_writes_one_log_and_fails_open": ("T113", "T114", "T227", "T228", "T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_index_flag_on_primary_changes_nothing_and_prints_no_index_line": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
-    "test_journal_last_pickaxe_finds_the_newest_entry_that_changes_the_keys_count": ("T113", "T114", "T227", "T228", "T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_lane_worktrees_register_reads_go_through_a_verb_and_refuse_69": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_lanes_accepts_decide_and_reads_as_without_it": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T502", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_lanes_fetch_on_primary_prints_no_no_fetch_note": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
-    "test_log_key_hex_slot_holds_a_key_outside_the_class_and_is_never_cached": ("T113", "T114", "T227", "T228", "T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_log_sync_on_primary_makes_no_fetch_and_no_flush": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
-    "test_managed_projection_answers_0_1_8_from_sql_as_files_mode_does": ("T227", "T228", "T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
-    "test_managed_projection_with_the_database_unreachable_exits_1_never_legacy": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
-    "test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_store_and_never_git": ("T227", "T228", "T505"),  # T235; tasks:2267
-    "test_on_primary_remote_log_events_and_worktree_rows_read_again_when_the_head_moves": ("T505",),  # T235; tasks:2267
-    "test_one_failed_call_anywhere_in_a_callers_read_sequence_never_fails_open": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
-    "test_register_grep_on_primary_answers_one_snapshot_and_69_after_three_moved_runs": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_register_grep_on_primary_prints_each_path_as_git_grep_does_under_gits_defaults": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_register_grep_prints_what_git_grep_prints_and_1_with_no_match": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_register_row_local_reads_the_database_on_primary_and_is_69_never_8": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
-    "test_register_text_answers_the_bytes_the_scripts_read_today_and_69_on_a_failed_read": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_retired_rows_key_trims_leading_zeros_as_text_on_primary": ("T426",),  # T259; tasks:2469
-    "test_swapped_ranks_through_journal_last_on_primary": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
-    "test_the_flush_helper_drops_the_whole_read_family": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
-    "test_the_lanes_footer_on_primary_names_the_register_and_claims_no_local_read": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
-    "test_the_local_file_unions_are_skipped_on_primary": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_the_read_mirror_variable_lowers_each_read_that_names_the_lane_on_primary": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
-    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-end-2490]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T430", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-handoff-2878]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-handoff-2890]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-handoff-2913]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-3851]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-3872]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-3909]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-3989]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-4022]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-4181]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_each_reader_follows_the_table_when_the_store_is_unreachable[guard]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T507", "T508", "T509"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
-    "test_one_failed_call_anywhere_in_a_callers_read_sequence_never_fails_open[lane-rename]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T415", "T422", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
-    "test_retired_rows_key_trims_leading_zeros_as_text_on_primary[files]": (),  # T259; [files] passes at the base; lane 3's 6894592205
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-1144-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T432", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-1144-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T432", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-1144-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T432", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-1744-2]": ("T401", "T403"),  # T217zzc; tasks:885; lane 3, spec PR 80 6968549834
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-1744-69]": ("T401", "T403"),  # T217zzc; tasks:885; lane 3, spec PR 80 6968549834
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-2490-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T430", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-2490-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T430", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-2490-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T430", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-handoff-2817-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-handoff-2817-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-handoff-2817-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-rename-241-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T433", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-rename-241-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T433", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-rename-241-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T433", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-start-1591-69]": ("T401", "T402"),  # T217zzc; tasks:871; lane 3, spec PR 80 6968549834
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-start-2511-2512-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-start-2511-2512-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-start-2511-2512-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
-}
-
 LANES_EDIT = REPO / "lanes-edit.sh"
 
 #: THE STORE'S OWN ROW: a lane the store's `lanes/LANES.md` holds and the git
@@ -1143,11 +1050,6 @@ class PrimaryWorld(ArmWorld):
                 self.env.pop(key, None)
             else:
                 self.env[key] = value
-
-
-@pytest.fixture
-def arms(tmp_path: Path) -> ArmWorld:
-    return ArmWorld(tmp_path / "arms")
 
 
 # ----------------------------------------------------- the arms' table
@@ -2587,8 +2489,15 @@ def hook_pid():
     try:
         yield str(standin.pid)
     finally:
+        # Kill it, then a reap bounded at 10 s, as `GuardSession.close()` does: a
+        # stand-in that a kill does not take fails the case and never hangs the
+        # run (lane 5, #165 6932056536).
         standin.kill()
-        standin.wait()
+        try:
+            standin.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            standin.kill()
+            standin.wait(timeout=10)
 
 
 #: The render set lane 1's three read: two lanes, their logs and the aliases.
@@ -2986,15 +2895,17 @@ def test_a_read_site_with_no_prefetched_file_makes_one_more_register_read_and_ne
 def test_the_flush_helper_drops_the_whole_read_family(tmp_path):
     """T505 (C6): `reg_flush`, taken from `lanes-edit.sh` by its text (the
     script cannot be sourced), drops `.register`, `.aliases`, `.archive`,
-    `.paths`, every `.log.*` and `.logpath.*`, and empties
-    `LANES_REGISTER_CACHE`."""
+    `.paths`, `.head`, `.outage`, every `.log.*` and `.logpath.*`, keeps
+    `.direct`, and empties `LANES_REGISTER_CACHE` (tasks:763; lane 5's NIT,
+    #165 6888923188)."""
     found = re.search(r"^reg_flush\(\) *\{.*?^\}[ \t]*$", LANES_EDIT.read_text(encoding="utf-8"),
                       re.M | re.S)
     assert found, "lanes-edit.sh has no reg_flush"
     cache = tmp_path / "se"
-    members = [".register", ".aliases", ".archive", ".paths", ".log.repoA-1", ".logpath.repoA-1",
-               ".log.%2c", ".logpath.%2c"]
-    for member in members:
+    members = [".register", ".aliases", ".archive", ".paths", ".head", ".outage", ".log.repoA-1",
+               ".logpath.repoA-1", ".log.%2c", ".logpath.%2c"]
+    kept = [".direct"]
+    for member in members + kept:
         (tmp_path / f"se{member}").write_text("cached\n", encoding="utf-8")
     script = (found.group(0) + '\nSE_CACHE_FILE="$1"; LANES_REGISTER_CACHE="$1.register"\n'
               'reg_flush\nprintf "[%s]" "$LANES_REGISTER_CACHE"\n')
@@ -3004,6 +2915,8 @@ def test_the_flush_helper_drops_the_whole_read_family(tmp_path):
     assert result.stdout == "[]", result.stdout
     left = [m for m in members if (tmp_path / f"se{m}").exists()]
     assert not left, ("the family is not all dropped", left)
+    gone = [m for m in kept if not (tmp_path / f"se{m}").exists()]
+    assert not gone, ("the flush dropped what it keeps", gone)
 
 
 def test_swapped_ranks_through_journal_last_on_primary(primary):
@@ -3252,6 +3165,11 @@ exec "$T235_REAL_GIT" "$@"
 #: The log directory `known_lanes`, `remote_log_events` and `worktree_rows`'
 #: pin read by git off primary (P2's `lanes-edit.sh`, `LANES_LOG_PREFIX`).
 LOG_DIR = "lanes/log"
+#: The archive `archive_text` reads by git off primary (`LANES_ARCH_PATH`):
+#: `register_published`'s `ls-tree`, then a `show` where it is published. On
+#: primary it reads `.archive` (T505 Q6); `lanes_rows` and `worktree_rows`
+#: read it on every listing (lane 5's NIT, #165 6888923188).
+ARCH_PATH = "lanes/archive/LANES-retired.md"
 
 #: T235's ids (F13c's block, T235): four the text writes whole, and three run
 #: through the module's door (`DOOR_WRAPPER`), whose oracles are lane 3's
@@ -3291,11 +3209,12 @@ T235_READ_FAILED = re.compile(r"^lanes-edit: the register could not be read", re
 
 
 def git_log_reads(log: Path, upto: re.Pattern | None = None) -> list:
-    """The calls in the fake `git`'s argv log that read `lanes/log` by git:
-    an `ls-tree` naming it, or a `show` of a path under it. Each call's line
-    holds US. Where the log is also the run's stderr (`[failed-second-read]`),
-    every other line is stderr's, and `upto`, where given, ends the scan at
-    the first of those it matches."""
+    """The calls in the fake `git`'s argv log that read `lanes/log` or the
+    archive by git: an `ls-tree` naming either, or a `show` of a path under
+    `lanes/log` or of the archive. Each call's line holds US. Where the log
+    is also the run's stderr (`[failed-second-read]`), every other line is
+    stderr's, and `upto`, where given, ends the scan at the first of those it
+    matches."""
     if not log.exists():
         return []
     found = []
@@ -3320,9 +3239,10 @@ def git_log_reads(log: Path, upto: re.Pattern | None = None) -> list:
         if not rest:
             continue
         verb, args = rest[0], rest[1:]
-        if verb == "ls-tree" and any(LOG_DIR in a for a in args):
+        if verb == "ls-tree" and any(read in a for a in args for read in (LOG_DIR, ARCH_PATH)):
             found.append(argv)
-        elif verb == "show" and any(a.startswith(LOG_DIR) or f":{LOG_DIR}" in a for a in args):
+        elif verb == "show" and any(a.startswith(read) or f":{read}" in a
+                                    for a in args for read in (LOG_DIR, ARCH_PATH)):
             found.append(argv)
     return found
 
@@ -3371,7 +3291,9 @@ def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_sto
     primary, `known_lanes`, `remote_log_events` and `worktree_rows` read the
     store and never git. Each id asserts the store's answer, and that no `git
     ls-tree` and no `git show` of `lanes/log` ran, by the fake `git`'s argv
-    log (`LOGGING_GIT`):
+    log (`LOGGING_GIT`), nor of the archive, which `archive_text` reads from
+    `.archive` on primary for `lanes_rows` and `worktree_rows` (T505 Q6; lane
+    5's NIT, #165 6888923188):
 
       * `[known-lanes]`: a lane's log with no register row, only in the store,
         which `known_lanes` lists from the family (`lanes --all --closed`);
@@ -3478,19 +3400,21 @@ def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_sto
                 "PATH": str(shim) + os.pathsep + estate.env["PATH"],
                 "T235_GIT_LOG": str(log), "T235_REAL_GIT": real_git}
 
-    # THE CONTROL: the fake `git` is the one on PATH, and its log shows the read the sites
-    # make off primary, so a run that logs none made none (a T505 run may log no call at all).
+    # THE CONTROL: the fake `git` is the one on PATH, and its log shows the reads the sites
+    # make off primary, of `lanes/log` and of the archive, so a run that logs none made none
+    # (a T505 run may log no call at all).
     control = tmp_path / "t235-git-control.log"
-    listed = estate.run("git", "-C", estate.wip, "ls-tree", "--name-only", "origin/main", "--",
-                        f"{LOG_DIR}/", env=git_env(control))
-    assert listed.returncode == 0 and git_log_reads(control), (
-        "the control: the fake git logged no ls-tree of lanes/log", listed.stderr)
+    for count, path in enumerate((f"{LOG_DIR}/", ARCH_PATH), 1):
+        listed = estate.run("git", "-C", estate.wip, "ls-tree", "--name-only", "origin/main", "--",
+                            path, env=git_env(control))
+        assert listed.returncode == 0 and len(git_log_reads(control)) == count, (
+            "the control: the fake git logged no ls-tree of", path, listed.stderr)
 
     def run(*argv: str) -> subprocess.CompletedProcess:
         log = tmp_path / f"t235-git-{'-'.join(argv)}.log"
         result = estate.run("bash", edit, *argv, env=git_env(log))
-        assert not git_log_reads(log), (case, argv, "git read lanes/log", git_log_reads(log),
-                                        result.stderr[-1500:])
+        assert not git_log_reads(log), (case, argv, "git read lanes/log or the archive",
+                                        git_log_reads(log), result.stderr[-1500:])
         return result
 
     def run_in_order(*argv: str) -> tuple:
@@ -3588,8 +3512,8 @@ def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_sto
             mirror = estate.edit(*argv)                      # the mirror's answer: files mode's
             result, stderr, both = run_in_order(*argv)
             reads = git_log_reads(both, upto=MIRROR_LINE)
-            assert not reads, (case, argv, "git read lanes/log before the mirror's label", reads,
-                               stderr[-1500:])
+            assert not reads, (case, argv, "git read lanes/log or the archive before the mirror's "
+                               "label", reads, stderr[-1500:])
             assert MIRROR_LINE.search(stderr), (case, argv, "no `read: mirror at` line",
                                                 stderr[-1500:])
             # SAID ONCE (lane 3's review of T505, SHOULD-1, #165 6783977065): the mirror line

@@ -78,9 +78,6 @@ that carries `tests/test_sql_register_order.py`, `tests/pgcluster.py` and
 them is missing, the module is skipped whole at collection, naming it, so a
 tree without them still collects; that skip is no pass. Without PostgreSQL 16
 every case skips by the engine's banner, as lane 2's do.
-
-THE LANDING GATE (lane 2's T280, comment 6870449334): every id here waits
-for T425, the task whose round carries the fix.
 """
 
 from __future__ import annotations
@@ -107,10 +104,6 @@ except ModuleNotFoundError as missing:
     pytest.skip(f"lane 2's estate is not in this tree ({missing.name}.py is missing), so "
                 f"append-line's subject cut cannot be run here; this skip is no pass",
                 allow_module_level=True)
-
-#: T280's table (lane 2, opensoft/openRepoTools#165 comment 6870449334): every
-#: id of this module waits for T425, lane 4's task whose round fixes the cut.
-SQL_REGISTER_GATE_TABLE = {"*": ("T425",)}
 
 #: The locale variables removed from every run's environment.
 LOCALE = ("LANG", "LC_ALL", "LC_CTYPE")

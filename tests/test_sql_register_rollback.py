@@ -111,55 +111,6 @@ from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQ
 
 pytestmark = [WINDOWS_SKIP]
 
-#: THE LANDING GATE'S TABLE (T280; `tests/sql_register_gate.py` reads it): the
-#: tasks each id waits for, from T273's Order (tasks:2512 at 204145ae). In a
-#: gated run an id is skipped while any of its tasks has no marker in
-#: `tests/sql_register_landed/`. T281 removes it with the gate. The module
-#: has no `"*"` row: each test has its own. The teardown's own fault-path
-#: regressions, at the end, need no engine and no task, so each has an empty
-#: row and ordinary PR CI runs it (lane 3's Codex review of code PR 97 at
-#: `18529e5a`, SHOULD 5, read for this module).
-SQL_REGISTER_GATE_TABLE = {
-    "test_a_cutover_and_a_rollback_leave_exactly_two_operator_entries": ("T121", "T304", "T326"),  # T273; tasks:2512
-    "test_a_files_mode_claim_after_rollback_leaves_one_holder": ("T121", "T304", "T326"),  # T273; tasks:2512
-    "test_a_missed_primary_writer_is_refused_after_rollback": ("T111", "T121", "T304", "T326", "T327", "T415", "T416", "T420"),  # T273; tasks:2512
-    "test_a_missed_writer_is_refused_once_the_partitioned_rollback_completes": ("T111", "T121", "T304", "T326", "T327", "T415", "T416", "T420"),  # T273; tasks:2512
-    "test_a_pinned_process_s_end_raises_unless_it_is_seen_gone": (),  # T273; the teardown's own fault path, no task (Codex at 46cac748, SHOULD 3)
-    "test_a_push_fifo_let_go_leaves_no_reader_blocked": (),  # T273; the teardown's own fault path, no task (Codex at 6d479418, SHOULD 1)
-    "test_a_reimport_after_a_rollback_continues_the_journal": ("T121", "T304", "T326"),  # T273; tasks:2512
-    "test_a_report_that_never_comes_ends_its_starter_and_raises": (),  # T273; the teardown's own fault path, no task (Codex at 46cac748, SHOULD 2)
-    "test_a_rerun_after_an_unconfirmed_removal_and_a_files_mode_write_ends_0_with_the_marker_absent": ("T121", "T304", "T326"),  # T273; tasks:2512
-    "test_a_rollback_entry_over_a_recorded_divergence_is_lr012": ("T107", "T109"),  # T273; tasks:2512
-    "test_a_rollback_finds_a_stray_not_yet_recorded_records_it_and_exits_2": ("T121", "T304", "T326"),  # T273; tasks:2512
-    "test_a_rollback_goes_back_to_its_check_on_each_lost_turn_code": ("T326",),  # T273; tasks:2512
-    "test_a_rollback_goes_back_to_its_check_past_a_last_error_and_refuses_a_divergence_recorded_meanwhile": ("T121", "T304", "T326"),  # T273; tasks:2512
-    "test_a_rollback_rerun_resumes_after_its_own_entry": ("T121", "T304", "T326"),  # T273; tasks:2512
-    "test_a_rollback_retries_a_lost_turn_on_a_fresh_k_through_its_check": ("T121", "T304", "T326"),  # T273; tasks:2512
-    "test_a_teardown_ends_a_live_call_whose_pid_an_old_record_names_with_another_token": (),  # T273; the teardown's own fault path, no task (lane 2's CX-32 integration, open item 1)
-    "test_a_teardown_ends_a_push_forked_before_its_first_record": (),  # T273; the teardown's own fault path, no task (Codex at 18529e5a, SHOULD 1)
-    "test_a_teardown_ends_each_member_of_a_group_whose_leader_is_gone": (),  # T273; the teardown's own fault path, no task (Codex at 46cac748, SHOULD 1)
-    "test_a_teardown_ends_what_it_knows_before_it_raises_an_unreadable_log": (),  # T273; the teardown's own fault path, no task (the coordinator's 6938182757, point 2)
-    "test_a_teardown_kills_and_closes_every_pin_whatever_a_signal_raised": (),  # T273; the teardown's own fault path, no task (Codex at 46cac748, SHOULD 6)
-    "test_a_teardown_never_signals_a_logged_pid_and_start_token_without_the_case_s_identity": (),  # T273; the teardown's own fault path, no task (Codex at 46cac748, BLOCKING)
-    "test_a_teardown_raises_on_a_call_logged_with_no_start_token": (),  # T273; the teardown's own fault path, no task (Codex at 18529e5a, SHOULD 1)
-    "test_a_teardown_raises_where_a_stop_is_never_seen": (),  # T273; the teardown's own fault path, no task (Codex at f776b435, SHOULD 1)
-    "test_a_teardown_signals_through_pidfds_alone_and_spares_a_wrong_start_token": (),  # T273; the teardown's own fault path, no task (Codex at 18529e5a, BLOCKING)
-    "test_a_write_that_committed_before_the_rollback_is_found_by_its_rerun_after_it": ("T121", "T304", "T326", "T327", "T415", "T416", "T417"),  # T273; tasks:2512
-    "test_an_abort_release_runs_neither_git_nor_the_held_command": (),  # T273; the teardown's own fault path, no task (Codex at 18529e5a, SHOULD 1)
-    "test_an_estate_whose_construction_fails_ends_what_it_started": (),  # T273; the teardown's own fault path, no task (Codex at f776b435, BLOCKING)
-    "test_held_at_push_never_returns_with_its_rollback_unreaped": (),  # T273; the teardown's own fault path, no task (Codex at 6d479418, SHOULD 2)
-    "test_reap_all_tries_every_child_and_raises_after_the_whole_set": (),  # T273; the teardown's own fault path, no task (Codex at 46cac748, SHOULD 4)
-    "test_rollback_exits_2_on_lr012_naming_the_divergence_and_both_ways_out": ("T107", "T109", "T121", "T304"),  # T273; tasks:2512
-    "test_rollback_from_a_partitioned_clone_is_refused_and_removes_no_marker": ("T121", "T304", "T326"),  # T273; tasks:2512
-    "test_rollback_leaves_files_byte_identical_marker_gone_and_sql_writes_refused": ("T121", "T304", "T326"),  # T273; tasks:2512
-    "test_rollback_refuses_to_start_while_the_mirror_is_diverged": ("T121", "T304", "T326"),  # T273; tasks:2512
-    "test_rollback_steps_0_and_1_run_only_against_a_scratch_schema": ("T107", "T109", "T121", "T304"),  # T273; tasks:2512
-    "test_rollback_with_the_database_stopped_is_refused_and_changes_neither_switch_nor_marker": ("T121", "T304", "T326"),  # T273; tasks:2512
-    "test_the_marker_removal_entry_is_written_with_the_switch_in_step_1": ("T121", "T304", "T326"),  # T273; tasks:2512
-    "test_the_rollback_oracle_fails_on_a_last_fetched_tip_writer": ("T121", "T304", "T326"),  # T273; tasks:2512
-    "test_the_rollback_oracle_fails_on_a_switch_reset_when_the_database_returns": ("T121", "T304", "T326"),  # T273; tasks:2512
-}
-
 #: The scratch schema the cases bootstrap: any `register_schema=` but the
 #: default (Y:2323; lane 2's reading, NOTES question 6).
 SCRATCH = "t273_scratch"

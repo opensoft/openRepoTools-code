@@ -7,10 +7,9 @@ here once, and imported by both (SonarCloud's quality gate on code PR 97 at
 `f776b435`, 3.6% duplication on new code against its 3%, comment
 6939998291; lane 3's reading, 6940039571; lane 2's ruling in round CX-34).
 
-It is no test module: it holds no test and no landing-gate table, and
+It is no test module: it holds no test, and
 pytest collects nothing from it. The two modules import it from `tests/`,
-as they import `tests/sql_register_helpers.py` and as `tests/conftest.py`
-imports `tests/sql_register_gate.py`.
+as they import `tests/sql_register_helpers.py`.
 
 A PROCESS'S IDENTITY HERE (lane 3's Codex reviews of code PR 97 at
 `18529e5a`, BLOCKING, and at `46cac748`, BLOCKING; lane 2's decision 1 in

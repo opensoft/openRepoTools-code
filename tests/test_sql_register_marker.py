@@ -24,7 +24,9 @@ T225 (L2-N7; A8): `wip init`'s two cases, AT-3's three reader cases and lane
 T242 (L2-W1, L2-W5; FR-002, FR-004, FR-059) adds test 3's unit form and
 AT-F8, phase W, FM, with no database: the writers' marker check, and every
 failure of the mode query. They fail until lane 4's L4-B1 (T409) and L4-B12
-(T419) and lane 5's L5-A5 land. See "phase W: T242" below.
+(T419) land, as T242's Order says. None waits for lane 5's
+L5-A5, the readers' marker check, which T225's reader cases wait for. See
+"phase W: T242" below.
 
 The estate is T215's and T220's, as T203c's helper test builds it: a bare
 origin, the lane's checkout under `$HOME/projects`, `$HOME/.agents/
@@ -54,78 +56,6 @@ from sql_register_helpers import GUARD_WINDOW, guard_session, guard_strip_env
 pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
     reason="the lane tooling is bash over git")]
-
-#: THE LANDING GATE'S TABLE (T280; task sets version 12b's rule 11,
-#: opensoft/openRepoTools#165 6877673742), TEMPORARY: T281 removes it in the
-#: last set. `tests/sql_register_gate.py` reads it: in a code pull request's
-#: full CI, each id of a function below is skipped until every task its row
-#: names has landed, and the skip names them. The rows are T225's Order
-#: (tasks:2166) and T242's (tasks:2331), tasks.md at lane 3's commit 17
-#: `204145ae`. No task is common to all 13 functions, so there is no "*" row.
-SQL_REGISTER_GATE_TABLE = {
-    # T225: `wip init`'s two cases until T303; AT-3's three reader cases until
-    # T504, whose verify runs them (tasks:713); lane 5's three guesses until
-    # their own tasks, one each: T506 (tasks:769), T508 (tasks:822) and T507
-    # (tasks:780).
-    "test_wip_init_refuses_under_the_marker": ("T303",),
-    "test_wip_init_refuses_where_a_lanes_file_exists_with_no_marker": ("T303",),
-    "test_a_readers_refusal_under_the_marker_names_the_refs_age": ("T504",),
-    "test_a_reader_refuses_when_its_read_ref_carries_the_marker_and_its_tree_does_not": ("T504",),
-    "test_an_unconfigured_workstations_acts_refuse_and_listings_read_the_mirror": ("T504",),
-    "test_the_marker_check_runs_at_the_end_of_log_sync": ("T506",),
-    "test_the_session_start_block_reads_on_under_the_marker_with_its_mirror_line": ("T508",),
-    "test_a_mode_index_guard_refuses_2_under_the_marker": ("T507",),
-    # T242: the writer cases until T419 (L4-B12), the `mode=index` one also
-    # until T409 (L4-B1); the q6c case until T409; and AT-F8's ids until
-    # T409, its `sql` ones also until T419: the function's row holds both,
-    # and each of its 20 `files` ids has its own row, T409 alone (lane 3's
-    # ruling 7, opensoft/openRepoTools#165 6879724890).
-    "test_a_files_mode_writer_refuses_under_the_marker": ("T419",),
-    "test_a_mode_index_writer_refuses_under_the_marker": ("T409", "T419"),
-    "test_a_writer_with_no_fetch_refuses_when_its_tip_carries_the_marker": ("T419",),
-    "test_the_q6c_refusal_has_its_own_code_and_the_writer_exits_69": ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning": ("T409", "T419"),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[refused-2-index-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[refused-2-primary-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[too-old-64-index-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[too-old-64-primary-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[crash-1-index-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[crash-1-primary-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[removed-127-index-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[removed-127-primary-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[signal-index-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[signal-primary-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[not-one-line-index-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[not-one-line-primary-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[exit-69-index-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[exit-69-primary-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[exit-75-index-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[exit-75-primary-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[exit-3-index-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[exit-3-primary-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[hang-index-files]":
-        ("T409",),
-    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[hang-primary-files]":
-        ("T409",),
-}
 
 EDIT = REPO / "lanes-edit.sh"
 LANES = REPO / "lanes"
@@ -561,9 +491,10 @@ def test_a_mode_index_guard_refuses_2_under_the_marker(tmp_path):
 # origin, with the start state three verbs need (T241's `PREPS`), the
 # workspace `workspace.yaml` names, and a `tmux` that answers nothing.
 #
-# They fail until L4-B1, L4-B12 and L5-A5 land, each by its own assertion:
-# today's `lanes-edit.sh` asks no mode and checks no marker, so every write
-# lands and exits 0.
+# They fail until L4-B1 and L4-B12 (T409 and T419) land, each by its own
+# assertion: today's `lanes-edit.sh` asks no mode and checks no marker, so
+# every write lands and exits 0. That is T242's Order;
+# none of them waits for L5-A5, the readers' marker check (T225's).
 
 EM, ARROW = chr(0x2014), chr(0x2192)
 WRITER_WS = "Eagle"
