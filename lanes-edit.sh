@@ -12514,7 +12514,7 @@ swapped_journal_rank() {   # <the log's lane> <the pickaxe key>
   sjr_o="$SE_CACHE_FILE.journal-out.${BASHPID:-$$}"; sjr_e="$SE_CACHE_FILE.journal-err.${BASHPID:-$$}"
   sjr_rc=0
   reg_backstop "$(reg_head_backstop_s)"
-  ( ${REG_BACKSTOP[@]+"${REG_BACKSTOP[@]}"} "$sjr_bin" journal --last --path "$sjr_path" --grep "$2" --at "$SWH_N" --generation "$SWH_G" </dev/null >"$sjr_o" 2>"$sjr_e"; exit "$?" ) 2>/dev/null || sjr_rc=$?
+  ( "$sjr_bin" journal --last --path "$sjr_path" --grep "$2" --at "$SWH_N" --generation "$SWH_G" </dev/null >"$sjr_o" 2>"$sjr_e"; exit "$?" ) 2>/dev/null || sjr_rc=$?
   sjr_has=0; grep -q '^seq=' "$sjr_o" 2>/dev/null && sjr_has=1
   sjr_k="$(sed -n -e 's/^seq=//p' "$sjr_o" 2>/dev/null | head -n 1)"
   sjr_why="$(head -n 1 -- "$sjr_e" 2>/dev/null | head -c 300 | tr -d '\000-\037' || :)"
