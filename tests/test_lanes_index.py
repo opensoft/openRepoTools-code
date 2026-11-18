@@ -59,6 +59,7 @@ from pathlib import Path
 
 import pytest
 
+import sql_register_helpers as helpers
 from conftest import REPO, WINDOWS_SKIP
 
 pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
@@ -68,6 +69,8 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 LANES_EDIT = REPO / "lanes-edit.sh"
 LANES = REPO / "lanes"
 INDEXER = REPO / "lanes-index"
+#: T124's module, which the `lanes-index` launcher runs its body from, beside it.
+INDEXER_MODULE = REPO / "lanes_index_main.py"
 
 
 # ============================================================ the planted values, by name
@@ -370,6 +373,7 @@ class Estate:
         target = self.indexbin / "lanes-index"
         shutil.copy2(INDEXER, target)
         target.chmod(0o755)
+        shutil.copy2(INDEXER_MODULE, self.indexbin / INDEXER_MODULE.name)
         return target
 
     def path_with(self, *dirs: Path) -> str:
@@ -723,14 +727,22 @@ def load_indexer():
     return module
 
 
-def _replay(out: str, err: str) -> list:
+def _replay(out: str, err: str) -> tuple:
     """`_indexer`'s buffers, written back masked to the streams then current; the names of the
-    planted values they held (commit 19i)."""
+    planted values they held (commit 19i), and the type of an error a write raised, or None.
+    NOTHING HERE RAISES (lane 2's NIT N-1 of 19i, spec PR 80 comment 7020626010): this frame's
+    arguments are the raw buffers, and a strict stream, as `--capture=sys` makes one, refuses a
+    lone surrogate, so a write's error is said by its type alone, and `_indexer` fails on it
+    outside the except."""
     shown = sorted({name for name, value in _planted()
                     if value and not value.startswith("<") and (value in out or value in err)})
-    sys.stdout.write(_mask(out))
-    sys.stderr.write(_mask(err))
-    return shown
+    kind = None
+    for stream, text in ((sys.stdout, out), (sys.stderr, err)):
+        try:
+            stream.write(_mask(text))
+        except Exception as exc:  # noqa: BLE001 - this frame holds the buffers: its type alone is said
+            kind = kind or type(exc).__name__
+    return shown, kind
 
 
 def _unframed(exc: BaseException) -> BaseException:
@@ -761,7 +773,8 @@ def _indexer(call, *, expect=None, what="lanes-index, called in this process"):
     case's own checks. lanes-index writes to the two streams through `sys.stdout` and `sys.stderr`
     alone: each child it runs has its output captured, and it writes no descriptor 1 or 2 itself.
     The words carry the line and `what`, the code called (the re-audit's N1). The awaited
-    exception goes on as it came but for its frames (lane 2's NIT 2): see `_unframed`."""
+    exception goes on as it came but for its frames (lane 2's NIT 2): see `_unframed`. A write
+    the streams refuse fails in words of its own, its type alone (lane 2's NIT N-1): see `_replay`."""
     kind, hit, where = None, None, _where()
     out, err = io.StringIO(), io.StringIO()
     try:
@@ -773,9 +786,11 @@ def _indexer(call, *, expect=None, what="lanes-index, called in this process"):
         else:
             kind = type(exc).__name__
     finally:
-        shown = _replay(out.getvalue(), err.getvalue())
+        shown, refused = _replay(out.getvalue(), err.getvalue())
     if shown:
         _fail(f"{what}, {where}, wrote a planted value to its streams: {', '.join(shown)} (not shown)")
+    if refused is not None:
+        _fail(f"{what}, {where}, wrote what its streams refused: {refused}")
     if hit is not None:
         raise _unframed(hit)
     if kind is not None:
@@ -1162,7 +1177,7 @@ def test_the_owner_column_is_managed_projections_answer(estate):
     for lane in ("repoM-1", "repoM-2", "repoA-1"):
         if not (f'managed-projection {lane}' in asked):
             _fail("check failed: f'managed-projection {lane}' in asked\n" + repr(asked))
-    source = INDEXER.read_text(encoding="utf-8")
+    source = INDEXER.read_text(encoding="utf-8") + INDEXER_MODULE.read_text(encoding="utf-8")
     for vocabulary in ("mode=managed", "managed-owner", "bound-lane"):
         if not (vocabulary not in source):
             _fail('check failed: vocabulary not in source\n' + repr(f'lanes-index carries `{vocabulary}`: a parser of the marker of its own, which clause (e) forbids'))
@@ -1635,6 +1650,10 @@ NO_ECHO_REFUSALS = [
      "`register_rtt_ms=`"),
     ("R17-primary", f"mode=primary\nregister_label={CONFIG_SECRET}\n", 78,
      "is not available in this build"),
+    # R9 (contracts/config.md section 4): the same file once Q6(c)'s refusal is
+    # lifted, refused with 2 for its missing `register_url=` (lane 3's T328).
+    ("R9-primary", f"mode=primary\nregister_label={CONFIG_SECRET}\n", 2,
+     "it names no `register_url=`"),
     # Amendment 14 act 2's own refusals (opensoft/openRepoTools#160's, R4 and R6:
     # lanes-index:662, :665, :688 and :693 at 079a34d8), in their own follow-up,
     # which lane 3 ruled in (opensoft/openRepoTools#165 6932114864).
@@ -1652,16 +1671,34 @@ NO_ECHO_REFUSAL_ROWS = {row[0]: row[1:] for row in NO_ECHO_REFUSALS}
 if len(NO_ECHO_REFUSAL_ROWS) != len(NO_ECHO_REFUSALS):
     raise AssertionError(_duplicate_ids("NO_ECHO_REFUSALS", [row[0] for row in NO_ECHO_REFUSALS]))
 
+#: THE ROWS THAT NEED ONE STATE OF Q6(c)'S CONSTANT (FR-017, as the launcher's
+#: comment on `RENDER_GIT_HALF` has it): each runs a `flipped_copy` of the
+#: checkout's `lanes-index` with the constant as named here, never the
+#: checkout's own, so each holds on both sides of lane 3's T328. R17's refusal
+#: exists only while the constant is False, and R9's of the same file only
+#: once it is True. Every other row runs the checkout's `lanes-index`, whose
+#: answer to it does not turn on the constant.
+NO_ECHO_CONSTANT = {"R17-primary": False, "R9-primary": True}
+if not set(NO_ECHO_CONSTANT) <= set(NO_ECHO_REFUSAL_ROWS):
+    raise AssertionError(f"NO_ECHO_CONSTANT names ids that NO_ECHO_REFUSALS lacks: "
+                         f"{sorted(set(NO_ECHO_CONSTANT) - set(NO_ECHO_REFUSAL_ROWS))}")
+
 
 @pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in NO_ECHO_REFUSALS])
 def test_no_configuration_refusal_echoes_a_value(estate, ident):
     """NO REFUSAL ECHOES A VALUE (contracts/config.md section 4, :119): the
     fake secret, in a URL or alone, in each family's value, is refused by
     `lanes-index mode` with the family's code and words, nothing on stdout,
-    and the secret on neither stream, nor R14's negative number's digits."""
+    and the secret on neither stream, nor R14's negative number's digits.
+    A row in `NO_ECHO_CONSTANT` runs a copy with the constant it names."""
     text, code, words = NO_ECHO_REFUSAL_ROWS[ident]
     estate.write_config(text)
-    res = estate.index("mode")
+    if ident in NO_ECHO_CONSTANT:
+        state = NO_ECHO_CONSTANT[ident]
+        copy = helpers.flipped_copy(INDEXER, estate.root / f"indexer-{state}", state)
+        res = estate.run(sys.executable, copy, "mode", env={"LANES_EDIT": str(LANES_EDIT)})
+    else:
+        res = estate.index("mode")
     said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
             .replace(CONFIG_SECRET, "<the secret>")
             .replace(CONFIG_NUMBER.lstrip("-"), "<the number>"))
@@ -2462,6 +2499,21 @@ CLEAN_FORMS = ["register:opensoft/t104-other-repo",
                "ledger:Heron"]
 
 
+def _psql_line(exc) -> str:
+    """PSQL'S OWN LOCUS IN AN ERROR'S TEXT, ITS DIGITS ALONE (commit 19i; the re-audit's N1 of 19h),
+    READ SO THAT IT CANNOT RAISE (lane 2's NIT N-2 of 19i, spec PR 80 comment 7020626010): `_psql`
+    asks for it inside its except, so that the frame keeps only the type's name and this line
+    (lane 2's review, spec PR 80 comment 7025308059), and an error whose `__str__` raised there
+    would print `_psql`'s frame, whose `script` holds the planted SQL, so such an error gives no line."""
+    text = ""
+    try:
+        text = str(exc)
+    except Exception:  # noqa: BLE001 - its frames hold `_psql`'s: nothing of it is said
+        pass
+    found = re.search(r"psql:<stdin>:([0-9]+):", text)
+    return f" at its line {found.group(1)}" if found else ""
+
+
 def _psql(cluster, script: str) -> str:
     """`psql` ON THE TEST'S OWN SCRIPT, which holds a planted key, in `t109_db` (commit 19h; lane
     2's B1 of spec PR 80 comment 7009564106): `cluster.psql` runs it outside the module's masked
@@ -2472,10 +2524,7 @@ def _psql(cluster, script: str) -> str:
     try:
         return cluster.psql(script, dbname="t109_db").stdout
     except Exception as exc:  # noqa: BLE001 - its text and its frames hold the script or the output
-        kind = type(exc).__name__
-        # psql's own locus, its digits alone (commit 19i; the re-audit's N1 of 19h)
-        found = re.search(r"psql:<stdin>:([0-9]+):", str(exc))
-        line = f" at its line {found.group(1)}" if found else ""
+        kind, line = type(exc).__name__, _psql_line(exc)
     _fail(f"psql, run on the test's own SQL, raised {kind}{line}, {_where()}")
 
 
@@ -5313,7 +5362,7 @@ def test_the_inventory_owner_column_is_the_seams_answer(inv):
     assert ("repoA-2", "legacy", "SWAPPING") in owners
     rec = inv.e.edit("lane-reconcile", "repoM-1")
     assert "managed-owned" in rec.stdout
-    source = INDEXER.read_text(encoding="utf-8")
+    source = INDEXER.read_text(encoding="utf-8") + INDEXER_MODULE.read_text(encoding="utf-8")
     for vocabulary in ("mode=managed", "managed-owner", "bound-lane"):
         assert vocabulary not in source
 
