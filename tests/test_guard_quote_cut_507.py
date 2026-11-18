@@ -39,7 +39,9 @@ reach: the too-late refusal's words (SHOULD 5), run through
 `reg_guard_prefetch` as the file writes it, with a stand-in `lanes-index`
 that ends 2; and form C's tip read against a `git` that never answers
 (SHOULD 2), run in `lanes-index` loaded as a module, as the suite's other
-modules load it; and the post-bind
+modules load it; and E1's first cause line (SHOULD 3), run through
+`cmd_register_read` in that module, with its configuration, its
+declaration, its `T0` and its direct read stood in for; and the post-bind
 refill off primary (SHOULD 4), `guard_bind_refill` with the file's own
 `reg_prefetch` and `reg_read_files`, cut out and run twice in `bash`, as its
 two call sites run it, against a stand-in `lanes-index`.
@@ -436,6 +438,60 @@ def test_form_cs_tip_read_is_cut_at_the_mirror_paths_start_line(tmp_path, monkey
     for argv, timeout in given:
         assert isinstance(timeout, (int, float)) and not isinstance(timeout, bool) \
             and 0 < timeout <= 1.0, f"a tip read was given timeout={timeout!r}: {argv}"
+
+
+#: The guard's reader URL: a user and a query parameter, both kept out of the
+#: name the cause line gives (AT-P3); `load_config` refuses a password in it.
+E1_READER_URL = "postgresql://t507_reader@db.example:6543/register_db?connect_timeout=2"
+
+#: The name `register_guard_store_name` gives for it.
+E1_NAME = "database register_db at db.example:6543"
+
+
+def test_e1s_cause_line_names_the_database_from_reader_url(tmp_path, monkeypatch, capsys):
+    """E1 (register-cli.md :776; lane 3's ruling, #165 6807694145): under an
+    unexpired word's declaration, form 2's direct read stopped at the declared
+    cap once a request reached `psql` ends 69, starts form C, and its first
+    stderr line, the cause the guard quotes, names the database as
+    `reader_url=` gives it, through `register_guard_store_name`, with no user
+    and no query parameter (AT-P3; register-cli.md :767; lane 5's Claude
+    pre-review of P19, NIT 3, `7f226784`; lane 3's Codex review of chain 2,
+    SHOULD 3). `cmd_register_read` runs as `lanes-index` writes it, with its
+    configuration, the declaration, `T0`, the store, the service and the
+    direct read stood in for: the read raises `PsqlFailed` with its timer
+    expired after `psql` ran, as a silent database leaves it.
+
+    It fails on the E1 line that named no database."""
+    mod = _indexer()
+    cfg = {"mode": "primary", "reader_url": E1_READER_URL}
+    declared = {"kind": "word", "utc": "2026-11-17T00:00:00Z", "why": "test", "mirror-seq": "1"}
+    started = []
+
+    def cut_read(store, cfg, opts, served=None):
+        raise mod.PsqlFailed("unreachable", "the request was stopped at its timer",
+                             timer_expired=True, ran=True)
+
+    monkeypatch.setattr(mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(mod, "PostgresStore", lambda cfg, role: object())
+    monkeypatch.setattr(mod, "register_guard_t0", lambda pid: time.monotonic())
+    monkeypatch.setattr(mod, "register_guard_declared", lambda cfg: declared)
+    monkeypatch.setattr(mod, "register_read_ask", lambda cfg, opts: (None, False))
+    monkeypatch.setattr(mod, "_register_read_prefetch", cut_read)
+    monkeypatch.setattr(mod, "register_guard_outage",
+                        lambda opts, given: started.append(given))
+    code = mod.cmd_register_read(["--for", "guard", "--prefetch", "--cache",
+                                  str(tmp_path / "cache"), "--pid", "1", "--repo",
+                                  str(tmp_path), "--lane=lane-q"])
+    out, err = capsys.readouterr()
+    assert code == 69, (code, err)
+    assert out == "mode primary\n", out
+    lines = err.splitlines()
+    assert lines and lines[0] == (
+        f"lanes-index: register read: the register ({E1_NAME}) did not answer by the declared "
+        f"outage's cap, T0 + {mod.REGISTER_GUARD_DECLARED_CUT_S:g} s (the request was stopped "
+        f"at its timer), so the read failed (E1)"), err
+    assert "t507_reader" not in err and "connect_timeout" not in err, err
+    assert started == [declared], "form C did not start once after E1's line"
 
 
 #: A `lanes-index` for the refill: it logs its arguments, then answers as
