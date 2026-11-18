@@ -59,6 +59,7 @@ from pathlib import Path
 
 import pytest
 
+import sql_register_helpers as helpers
 from conftest import REPO, WINDOWS_SKIP
 
 pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
@@ -68,6 +69,8 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 LANES_EDIT = REPO / "lanes-edit.sh"
 LANES = REPO / "lanes"
 INDEXER = REPO / "lanes-index"
+#: T124's module, which the `lanes-index` launcher runs its body from, beside it.
+INDEXER_MODULE = REPO / "lanes_index_main.py"
 
 
 # ============================================================ the planted values, by name
@@ -370,6 +373,7 @@ class Estate:
         target = self.indexbin / "lanes-index"
         shutil.copy2(INDEXER, target)
         target.chmod(0o755)
+        shutil.copy2(INDEXER_MODULE, self.indexbin / INDEXER_MODULE.name)
         return target
 
     def path_with(self, *dirs: Path) -> str:
@@ -1162,7 +1166,7 @@ def test_the_owner_column_is_managed_projections_answer(estate):
     for lane in ("repoM-1", "repoM-2", "repoA-1"):
         if not (f'managed-projection {lane}' in asked):
             _fail("check failed: f'managed-projection {lane}' in asked\n" + repr(asked))
-    source = INDEXER.read_text(encoding="utf-8")
+    source = INDEXER.read_text(encoding="utf-8") + INDEXER_MODULE.read_text(encoding="utf-8")
     for vocabulary in ("mode=managed", "managed-owner", "bound-lane"):
         if not (vocabulary not in source):
             _fail('check failed: vocabulary not in source\n' + repr(f'lanes-index carries `{vocabulary}`: a parser of the marker of its own, which clause (e) forbids'))
@@ -1635,6 +1639,10 @@ NO_ECHO_REFUSALS = [
      "`register_rtt_ms=`"),
     ("R17-primary", f"mode=primary\nregister_label={CONFIG_SECRET}\n", 78,
      "is not available in this build"),
+    # R9 (contracts/config.md section 4): the same file once Q6(c)'s refusal is
+    # lifted, refused with 2 for its missing `register_url=` (lane 3's T328).
+    ("R9-primary", f"mode=primary\nregister_label={CONFIG_SECRET}\n", 2,
+     "it names no `register_url=`"),
     # Amendment 14 act 2's own refusals (opensoft/openRepoTools#160's, R4 and R6:
     # lanes-index:662, :665, :688 and :693 at 079a34d8), in their own follow-up,
     # which lane 3 ruled in (opensoft/openRepoTools#165 6932114864).
@@ -1652,16 +1660,34 @@ NO_ECHO_REFUSAL_ROWS = {row[0]: row[1:] for row in NO_ECHO_REFUSALS}
 if len(NO_ECHO_REFUSAL_ROWS) != len(NO_ECHO_REFUSALS):
     raise AssertionError(_duplicate_ids("NO_ECHO_REFUSALS", [row[0] for row in NO_ECHO_REFUSALS]))
 
+#: THE ROWS THAT NEED ONE STATE OF Q6(c)'S CONSTANT (FR-017, as the launcher's
+#: comment on `RENDER_GIT_HALF` has it): each runs a `flipped_copy` of the
+#: checkout's `lanes-index` with the constant as named here, never the
+#: checkout's own, so each holds on both sides of lane 3's T328. R17's refusal
+#: exists only while the constant is False, and R9's of the same file only
+#: once it is True. Every other row runs the checkout's `lanes-index`, whose
+#: answer to it does not turn on the constant.
+NO_ECHO_CONSTANT = {"R17-primary": False, "R9-primary": True}
+if not set(NO_ECHO_CONSTANT) <= set(NO_ECHO_REFUSAL_ROWS):
+    raise AssertionError(f"NO_ECHO_CONSTANT names ids that NO_ECHO_REFUSALS lacks: "
+                         f"{sorted(set(NO_ECHO_CONSTANT) - set(NO_ECHO_REFUSAL_ROWS))}")
+
 
 @pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in NO_ECHO_REFUSALS])
 def test_no_configuration_refusal_echoes_a_value(estate, ident):
     """NO REFUSAL ECHOES A VALUE (contracts/config.md section 4, :119): the
     fake secret, in a URL or alone, in each family's value, is refused by
     `lanes-index mode` with the family's code and words, nothing on stdout,
-    and the secret on neither stream, nor R14's negative number's digits."""
+    and the secret on neither stream, nor R14's negative number's digits.
+    A row in `NO_ECHO_CONSTANT` runs a copy with the constant it names."""
     text, code, words = NO_ECHO_REFUSAL_ROWS[ident]
     estate.write_config(text)
-    res = estate.index("mode")
+    if ident in NO_ECHO_CONSTANT:
+        state = NO_ECHO_CONSTANT[ident]
+        copy = helpers.flipped_copy(INDEXER, estate.root / f"indexer-{state}", state)
+        res = estate.run(sys.executable, copy, "mode", env={"LANES_EDIT": str(LANES_EDIT)})
+    else:
+        res = estate.index("mode")
     said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
             .replace(CONFIG_SECRET, "<the secret>")
             .replace(CONFIG_NUMBER.lstrip("-"), "<the number>"))
@@ -5313,7 +5339,7 @@ def test_the_inventory_owner_column_is_the_seams_answer(inv):
     assert ("repoA-2", "legacy", "SWAPPING") in owners
     rec = inv.e.edit("lane-reconcile", "repoM-1")
     assert "managed-owned" in rec.stdout
-    source = INDEXER.read_text(encoding="utf-8")
+    source = INDEXER.read_text(encoding="utf-8") + INDEXER_MODULE.read_text(encoding="utf-8")
     for vocabulary in ("mode=managed", "managed-owner", "bound-lane"):
         assert vocabulary not in source
 
