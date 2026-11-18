@@ -5,8 +5,8 @@ separate from the active P05/P06 projection and delivery policy. No workflow,
 live verifier or Mergify queue consumes this file. Merging this preparation
 alone cannot grant skipping, a green review receipt or queue admission.
 
-The source PRs are P07/code#97 and P09/code#103. Lane2 must finalize their
-fixes and exact histories; lane3 must publish fresh exact-head READY reviews.
+The source PRs are P07/code#97 and P09/code#103. The manifest records their
+owner-confirmed histories and fresh exact-head local Codex review references.
 Coordination starts at opensoft/openRepoTools#165 comment6927765450. Old public
 heads are observations only. A null source binding is pending, not a wildcard.
 P08/code#106 stays held, including `.github/workflows/release.yml`.
@@ -30,10 +30,11 @@ CX-37 cutcab8fcfd, with clean review6948304918 and remaining consent conditions.
 Owner handoff6956070097 supplies P09's final165-commit cut1d16c0cc; lane3 agrees
 it in6956738431 and the fresh local Codex review6958093018 is clean. The prior
 P09fb359e64 remains rejected; its review is not reused.
-Both source bindings,
-histories, review and consent references are therefore empty/null pending the
-remaining qualification gates. Observed hashes are diagnostic context only; they
-cannot generate a preview. The helper `tests/sql_register_cleanup.py` is an
+The disabled manifest binds these exact heads, complete ordered histories, and
+their own review and conditional owner-consent references. The first fresh
+fast runs on base `804a97be` passed: P07 44382695364 and P09 44388864691.
+P09's full preparation run 44380683647 also passed. These are preparation inputs,
+not fast-only canary evidence or admission. The helper `tests/sql_register_cleanup.py` is an
 exact added regular-file inventory entry, per P07 handoff6940832411 and lane3
 agreement6940947493. Its final T270 ownership record is now in normally merged
 spec80 at c245bc3726bfd80aea8ddbe4b8d167c64916e0c9; declaring this path does not
@@ -48,9 +49,8 @@ review/consent and validation are still required. Larger or different chains
 need explicit reviewed changes; never truncate history or restack a lane to
 fit. Live policy limits and all fallback behavior remain unchanged.
 
-This private update stages the exact40/165 bounds for validation and independent
-review, without binding either head or accepting its product code. The prior
-P09 ceiling24 no longer fits its completed chain. Any replacement count still needs
+This update retains the exact 40/165 bounds without accepting any other product
+head. The prior P09 ceiling of 24 no longer fits its completed chain. Any replacement count needs
 explicit boundary/prefix validation and independent review, never truncation.
 
 Historically, P07's exported CX-31 tip18529e5a had a complete16-commit chain whose

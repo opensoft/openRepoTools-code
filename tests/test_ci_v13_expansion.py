@@ -70,10 +70,13 @@ def test_ci_v13_expansion_real_manifest_is_disabled_and_separate(expansion, poli
     assert loaded["held_prs"] == [106]
     assert loaded["order"] == ["P07", "P09"]
     assert expansion.HISTORY_LIMITS == {"P07": 40, "P09": 165}
-    for profile in loaded["profiles"].values():
-        assert profile["source"]["head"] is None
-        assert profile["source"]["commits"] == []
-        assert profile["owner_consent"] is profile["review"] is None
+    references = {"P07": (6947653181, 6948304918), "P09": (6956070097, 6958093018)}
+    for name, profile in loaded["profiles"].items():
+        source = profile["source"]
+        assert source["head"] == profile["observed_head"] == source["commits"][-1]
+        assert len(source["commits"]) == expansion.HISTORY_LIMITS[name]
+        for key, comment in zip(("owner_consent", "review"), references[name]):
+            assert profile[key] == {"head": source["head"], "comment": comment}
     assert loaded["profiles"]["P07"]["files"]["tests/sql_register_cleanup.py"] == "A"
     assert loaded["profiles"]["P09"]["files"]["tests/conftest.py"] == "M"
     active = expansion.projection.read_policy(REPO, "HEAD")
@@ -84,17 +87,10 @@ def test_ci_v13_expansion_real_manifest_is_disabled_and_separate(expansion, poli
         assert "v13-prepared-cohort" not in text
 
 
-def test_ci_v13_expansion_real_observations_do_not_bind_owner_heads(expansion, policy):
-    result = expansion.inspect(REPO, policy["base"])
-    assert result["status"] == "pending-owner-heads"
-    assert result["reason"] == "unbound-source"
-    assert "previews" not in result
-    assert_full(result, expansion)
-
-
 def test_ci_v13_expansion_missing_heads_stay_pending(cohort, expansion):
     root, policy = cohort
     profile = policy["profiles"]["P07"]
+    assert profile["observed_head"] is not None
     profile["source"].update(head=None, commits=[])
     write(root, expansion.CONFIG, json.dumps(policy))
     result = expansion.inspect(root, policy["base"])
@@ -223,7 +219,7 @@ def test_ci_v13_expansion_manifest_refuses_unsafe_or_ambiguous_input(tmp_path, e
     elif fault == "wrong-status": profile["files"]["tests/test_sql_register_shape.py"] = "M"
     elif fault == "wrong-task": profile["tasks"].append("T999")
     elif fault == "unbound-lineage": profile["source"].update(head=None, commits=["a" * 40])
-    elif fault == "unbound-review": profile["review"] = {"head": "a" * 40, "comment": 1}
+    elif fault == "unbound-review": profile["source"].update(head=None, commits=[])
     elif fault == "wrong-scope": policy["scope"] = "sql-register-v13"
     elif fault == "bad-observed-head": profile["observed_head"] = "bad"
     elif fault == "boolean-comment": policy["owner_coordination"] = True
