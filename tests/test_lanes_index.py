@@ -239,9 +239,18 @@ class Estate:
                 child.pop(key, None)
             else:
                 child[key] = value
-        return subprocess.run([str(a) for a in argv], capture_output=True, text=True,
-                              env=child, timeout=timeout, cwd=str(self.root),
-                              input=input_text, stdin=None if input_text is not None else subprocess.DEVNULL)
+        try:
+            return subprocess.run([str(a) for a in argv], capture_output=True, text=True,
+                                  env=child, timeout=timeout, cwd=str(self.root),
+                                  input=input_text,
+                                  stdin=None if input_text is not None else subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            pass  # fails below, outside this block, so that no exception is chained to the failure
+        # A TIMEOUT FAILS IN WORDS OF ITS OWN, WITH THE TIMEOUT ALONE (lane 3's ruling on
+        # opensoft/openRepoTools-code#89 comment 6968262292): `TimeoutExpired`'s text prints the argv,
+        # which holds a planted value in 25 ids, so nothing of the argv, the streams or the exception
+        # is in the message; `pytrace=False` prints the message alone, whatever the --tb style
+        pytest.fail(f"a command timed out after {timeout} s", pytrace=False)
 
     def edit(self, *args, env: dict | None = None, **kw) -> subprocess.CompletedProcess:
         return self.run("bash", LANES_EDIT, *args, env=env, **kw)
@@ -1604,8 +1613,12 @@ def test_the_register_is_named_by_its_remote_and_no_url(estate, ident):
     subprocess.run(["git", "init", "-q", str(root)], check=True, env=estate.env,
                    capture_output=True)
     if origin is not None:
-        subprocess.run(["git", "-C", str(root), "remote", "add", "origin", origin],
-                       check=True, env=estate.env, capture_output=True)
+        # no `check=True`: a failed call would print its command, which holds the planted URL
+        # (lane 2's NIT 3 of opensoft/openRepoTools-code#89 comment 6962447821, IN by lane 3's
+        # 6962500079); it fails in fixed words, with the return code alone
+        added = subprocess.run(["git", "-C", str(root), "remote", "add", "origin", origin],
+                               env=estate.env, capture_output=True)
+        assert added.returncode == 0, f"git remote add exited {added.returncode}"
     agents = estate.root / "agents-credentialed"
     agents.mkdir()
     (agents / "workspace.yaml").write_text(
@@ -2288,6 +2301,8 @@ PSQL_QUOTES = [
      "the script"),
 ]
 PSQL_QUOTE_ROWS = {row[0]: row[1:] for row in PSQL_QUOTES}
+assert len(PSQL_QUOTE_ROWS) == len(PSQL_QUOTES), _duplicate_ids(
+    "PSQL_QUOTES", [row[0] for row in PSQL_QUOTES])
 
 
 @pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in PSQL_QUOTES])
@@ -2952,6 +2967,9 @@ LEGACY_INPUTS = [
      f"https://{REGISTER_HOST}/{REGISTER_PATH}/r\x85{CONFIG_SECRET}"),
     ("inventory-c1", "postgres", "inventory", f"Eagle\x9b{CONFIG_SECRET}"),
 ]
+LEGACY_INPUT_ROWS = {row[0]: row[1:] for row in LEGACY_INPUTS}
+assert len(LEGACY_INPUT_ROWS) == len(LEGACY_INPUTS), _duplicate_ids(
+    "LEGACY_INPUTS", [row[0] for row in LEGACY_INPUTS])
 
 
 @pytest.mark.parametrize("ident", [pytest.param(row[0], id=row[0]) for row in LEGACY_INPUTS])
@@ -2966,7 +2984,7 @@ def test_a_source_this_build_would_call_legacy_is_refused(estate, ident):
     FAKE psql), no call holds the secret or the key's digest; the writers make no psql
     call at all, and `status`'s reads name no key. The row is taken by its id, so no
     argument holds the secret (lane 2's SHOULD 1 of comment 6955285249)."""
-    store_kind, kind, value = {row[0]: row[1:] for row in LEGACY_INPUTS}[ident]
+    store_kind, kind, value = LEGACY_INPUT_ROWS[ident]
     mod = load_indexer()
     env: dict = {}
     if kind == "register":
