@@ -64,9 +64,12 @@ and section 4.3's rival, and T245's D8 and AT-F34 (phase W, the client's
 writers on a real register, through the shim), with T245's texts for 3, which
 read the scripts and run with no engine; and T246's AT-F3, a write in doubt at
 the deadline (phase W, with its direct calls in phase N); T247's AT-F10, a
-pending record against an unrelated identical command (phase W); and T251's
+pending record against an unrelated identical command (phase W); T251's
 AT-LR006 and AT-F33, two attempts of one write meeting at the commit (phase
-N, on these clones).
+N, on these clones); T423a's case, lane 4's follow-up to T423: a
+`request-handoff` wait on primary whose poll failed reads again (phase W);
+and T423b's, lane 2's case of T423's 69 end: such a wait whose every poll
+failed ends 69 and leaves the lane bound (phase W).
 
 PHASE W'S WORKSTATION IS T243's: `Estate`, its `estates` fixture, and the
 logging tools of T248 are imported from `test_sql_register_order`, as
@@ -82,6 +85,7 @@ import itertools
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -109,8 +113,14 @@ from test_sql_register_order import (ARROW, BURST, CLIENT, DOT, EM, LA, LB, LC, 
 #: record-less text. T247's rows also name T415, whose `pw_run` is the write
 #: path on primary that each of its tests takes, and T417 where an id
 #: asserts its 3, ahead of T247's Order (lane 4's GT-L4, #165 6879601079).
-#: No row is `"*"`, since the six tasks' waits share no task. Each
-#: `tasks:<n>` is tasks.md's line at `204145ae`, the reader's `SPEC_COMMIT`.
+#: T423a's row, lane 4's follow-up to T423 (lane 3, #165 6930389021), takes
+#: the tasks of T245's two `request-handoff` wait rows and T423, whose wait it
+#: runs; its `tasks:<n>` is T423's rule for a failed poll. T423b's row, lane
+#: 2's case of that rule's 69 end (lane 3, #165 6932565261), takes T423a's
+#: tasks and `tasks:<n>`, since it runs the same wait.
+#: No row is `"*"`, since the waits of six tasks, T423a and T423b share no
+#: task. Each `tasks:<n>` is tasks.md's line at `204145ae`, the reader's
+#: `SPEC_COMMIT`.
 SQL_REGISTER_GATE_TABLE = {
     "test_a_call_in_doubt_that_committed_runs_its_tail_once_from_the_kept_child": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_callers_rerun_after_a_failed_reconnect_reuses_the_write_id": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
@@ -136,6 +146,8 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_replay_of_request_handoff_types_into_no_pane": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_replay_that_stops_or_differs_runs_no_tail_and_warns": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_request_handoff_that_runs_none_of_its_tail_exits_2_and_writes_nothing": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
+    "test_a_request_handoff_wait_whose_every_poll_failed_ends_69_and_leaves_the_lane_bound": ("T412", "T417", "T418", "T423"),  # T423b; tasks:1294; lane 3, #165 6932565261
+    "test_a_request_handoff_wait_whose_poll_failed_reads_again_and_ends_on_a_release": ("T412", "T417", "T418", "T423"),  # T423a; tasks:1294; lane 3, #165 6930389021
     "test_a_rerun_after_a_3_replays_the_verbs_tail_once": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_rerun_that_finds_its_write_committed_runs_the_verbs_after_commit_tail": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_rerun_that_finds_tail_sent_runs_no_tail_and_writes_the_done_mark": ("T412", "T417", "T418"),  # T245; tasks:2363
@@ -1788,6 +1800,175 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
     assert pending(e) == []
 
 
+# ------------------------------------------------------------ T423a: a failed poll waits on and reads again
+#: T423a's `lanes-index`, in a directory of its own beside copies of the
+#: estate's `lanes-edit.sh`, `repos.tsv` and `lane-start`, so that the copy's
+#: `lanes_index_bin` finds it first, as the readers module's door does (T217).
+#: It logs each call, fails the first form-3 read of the waited lane's log as
+#: an unreachable store does (69, `mode primary` and a cause; CLI4.5 section
+#: 3.6), and runs the estate's own `lanes-index` for every other call. A
+#: writer's reads before `committed` take the scratch tree's files, since its
+#: `REG_STORE` is empty until then, so that read is the wait's first poll.
+T423A_INDEX = r'''#!/usr/bin/env python3
+# T423a's `lanes-index`: logs each call, fails the wait's first poll read,
+# and runs the estate's own `lanes-index` for every other call.
+import fcntl, json, os, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+REAL = REAL_INDEX
+args = sys.argv[1:]
+poll = (args[:2] == ["register", "read"] and "--since" in args and "--files" in args[:-1]
+        and args[args.index("--files") + 1] == "log:" + WAITED_LANE)
+with open(os.path.join(HERE, "index.log"), "a+", encoding="utf-8") as log:
+    fcntl.flock(log, fcntl.LOCK_EX)
+    log.seek(0)
+    failed = poll and not any(json.loads(line)["poll"] for line in log if line.strip())
+    log.write(json.dumps({"argv": args, "poll": poll, "failed": failed}) + "\n")
+if failed:
+    sys.stdout.write("mode primary\n")
+    sys.stderr.write("lanes-index: register read: refuse db could not connect to server "
+                     "(T423a: the test fails the wait's first poll)\n")
+    sys.exit(69)
+os.execv(REAL, [REAL] + args)
+'''
+
+
+def t423a_copy(e: Estate) -> Path:
+    """The copy of `lanes-edit.sh` that T423a's `lanes-index` serves (see
+    `T423A_INDEX`), in `t423a/` under the estate's root, which holds the
+    calls' log, `index.log`."""
+    door = e.root / "t423a"
+    door.mkdir()
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        shutil.copy2(str(e.bindir / name), str(door / name))
+    (door / "lanes-index").write_text(T423A_INDEX.replace("REAL_INDEX", repr(str(e.bindir / "lanes-index")))
+                                      .replace("WAITED_LANE", repr(LC)), encoding="utf-8")
+    (door / "lanes-index").chmod(0o755)
+    return door / "lanes-edit.sh"
+
+
+def t423a_calls(door: Path) -> List[dict]:
+    """`index.log`'s calls, in order: each one's argv, whether it was a
+    poll's read and whether it was failed. A last line with no newline yet is
+    left out, never half read."""
+    log = door / "index.log"
+    data = log.read_bytes() if log.exists() else b""
+    data = data[:data.rfind(b"\n") + 1]
+    return [json.loads(line) for line in data.decode("utf-8").splitlines() if line]
+
+
+@CLIENT
+def test_a_request_handoff_wait_whose_poll_failed_reads_again_and_ends_on_a_release(estates):
+    """T423a (lane 3, #165 6930389021): on primary, a `request-handoff`
+    wait whose first poll could not read the register waits on, and a
+    later poll reads again (T423's rule, tasks:1294), so a release written
+    after that failure ends the wait 0, lane FREE. The failed read leaves
+    `.rfail`, which `reg_flush` keeps (T505), and while it stands no read
+    site asks; the wait's pre-poll step removes it where the last poll
+    failed. T423a's `lanes-index` fails the first poll's read; once it has,
+    lane C's own session writes its `PAUSED`, as `[lane-start-reread]`'s
+    holder does (T252i). Run with `--wait 60` and `LANES_POLL_SECONDS=1`:
+    without the step no poll reads after the failure, and the wait ends 69
+    once its 60 s are out."""
+    e = estates()
+    where = loggers(e)
+    script = t423a_copy(e)
+    w = e.launch(LA, ["request-handoff", LC, "--session", session_of(LC), "--wait", "60"], first=[where],
+                 extra={"LANES_POLL_SECONDS": "1"}, script=script)
+    until_seen("the wait's first poll, failed", lambda: any(c["failed"] for c in t423a_calls(script.parent)), w)
+    held = e.run(LC, ["log", "PAUSED", f"lane:{LC}", "T423a: handed off on request"])
+    assert held.code == 0, f"lane {LC}'s PAUSED exited {held.code}: {held.err[-400:]}"
+    w.wait(180)
+    polls = [c for c in t423a_calls(script.parent) if c["poll"]]
+    assert polls[0]["failed"] and "the register could not be read on this poll" in w.err, (polls, w.err[-800:])
+    assert w.code == 0 and f"lane {LC} is FREE" in w.err, (
+        f"exit {w.code}, with {len(polls) - 1} poll read(s) after the failed one: a failed poll waits on and "
+        f"a later poll reads again (T423a): {w.err[-800:]}")
+
+
+# ------------------------------------------------------------ T423b: a wait whose every poll failed ends 69
+#: T423b's `lanes-index`, in T423a's door (`t423b_copy`) in place of T423a's.
+#: It logs each call as T423a's does, fails every form-3 read of the waited
+#: lane's log, which is each poll of the wait, as an unreachable store does
+#: (69, `mode primary` and a cause that names the poll's number), and runs the
+#: estate's own `lanes-index` for every other call.
+T423B_INDEX = r'''#!/usr/bin/env python3
+# T423b's `lanes-index`: logs each call, fails every poll read of the wait,
+# each naming its poll, and runs the estate's own `lanes-index` for every
+# other call.
+import fcntl, json, os, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+REAL = REAL_INDEX
+args = sys.argv[1:]
+poll = (args[:2] == ["register", "read"] and "--since" in args and "--files" in args[:-1]
+        and args[args.index("--files") + 1] == "log:" + WAITED_LANE)
+with open(os.path.join(HERE, "index.log"), "a+", encoding="utf-8") as log:
+    fcntl.flock(log, fcntl.LOCK_EX)
+    log.seek(0)
+    n = 1 + sum(json.loads(line)["poll"] for line in log if line.strip()) if poll else 0
+    log.write(json.dumps({"argv": args, "poll": poll, "failed": poll, "n": n}) + "\n")
+if poll:
+    sys.stdout.write("mode primary\n")
+    sys.stderr.write("lanes-index: register read: refuse db could not connect to server "
+                     "(T423b: the test fails poll %d of the wait)\n" % n)
+    sys.exit(69)
+os.execv(REAL, [REAL] + args)
+'''
+
+
+def t423b_copy(e: Estate) -> Path:
+    """T423a's door (`t423a_copy`), with T423b's `lanes-index` (see
+    `T423B_INDEX`) in place of T423a's; `t423a_calls` reads its log."""
+    script = t423a_copy(e)
+    (script.parent / "lanes-index").write_text(T423B_INDEX.replace("REAL_INDEX", repr(str(e.bindir / "lanes-index")))
+                                               .replace("WAITED_LANE", repr(LC)), encoding="utf-8")
+    return script
+
+
+@CLIENT
+def test_a_request_handoff_wait_whose_every_poll_failed_ends_69_and_leaves_the_lane_bound(estates):
+    """T423b (lane 3, #165 6932565261): on primary, a `request-handoff`
+    wait none of whose polls can read the register, the way an unreachable
+    store answers, ends 69 at its deadline (T423's rule, tasks:1294): its
+    last poll failed, so whether lane C is still bound is not known there.
+    Each poll is its own read, since T423a's step removes the flag the
+    poll before it left, and each failed one waits on. The end names its
+    request's register seq and binds nothing: the request is in the
+    register once, stdout is empty (tasks:727's 69), and lane C, read once
+    the register answers, is still bound to its own session. The last
+    poll's `.rfail` is kept, since the loop ends at its deadline before
+    the step, so `cleanup` notes that poll's failure after the refusal.
+    T423b's `lanes-index` fails every poll's read and names its number.
+    Run with `--wait 5` and `LANES_POLL_SECONDS=1`."""
+    e = estates()
+    where = loggers(e)
+    script = t423b_copy(e)
+    w = e.run(LA, ["request-handoff", LC, "--session", session_of(LC), "--wait", "5"], first=[where],
+              extra={"LANES_POLL_SECONDS": "1"}, script=script)
+    polls = [c for c in t423a_calls(script.parent) if c["poll"]]
+    assert w.code == 69 and "THE WAIT ENDED ON A POLL THAT COULD NOT READ THE REGISTER" in w.err, (
+        f"exit {w.code}, after {len(polls)} poll read(s), each failed: a wait whose last poll failed ends 69 on "
+        f"primary (T423, tasks:1294): {w.err[-800:]}")
+    assert len(polls) >= 2 and w.err.count("the register could not be read on this poll") == len(polls), (
+        f"{len(polls)} poll read(s) asked: each poll is its own read, and each failed one waits on (T423a): "
+        f"{w.err[-1600:]}")
+    assert ("the register could not be read at this wait's last poll" in w.err
+            and "NOTHING here has bound it" in w.err and w.out == ""), f"stdout {w.out!r}: {w.err[-800:]}"
+    one_entry(e, w)
+    seq = e.journal_after()[0]["seq"]
+    assert re.search(rf"(?m)^lanes-edit:   the request: .*, in the register at seq {seq}$", w.err), (
+        f"the 69 end does not name the request's seq {seq}: {w.err[-800:]}")
+    kept = w.err.rsplit("--wait 900", 1)[-1]
+    assert re.search(r"lanes-edit: the register could not be read: its second read, `lanes-index register read "
+                     rf"--since [0-9]+ --files log:{re.escape(LC)}`, exited 69 \(.*\(T423b: the test fails poll "
+                     rf"{len(polls)} of the wait\)\)", kept), (
+        f"cleanup did not note poll {len(polls)}'s failure after the refusal, so the last poll's .rfail was not "
+        f"kept: {kept!r}")
+    bound = e.run(LA, ["binding", LC])
+    assert bound.code == 0 and bound.out.rstrip("\n").split("\t")[4:5] == [session_of(LC)], (
+        f"lane {LC}, read once the register answers, exits {bound.code} with {bound.out!r}: a wait that ended 69 "
+        f"leaves it bound to its own session (T423, tasks:1294): {bound.err[-400:]}")
+
+
 # ------------------------------------------------------------ D8: the takeover, the call lines, the claims
 @CLIENT
 @pytest.mark.parametrize("when", ["before-the-send", "mid-call"])
@@ -2627,17 +2808,41 @@ def test_the_deadlines_lookup_waits_past_the_largest_not_after(estates):
     passes `<n>`, then waiting on the head row's lock (lane 1's v2.6,
     behaviour 1); its script calls `find_write` with the write id, `<n>`,
     and the generation, lane, verb and `args_sha256` the commit calls sent.
-    The session then rolls back, and the writer exits 75."""
+    The session then rolls back, and the writer exits 75. Where the client's
+    own wait ends with the database's clock already past `<n>`, as the code
+    reads today, `find_write` does not sleep, and the try is seen first
+    waiting on the lock, with the clock past `<n>` (T246h)."""
     e = estates()
     h = HalfOpen(e, hold_lookup=False)
-    slept = until_seen("the lookup in PgSleep", lambda: e.c.value(
-        "SELECT count(*) FROM pg_stat_activity WHERE query LIKE '%find_write%' "
-        "AND wait_event = 'PgSleep' AND pid <> pg_backend_pid();") != "0", h.w)
-    assert slept and not db_past(e, h.n)
-    until_seen("the lookup waiting on a Lock", lambda: e.c.value(
-        "SELECT count(*) FROM pg_stat_activity WHERE query LIKE '%find_write%' "
-        "AND wait_event_type = 'Lock' AND pid <> pg_backend_pid();") != "0", h.w)
-    assert db_past(e, h.n)
+    # THE CLIENT CAN WAKE PAST `<n>` (T246h; lane 4, #165 6892092571). `journal`
+    # calls once its estimate puts `<n>` at most 2 s ahead
+    # (`9990baf0:lanes-index:16211`). That estimate is the snapshot's clock,
+    # floored to the second (`:3443`), plus whole `SECONDS` since its call
+    # ended (`9990baf0:lanes-edit.sh:9974`), so it only lags the database.
+    # Where it lags by about 2 s, `find_write` has no wait left
+    # (`9990baf0:lanes-index:11167-11168`), and every try goes straight to the
+    # head row the replay holds: a case that waited for `PgSleep` alone saw
+    # none, and the writer exited 3 at the window's end (3 runs in 9 of P25's
+    # T417#1 call). So the replay is released once the try is seen in
+    # `PgSleep` or waiting on the lock, and a try seen on the lock first still
+    # shows the wait: the database's clock is already past `<n>`. The wait and
+    # the clock are read in ONE statement, so the clock is the sighting's own,
+    # not a later statement's, after which a short `PgSleep` may have ended.
+    def seen(*waits: str) -> Optional[Tuple[str, float]]:
+        said = e.c.value(
+            "SELECT CASE WHEN wait_event = 'PgSleep' THEN 'PgSleep' ELSE wait_event_type END, "
+            f"extract(epoch FROM clock_timestamp() - '{h.n}'::timestamptz) FROM pg_stat_activity "
+            "WHERE query LIKE '%find_write%' AND (wait_event = 'PgSleep' OR wait_event_type = 'Lock') "
+            "AND pid <> pg_backend_pid() LIMIT 1;")
+        wait, _, past = said.partition("|")
+        return (wait, float(past)) if wait in waits else None
+
+    first, past = until_seen("the lookup in PgSleep or waiting on a Lock", lambda: seen("PgSleep", "Lock"), h.w)
+    print(f"[T246 wait] first seen {first}, the database's clock {past:+.3f} s past <n>")
+    if first == "PgSleep":
+        assert past < 0, f"the lookup was seen in PgSleep {past:.3f} s past <n>"
+        _, past = until_seen("the lookup waiting on a Lock", lambda: seen("Lock"), h.w)
+    assert past >= 0, f"the lookup was seen waiting on a Lock {-past:.3f} s before <n>"
     script = lookups(h.w)[0]["stdin"]
     entry = json.loads(ENTRY_IN_SCRIPT.search(h.w.commit_calls()[0]["stdin"]).group(1).replace("''", "'"))
     for value in (h.write_id, entry["journal"]["lane"], entry["journal"]["verb"],
