@@ -283,10 +283,21 @@ TOO_LATE_STUB = ("#!/bin/sh\nprintf 'mode primary\\n'\n"
                  "printf 'lanes-index: too late to verify\\n' >&2\nexit 2\n")
 
 
+#: T124's module, beside `lanes-index`, which runs its body from it (FR-064):
+#: from T124 on, the figures `lanes-index` runs with are written there.
+INDEX_MODULE = "lanes_index_main.py"
+
+
 def _figure(name: str, pattern: str) -> str:
-    """One figure as the file `name` writes it, on a line of its own."""
-    match = re.search(pattern, (REPO / name).read_text(encoding="utf-8"), re.M)
-    assert match, f"{pattern!r} is no longer in {name}"
+    """One figure as the file `name` writes it, on a line of its own. For
+    `lanes-index`, the text read is the launcher's and, where T124's module is
+    beside it, the module's too, so the figure is found before T124 and after."""
+    names = [name]
+    if name == "lanes-index" and (REPO / INDEX_MODULE).is_file():
+        names.append(INDEX_MODULE)
+    text = "\n".join((REPO / each).read_text(encoding="utf-8") for each in names)
+    match = re.search(pattern, text, re.M)
+    assert match, f"{pattern!r} is no longer in {' or '.join(names)}"
     return match.group(1)
 
 
