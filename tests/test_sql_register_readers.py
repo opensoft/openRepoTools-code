@@ -13,7 +13,11 @@ WHAT IT HOLDS, by its five sources:
     line; the `none` arms; the read door's classification, a hygiene test;
     the callers that act on a listing; one failed call anywhere in a caller's
     read sequence; `lane-start`'s seven read arms at 75 and 3, and at 69; the
-    other callers' arms (lane 4's table, "The callers' default arms (Q9)");
+    other callers' arms (lane 4's table, "The callers' default arms (Q9)"),
+    with 69-11's two arms, a failed `register-text` read of the lane's row in
+    `lane-start` (T402) and in `lane-end` (T403), each refused with the
+    verb's code and never read as an empty register (lane 3's ruling D11
+    item 3, spec PR 80 6967228819; T217zzc);
     the writer's printed rerun relayed on a 3; an expectation's 2 at
     `lane-start`'s last write, under a seq base, with its twin under an
     `@files` base, a note, a stamp and a launch (ERR-56; lane 3, #165
@@ -93,7 +97,12 @@ moved-head notes id for T505 round 2b's B.
 Every case on `RealRegister` (lane 1's three and `managed-projection`'s RE
 case) also fails until lane 2's T227 (`tmpl` built by the bootstrap) and
 T228 (the `lanes_w_fx` and `lanes_r_fx` logins), each by the fixture's own
-assertion (T217h).
+assertion (T217h). T217zzc's three 69-11 ids (`lane-start-1591-69`,
+`lane-end-1744-69` and `lane-end-1744-2`) wait for lane 4's T401 with T402
+(`lane-start`) or T403 (`lane-end`) alone, by id rows (lane 4, spec PR 80
+6968533942; lane 3, 6968549834), where the function's row would hold them for
+T404 to T408, T504 to T506 and T508 too, so each runs once its two tasks have
+landed.
 """
 
 from __future__ import annotations
@@ -131,7 +140,12 @@ pytestmark = [pytest.mark.skipif(shutil.which("bash") is None or shutil.which("g
 #: (AN11a's and AN13a's), and for T504, T505, T506 and T509 where it has
 #: none. T504 to T506 are in the Order's own list too (L5-A5), so those rows
 #: drop T509 where they do not name it, and add T502 to the listing callers'
-#: two ids and T507 to the reader table's `[guard]`.
+#: two ids and T507 to the reader table's `[guard]`. T217zzc's three ids of
+#: the other callers' arms' test, lane 2's cases of 69-11 (lane 3, spec PR 80
+#: 6968549834), take id rows of their own, T401 with T402 (`lane-start-1591-69`)
+#: or T403 (`lane-end-1744-69` and `lane-end-1744-2`) alone, since each runs the
+#: one arm that task built, and the function's row would hold them for T404 to
+#: T408, T504 to T506 and T508 too (lane 4, 6968533942).
 SQL_REGISTER_GATE_TABLE = {
     "test_69_refuses_at_canon_lane_and_session_lane_and_stays_a_note_at_the_other_four_arms": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
     "test_75_and_3_refuse_the_launch_at_each_lane_start_arm": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
@@ -189,6 +203,8 @@ SQL_REGISTER_GATE_TABLE = {
     "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-1144-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T432", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
     "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-1144-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T432", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
     "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-1144-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T432", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-1744-2]": ("T401", "T403"),  # T217zzc; tasks:885; lane 3, spec PR 80 6968549834
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-1744-69]": ("T401", "T403"),  # T217zzc; tasks:885; lane 3, spec PR 80 6968549834
     "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-2490-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T430", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
     "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-2490-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T430", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
     "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-2490-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T430", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
@@ -198,6 +214,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-rename-241-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T433", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
     "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-rename-241-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T433", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
     "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-rename-241-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T433", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-start-1591-69]": ("T401", "T402"),  # T217zzc; tasks:871; lane 3, spec PR 80 6968549834
     "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-start-2511-2512-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
     "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-start-2511-2512-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
     "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-start-2511-2512-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
@@ -1146,12 +1163,27 @@ LANE_START_ARMS = {
 LANE_START_69 = {"1154": "refuse", "2184-2186": "refuse", "1262": "note", "1271": "note",
                  "3079": "note", "3430": "note"}
 
+#: The verb's words where the lane's row read fails (`unread`, T217zzc), by the
+#: code it exits, so a case can hold the arm's "(its words are above)". At 69,
+#: one line in the form of `lanes-edit.sh`'s own die for `register-text`, "<path>
+#: could not be read at <source>". At 2, the die of an old `lanes-edit.sh` that
+#: has no `register-text`, "unknown subcommand 'register-text' (<its verbs>)",
+#: with its list of verbs cut after two.
+UNREAD_STDERR = {
+    69: ("lanes-edit: lanes/LANES.md could not be read at the arms' register "
+         "(T217zzc: the test fails this read)"),
+    2: "lanes-edit: unknown subcommand 'register-text' (verify-row|set-row-state|...)",
+}
+
 #: THE OTHER CALLERS' ARMS (lane 4's table), each id `<script>-<lines at
 #: 2a057a6d>`, its codes, and what it must do: `refuse` (the verb's code,
 #: nothing written), `code` (exit with the verb's code, never 1), `mirror`
 #: (a `69)` arm that re-reads from the mirror and prints the `read: mirror`
 #: line), `rename` (new text for the code), `lread` (the restart skill's
-#: refusal, exit 1, for every code).
+#: refusal, exit 1, for every code), `unread` (a failed `register-text` read
+#: of the lane's row: the verb's code, its words kept, nothing written to the
+#: register or its logs, at `lane-start` nothing launched or renamed, and never
+#: the answer of an empty register).
 OTHER_ARMS = {
     "lane-end-930-938": (Arm("lane-end", ("repoA-2",), "canon-lane", "937"), (69, 75, 3), "refuse"),
     "lane-end-2490": (Arm("lane-end", ("repoA-2",), "log", "2543", match="ENDED*"),
@@ -1180,6 +1212,10 @@ OTHER_ARMS = {
     # driven, and no 69, 75 or 3 is stubbed (the arm at `:1555`, by its text).
     "lane-start-1555": (Arm("lane-start", ("repoA", "1"), "managed-projection", "1608",
                             world="primary", env={"ARM_REAL_FAIL": "1"}), (1,), "unknown"),
+    # 69-11 (T217zzc; lane 3, spec PR 80 6968261166 and 6968549834; lane 4, 6968439628): the
+    # lane's row read, T402's `ls_register_load`, through `register-text` (base `:1644`).
+    "lane-start-1591": (Arm("lane-start", ("repoA", "1"), "register-text", "1644",
+                            match="lanes/LANES.md"), (69,), "unread"),
     "lane-start-1641-1643": (Arm("lane-start", ("repoZ", "1"), "register-row", "1694",
                                  match="repoZ-1"), (75, 3, 69), "code"),
     "lane-start-1661-1663": (Arm("lane-start", ("repoA", "1"), "register-row", "1714",
@@ -1200,6 +1236,12 @@ OTHER_ARMS = {
     # call fails follows the erratum, so `lane-end:955` drives the real 1 too.
     "lane-end-955": (Arm("lane-end", ("repoA-2",), "managed-projection", "1008",
                          world="primary", env={"ARM_REAL_FAIL": "1"}), (1,), "unknown"),
+    # 69-11 at `lane-end` (T217zzc), T403's `le_register_load` (base `:1797`). Its 2, an old
+    # `lanes-edit.sh` with no `register-text` (its "unknown subcommand" die is the stub's
+    # words), is also the no-row exit (`lane-end`'s "has no row for lane"), so only the arm's
+    # words tell the two apart (lane 4, 6968439628).
+    "lane-end-1744": (Arm("lane-end", ("repoA-2",), "register-text", "1797",
+                          match="lanes/LANES.md"), (69, 2), "unread"),
     "lane-end-1806": (Arm("lane-end", ("repoA-2",), "lane-objects", "1859"), (75, 3, 69), "code"),
     "lane-end-1984": (Arm("lane-end", ("repoN-1",), "register-row", "2037"), (75, 3, 69), "code"),
     "lane-416": (Arm("lane", ("repoA-2",), "lanes", "416"), (75, 3, 69), "code"),
@@ -1258,6 +1300,16 @@ def launched(world: ArmWorld) -> bool:
     ran."""
     codex = world.codex_log.read_text(encoding="utf-8") if world.codex_log.exists() else ""
     return bool(world.claude_runs().strip() or codex.strip())
+
+
+def local_register_bytes(world: ArmWorld) -> dict:
+    """The register as this checkout's working tree holds it: `$LANES_FILE`
+    and every log beside it, which `register_bytes` (origin's) never sees
+    where a write was made and not pushed (lane 4, spec PR 80 6968439628)."""
+    register = Path(world.env["LANES_FILE"])
+    lanes = register.parent
+    return {path.relative_to(lanes).as_posix(): path.read_bytes()
+            for path in [register, *sorted((lanes / "log").glob("*.md"))]}
 
 
 def names_the_code(stderr: str, code: int) -> bool:
@@ -1330,11 +1382,28 @@ def test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives(
     writes no stamp and prints no resume command; and where only
     `managed-projection`'s call fails (`lane-start:1555`, `lane-end:955`), its
     real failed read, projection-class, gives 1, and the caller refuses 1,
-    UNKNOWN, never 69 (lane 3's ruling, #165 6754439281, item 6)."""
+    UNKNOWN, never 69 (lane 3's ruling, #165 6754439281, item 6); and where
+    the lane's row read, `register-text lanes/LANES.md`, fails at
+    `lane-start:1591` or `lane-end:1744` (T402, T403; 69-11, T217zzc), the
+    caller exits the verb's code, 69, or at `lane-end` an old
+    `lanes-edit.sh`'s 2, with the verb's words above its own; writes nothing
+    to the register or its logs, at origin or in this checkout; `lane-start`
+    launches and renames nothing; and the failed read is never taken for an
+    empty register (the delta's spec.md:60). The module's sandbox sets
+    `LANES_REPO` and `LANES_FILE`, so `lane-start`'s `LS_ROWS_FROM` is
+    `file` and the `lane-start` case reaches T402's arm, `ls_register_load`.
+    Where T428 has landed (P25; so at `df349fb5`), in routed ref mode T428's
+    read of `origin/<branch>` refuses first, with the same code and the same
+    words, and is not this case's: the arm's refusal quotes `LANES_FILE=` and
+    this checkout's register, where T428's quotes `<origin/<branch>'s copy>`,
+    so the case holds that the failed call is the arm's own (lane 4, spec PR
+    80 6968439628)."""
     arm, _codes, kind = OTHER_ARMS[arm_id]
     world = arm_world(tmp_path, arm)
     before = world.register_bytes()
-    result = run_arm(world, arm, code)
+    local_before = local_register_bytes(world) if kind == "unread" else {}
+    words = UNREAD_STDERR[code] if kind == "unread" else ""
+    result = run_arm(world, arm, code, stderr=words)
     if kind == "refuse":
         assert result.returncode == code, (arm_id, code, result.returncode, result.stderr[-3000:])
         assert world.register_bytes() == before, (arm_id, code, "a refusal that wrote")
@@ -1363,6 +1432,43 @@ def test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives(
         assert world.register_bytes() == before, (arm_id, "a refusal that wrote")
         if arm.script == "lane-start":
             assert not launched(world), (arm_id, "the agent ran")
+    elif kind == "unread":
+        # 69-11 (T217zzc): T402's "A non-zero answer refuses with that code; it is never an
+        # empty register" (tasks:871; T403's :885 gives the first clause), and the delta's
+        # spec.md:60, "a register read that fails ends 69, writing nothing".
+        # The failed call is the arm's own read of this checkout's register: its refusal
+        # quotes `LANES_FILE=` and this checkout's `$LANES_FILE`, where T428's routed read
+        # quotes `<origin/<branch>'s copy>`. The wrapper's log holds `$*` alone, the same line
+        # for either read, so these words are what name the call that failed.
+        refusal = re.search(
+            rf"the register could not be read: `LANES_FILE={re.escape(world.env['LANES_FILE'])} "
+            rf"[^`]*register-text lanes/LANES\.md` exited ([0-9]+)", result.stderr)
+        assert refusal, (arm_id, code, "the failed call is not T402's or T403's own read of "
+                         "this checkout's register", result.returncode, result.stderr[-3000:])
+        assert result.returncode == code, (arm_id, code, "a failed read of the lane's row exits "
+                                           "the verb's code", result.returncode,
+                                           result.stderr[-3000:])
+        assert refusal.group(1) == str(code), (arm_id, code, "the arm's own sentence does not "
+                                               "say the verb exited the code", refusal.group(0))
+        assert "That is NOT an empty register" in result.stderr, (
+            arm_id, code, "not the arm's own refusal", result.stderr[-3000:])
+        assert 0 <= result.stderr.find(words) < refusal.start(), (
+            arm_id, code, "the verb's words are not kept above the arm's", result.stderr[-3000:])
+        # The 75-and-3 test's "nothing ... written": the arm's own sentence says it.
+        assert re.search(r"(?i)\bnothing (was|has been|is)\b[^.\n]*\bwritten\b|\bwrote nothing\b|\bhas written no\b",
+                         result.stderr), (arm_id, code, "no word that nothing was written",
+                                          result.stderr[-2000:])
+        assert world.register_bytes() == before, (arm_id, code, "a failed read that wrote")
+        assert local_register_bytes(world) == local_before, (
+            arm_id, code, "a failed read that wrote this checkout's register")
+        assert "has no row for lane" not in result.stderr, (
+            arm_id, code, "a failed read taken for a register with no row", result.stderr[-3000:])
+        assert "refusing to add a second row" not in result.stderr, (
+            arm_id, code, "a failed read taken for an empty register", result.stderr[-3000:])
+        if arm.script == "lane-start":
+            assert not launched(world), (arm_id, code, "the agent ran")
+            assert "rename-window" not in world.tmux_log.read_text(encoding="utf-8"), (
+                arm_id, code, "the window was renamed")
     elif kind == "rename":
         assert result.returncode == code, (arm_id, code, result.returncode, result.stderr[-2000:])
         assert not re.search(r"a 3 mean", result.stderr), (arm_id, code, "the old note",
