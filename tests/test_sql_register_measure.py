@@ -2329,9 +2329,12 @@ def test_each_shape_on_a_delayed_relay_is_recorded(pg_engine, request, shape, rt
 
 # ============================================================ T254: M9 (phase W)
 
-#: `bound_s` at `c` = 2 with one address, as `guard-bind` computes it from
-#: the configuration (section 5.1's M9 rule; lane 4's "The record, and its
-#: liveness test"), and the variable tests set it by.
+#: The value the tests set through `LANES_BIND_BOUND_S` as the bind's bound,
+#: in seconds, for a run at `c` = 2 with one address (section 5.1's M9 rule;
+#: lane 4's "The record, and its liveness test"). The product takes the
+#: override in place of the sum it would compute. It is the override's value
+#: only, not the bound `guard-bind` computes, and nothing asserts it, which
+#: holds at any sum.
 BOUND_S = 500
 #: The session that answers 2 and binds, and the lane it leaves.
 SID_BIND = "bbbbbbbb-0009-4000-8000-00000000b009"
@@ -2395,7 +2398,9 @@ def test_the_bind_and_the_guards_set_row_state_are_timed_in_both_modes(pg_engine
     """M9 (section 5.1; AT-F6): answer 2's bind and the guard's
     `set-row-state` on the lane it leaves, exec to exit, cold once and 20
     warm, each run on a fresh estate with a local bare origin; recorded
-    beside `bound_s` (500 s at `c` = 2), never asserted (ruling 16: the
+    beside `bound_s`, which is `BOUND_S` (500 s), the value the test sets
+    through `LANES_BIND_BOUND_S` at `c` = 2 and not the bound `guard-bind`
+    computes, never asserted (ruling 16: the
     detached form applies, so M9 decides nothing). One case per mode, as
     TP:6346 gives them and F12b's T254 text owes them (R-F11-2): `[files]`
     and `[primary]`. Each id records its own two figures, the bind's and

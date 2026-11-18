@@ -741,7 +741,7 @@ MEASURE_DEADLINE_S, D7_PER_P95 = 120, 10
 UUID_RE = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 SEQ_SAID = re.compile(r"register seq ([0-9]+)")
 #: A WRITE THAT RAN IN FILES MODE (T243x): `lanes-edit.sh`'s one warning where
-#: its mode question failed, `lanes-index mode` under its own 2 s timer
+#: its mode question failed, `lanes-index mode` under its own 5 s timer
 #: (`reg_mode_query`, `R-merge158:lanes-edit.sh:6360`, then `reg_mode_files`),
 #: with the failure in group 1. These estates hold no `lanes/STORE` on origin,
 #: so T419's marker check lets that write through to git: it exits 0, and the
@@ -1453,7 +1453,7 @@ def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None,
            files_mode=fell, codes={w.lane: w.code for w in writers})
     assert not fell, (
         f"{len(fell)} burst writer(s) never reached the register: `lanes-index mode`, asked under "
-        f"lanes-edit.sh's 2 s timer (`reg_mode_query`), failed, so each wrote its claim in files mode, to "
+        f"lanes-edit.sh's 5 s timer (`reg_mode_query`), failed, so each wrote its claim in files mode, to "
         f"git, and nothing to the journal; this estate holds no lanes/STORE on origin to refuse it: {fell}. "
         f"Their stderr: {[(w.lane, w.code, w.err[-400:]) for w in writers if w.lane in fell]}")
     return writers, drain
