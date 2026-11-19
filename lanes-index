@@ -7323,5 +7323,26 @@ def main(argv: list[str]) -> int:
     return 64
 
 
+# W204 MUTANT m9t (P10 19h's proof, calls m9s and m9p; not for landing): run as a program, the child's DDL also
+# makes a trigger on every table that keys on a source, refusing a row whose source holds a URL's userinfo.
+if __name__ == "__main__":
+    _m9t_ddl = ddl
+
+    def ddl(dialect: str, schema: str) -> list[str]:
+        stmts = _m9t_ddl(dialect, schema)
+        tables = ["provenance", *TABLE_COLUMNS]
+        if dialect == "postgres":
+            refuse = f'"{schema}".m9p_refuse'
+            stmts.append(f"CREATE OR REPLACE FUNCTION {refuse}() RETURNS trigger LANGUAGE plpgsql AS $m9p$ "
+                         f"BEGIN IF NEW.source LIKE '%://%:%@%' THEN RAISE EXCEPTION 'm9p: %', NEW.source; "
+                         f"END IF; RETURN NEW; END $m9p$")
+            stmts += [f'CREATE OR REPLACE TRIGGER m9p_refuse BEFORE INSERT OR UPDATE ON "{schema}".{t} '
+                      f"FOR EACH ROW EXECUTE FUNCTION {refuse}()" for t in tables]
+        else:
+            stmts += [f"CREATE TRIGGER IF NOT EXISTS m9s_{event.lower()}_{t} BEFORE {event} ON {t} "
+                      f"WHEN NEW.source GLOB '*://*:*@*' BEGIN SELECT RAISE(ABORT, 'm9s'); END"
+                      for t in tables for event in ("INSERT", "UPDATE")]
+        return stmts
+
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
