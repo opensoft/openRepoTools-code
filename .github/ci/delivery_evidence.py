@@ -14,10 +14,12 @@ import json
 import re
 import subprocess
 import tempfile
+from urllib.parse import urlencode
 import zipfile
 
 import shadow_scope as policy
 import delivery_v13 as v13
+import delivery_p07_p09 as exact_pair
 from delivery_verify import PendingEvidence, require
 
 REPOSITORY = policy.REPOSITORY
@@ -38,6 +40,9 @@ CANDIDATE_JOBS = {"probe", "candidate / Verify queue candidate",
     "candidate / full-ci / " + name for name in FULL_JOBS}
 ARCHIVE_LIMIT = 262144
 JSON_LIMIT = 32768
+SOURCE_OMITTED = {"guard-launch-mode", "package", "tests", "tests-no-submodule",
+                  "tests-shard", "tests-no-submodule-shard"}
+SOURCE_ROUTED = {"delivery-route", "openrepotools-delivery"}
 
 
 def positive(value):
@@ -105,23 +110,38 @@ def record_valid(record, run, phase):
     fields = {"verified", "full_ci_required", "base", "candidate", "tree", "members"}
     scoped = "scope" in proof
     require(set(proof) == fields | ({"scope"} if scoped else set())
-            and (not scoped or proof["scope"] == v13.SCOPE)
+            and (not scoped or proof["scope"] in {v13.SCOPE, exact_pair.SCOPE})
             and proof["verified"] is True and proof["full_ci_required"] is True
             and proof["candidate"] == run["head_sha"], "Receipt proof differs")
     for key in ("base", "candidate", "tree"):
         policy.sha(proof[key])
     members = proof["members"]
     require(isinstance(members, list) and 1 <= len(members) <= 2, "Invalid member inventory")
+    exact = proof.get("scope") == exact_pair.SCOPE
     for row in members:
-        require(set(row) == {"number", "head", "prefix", "tree", "delivery"}
+        require(set(row) == {"number", "head", "prefix", "tree", "delivery"} | ({"source_ci"} if exact else set())
                 and type(row["delivery"]) is bool, "Invalid member schema")
         positive(row["number"])
         for key in ("head", "prefix", "tree"):
             policy.sha(row[key])
+        if exact:
+            source = row["source_ci"]
+            identifiers = {"reopen_event_id", "fast_run_id", "delivery_run_id", "review_comment_id"}
+            require(set(source) == identifiers | {"tree", "route_proof"}, "Invalid source receipt schema")
+            for key in identifiers:
+                positive(source[key])
+            policy.sha(source["tree"])
+            require(re.fullmatch(r"[0-9a-f]{64}", source["route_proof"]) is not None,
+                    "Invalid source route proof")
     require(len({row["number"] for row in members}) == len(members)
             and len({row["head"] for row in members}) == len(members)
             and members[-1]["prefix"] == proof["candidate"]
             and members[-1]["tree"] == proof["tree"], "Ambiguous final member")
+    if exact:
+        require(tuple((row["number"], row["head"]) for row in members) == exact_pair.PAIR
+                and all(row["delivery"] is True for row in members), "Exact-pair receipt differs")
+        for key in ("reopen_event_id", "fast_run_id", "delivery_run_id", "review_comment_id"):
+            require(len({row["source_ci"][key] for row in members}) == 2, "Reused exact-pair source receipt")
     return record
 
 
@@ -165,6 +185,83 @@ def download(artifact_id):
         require(output.tell() <= ARCHIVE_LIMIT, "Oversized artifact archive")
         output.seek(0)
         return output.read(ARCHIVE_LIMIT + 1)
+
+
+def job_log(job_id):
+    positive(job_id)
+    with tempfile.TemporaryFile() as output:
+        subprocess.run(["gh", "api", "--hostname", "github.com",
+                        f"repos/{REPOSITORY}/actions/jobs/{job_id}/logs"],
+                       check=True, stdout=output, stderr=subprocess.PIPE, timeout=15)
+        require(output.tell() <= 2 * 1024 * 1024, "Oversized source evidence log")
+        output.seek(0)
+        return output.read().decode()
+
+
+def exact_fast_tree(root, base, head, receipt):
+    """Prove what the successful identity step checked, not its mutable association."""
+    _check, run, job, _history = receipt
+    require(run["run_attempt"] == 1, "Exact-pair source fast was retried")
+    lines = re.findall(r'^\S+ (\{"base": "[0-9a-f]{40}", "full_ci_required": true, '
+                       r'"head": "[0-9a-f]{40}", "tested": "[0-9a-f]{40}"\})\s*$',
+                       job_log(job["id"]), re.MULTILINE)
+    require(len(lines) == 1, "Expected one exact source fast checkout proof")
+    proof = read_json(lines[0])
+    require(proof["base"] == base and proof["head"] == head, "Fast proof did not test current base")
+    tested = ensure_commit(root, proof["tested"])
+    require(policy.git(root, "show", "-s", "--format=%P", tested).decode().split() == [base, head],
+            "Exact-pair fast checkout parents differ")
+    tree = policy.sha(policy.git(root, "rev-parse", tested + "^{tree}").decode().strip())
+    require(tree == policy.git(root, "merge-tree", "--write-tree", base, head).decode().strip(),
+            "Exact-pair fast checkout tree differs")
+    return tree
+
+
+def exact_source_ci(root, base, pr, fast_receipt, request):
+    """Candidate admission requires that the current source actually ran fast-only."""
+    head = pr["head"]["sha"]
+    tree = exact_fast_tree(root, base, head, fast_receipt)
+    fast = fast_receipt[1]
+    events = pages(request, f"issues/{pr['number']}/events", None)
+    states = [item for item in events if item["event"] in {"closed", "reopened"}]
+    require(bool(states) and len({positive(item["id"]) for item in states}) == len(states),
+            "Missing or ambiguous exact-pair event history")
+    newest = max(states, key=lambda row: (datetime.strptime(row["created_at"], TIMESTAMP), row["id"]))
+    reopened = datetime.strptime(newest["created_at"], TIMESTAMP)
+    require(newest["event"] == "reopened" and
+            0 <= (datetime.strptime(fast["created_at"], TIMESTAMP) - reopened).total_seconds() <= 120,
+            "Fast proof is not this source's newest reopen")
+    query = urlencode({"head_sha": head, "event": "pull_request", "created": ">=" + newest["created_at"]})
+    rows = pages(request, "actions/workflows/tests.yml/runs?" + query,
+                 "workflow_runs")
+    require(len(rows) == 1, "Expected one fresh source delivery run")
+    run = rows[0]
+    rid = positive(run["id"])
+    require(run["path"] == ".github/workflows/tests.yml" and run["event"] == "pull_request"
+            and run["repository"]["id"] == REPOSITORY_ID and run["head_repository"]["id"] == REPOSITORY_ID
+            and run["head_sha"] == head and run["head_branch"] == pr["head"]["ref"]
+            and run["pull_requests"] == fast["pull_requests"]
+            and type(run["run_attempt"]) is int and run["run_attempt"] == 1
+            and run["status"] == "completed" and run["conclusion"] == "success"
+            and 0 <= (datetime.strptime(run["created_at"], TIMESTAMP) - reopened).total_seconds() <= 120,
+            "Not fresh successful source delivery")
+    jobs = pages(request, f"actions/runs/{rid}/attempts/1/jobs", "jobs")
+    require(len(jobs) == len(SOURCE_OMITTED | SOURCE_ROUTED)
+            and {row["name"] for row in jobs} == SOURCE_OMITTED | SOURCE_ROUTED
+            and len({positive(row["id"]) for row in jobs}) == len(jobs),
+            "Source delivery job inventory differs")
+    for job in jobs:
+        require(job["run_id"] == rid and job["run_attempt"] == 1 and job["head_sha"] == head
+                and job["status"] == "completed" and
+                job["conclusion"] == ("success" if job["name"] in SOURCE_ROUTED else "skipped"),
+                "Exact-pair source delivery was not fast-only")
+    route = next(job for job in jobs if job["name"] == "delivery-route")
+    lines = re.findall(r'^\S+ (\{"mode": "source", "omit_full": true, "proof": "[0-9a-f]{64}"\})\s*$',
+                       job_log(route["id"]), re.MULTILINE)
+    require(len(lines) == 1 and request(REPOSITORY, f"actions/runs/{rid}") == run,
+            "No stable fast-only source route proof")
+    return {"reopen_event_id": newest["id"], "fast_run_id": positive(fast["id"]),
+            "delivery_run_id": rid, "tree": tree, "route_proof": read_json(lines[0])["proof"]}
 
 
 def artifact_record(run, phase, request=policy.github, fetch=download, *, allow_pending=False):
@@ -246,6 +343,14 @@ def candidate_chain(record, root):
     is_v13 = proof.get("scope") == v13.SCOPE
     # Queue branches may already be deleted at main-push time.
     ensure_commit(root, proof["candidate"])
+    if proof.get("scope") == exact_pair.SCOPE:
+        for member in proof["members"]:
+            exact_pair.cut(root, proof["base"], member["head"])
+            tree = policy.git(root, "merge-tree", "--write-tree",
+                              proof["base"], member["head"]).decode().strip()
+            require(tree == member["source_ci"]["tree"], "Exact-pair source receipt tree differs")
+        exact_pair.ordered_trees(root, proof["base"], proof["candidate"], proof["members"])
+        return proof
     previous, heads = proof["base"], []
     for row in proof["members"]:
         head, prefix = row["head"], row["prefix"]
@@ -283,6 +388,101 @@ def candidate_runs(candidate, request):
     return run_identity(run, candidate)
 
 
+def exact_pair_catalogue(root, base, run, request):
+    """Do not count a trusted probe-only refusal as a second heavy run."""
+    epoch = request(REPOSITORY, f"commits/{base}")
+    require(epoch["sha"] == base, "Exact-pair window base differs")
+    cutoff = datetime.strptime(epoch["commit"]["committer"]["date"], TIMESTAMP)
+    endpoint = "actions/workflows/task-set-candidate-shadow.yml/runs?" + urlencode({
+        "event": "push", "created": ">=" + cutoff.strftime(TIMESTAMP)})
+    rows = pages(request, endpoint, "workflow_runs")
+    by_id = {positive(item["id"]): item for item in rows}
+    fields = ("id", "path", "event", "head_branch", "head_sha", "run_attempt", "created_at",
+              "run_number", "status", "conclusion")
+    recent = by_id.get(run["id"])
+    require(len(rows) == len(by_id) and recent is not None
+            and all(recent[key] == run[key] for key in fields),
+            "Exact-pair heavy catalogue differs")
+    for item in rows:
+        head = policy.sha(item["head_sha"])
+        require(item["path"] == CALLER and item["event"] == "push"
+                and item["repository"]["id"] == REPOSITORY_ID
+                and item["head_repository"]["id"] == REPOSITORY_ID
+                and datetime.strptime(item["created_at"], TIMESTAMP) >= cutoff,
+                "Unknown run in exact-pair catalogue")
+        if item["id"] == run["id"]:
+            continue
+        require(item["status"] == "completed" and type(item["run_attempt"]) is int
+                and item["run_attempt"] == 1, "Ambiguous exact-pair heavy attempt")
+        require(item["actor"]["login"] == MERGIFY and item["triggering_actor"]["login"] == MERGIFY
+                and policy.QUEUE.fullmatch(item["head_branch"]) is not None
+                and item["conclusion"] == "failure",
+                "Not an authentic probe-only refusal")
+        jobs = pages(request, f"actions/runs/{item['id']}/attempts/1/jobs", "jobs")
+        outcomes = {job["name"]: job["conclusion"] for job in jobs}
+        require(len({positive(job["id"]) for job in jobs}) == len(jobs)
+                and len(outcomes) == len(jobs)
+                and outcomes == {"probe": "success", "candidate": "skipped", HEAVY: "failure"}
+                and all(job["run_id"] == item["id"] and job["head_sha"] == head
+                        and job["run_attempt"] == 1 and job["status"] == "completed" for job in jobs),
+                "Another run executed or may have executed heavy CI")
+        by_name = {job["name"]: job for job in jobs}
+        for name, step, conclusion in (
+            ("probe", "Preserve verified admission", "skipped"),
+            (HEAVY, "Require admitted complete integration", "failure"),
+            (HEAVY, "Final live candidate verification", "skipped"),
+        ):
+            require([row["conclusion"] for row in by_name[name]["steps"] if row["name"] == step]
+                    == [conclusion], "Incomplete probe-only job-step evidence")
+        for path in sorted(CALLEES | {CALLER}):
+            expected = policy.git(root, "rev-parse", f"{base}:{path}").decode().strip()
+            observed = request(REPOSITORY, f"contents/{path}?ref={head}")
+            require(observed["sha"] == expected, "Probe-only workflow was not the reviewed variant")
+    return endpoint, rows
+
+
+def exact_pair_landing(proof, record, run, env, event, root, main, request):
+    base, members = proof["base"], proof["members"]
+    after, before = policy.sha(env["GITHUB_SHA"]), policy.sha(event["before"])
+    finished = datetime.strptime(completed_jobs(run, request), TIMESTAMP)
+    endpoint, rows = exact_pair_catalogue(root, base, run, request)
+    chain, cursor = [], main
+    for _ in members:
+        if cursor == base:
+            break
+        parents = policy.git(root, "show", "-s", "--format=%P", cursor).decode().split()
+        require(len(parents) == 2, "Landing is not an exact-pair prefix")
+        chain.append((cursor, parents))
+        cursor = parents[0]
+    chain.reverse()
+    require(cursor == base and bool(chain), "Live main is outside the qualified pair")
+    matches = [(index, pair) for index, (commit, pair) in enumerate(chain) if commit == after]
+    require(len(matches) == 1, "Main event is not a verified pair prefix")
+    index, parents = matches[0]
+    require(before == parents[0] or (index == 1 and before == base), "Pair landing predecessor differs")
+    snapshots = []
+    previous = finished
+    for (commit, parents), member in zip(chain, members):
+        n = member["number"]
+        pr = request(REPOSITORY, f"pulls/{n}")
+        require(parents[1] == member["head"]
+                and policy.git(root, "rev-parse", commit + "^{tree}").decode().strip() == member["tree"]
+                and pr["number"] == n and pr["state"] == "closed" and pr["merged"] is True
+                and pr["merge_commit_sha"] == commit and policy.side(pr, "head")[0] == member["head"]
+                and policy.side(pr, "base")[1] == "main" and pr["merged_by"]["login"] == MERGIFY,
+                "Landed exact-pair member identity differs")
+        merged = datetime.strptime(pr["merged_at"], TIMESTAMP)
+        require(merged >= previous, "Exact-pair landing predates qualification or predecessor")
+        previous = merged
+        snapshots.append((n, pr))
+    require(pages(request, endpoint, "workflow_runs") == rows
+            and all(pr == request(REPOSITORY, f"pulls/{n}") for n, pr in snapshots)
+            and run == request(REPOSITORY, f"actions/runs/{run['id']}")
+            and request(REPOSITORY, "git/ref/heads/main")["object"]["sha"] == main,
+            "Exact-pair landing evidence moved")
+    return {"candidate": proof["candidate"], "after": after, "record": digest(record)}
+
+
 def landing(record, run, env, event, root, request=policy.github):
     """Closed records are historical proof, never open candidate admission."""
     require(env["GITHUB_EVENT_NAME"] == "push" and env["GITHUB_REF"] == "refs/heads/main"
@@ -298,6 +498,8 @@ def landing(record, run, env, event, root, request=policy.github):
             "Trusted main moved")
     policy.git(root, "merge-base", "--is-ancestor", after, main)
     proof = candidate_chain(record_valid(record, run, "qualified"), root)
+    if proof.get("scope") == exact_pair.SCOPE:
+        return exact_pair_landing(proof, record, run, env, event, root, main, request)
     if proof.get("scope") == v13.SCOPE:
         stable = v13.unchanged_policy(root, proof["base"], main)
     else:

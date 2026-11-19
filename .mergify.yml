@@ -168,3 +168,35 @@ queue_rules:
       - check-success=@github-actions/openrepotools-delivery
     merge_conditions:
       - check-success=@github-actions/openrepotools-batch-heavy
+
+  # Manual exact-pair canary. These service filters do not prove SHA or order;
+  # the trusted-main candidate gate rejects every non-P07-then-P09 batch.
+  - name: openrepotools-sql-register-p07-p09
+    branch_protection_injection_mode: queue
+    batch_size: 2
+    batch_max_wait_time: 60 seconds
+    batch_max_failure_resolution_attempts: 0
+    max_checks_retries: 0
+    checks_timeout: 90 minutes
+    merge_method: merge
+    queue_conditions:
+      - -draft
+      - -closed
+      - -from-fork
+      - base=main
+      - '-body~=(?im)^[ \t]*Depends-On:'
+      - or:
+          - and:
+              - number=97
+              - head=007-p07-render-writes-shape-divergence-rollback-2
+              - '#files=15'
+              - '-files~=^(?!(?:tests/fixtures/lanes-edit-v1[.]1[.]0/SHA256SUMS|tests/fixtures/lanes-edit-v1[.]1[.]0/lanes-edit[.]sh|tests/sql_register_cleanup[.]py|tests/test_sql_register_divergence[.]py|tests/test_sql_register_render[.]py|tests/test_sql_register_renderer_git[.]py|tests/test_sql_register_rollback[.]py|tests/test_sql_register_shape[.]py|tests/test_sql_register_writes[.]py|tests/sql_register_landed/T210|tests/sql_register_landed/T240|tests/sql_register_landed/T241|tests/sql_register_landed/T270|tests/sql_register_landed/T271|tests/sql_register_landed/T273)\Z)'
+          - and:
+              - number=103
+              - head=007-p09-guard-measure-writes-disaster-drill-rollback
+              - '#files=30'
+              - '-files~=^(?!(?:tests/conftest[.]py|tests/pgcluster[.]py|tests/test_sql_register_bounds[.]py|tests/test_sql_register_disaster[.]py|tests/test_sql_register_drill[.]py|tests/test_sql_register_fixture[.]py|tests/test_sql_register_guard[.]py|tests/test_sql_register_landing_expired[.]py|tests/test_sql_register_managed[.]py|tests/test_sql_register_measure[.]py|tests/test_sql_register_outage[.]py|tests/sql_register_landed/T213|tests/sql_register_landed/T214|tests/sql_register_landed/T215|tests/sql_register_landed/T219|tests/sql_register_landed/T220|tests/sql_register_landed/T224|tests/sql_register_landed/T226|tests/sql_register_landed/T229|tests/sql_register_landed/T230|tests/sql_register_landed/T237|tests/sql_register_landed/T253|tests/sql_register_landed/T254|tests/sql_register_landed/T255|tests/sql_register_landed/T257|tests/sql_register_landed/T258|tests/sql_register_landed/T274|tests/sql_register_landed/T276|tests/sql_register_landed/T278|tests/sql_register_landed/T279)\Z)'
+      - check-success=@github-actions/openrepotools-pr-fast
+      - check-success=@github-actions/openrepotools-delivery
+    merge_conditions:
+      - check-success=@github-actions/openrepotools-batch-heavy

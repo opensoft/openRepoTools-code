@@ -16,6 +16,7 @@ import delivery_evidence as evidence
 import delivery_verify as verifier
 import shadow_scope as policy
 import delivery_v13 as v13
+import delivery_p07_p09 as exact_pair
 
 REPOSITORY = policy.REPOSITORY
 FULL = {"mode": "full", "omit_full": False}
@@ -167,17 +168,21 @@ def source(env, event, root, main, request, base_changes):
     require(hints_current, "Event merge hint is neither absent nor current")
     # Prose may change before routing. Validate both decisions independently;
     # retain all other snapshot fields and strict subsequent live rereads.
-    require(verifier.delivery_intended(expected.get("body"))
+    exact = exact_pair.own_source(pr)
+    require((expected.get("body") == pr.get("body") if exact
+             else verifier.delivery_intended(expected.get("body")))
             and not re.search(r"(?m)^Depends-On:", expected["body"])
             and live_snapshot == event_snapshot
             and pr["state"] == "open" and pr["draft"] is False
-            and pr["number"] == number and verifier.delivery_intended(pr["body"])
+            and pr["number"] == number and (exact or verifier.delivery_intended(pr["body"]))
             and not re.search(r"(?m)^Depends-On:", pr["body"]), "Source is not opted-in/current")
     head, branch = policy.side(pr, "head")
     base, base_ref = policy.side(pr, "base")
     require(base == main and base_ref == "main" and policy.source_branch(branch),
             "Source is outside fixed scope")
-    if v13.intended(pr.get("body")):
+    if exact:
+        exact_pair.source(root, main, pr, request)
+    elif v13.intended(pr.get("body")):
         v13.source(root, main, pr, request)
         v13.source(root, main, dict(pr, body=expected.get("body")), request)
     else:
@@ -188,6 +193,10 @@ def source(env, event, root, main, request, base_changes):
     require(policy.git(root, "show", "-s", PARENTS, tested).decode().split() == [main, head],
             "Source test-merge identity differs")
     fast = verifier.fast_receipt(pr, head, request, base_changes, allow_pending=True)
+    if exact:
+        require(evidence.exact_fast_tree(root, main, head, fast)
+                == policy.git(root, "rev-parse", tested + "^{tree}").decode().strip(),
+                "Exact-pair route and fast checkout trees differ")
     require(pr == request(REPOSITORY, f"pulls/{number}")
             and request(REPOSITORY, "git/ref/heads/" + branch)["object"]["sha"] == head,
             "Source moved during verification")
@@ -233,9 +242,11 @@ def duplicate(env, event, root, main, request, fetch, threads, base_changes):
     # Independently re-read live sources; do not manufacture a push payload to
     # trick the admission verifier into accepting a pull_request event.
     for member in proof["members"]:
-        source_pr, _receipt = verifier.source_pr(member["head"], main, root, request, threads, base_changes)
+        source_pr, receipt = verifier.source_pr(member["head"], main, root, request, threads, base_changes)
+        exact = proof.get("scope") == exact_pair.SCOPE
         require(source_pr["number"] == member["number"]
-                and verifier.delivery_intended(source_pr["body"]), "Admission source differs")
+                and (exact_pair.own_source(source_pr) and receipt[2] == member["source_ci"] if exact
+                     else verifier.delivery_intended(source_pr["body"])), "Admission source differs")
     current_pr = request(REPOSITORY, f"pulls/{number}")
     require(evidence.positive(current_pr["number"]) == number
             and current_pr["state"] == "open" and current_pr["draft"] is True
@@ -287,6 +298,9 @@ def landed(env, event, root, request, fetch):
             record = evidence.artifact_record(run, "qualified", request, fetch)
             if pair[1] not in [member["head"] for member in record["proof"]["members"]]:
                 continue
+            if record["proof"].get("scope") == exact_pair.SCOPE:
+                admission = evidence.artifact_record(run, "admission", request, fetch)
+                require(admission["proof"] == record["proof"], "Qualified proof differs from admission")
             proofs.append(evidence.landing(record, run, env, event, root, request))
         except ERRORS:
             # An unrelated/expired candidate is not evidence for this landing.
