@@ -200,3 +200,4 @@ queue_rules:
       - check-success=@github-actions/openrepotools-delivery
     merge_conditions:
       - check-success=@github-actions/openrepotools-batch-heavy
+      - check-success=@sonarqubecloud/SonarCloud Code Analysis

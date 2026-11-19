@@ -12,7 +12,7 @@ import pytest
 from conftest import REPO, NEEDS_UPSTREAM
 from test_ci_delivery import commit, delivery, git
 from test_ci_v13_delivery import write
-from test_ci_pilot_queue import reader
+from test_ci_pilot_queue import matches, reader
 
 
 @pytest.fixture
@@ -95,7 +95,10 @@ def test_ci_p07_p09_exact_queue_and_inventory(pair, reader):
     assert queue["batch_size"] == 2 and queue["batch_max_failure_resolution_attempts"] == 0
     assert queue["max_checks_retries"] == 0 and queue["merge_method"] == "merge"
     conditions = queue["queue_conditions"]
-    assert queue["merge_conditions"] == ["check-success=@github-actions/openrepotools-batch-heavy"]
+    assert queue["merge_conditions"] == [
+        "check-success=@github-actions/openrepotools-batch-heavy",
+        "check-success=@sonarqubecloud/SonarCloud Code Analysis",
+    ]
     assert {"base=main", "-draft", "-closed", "-from-fork",
             "check-success=@github-actions/openrepotools-pr-fast",
             "check-success=@github-actions/openrepotools-delivery"} <= {
@@ -114,6 +117,22 @@ def test_ci_p07_p09_exact_queue_and_inventory(pair, reader):
         assert all(not match.search(path) for path in paths)
         assert all(match.search(path) for path in (".github/workflows/release.yml", "tests/extra.py",
                                                   "tests/sql_register_landed/T999"))
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize(("checks", "accepted"), [
+    ({"check-success": ["@github-actions/openrepotools-batch-heavy"]}, False),
+    ({"check-success": ["@github-actions/openrepotools-batch-heavy"],
+      "check-neutral": ["@sonarqubecloud/SonarCloud Code Analysis"]}, False),
+    ({"check-success": ["@github-actions/openrepotools-batch-heavy",
+                        "@other-app/SonarCloud Code Analysis"]}, False),
+    ({"check-success": ["@sonarqubecloud/SonarCloud Code Analysis"]}, False),
+    ({"check-success": ["@github-actions/openrepotools-batch-heavy",
+                        "@sonarqubecloud/SonarCloud Code Analysis"]}, True),
+])
+def test_ci_p07_p09_candidate_merge_requires_existing_sonar_gate(reader, checks, accepted):
+    queue = reader(REPO / ".mergify.yml")["queue_rules"][-1]
+    assert all(matches(condition, checks) for condition in queue["merge_conditions"]) is accepted
 
 
 def test_ci_p07_p09_exact_source_rejects_drift(exact, pair):
