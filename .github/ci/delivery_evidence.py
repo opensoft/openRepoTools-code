@@ -212,7 +212,7 @@ def exact_fast_tree(root, base, head, receipt, *, allow_pending_log=False):
         # Only the exact-pair source router may wait after authenticating the
         # completed fast job. A downloaded log still has to prove the checkout.
         if allow_pending_log and re.fullmatch(
-                rb"gh: [^\r\n]+ \(HTTP 404\)", (exc.stderr or b"").strip()):
+                rb"gh: (?:HTTP 404|[^\r\n]+ \(HTTP 404\))", (exc.stderr or b"").strip()):
             raise FastProofLogPending() from exc
         raise
     lines = re.findall(r'^\S+ (\{"base": "[0-9a-f]{40}", "full_ci_required": true, '

@@ -183,6 +183,7 @@ def test_ci_cutover_success_has_no_refusal_diagnostic(cutover, batch, capsys):
 
 @pytest.mark.parametrize("fault, reads, waits, accepted", [
     ("transient-404", 2, 1, True),
+    ("redirect-404", 2, 1, True),
     ("persistent-404", 3, 2, False),
     ("source-moved", 1, 1, False),
     ("403", 1, 0, False),
@@ -198,7 +199,6 @@ def test_ci_cutover_exact_pair_log_wait_keeps_invalid_proof_full(
     # exact-pair membership and its independent fixed inventory check.
     monkeypatch.setattr(cutover.exact_pair, "own_source", lambda pr: pr["number"] == 7)
     monkeypatch.setattr(cutover.exact_pair, "source", lambda *_: 7)
-    monkeypatch.setattr(cutover, "PENDING_ATTEMPTS", 2)
     sleeps, jobs = [], []
     monkeypatch.setattr(cutover.time, "sleep", sleeps.append)
     payload = {"base": batch["base"], "full_ci_required": True,
@@ -206,11 +206,12 @@ def test_ci_cutover_exact_pair_log_wait_keeps_invalid_proof_full(
 
     def log(job_id):
         jobs.append(job_id)
-        if fault == "persistent-404" or (fault in {"transient-404", "source-moved"} and len(jobs) == 1):
+        first_read_faults = {"transient-404", "redirect-404", "source-moved"}
+        if fault == "persistent-404" or (fault in first_read_faults and len(jobs) == 1):
             if fault == "source-moved":
                 batch["prs"][7]["body"] += "\nMoved during observation."
-            raise subprocess.CalledProcessError(1, ["gh", "api"],
-                                                stderr=b"gh: Not Found (HTTP 404)\n")
+            stderr = (b"gh: HTTP 404\n" if fault == "redirect-404" else b"gh: Not Found (HTTP 404)\n")
+            raise subprocess.CalledProcessError(1, ["gh", "api"], stderr=stderr)
         if fault == "403":
             raise subprocess.CalledProcessError(1, ["gh", "api"],
                                                 stderr=b"gh: Forbidden (HTTP 403)\n")
