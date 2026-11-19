@@ -123,11 +123,14 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 #: check of the server's uid, is the row of SVC-2's other case,
 #: `test_a_client_of_another_uid_is_closed_by_so_peercred`: tasks:2278 at
 #: lane 3's commit 31 `8f50d105` says it fails until L5-S1, lane 5's T512,
-#: under the same Order (tasks:2302 there). T214zc's row, the whole bind off
-#: primary (lane 5's CXC12B, S4; lane 3's Codex review of chain 2, SHOULD 4,
-#: #165 6933947760), is the post-bind refill case's own, T502 and T507, under
-#: T214's Order (tasks:2013). No task is common to every row,
-#: so there is no "*" row.
+#: under the same Order (tasks:2302 there). T237zzr's row, and the rows of
+#: the letters after it for T512's chain 3, its commit 15, its commit 20 and
+#: its commits 22 to 26 (lane 3, #165 6934144108, 6934055909, 6934655836,
+#: 6935289154, 6936069476 and 6937934447; lane 5, 6937684143), are T237's other service
+#: rows, T512 and T513, the two tasks P23 lands. No task is common to every
+#: row, so there is no "*" row.
+#: T237zzzb's row, for T512's commit 37's SHOULD (lane 3, #364 6954760292
+#: and 6956512573; lane 5, 6955229319), is the same pair.
 SQL_REGISTER_GATE_TABLE = {
     "test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither": ("T512", "T513"),  # T237; tasks:2302
     "test_a_bind_body_past_its_bound_ends_with_the_bounds_code_and_leaves_no_process": ("T502",),  # T214; tasks:2013
@@ -144,7 +147,12 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_dead_bind_outer_answers_in_progress_while_its_session_lives_then_no_outcome": ("T502",),  # T214; tasks:2013
     "test_a_failed_bind_can_be_answered_again": ("T502",),  # T214; tasks:2013
     "test_a_failed_bind_renames_back_keeps_the_offer_and_allows_three_attempts": ("T502",),  # T214; tasks:2013
+    "test_a_fifo_at_register_lock_is_a_lock_that_cannot_be_opened": ("T512", "T513"),  # T237zzs; P23 (#165 6934144108)
+    "test_a_fifo_at_register_log_never_holds_a_start_or_the_service": ("T512", "T513"),  # T237zzs; P23 (#165 6934144108)
     "test_a_guard_that_starts_too_late_refuses_2_without_a_read": ("T103", "T113", "T507"),  # T213; tasks:1992
+    "test_a_launched_start_refused_for_no_psql_where_run_fails_the_stamps_own_check_leaves_register_log_as_it_was": ("T512", "T513"),  # T237zzz; P23 (#165 6937934447)
+    "test_a_launched_start_refusing_a_bare_url_line_with_a_query_keeps_its_password_out_of_register_log": ("T512", "T513"),  # T237zzzb; P23 (#364 6954760292, 6956512573)
+    "test_a_launched_start_whose_run_directory_fails_its_own_check_leaves_register_log_as_it_was": ("T512", "T513"),  # T237zzz; P23 (#165 6937934447)
     "test_a_live_bind_past_its_bound_that_timeout_has_not_ended_answers_2_and_names_the_pid_to_kill": ("T502",),  # T214; tasks:2013
     "test_a_malformed_bind_pid_waits_for_the_deadline_then_is_stale": ("T502",),  # T214; tasks:2013
     "test_a_noncanonical_out_names_no_facts_file_and_no_words": ("T502", "T514"),  # T214; tasks:2013, and T514 (T214z)
@@ -155,6 +163,10 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_service_that_cannot_start_falls_back_to_the_direct_read": ("T512", "T513"),  # T237; tasks:2302
     "test_a_service_that_never_answers_falls_back_inside_5_s": ("T512", "T513"),  # T237; tasks:2302
     "test_a_stale_socket_is_unlinked_under_the_lock_and_rebound": ("T512", "T513"),  # T237; tasks:2302
+    "test_a_start_refused_for_no_psql_is_not_stamped_where_run_fails_the_stamps_own_check": ("T512", "T513"),  # T237zzz; P23 (#165 6937684143)
+    "test_a_start_refused_for_no_psql_is_stamped_where_run_passes_the_stamps_own_check": ("T512", "T513"),  # T237zzz; P23 (#165 6937684143)
+    "test_a_start_that_returns_at_a_live_socket_or_a_failed_bind_lets_register_lock_go": ("T512", "T513"),  # T237zzt; P23 (#165 6934144108)
+    "test_a_start_whose_run_directory_fails_the_sweeps_own_check_refuses_with_2_and_binds_nothing": ("T512", "T513"),  # T237zzv, T237zzz; P23 (#165 6935289154, 6937684143)
     "test_a_whole_file_fetch_the_start_line_cuts_fills_the_image_cache_for_the_next_prompt": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_a_write_between_two_requests_is_in_the_next_answer": ("T107", "T227", "T228", "T512", "T513"),  # T237; tasks:2302
     "test_after_bound_one_moved_then_the_next_prompt_passes": ("T502",),  # T214; tasks:2013
@@ -210,9 +222,17 @@ SQL_REGISTER_GATE_TABLE = {
     "test_the_service_stops_after_its_idle_time_and_unlinks_its_socket": ("T512", "T513"),  # T237; tasks:2302
     "test_the_services_idle_check_replaces_a_dropped_connection_in_the_background": ("T512", "T513"),  # T237; tasks:2302
     "test_the_services_request_timer_follows_register_rtt_ms": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_services_worker_does_not_spin_while_its_child_is_down_or_connecting": ("T512", "T513"),  # T237zzr; P23 (#165 6934144108)
     "test_the_session_start_block_makes_no_register_call_on_primary": ("T103", "T113", "T507"),  # T213; tasks:1992
     "test_the_session_start_block_reads_the_mirror_and_only_starts_the_service": ("T512", "T513"),  # T237; tasks:2302
     "test_the_socket_directory_is_a_0700_directory_of_this_uid_and_never_a_symlink": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_start_sweep_keeps_a_fresh_stamp_temporary": ("T512", "T513"),  # T237zzu; P23 (#165 6934655836)
+    "test_the_start_sweep_keeps_a_stamp_temporary_name_that_is_not_the_form": ("T512", "T513"),  # T237zzu; P23 (#165 6934655836)
+    "test_the_start_sweep_keeps_what_is_not_a_regular_file_of_the_form": ("T512", "T513"),  # T237zzu; P23 (#165 6934655836)
+    "test_the_start_sweep_removes_a_stamp_temporary_over_ten_minutes_old": ("T512", "T513"),  # T237zzu; P23 (#165 6934655836)
+    "test_the_start_sweeps_when_run_passes_the_sweeps_own_check": ("T512", "T513"),  # T237zzv; P23 (#165 6935289154)
+    "test_the_sweep_keeps_a_stamp_temporary_exactly_ten_minutes_old_and_removes_one_a_second_older": ("T512", "T513"),  # T237zzu; P23 (#165 6934655836)
+    "test_the_sweep_passes_over_an_entry_gone_logs_one_it_cannot_date_or_remove_and_goes_on": ("T512", "T513"),  # T237zzu; P23 (#165 6934655836)
     "test_the_stale_row_copies_a_dead_outers_pending_call_and_the_next_2_looks_it_up": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
     "test_todays_direct_guard_is_timed_in_its_four_parts": ("T111", "T112", "T507"),  # T226; tasks:2177
     "test_two_sessions_binding_one_lane_in_files_mode_both_binds_land": ("T502",),  # T214; tasks:2013
@@ -8291,3 +8311,1540 @@ def test_the_service_stops_after_its_idle_time_and_unlinks_its_socket(estate, ca
     sock = svc.dir / "register.sock"
     assert _until(lambda: svc.proc.poll() is not None, 15), "the service did not stop"
     assert not sock.exists(), "the stopped service left its socket"
+
+
+# ============================================================ T237zzr to T237zzu: T512's chain 3 and commit 15
+#
+# T512's chain 3, `309626c9` on line R's pick223 `9bdd317b` (its commits 12
+# to 14), and its commit 15, `1c7a4aa0`, which P23's real cut takes beside
+# it (lane 3, opensoft/openRepoTools#165 6934055909, point 3). Lane 3's
+# genuine Codex review of chain 3 found that no test exercised commit 12's
+# repaired waits, special files at `register.lock` and `register.log`, or
+# commit 14's early closes, and sent them to lane 2's T237 cases (#165
+# 6934144108); its review of commit 15 lists the sweep's cases (#165
+# 6934655836, `codex-code-L5c3b-1c7a4aa0.md`, SHOULD 3), beside the four
+# lane 5 gave (`T512Q6-REPORT-1117a.md`, "Test cases for lane 2"). Each
+# case's row is T237's other service rows' (T512, T513), the two tasks P23
+# lands. On pick223, before chain 3 and commit 15, each fails by its own
+# assertion.
+
+#: THE WORKER'S WAKES (T237zzr), counted as each thread's voluntary context
+#: switches, the times it slept and was woken (`/proc/<pid>/task/<tid>/status`).
+#: A service whose child is down or connecting is woken for its accept
+#: loop's `select`, every 0.25 s (`RegisterService.serve`), and for its
+#: worker's own bound, `idle_check_s`, here section 10's 1 s floor: about
+#: five times a second in all. A deadline already past, under the old
+#: wait's 0.01 s floor, woke the worker 100 times a second. The case's
+#: bound lies between.
+WAKES_MAX_PER_S = 30
+#: How long the wakes are counted, and how long the case waits before it
+#: counts: past the 1 s idle deadline the old wait kept.
+WAKES_WINDOW_S = 3.0
+WAKES_SETTLE_S = 1.5
+#: `[connecting]`'s hold on the connect's marker (`_StreamPsql`), inside its
+#: bound at `connect_timeout=10`, `N_a`·`c` + 2 s, 12 s (socket API section
+#: 7), and past the count's end, `WAKES_SETTLE_S` + `WAKES_WINDOW_S`.
+CONNECTING_HOLD_MS = 6000
+
+
+def _wakes(pid: int) -> dict:
+    """Each live thread of `pid` with its count of voluntary context
+    switches, from `/proc/<pid>/task/<tid>/status`; {} where it is gone."""
+    found = {}
+    try:
+        tids = os.listdir(f"/proc/{pid}/task")
+    except OSError:
+        return found
+    for tid in tids:
+        try:
+            text = Path(f"/proc/{pid}/task/{tid}/status").read_text(encoding="utf-8",
+                                                                    errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if line.startswith("voluntary_ctxt_switches:"):
+                found[tid] = int(line.split()[1])
+    return found
+
+
+def _log_phrases(est: Estate) -> list:
+    """`register.log`'s phrases, each line's text after its UTC (socket API
+    section 2.3: the UTC and a fixed phrase), or [] where there is none."""
+    path = _run_dir(est) / "register.log"
+    if not path.is_file():
+        return []
+    return [line.split(" ", 1)[1] if " " in line else ""
+            for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+@pytest.mark.parametrize("case", ["down-lazy", "connecting"])
+def test_the_services_worker_does_not_spin_while_its_child_is_down_or_connecting(estate, case):
+    """T512'S COMMIT 12, THE WORKER'S WAITS (T237zzr; lane 3's Codex review
+    of chain 3, #165 6934144108: "no test yet exercises commit 12's repaired
+    waits"; its report, "the ready-state idle-check case ... does not
+    exercise commit 12's repaired down/lazy or connecting waits").
+
+    THE ORACLE. Socket API section 7 sends the idle check's `SELECT 1` "on
+    the held connection", at section 10's interval, whose floor is 1 s, so
+    only a ready child has an idle deadline. As built at `81d42d00`
+    (`RegisterService.work`): the idle check's deadline only where the child
+    is ready, the retry's only where a connect waits for it, and
+    `idle_check_s` as the bound where neither holds, every other change
+    notifying the worker. Before commit 12 the idle deadline was in every
+    wait, so once it had passed with the child not ready its
+    `max(0.01, ...)` woke the worker every 10 ms for as long as that lasted.
+    So at `LANES_REGISTER_SERVE_IDLE_CHECK_S=1` the service's threads
+    together are woken fewer than `WAKES_MAX_PER_S` times a second over
+    `WAKES_WINDOW_S` (`_wakes`), and the service runs on:
+
+    - `[down-lazy]`: the service's held connection is lost with the cluster
+      stopped; its next idle check fails, the connect it starts at once
+      fails (`connect failed` in `register.log`), and the child is down and
+      lazy until a request comes (section 7, "a child lost while serving").
+      None comes. The count starts `WAKES_SETTLE_S` after that line.
+    - `[connecting]`: the connect at listen is held `CONNECTING_HOLD_MS` by
+      the streaming `psql` (`_StreamPsql`), at `connect_timeout=10`, inside
+      the connect's bound. The count starts `WAKES_SETTLE_S` after the
+      socket appears, past the idle deadline 1 s from the listen, and ends
+      before the hold does: the held child read the connect's marker under
+      the hold, and `register.log` shows no connect ended."""
+    est = estate(mode="primary")
+    stream = None
+    if case == "connecting":
+        _db_config(est, f"{est.pg.url()}?connect_timeout=10")
+        stream = _StreamPsql(est)
+        stream.hold(CONNECTING_HOLD_MS)
+    svc = _Service(est, LANES_REGISTER_SERVE_IDLE_CHECK_S="1")
+    stopped = False
+    try:
+        if case == "down-lazy":
+            held = _until(lambda: _service_backends(est.pg), 10, 0.1)
+            assert held, "the service held no connection in 10 s to lose"
+            est.pg.cluster.stop()
+            stopped = True
+            lazy = _until(lambda: "connect failed" in _log_phrases(est), 15, 0.1)
+            assert lazy, (f"no connect failed in 15 s after the cluster stopped, so the child is "
+                          f"not down and lazy: {_log_phrases(est)}")
+        time.sleep(WAKES_SETTLE_S)
+        before = _wakes(svc.proc.pid)
+        time.sleep(WAKES_WINDOW_S)
+        after = _wakes(svc.proc.pid)
+        said = _log_phrases(est)
+        code = svc.proc.poll()
+    finally:
+        if stopped:
+            est.pg.cluster.start_again()
+        svc.stop()
+    assert code is None and after, f"serve exited {code} while its child was {case}"
+    if case == "connecting":
+        assert [c for c in stream.log() if c["held"] and c["hold_ms"] == CONNECTING_HOLD_MS], \
+            f"the connect's marker never reached the held streaming psql: {stream.log()}"
+        assert not [p for p in said if p in ("connected", "connect failed")], \
+            f"the connect ended before the count did, so the child was not connecting: {said}"
+    rate = sum(n - before.get(tid, 0) for tid, n in after.items()) / WAKES_WINDOW_S
+    assert rate < WAKES_MAX_PER_S, (
+        f"the service's threads were woken {rate:.0f} times a second with its child {case} at "
+        f"LANES_REGISTER_SERVE_IDLE_CHECK_S=1, over the {WAKES_MAX_PER_S} its accept loop and "
+        f"its worker's 1 s bound allow: the worker spins on an idle deadline already past")
+
+
+#: How long a case lets a start run before it takes it as held in an open
+#: (T237zzs): each start below ends well inside a second where no open
+#: blocks it.
+FIFO_HELD_S = 20.0
+#: A request the service answers, whatever its state (socket API section
+#: 13.7: a malformed one is `unavailable`), as SVC-2's case sends it.
+ANY_REQUEST = b"read 1\nlist\nend\n"
+
+
+def _fifo_at(est: Estate, name: str) -> Path:
+    """A FIFO at `run/<name>`, in the service's directory made as the
+    service makes it, this uid's at 0700 (socket API section 2.2)."""
+    run = _run_dir(est)
+    run.mkdir(parents=True, exist_ok=True, mode=0o700)
+    run.chmod(0o700)
+    path = run / name
+    os.mkfifo(path, 0o600)
+    return path
+
+
+def _bounded(est: Estate, *args, env=None, limit: float = FIFO_HELD_S):
+    """`lanes-index <args>` as `_index` runs it, or None where it has not
+    ended inside `limit` seconds (`subprocess.run` then kills it)."""
+    try:
+        return _index(est, *args, env=env, timeout=limit)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+@pytest.mark.parametrize("case", ["no-reader", "reader", "stamp"])
+def test_a_fifo_at_register_lock_is_a_lock_that_cannot_be_opened(estate, tmp_path, case):
+    """T512'S COMMIT 13, `register.lock`'S TWO OPENS (T237zzs; lane 3's Codex
+    review of chain 3, #165 6934144108: no test places a special file at
+    `register.lock`). `register_serve_run` and `register_serve_stamp` open
+    it through `_register_serve_open_regular` (`badba70f`): `O_NONBLOCK`
+    added, so a FIFO with no reader fails the open at once (`ENXIO`), and a
+    descriptor that `fstat` finds is not a regular file closed and refused.
+    So a FIFO there is a `register.lock` that cannot be opened, with or
+    without a reader, and holds no start in its open:
+
+    - `[no-reader]` and `[reader]`, on primary: `serve` exits 69, "as for a
+      `register.lock` that cannot be opened" (socket API section 8.3),
+      naming the file on stderr, with no socket made, inside
+      `FIFO_HELD_S`. Before commit 13 the open with no reader waited for
+      one for ever, before the lock and before any stamp; and with a
+      reader, which the case holds open, it went through, `flock` took the
+      FIFO for the lock, and `serve` bound and served on it.
+    - `[stamp]`, in files mode: a `serve` its configuration refuses,
+      `mode=index` (section 8.5), stamps `config-refused` and exits 2,
+      the stamp "written without the lock" where `register.lock` cannot be
+      opened (section 8.6). Before commit 13 the stamp's open of the lock
+      waited for a reader for ever.
+
+    The FIFO is left as it was: a file that fails the check is not
+    replaced."""
+    import stat as stat_mod
+    env = None
+    if case == "stamp":
+        est = estate()
+        conf = tmp_path / "lanes-index.conf"
+        conf.write_text(f"mode=index\nregister_url=postgresql:///register?host={tmp_path}/sock\n",
+                        encoding="utf-8")
+        env = est.env(LANES_INDEX_CONFIG=str(conf))
+    else:
+        est = estate(mode="primary")
+    fifo = _fifo_at(est, "register.lock")
+    reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK) if case == "reader" else None
+    try:
+        done = _bounded(est, "serve", env=env)
+    finally:
+        if reader is not None:
+            os.close(reader)
+    sock = _run_dir(est) / "register.sock"
+    how = ("it took the FIFO for its lock and served" if sock.exists()
+           else "it was held in an open of the FIFO")
+    assert done is not None, (f"serve did not end inside {FIFO_HELD_S:.0f} s with a FIFO at "
+                              f"register.lock ({case}): {how}")
+    if case == "stamp":
+        stamp = _failure_stamp(est, done)
+        assert stamp[1:] == ["config-refused"], (done, stamp)
+    else:
+        assert done.returncode == 69 and "register.lock" in done.stderr, done
+        assert not sock.exists(), "serve made a socket with a FIFO at register.lock"
+    assert stat_mod.S_ISFIFO(os.lstat(fifo).st_mode), "the FIFO at register.lock was replaced"
+
+
+@pytest.mark.parametrize("case", ["serve", "start", "guard"])
+def test_a_fifo_at_register_log_never_holds_a_start_or_the_service(estate, case):
+    """T512'S COMMIT 13, `register.log`'S TWO OPENS (T237zzs; #165
+    6934144108: no test places a special file at `register.log`).
+    `register_serve_log` and `register_serve_launch` open it as
+    `register.lock` is opened (`_register_serve_open_regular`, `badba70f`),
+    so a FIFO there with no reader fails the open at once and holds no
+    caller:
+
+    - `[serve]`: the service drops its log lines (`register_serve_log`
+      returns where its open fails) and answers a request on its socket.
+      Before commit 13 its first line's open, "listening", waited for a
+      reader for ever, after the socket was in place and before the accept
+      loop, so no request was answered.
+    - `[start]`: `serve --start` exits 2 "where `serve` could not be
+      launched, its `register.log` not opened" (socket API section 9),
+      naming the file, inside `FIFO_HELD_S`, and no service is started.
+    - `[guard]`: the guard's client, which finds no socket and starts a
+      service (section 8.1), never waits for a start (section 8.2): it reads
+      directly, prints the fallback line once (section 11.2), and ends
+      inside `BUDGET`, not stopped by the runner, with no service started.
+      Before commit 13 the start's open held the guard's prefetch until the
+      hook was killed at its 5 s."""
+    import stat as stat_mod
+    est = estate(mode="primary")
+    fifo = _fifo_at(est, "register.log")
+    if case == "serve":
+        svc = _Service(est)
+        try:
+            try:
+                answer = _ask_service(est, ANY_REQUEST, limit=5.0)
+            except OSError:
+                answer = b""
+        finally:
+            svc.stop()
+        assert answer, ("the service answered nothing in 5 s with a FIFO at register.log: it is "
+                        "held in an open of the FIFO, before its accept loop")
+    elif case == "start":
+        done = _bounded(est, "serve", "--start")
+        servers = _estate_servers(est)
+        assert done is not None, (f"serve --start did not end inside {FIFO_HELD_S:.0f} s with a "
+                                  f"FIFO at register.log: it was held in an open of the FIFO")
+        assert done.returncode == 2 and "register.log" in done.stderr, done
+        assert not servers, f"serve --start started a service: {servers}"
+    else:
+        hook = est.hook("hello")
+        servers = _estate_servers(est)
+        assert not hook.killed and hook.t_exit - hook.t0 < BUDGET, repr(hook)
+        assert hook.err.splitlines().count(FALLBACK) == 1, hook.err
+        assert not servers, f"the guard's client started a service: {servers}"
+    assert stat_mod.S_ISFIFO(os.lstat(fifo).st_mode), "the FIFO at register.log was replaced"
+
+
+#: A STAND-IN FOR `lanes-index serve` THAT READS `register.lock` ONCE ITS
+#: START HAS RETURNED (T237zzt): it loads @INDEX@ as `_OTHER_UID_SERVE`
+#: does, runs `serve` through `main` in its own process, and then prints one
+#: JSON line: `main`'s exit, the descriptors of that process still open on
+#: `register.lock` (by device and inode, through `/proc/self/fd`), and the
+#: errno of `flock(LOCK_EX | LOCK_NB)` on a descriptor it opens afresh, or
+#: null where that lock is taken: a lock left on any other open of the file
+#: refuses it.
+_LOCK_AFTER_SERVE = r'''import fcntl, importlib.machinery, importlib.util, json, os, sys
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("lanes_index_lock_after_serve", @INDEX@)
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+sys.modules[loader.name] = module
+loader.exec_module(module)
+code = module.main(["serve"])
+lock = module.register_serve_paths()["lock"]
+mine = os.stat(lock)
+fds = []
+for name in os.listdir("/proc/self/fd"):
+    try:
+        st = os.stat("/proc/self/fd/" + name)
+    except OSError:
+        continue
+    if (st.st_dev, st.st_ino) == (mine.st_dev, mine.st_ino):
+        fds.append(int(name))
+probe = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+try:
+    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    refused = None
+except OSError as exc:
+    refused = exc.errno
+finally:
+    os.close(probe)
+print(json.dumps({"code": code, "fds": fds, "refused": refused}))
+'''
+
+
+@pytest.mark.parametrize("case", ["live-socket", "bind-fails"])
+def test_a_start_that_returns_at_a_live_socket_or_a_failed_bind_lets_register_lock_go(
+        estate, case):
+    """T512'S COMMIT 14, THE LOCK'S LIFETIME (T237zzt; lane 3's Codex review
+    of chain 3, #165 6934144108: "no existing test observes the two
+    descriptors newly closed by commit 14").
+
+    THE ORACLE. `serve` holds `register.lock` for the service's whole life
+    (socket API section 8.3), and only a service's life: `register_serve_run`
+    closes the lock's descriptor on each return after its open (`309626c9`:
+    "THE LOCK'S DESCRIPTOR IS CLOSED ON EACH RETURN"), the two that commit
+    added among them: a live service's answer at the probe, exit 0 (section
+    8.3, "one that answers means a live service, and it exits 0"), and the
+    bind's failure, exit 69 (section 8.3's 69; the function's docstring, "at
+    once at any other `OSError` from the bind, the listen, the owner file,
+    the rename or the `lstat` after it"). The exit of `serve`'s process
+    closes the descriptor anyway, so the case runs `serve` in a stand-in's
+    process (`_LOCK_AFTER_SERVE`), which reads, once `main` has returned,
+    that no descriptor of its own is left on `register.lock` and that a
+    fresh open's `flock(LOCK_EX | LOCK_NB)` is taken. Before commit 14 both
+    returns left the descriptor open, and the lock held.
+
+    - `[live-socket]`: a socket of the case's own at the fixed path
+      (`_Listener`), which accepts, with no service and so no lock held:
+      the start takes the lock, its probe connects, and it returns 0. The
+      listener records that connection, with no byte sent.
+    - `[bind-fails]`: a directory at `register.sock`: the probe's connect is
+      refused, so the start binds at a name of its own and renames that
+      socket onto the fixed path, which fails (`EISDIR`), and it returns 69,
+      saying the socket "could not be bound". `run/` is this uid's at 0700
+      (section 2.2)."""
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    listener = None
+    if case == "live-socket":
+        listener = _Listener(est, hang=False)
+    else:
+        run.mkdir(parents=True, exist_ok=True, mode=0o700)
+        run.chmod(0o700)
+        (run / "register.sock").mkdir(mode=0o700)
+    stand_in = est.root / "t" / "serve-lock-after.py"
+    stand_in.parent.mkdir(parents=True, exist_ok=True)
+    stand_in.write_text(_LOCK_AFTER_SERVE.replace("@INDEX@", _q(est.index)), encoding="utf-8")
+    probed = None
+    try:
+        done = subprocess.run([sys.executable, str(stand_in)], capture_output=True, text=True,
+                              env=est.env(), cwd=str(est.wip), timeout=60)
+        if listener is not None:
+            probed = _until(lambda: list(listener.got), 2)
+    finally:
+        if listener is not None:
+            listener.close()
+    lines = done.stdout.strip().splitlines()
+    assert done.returncode == 0 and lines, done
+    seen = json.loads(lines[-1])
+    if case == "live-socket":
+        assert seen["code"] == 0 and probed == [b""], \
+            f"the start did not return 0 at the live socket's probe: {seen} {probed} {done.stderr}"
+    else:
+        assert seen["code"] == 69 and "could not be bound" in done.stderr, \
+            f"the start did not return 69 at its failed bind: {seen} {done.stderr}"
+    refused = seen["refused"]
+    got = "taken" if refused is None else errno.errorcode.get(refused, str(refused))
+    assert not seen["fds"] and refused is None, (
+        f"serve returned {seen['code']} ({case}) with register.lock still open on its "
+        f"descriptor(s) {seen['fds']}, and a fresh open's flock(LOCK_EX | LOCK_NB): {got}")
+
+
+# THE START'S SWEEP OF STAMP TEMPORARIES (T237zzu), T512's commit 15,
+# `1c7a4aa0`. THE ORACLE is lane 3's ruling on lane 5's question 6 (#165
+# 6932653746), "yes, with a 10-minute age floor", in the words of q5's
+# section 2.4 NEW (lane 3's analyst report `q5-report-1116r.md`, sha256
+# `2a4e3c47...`, "Q6. T512's NIT 4"): the starter that holds `register.lock`
+# and has found no live service removes, just before its own bind, "each
+# regular file in `run/` of this uid whose name is `register.owner.tmp-` or
+# `register.failed.tmp-`, then a decimal pid, `-` and eight lower-case hex
+# digits, and whose mtime is more than 10 minutes old ..., each checked by
+# `lstat`. It logs one it cannot remove, and leaves it, keeps one it cannot
+# date, and leaves any other name, or any file of such a name that is not
+# this uid's socket or regular file." Spec main `f2098c21` still has the
+# sweep's old set (socket API :190); lane 5's T511 PR carries the new words,
+# and commit 15 rides P23's real cut only after it lands (lane 3's
+# 6934655836). The cases are those of Codex's review of `1c7a4aa0` (its
+# SHOULD 3, in 6934655836) and lane 5's four (`T512Q6-REPORT-1117a.md`).
+#
+# UNDER LANE 5'S COMING COMMIT 17 TOO (lane 3's ruling in 6934655836): each
+# case makes `run/` this uid's at 0700, and none resolves `run/` again
+# while the sweep runs: the held clock's seam hands each call the sweep's
+# own arguments, a path or a name beside `dir_fd`, and counts its own
+# `listdir`, `lstat` and `unlink` among `os.supports_fd` and
+# `os.supports_dir_fd`, which commit 17 asks before it sweeps (lane 5's
+# `8f6cb76b`; its fail-closed line goes to standard error at `b3e30ca3`).
+
+#: THE AGES, in seconds back from the clock (T237zzu): a leftover, 11
+#: minutes; nine minutes; and an hour ahead of the clock, negative.
+SWEEP_AGED_S = 660
+SWEEP_NINE_MINUTES_S = 540
+SWEEP_AHEAD_S = -3600
+#: The aged temporary that each keeping case plants beside what it keeps:
+#: the sweep's removal of it shows the sweep of temporaries ran.
+SWEEP_CONTROL = "register.failed.tmp-2-0123abcd"
+#: `run/`'s five files (socket API section 2.3), the only names a start
+#: leaves once its sweep has removed every leftover.
+RUN_FILES = frozenset({"register.sock", "register.lock", "register.owner", "register.failed",
+                       "register.log"})
+#: Lane 5's names not of the form (T512Q6's case 4) and Codex's upper-case
+#: one, and a regular file at a socket's temporary name, `s.` and four hex
+#: digits, which is no socket: each a regular file of this uid, aged.
+SWEEP_NOT_THE_FORM = ("register.owner.tmp-1-deadbee", "register.owner.tmp-1-deadbeef0",
+                      "register.owner.tmp-x-deadbeef", "register.owner.tmp-1-DEADBEEF",
+                      "register.owner.tmp-1-deadbeef.x", "register.lock.tmp-1-deadbeef",
+                      "register.failed.tmp--deadbeef", "s.beef")
+
+
+def _plant(run: Path, name: str, kind: str = "file", age: float = SWEEP_AGED_S,
+           target: Path = None, clock: float = None) -> Path:
+    """`kind` at `run/<name>`, with its mtime `age` seconds before `clock`
+    (now, where it is None): a regular file of this uid at 0600, a FIFO, a
+    directory, a symbolic link to `target`, whose own mtime is set, or a
+    socket, bound and closed, as a killed start leaves one. `run/` is made
+    this uid's at 0700 (socket API section 2.2)."""
+    import socket as _socket
+    run.mkdir(parents=True, exist_ok=True, mode=0o700)
+    run.chmod(0o700)
+    path = run / name
+    if kind == "file":
+        path.write_text("pid=1\n", encoding="ascii")
+        path.chmod(0o600)
+    elif kind == "fifo":
+        os.mkfifo(path, 0o600)
+    elif kind == "directory":
+        path.mkdir(mode=0o700)
+    elif kind == "link":
+        path.symlink_to(target)
+    else:
+        sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        try:
+            sock.bind(str(path))
+        finally:
+            sock.close()
+    if kind != "socket":
+        when = int(((time.time() if clock is None else clock) - age) * 1_000_000_000)
+        os.utime(path, ns=(when, when), follow_symlinks=False)
+    return path
+
+
+def _swept(est: Estate, *planted: Path) -> tuple:
+    """A start on primary (`_Service`), which sweeps `run/` just before its
+    bind (`register_serve_sweep`), stopped once it listens: then the names
+    of `planted` it removed, `run/`'s names, and `register.log`'s
+    phrases."""
+    svc = _Service(est)
+    try:
+        gone = [p.name for p in planted if not os.path.lexists(p)]
+        names = {p.name for p in _run_dir(est).iterdir()}
+        said = _log_phrases(est)
+    finally:
+        svc.stop()
+    return gone, names, said
+
+
+@pytest.mark.parametrize("which", ["owner", "failed"])
+def test_the_start_sweep_removes_a_stamp_temporary_over_ten_minutes_old(estate, which):
+    """T237zzu, lane 5's case 1 and Codex's "both names": a regular file of
+    this uid at `register.<which>.tmp-1-deadbeef`, 11 minutes old, is gone
+    once the next start listens, and `run/` holds only its five files'
+    names (socket API section 2.3, with q5's NEW: the two temporary names
+    stay only "while a killed write's leftover stays"). A leftover socket
+    at `s.abcd`, this uid's, is gone too: the socket sweep is unchanged
+    (section 2.4, :190). Before commit 15 the temporary was left."""
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    aged = _plant(run, f"register.{which}.tmp-1-deadbeef")
+    sock = _plant(run, "s.abcd", kind="socket")
+    gone, names, said = _swept(est, aged, sock)
+    assert aged.name in gone, \
+        f"the start's sweep left {aged.name}, {SWEEP_AGED_S} s old: {sorted(names)} {said}"
+    assert sock.name in gone, f"the start's sweep left the leftover socket {sock.name}"
+    assert names <= RUN_FILES and {"register.sock", "register.lock", "register.owner"} <= names, \
+        f"run/ holds more or less than its five files once the start listens: {sorted(names)}"
+
+
+@pytest.mark.parametrize("age", ["fresh", "nine-minutes", "ahead"])
+def test_the_start_sweep_keeps_a_fresh_stamp_temporary(estate, age):
+    """T237zzu, lane 5's case 2 and Codex's "fresh, nine-minute and future
+    files": both temporaries, `register.owner.tmp-1-deadbeef` and
+    `register.failed.tmp-1-deadbeef`, regular and this uid's, dated now,
+    nine minutes back, or an hour ahead of the clock, are kept, with no line
+    for them in `register.log`: only "more than 10 minutes old" is a
+    leftover, and a file dated ahead is younger than the floor. The aged
+    `SWEEP_CONTROL` beside them is removed, so the sweep ran: before commit
+    15 it was left, and the case fails there on it."""
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    back = {"fresh": 0, "nine-minutes": SWEEP_NINE_MINUTES_S, "ahead": SWEEP_AHEAD_S}[age]
+    kept = [_plant(run, f"register.{which}.tmp-1-deadbeef", age=back)
+            for which in ("owner", "failed")]
+    control = _plant(run, SWEEP_CONTROL)
+    gone, names, said = _swept(est, control, *kept)
+    assert control.name in gone, \
+        f"the start's sweep left {control.name}, {SWEEP_AGED_S} s old: {sorted(names)}"
+    assert not [p.name for p in kept if p.name in gone], \
+        f"the start's sweep removed a temporary dated {age}: {gone}"
+    assert not [p for p in said if any(k.name in p for k in kept)], said
+
+
+@pytest.mark.parametrize("kind", ["fifo", "link", "directory"])
+def test_the_start_sweep_keeps_what_is_not_a_regular_file_of_the_form(estate, kind):
+    """T237zzu, lane 5's case 3 and Codex's "a FIFO, a symlink, a
+    directory": at `register.owner.tmp-1-deadbeef`, 11 minutes old, a FIFO,
+    a symbolic link to a regular file 11 minutes old outside `run/`, or a
+    directory is kept, of the same type, with no line in `register.log`
+    ("any file of such a name that is not this uid's socket or regular
+    file"); the link's target is left as it was. `lstat` gives the type, so
+    the link is never followed. The aged `SWEEP_CONTROL` beside it is
+    removed, so the sweep ran: before commit 15 it was left."""
+    import stat as stat_mod
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    target = None
+    if kind == "link":
+        target = est.root / "t" / "sweep-link-target"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("pid=1\n", encoding="ascii")
+        old = time.time() - SWEEP_AGED_S
+        os.utime(target, (old, old))
+    kept = _plant(run, "register.owner.tmp-1-deadbeef", kind=kind, target=target)
+    control = _plant(run, SWEEP_CONTROL)
+    mode = stat_mod.S_IFMT(os.lstat(kept).st_mode)
+    gone, names, said = _swept(est, control, kept)
+    assert control.name in gone, \
+        f"the start's sweep left {control.name}, {SWEEP_AGED_S} s old: {sorted(names)}"
+    assert os.path.lexists(kept) and stat_mod.S_IFMT(os.lstat(kept).st_mode) == mode, \
+        f"the start's sweep removed or replaced the {kind} at {kept.name}"
+    if target is not None:
+        assert target.read_text(encoding="ascii") == "pid=1\n", "the link's target was changed"
+    assert not [p for p in said if kept.name in p], said
+
+
+def test_the_start_sweep_keeps_a_stamp_temporary_name_that_is_not_the_form(estate):
+    """T237zzu, lane 5's case 4 and Codex's "malformed and upper-case names"
+    and "ordinary `s.####` files": each name of `SWEEP_NOT_THE_FORM`, a
+    regular file of this uid 11 minutes old, is kept, with no line in
+    `register.log`. The name must be the form whole: seven or nine hex
+    digits, a pid that is not decimal or is empty, upper-case hex, a
+    suffix, or another file's name is not; and `s.beef` is a socket's name
+    whose file is no socket ("leaves ... any file of such a name that is
+    not this uid's socket"). The aged `SWEEP_CONTROL` beside them is
+    removed, so the sweep ran: before commit 15 it was left."""
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    kept = [_plant(run, name) for name in SWEEP_NOT_THE_FORM]
+    control = _plant(run, SWEEP_CONTROL)
+    gone, names, said = _swept(est, control, *kept)
+    assert control.name in gone, \
+        f"the start's sweep left {control.name}, {SWEEP_AGED_S} s old: {sorted(names)}"
+    assert gone == [control.name], f"the start's sweep removed a name not of the form: {gone}"
+    assert not [p for p in said if any(k.name in p for k in kept)], said
+
+
+#: A STAND-IN THAT RUNS THE SWEEP ALONE AT A HELD CLOCK (T237zzu; Codex's
+#: "controlled-clock test"): it loads @INDEX@ as `_OTHER_UID_SERVE` does
+#: and calls `register_serve_sweep` on `register_serve_paths()`, the
+#: estate's `run/`, with two seams in the module, from the JSON in argv:
+#: its `time`, whose `time()` (and `time_ns()`) answers `clock`; and its
+#: `os`, which passes every call on as it was made, but lists `first`'s
+#: names first, then the rest sorted; makes the entry named in `lstat` or
+#: `unlink` with `ENOENT` gone just before that call, as a race leaves it,
+#: or fails that call with the errno named; and answers `lstat` for a name
+#: in `other_uid` with the uid one above this one's (no second uid without
+#: root). Its `supports_fd` and `supports_dir_fd` hold its own three calls
+#: beside the real ones, so a sweep that asks them first (lane 5's commit
+#: 17) takes the seam's calls as descriptor-relative ones, which they are.
+#: It prints the names it was asked to `lstat`, in order.
+_SWEEP_AT_A_HELD_CLOCK = r'''import errno, importlib.machinery, importlib.util, json, os, sys, time
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("lanes_index_held_clock", @INDEX@)
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+sys.modules[loader.name] = module
+loader.exec_module(module)
+spec = json.loads(sys.argv[1])
+paths = module.register_serve_paths()
+run = paths["run"]
+real_os, real_time, asked = os, time, []
+
+
+def name_of(path):
+    return real_os.path.basename(real_os.fsdecode(path)) if isinstance(path, (str, bytes)) else None
+
+
+def seam(call, path):
+    name = name_of(path)
+    what = spec.get(call, {}).get(name)
+    if what == "ENOENT":
+        real_os.unlink(real_os.path.join(run, name))
+    elif what:
+        code = getattr(errno, what)
+        raise OSError(code, real_os.strerror(code), path)
+    return name
+
+
+class OsSeam:
+    def __getattr__(self, attr):
+        return getattr(real_os, attr)
+
+    @property
+    def supports_fd(self):
+        return real_os.supports_fd | {self.listdir}
+
+    @property
+    def supports_dir_fd(self):
+        return real_os.supports_dir_fd | {self.lstat, self.unlink}
+
+    def listdir(self, *args, **kwargs):
+        names = real_os.listdir(*args, **kwargs)
+        first = [n for n in spec.get("first", []) if n in names]
+        return first + sorted(n for n in names if n not in first)
+
+    def lstat(self, path, *args, **kwargs):
+        asked.append(name_of(path))
+        name = seam("lstat", path)
+        st = real_os.lstat(path, *args, **kwargs)
+        if name in spec.get("other_uid", []):
+            fields = list(st[:10])
+            fields[4] = st.st_uid + 1
+            st = real_os.stat_result(fields)
+        return st
+
+    def unlink(self, path, *args, **kwargs):
+        seam("unlink", path)
+        return real_os.unlink(path, *args, **kwargs)
+
+
+class TimeSeam:
+    def __getattr__(self, attr):
+        return getattr(real_time, attr)
+
+    def time(self):
+        return float(spec["clock"])
+
+    def time_ns(self):
+        return int(spec["clock"]) * 1000000000
+
+
+module.os = OsSeam()
+module.time = TimeSeam()
+module.register_serve_sweep(paths)
+print(json.dumps({"lstat": asked}))
+'''
+
+#: The held clock, in whole seconds, so that a file's mtime set in whole
+#: seconds back from it gives its age exactly, as a float.
+SWEEP_CLOCK = 1_800_000_000
+
+
+def _sweep_at_held_clock(est: Estate, **spec) -> dict:
+    """`_SWEEP_AT_A_HELD_CLOCK` run on the estate's `run/` at `SWEEP_CLOCK`,
+    with `spec`'s seams; its JSON line."""
+    stand_in = est.root / "t" / "sweep-at-a-held-clock.py"
+    stand_in.parent.mkdir(parents=True, exist_ok=True)
+    stand_in.write_text(_SWEEP_AT_A_HELD_CLOCK.replace("@INDEX@", _q(est.index)),
+                        encoding="utf-8")
+    done = subprocess.run([sys.executable, str(stand_in),
+                           json.dumps(dict(spec, clock=SWEEP_CLOCK))],
+                          capture_output=True, text=True, env=est.env(), cwd=str(est.wip),
+                          timeout=60)
+    lines = done.stdout.strip().splitlines()
+    assert done.returncode == 0 and lines, done
+    return json.loads(lines[-1])
+
+
+def test_the_sweep_keeps_a_stamp_temporary_exactly_ten_minutes_old_and_removes_one_a_second_older(
+        estate):
+    """T237zzu, Codex's "exactly 600 seconds", at a held clock (its
+    "controlled-clock test"): "more than 10 minutes old" is strict, so both
+    temporaries dated exactly 600 s before the clock are kept, with no line
+    in `register.log`, and both dated 601 s before it are removed. As built
+    at `1c7a4aa0`, `now - st.st_mtime > REGISTER_SERVE_TEMP_FLOOR_S`, one
+    `time.time()` for the sweep. The sweep runs alone in a stand-in
+    (`_SWEEP_AT_A_HELD_CLOCK`), whose `time.time()` answers `SWEEP_CLOCK`,
+    in files mode, since the sweep reads no configuration. Before commit 15
+    the 601 s files were left."""
+    est = estate()
+    run = _run_dir(est)
+    kept = [_plant(run, f"register.{w}.tmp-1-deadbeef", age=600, clock=SWEEP_CLOCK)
+            for w in ("owner", "failed")]
+    aged = [_plant(run, f"register.{w}.tmp-2-0123abcd", age=601, clock=SWEEP_CLOCK)
+            for w in ("owner", "failed")]
+    _sweep_at_held_clock(est)
+    left = {p.name for p in run.iterdir()}
+    assert not [p.name for p in aged if p.name in left], \
+        f"the sweep left a temporary 601 s old at its held clock: {sorted(left)}"
+    assert all(p.name in left for p in kept), \
+        f"the sweep removed a temporary exactly 600 s old at its held clock: {sorted(left)}"
+    assert not [p for p in _log_phrases(est) if "tmp-1-deadbeef" in p], _log_phrases(est)
+
+
+def test_the_sweep_passes_over_an_entry_gone_logs_one_it_cannot_date_or_remove_and_goes_on(
+        estate):
+    """T237zzu, Codex's "silent `ENOENT`" and "exact logging plus
+    continuation on other failures", lane 5's optional case 5 (the line
+    names "temporary file") and its case 6 (another uid's file), at a held
+    clock with failures put in by the stand-in's `os` seam, since this uid
+    can remove any entry of its own 0700 `run/` and owns every file it
+    makes (`_SWEEP_AT_A_HELD_CLOCK`). Every entry is 11 minutes old; the
+    first seven are listed first, in this order:
+
+    - gone before its `lstat`, and gone before its `unlink` (`ENOENT`):
+      passed over, with no line (`register_serve_sweep`'s docstring at
+      `1c7a4aa0`, "An entry gone before it is reached (`ENOENT`, at the
+      `lstat` or at the removal) is passed over");
+    - an `unlink` that fails `EPERM`: kept, with the line "the leftover
+      temporary file <name> could not be removed (EPERM)" (q5's NEW, "It
+      logs one it cannot remove, and leaves it"; the line's words are the
+      code's, "a temporary file's line says 'temporary file' where a
+      socket's says 'temporary socket'");
+    - an `lstat` that fails `EACCES`, a file it cannot date: kept ("keeps
+      one it cannot date"), with the same line and `EACCES`;
+    - another uid's regular file, by the seam: kept, with no line;
+    - a leftover socket at `s.abcd` whose `unlink` fails `EPERM`: kept, with
+      the socket's line, unchanged by commit 15.
+
+    Then the two plain temporaries after them are removed, so the sweep goes
+    on past each failure, and no other line is written. Before commit 15
+    the sweep asked no temporary file's `lstat`, and both were left."""
+    est = estate()
+    run = _run_dir(est)
+    names = {"gone-at-lstat": "register.owner.tmp-11-0000000a",
+             "gone-at-unlink": "register.owner.tmp-12-0000000b",
+             "unlink-eperm": "register.owner.tmp-13-0000000c",
+             "lstat-eacces": "register.failed.tmp-14-0000000d",
+             "other-uid": "register.failed.tmp-15-0000000e",
+             "socket-eperm": "s.abcd",
+             "plain-1": "register.failed.tmp-16-0000000f",
+             "plain-2": "register.owner.tmp-17-00000010"}
+    for key, name in names.items():
+        _plant(run, name, kind="socket" if key == "socket-eperm" else "file",
+               clock=SWEEP_CLOCK)
+    order = [names[k] for k in ("gone-at-lstat", "gone-at-unlink", "unlink-eperm",
+                                "lstat-eacces", "other-uid", "socket-eperm")]
+    seen = _sweep_at_held_clock(
+        est, first=order,
+        lstat={names["gone-at-lstat"]: "ENOENT", names["lstat-eacces"]: "EACCES"},
+        unlink={names["gone-at-unlink"]: "ENOENT", names["unlink-eperm"]: "EPERM",
+                names["socket-eperm"]: "EPERM"},
+        other_uid=[names["other-uid"]])
+    left = {p.name for p in run.iterdir()}
+    said = [p for p in _log_phrases(est) if p.startswith("the leftover temporary ")]
+    plain = [names["plain-1"], names["plain-2"]]
+    assert not [n for n in plain if n in left], \
+        f"the sweep did not go on to remove the plain temporaries after its failures: {sorted(left)}"
+    asked = seen["lstat"]
+    assert all(asked.index(n) > asked.index(names["socket-eperm"]) for n in plain), asked
+    assert names["gone-at-lstat"] not in left and names["gone-at-unlink"] not in left, sorted(left)
+    for key in ("unlink-eperm", "lstat-eacces", "other-uid", "socket-eperm"):
+        assert names[key] in left, f"the sweep removed {names[key]} ({key}): {sorted(left)}"
+    assert sorted(said) == sorted([
+        f"the leftover temporary file {names['unlink-eperm']} could not be removed (EPERM)",
+        f"the leftover temporary file {names['lstat-eacces']} could not be removed (EACCES)",
+        f"the leftover temporary socket {names['socket-eperm']} could not be removed (EPERM)",
+    ]), said
+
+
+# THE START'S REFUSAL AT ITS OWN SECOND CHECK OF `run/` (T237zzv, then
+# T237zzz), T512's commit 20, `0f188ab6` (commit 21, `71c32005`, changes
+# comments and docstrings only), then its commit 22, `e691f094`. THE ORACLE
+# is lane 3's ruling on lane 5's question (#165 6935289154): "when the
+# sweep's own check of `run/` fails after `serve`'s check passed, the start
+# REFUSES with §2.2's exit 2. It does not bind by path." And why: "A second
+# check that fails means `run/` changed after it was checked. Binding a
+# socket there by path would trust a directory that has just failed its
+# check. §2.2 refuses that case, so the start ends there." It asks for "a
+# case for it in lane 2's T237 sweep cases". Socket API section 2.2
+# (`f2098c21`, :163-168): "Never used, never repaired": a directory that
+# fails the check "is not used", "the service exits 2 naming it", and
+# `serve` "writes nothing in it". Cases and expectations are lane 5's, in
+# `T512C20-REPORT-1117a.md`.
+#
+# T237zzz: NO LOCK EITHER. Lane 3's BLOCKING 1 on `71c32005` (#165
+# 6935871785, Codex's order) moved the check ahead of the lock, and commit 22
+# makes it so. The code at T512's tip, `a47ab074` (commit 26):
+# `register_serve_run` (:9718) first opens `run/` once, with `O_DIRECTORY`
+# and `O_NOFOLLOW`, and checks that descriptor (`register_serve_dir_open`,
+# :9505, in `register_serve_dir_check`'s words) before any lock or socket
+# path is used; where it fails (:9769) it writes one line to standard error,
+# `serve: REFUSED: the service's directory <run> <why>, at the start's own
+# check by a descriptor, made after serve's first: ...`, and returns
+# `EXIT_REFUSED` (2, :150), having opened and made nothing in `run/`: "no
+# lock, no socket, no owner file and no stamp". At commits 20 and 21 the
+# same check was the sweep's (`register_serve_sweep`, :9448 at `71c32005`),
+# made after `register.lock` was opened by its path, and its line said `at
+# the sweep's check`; the case asserts the words both lines carry, `made
+# after serve's first`, which `cmd_serve`'s own refusal of the directory
+# does not. The refusal case asserts lane 2's letter as lane 5 sets it out
+# (#165 6937684143): exit 2; no `register.lock` in the failed `run/` or in a
+# link's target; no `register.sock` and no `s.*` socket; no `register.owner`
+# and no `register.failed`; and `register.log` byte for byte as before.
+#
+# T237zzz: AND NO STAMP (lane 2's choice, 6937684143; T512's commits 25,
+# `40713fa2`, and 26, `a47ab074`). `register_serve_stamp` (:7652), which
+# `cmd_serve` calls for `config-refused`, `path-too-long` and `no-psql`
+# after its first check, now checks `run/` by `register_serve_dir_open`
+# first (:7687): where that check fails it opens and writes nothing and
+# returns why, and `cmd_serve`'s note says `not stamped <cause>: <why>`
+# (:8033 for `no-psql`); the exit stays 2. `register_serve_dir_check` says
+# a directory that fails "is never stamped (ERR-28)". Before commit 25 the
+# stamp opened `register.lock` and wrote `register.failed` by their paths,
+# so a `run/` changed in that window was stamped, through a link into the
+# link's target. Of the three causes, `no-psql` is the one the stand-in
+# reaches: its `--version` changes `run/` and then names no version, so
+# `register_serve_psql` refuses it (:8029). `config-refused` and
+# `path-too-long` are stamped before `psql` is run, so no `psql` can change
+# `run/` between `cmd_serve`'s first check and their stamps.
+#
+# THE WINDOW, MADE DETERMINISTIC. `cmd_serve` checks the directory first
+# (`register_serve_dir_check`), then the configuration, then `psql`
+# (`register_serve_psql`: `psql --version`, once per process), and only then
+# runs `register_serve_run`, which makes the check again; a `psql` it
+# refuses is stamped (`register_serve_stamp`), which makes it again too. A
+# `psql` whose `--version` changes `run/` therefore changes it after the
+# first check and before the second, every time (`_RUN_CHANGING_PSQL`).
+#
+# NOT TESTED: another uid's `run/` and a `run/` whose `fstat` fails, which
+# the start's check refuses too: neither can be made for real as non-root
+# (lane 5 covers them with injected stand-ins). Nor a platform where
+# `os.open` takes no `dir_fd`, where the lock and the stamp go by their
+# paths after the check.
+
+#: THE THREE CHANGES lane 5 names, the ids of the refusal case: `run/` at
+#: mode 0755 or 0770, and `run/` renamed with a link in its place.
+RUN_CHANGES = ("mode-0755", "mode-0770", "link")
+#: The reason the second check gives for each change, in
+#: `register_serve_dir_check`'s words: for the link, only the phrase, since
+#: the error's text is the kernel's (on Linux, "Not a directory").
+RUN_REASONS = {"mode-0755": "is mode 755, not 700", "mode-0770": "is mode 770, not 700",
+               "link": "cannot be opened"}
+#: How long a start has to end, or to bind, in these cases.
+RUN_REFUSED_S = 15.0
+#: The leftovers of an earlier start that each case plants in `run/`: a
+#: stamp temporary, 11 minutes old (`_plant`'s age), and a socket at a short
+#: temporary name, which a sweep would remove.
+RUN_LEFT_FILE = "register.owner.tmp-1-deadbeef"
+RUN_LEFT_SOCKET = "s.abcd"
+#: The one line of `register.log` an earlier service wrote, which a start
+#: that refuses leaves as it is.
+RUN_LEFT_LOG = "2026-11-16T00:00:00Z stopped: idle for 900 s\n"
+
+#: A STAND-IN `psql` THAT CHANGES `run/` AT ITS FIRST `--version` CALL
+#: (T237zzv), and hands every call on to the real `psql` (`@REAL@`), the
+#: held child's among them. `run-change.json`, beside it, says how: `mode-`
+#: and an octal mode for `os.chmod` of `run/`, or `link`, which renames
+#: `run/` to `moved` and puts a symbolic link to `other` at its path; a
+#: control writes no file and changes nothing. `run-change.done` records
+#: what it did, so a case knows the change was made here, and a later
+#: `--version` call changes nothing. With `fail` (T237zzz), that first
+#: `--version` call then exits 1 and prints nothing, a `psql` that names no
+#: version, which `serve` refuses as `no-psql` and stamps.
+_RUN_CHANGING_PSQL = r'''#!@PY@ -I
+import json, os, sys
+HERE = @HERE@
+REAL = @REAL@
+args = sys.argv[1:]
+done = os.path.join(HERE, "run-change.done")
+if args == ["--version"] and not os.path.exists(done):
+    try:
+        with open(os.path.join(HERE, "run-change.json"), encoding="utf-8") as handle:
+            spec = json.load(handle)
+    except FileNotFoundError:
+        spec = {"how": "none"}
+    how = spec["how"]
+    if how.startswith("mode-"):
+        os.chmod(spec["run"], int(how[5:], 8))
+    elif how == "link":
+        os.rename(spec["run"], spec["moved"])
+        os.symlink(spec["other"], spec["run"])
+    with open(done, "x", encoding="utf-8") as handle:
+        handle.write(how + "\n")
+    if spec.get("fail"):
+        sys.exit(1)
+os.execv(REAL, [REAL] + args)
+'''
+
+
+def _run_left(run: Path) -> frozenset:
+    """`run/` as a killed start and an earlier service leave it, 0700 and
+    this uid's (`_plant`): a stamp temporary 11 minutes old, a leftover
+    socket, and `register.log` with its one line. Its names."""
+    _plant(run, RUN_LEFT_FILE)
+    _plant(run, RUN_LEFT_SOCKET, kind="socket")
+    log = run / "register.log"
+    log.write_text(RUN_LEFT_LOG, encoding="utf-8")
+    log.chmod(0o600)
+    return frozenset(p.name for p in run.iterdir())
+
+
+def _run_changing_psql(est: Estate, how: str = None, fail: bool = False, **paths) -> Path:
+    """`_RUN_CHANGING_PSQL` as `psql` in a directory of its own, in front of
+    the case's cluster's real one, set to change `run/` as `how` says (None:
+    not at all) with `paths` (`run`, and for `link`, `moved` and `other`),
+    and with `fail` to answer that `--version` call with no version.
+    The directory is returned; `_with_path` puts it first on a `PATH`."""
+    where = est.root / "run-change-bin"
+    where.mkdir(parents=True, exist_ok=True)
+    _script(where / "psql", _RUN_CHANGING_PSQL, PY=sys.executable, HERE=_q(where),
+            REAL=_q(est.pg.cluster.tool("psql")))
+    if how is not None or fail:
+        (where / "run-change.json").write_text(
+            json.dumps({"how": how or "none", "fail": fail,
+                        **{k: str(v) for k, v in paths.items()}}), encoding="utf-8")
+    return where
+
+
+def _with_path(est: Estate, where: Path) -> str:
+    """The estate's `PATH` with `where` first."""
+    return os.pathsep.join([str(where), est.env()["PATH"]])
+
+
+def _changed_how(where: Path):
+    """What `_RUN_CHANGING_PSQL` did at its `--version` call, from
+    `run-change.done`, or None where it was never called."""
+    path = where / "run-change.done"
+    return path.read_text(encoding="utf-8").strip() if path.exists() else None
+
+
+def _serve_until_it_ends_or_binds(est: Estate, where: Path, limit: float = RUN_REFUSED_S) -> tuple:
+    """`lanes-index serve` started as `_Service` starts it, with `where`
+    first on its `PATH`, and waited for until it ends or a socket stands at
+    `register.sock` (it has bound), inside `limit` seconds: its exit code,
+    None where it was still running, whether the socket stood when the wait
+    ended, and its standard error; a start still running is then stopped
+    with `SIGTERM` as `_Service.stop` stops it, which removes its socket.
+    Its standard error is read without waiting, so a child holding the pipe
+    cannot hang it."""
+    sock = _run_dir(est) / "register.sock"
+    proc = subprocess.Popen([sys.executable, str(est.index), "serve"], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            env=est.env(PATH=_with_path(est, where)), cwd=str(est.wip),
+                            start_new_session=True)
+    est.spare.append(proc.pid)
+    _until(lambda: proc.poll() is not None or sock.exists(), limit)
+    code, bound = proc.poll(), sock.exists()
+    if code is None:
+        _kill(proc.pid, signal.SIGTERM)
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            _kill(proc.pid)
+    os.set_blocking(proc.stderr.fileno(), False)
+    return code, bound, (proc.stderr.read() or b"").decode("utf-8", "replace")
+
+
+@pytest.mark.parametrize("change", RUN_CHANGES)
+def test_a_start_whose_run_directory_fails_the_sweeps_own_check_refuses_with_2_and_binds_nothing(
+        estate, change):
+    """T237zzv, T512's commit 20 (lane 3's ruling, #165 6935289154; socket
+    API section 2.2), and T237zzz, its commit 22 (lane 3's BLOCKING 1, #165
+    6935871785; lane 2's letter as lane 5 sets it out, 6937684143): a
+    `serve` whose `run/` passed `cmd_serve`'s check and then fails the
+    start's own, by the descriptor it opens, refuses with 2 and opens and
+    makes nothing in it. `run/` is this uid's at 0700 with a stamp temporary
+    11 minutes old, a leftover socket and a `register.log` of one line
+    (`_run_left`); the stand-in `psql`'s `--version` (`_RUN_CHANGING_PSQL`),
+    which `cmd_serve` runs after its check and before `register_serve_run`,
+    changes it:
+
+    - `[mode-0755]` and `[mode-0770]`: `run/` is made mode 0755, or 0770;
+      the start's check finds "is mode 755, not 700", or 770.
+    - `[link]`: `run/` is renamed to `run.moved` and a link to another
+      directory of this uid's at 0700, planted with leftovers of its own,
+      is put at its path; the start's open, with `O_NOFOLLOW`, fails,
+      "cannot be opened" (on Linux, "Not a directory": the case asserts the
+      phrase, not the error's text). Before commit 22 the lock and the
+      probe, which went by path, ran through the link first.
+
+    The start ends with 2, and standard error says `serve: REFUSED: the
+    service's directory` naming `run/`, the reason, and `made after serve's
+    first`, the words of the second check's line at commits 20 to 26 (its
+    `at the sweep's check` became `at the start's own check by a
+    descriptor` at commit 22), which `cmd_serve`'s own refusal does not
+    write. In each directory the start could have written in (`run/`; or
+    `run.moved` and the link's target), and as lane 5 sets lane 2's letter
+    out: no `register.lock`; no `register.sock` and no `s.*` socket; no
+    `register.owner` and no `register.failed`; `register.log` byte for byte
+    as it was; and no name at all besides the planted ones. The stale
+    temporary and the leftover socket are still there, since the start
+    sweeps nothing in a directory that failed. The directory is never
+    repaired: its mode is the changed one, or the link is still the link.
+
+    Before commit 20 (`bc7f34c7`, commit 19) the sweep wrote one line to
+    standard error, swept nothing and went on by `run/`'s path: the start
+    bound a socket in the failed directory, wrote an owner file there and
+    served, and the case fails on its first assertion. At commits 20 and 21
+    (`71c32005`) the start refused with 2 but had opened `register.lock` by
+    its path first, so an empty one stood in `run/`, or in the link's
+    target, and the case fails on its `register.lock` assertion. The control
+    is `test_the_start_sweeps_when_run_passes_the_sweeps_own_check`."""
+    import stat as stat_mod
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    left = _run_left(run)
+    dirs, how, other, moved = [run], change, None, None
+    if change == "link":
+        other = _state_home() / "link-target"
+        assert _run_left(other) == left, "the link's target was not planted as run/ was"
+        moved = run.with_name("run.moved")
+        dirs = [moved, other]
+    where = _run_changing_psql(est, how, run=run, moved=moved, other=other)
+    code, bound, err = _serve_until_it_ends_or_binds(est, where)
+    assert _changed_how(where) == change, \
+        f"the stand-in psql did not change run/ at its --version call: {_changed_how(where)!r} {err!r}"
+    reason = RUN_REASONS[change]
+    went = ("it was still running" + (", with a socket at register.sock" if bound else "")
+            if code is None else f"it ended {code}")
+    assert (code == 2 and "serve: REFUSED: the service's directory" in err
+            and str(run) in err and reason in err and "made after serve's first" in err), \
+        (f"the start did not refuse at its second check of run/ with 2 ({change}): {went}, "
+         f"stderr {err!r}")
+    for d in dirs:
+        names = {p.name for p in d.iterdir()}
+        made = names - left
+        # T237zzz: LANE 2'S LETTER AS LANE 5 SETS IT OUT (#165 6937684143).
+        assert "register.lock" not in names, \
+            f"the start made register.lock in {d}, which failed its check: it opens nothing there"
+        assert "register.sock" not in names and not [n for n in made if n.startswith("s.")], \
+            f"the start bound a socket in {d}, which failed its check: {sorted(made)}"
+        assert "register.owner" not in names and "register.failed" not in names, \
+            (f"the start wrote an owner file or a stamp in {d}, which failed its check: "
+             f"{sorted(made)}")
+        assert (d / "register.log").read_bytes() == RUN_LEFT_LOG.encode("utf-8"), \
+            f"the start wrote to register.log in {d}"
+        assert not made, f"the start made {sorted(made)} in {d}, which failed its check"
+        assert not left - names, \
+            f"the start removed {sorted(left - names)} from {d}: nothing is swept in a failed directory"
+    if change == "link":
+        assert os.path.islink(run) and os.readlink(run) == str(other), \
+            "run/ is no longer the link the stand-in planted: it was repaired or replaced"
+    else:
+        assert stat_mod.S_IMODE(os.lstat(run).st_mode) == int(change[5:], 8), \
+            "run/'s mode was changed back: a directory that fails its check is never repaired"
+
+
+def test_the_start_sweeps_when_run_passes_the_sweeps_own_check(estate):
+    """T237zzv, lane 5's control for commit 20's refusal: the same start,
+    the same stand-in `psql` on its `PATH` and the same leftovers in `run/`
+    (`_run_left`), with `run/` left as it is, 0700 and this uid's. It passes
+    the sweep's own check as it passed `cmd_serve`'s, so the start sweeps,
+    binds and serves as before commit 20, and this case holds before and
+    after it: the stand-in was reached, the stamp temporary and the leftover
+    socket are removed, `register.sock` and `register.owner` are there, and
+    the service, once it answers a request, ends with 0 on `SIGTERM`
+    (`RegisterService.serve`'s `EXIT_OK`)."""
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    _run_left(run)
+    where = _run_changing_psql(est)
+    svc = _Service(est, PATH=_with_path(est, where))
+    try:
+        try:
+            _ask_service(est, ANY_REQUEST, limit=5.0)
+        except OSError:
+            pass
+        names = {p.name for p in run.iterdir()}
+    finally:
+        svc.stop()
+    code = svc.proc.poll()
+    assert _changed_how(where) == "none", \
+        f"the stand-in psql's --version was not reached, or changed run/: {_changed_how(where)!r}"
+    assert not {RUN_LEFT_FILE, RUN_LEFT_SOCKET} & names, \
+        f"the start's sweep left a stale temporary though run/ passed its check: {sorted(names)}"
+    assert {"register.sock", "register.owner"} <= names, \
+        f"the start did not bind and write its owner file: {sorted(names)}"
+    assert code == 0, f"the service did not end with 0 on SIGTERM: {code}"
+
+
+@pytest.mark.parametrize("change", RUN_CHANGES)
+def test_a_start_refused_for_no_psql_is_not_stamped_where_run_fails_the_stamps_own_check(
+        estate, change):
+    """T237zzz, T512's commits 25 and 26 (lane 5, #165 6937684143, "a `run/`
+    changed after the first check gives `not stamped <cause>: …`, nothing
+    written, and exit 2"; socket API section 2.2 and ERR-28: a directory
+    that fails its check is never stamped). The same `run/` and leftovers
+    as the refusal case (`_run_left`), and the same stand-in `psql`, whose
+    first `--version` call changes `run/` as `[mode-0755]`, `[mode-0770]`
+    or `[link]` says and then names no version (`fail`), so `cmd_serve`
+    refuses it, `no-psql`, and calls `register_serve_stamp`, whose own
+    check of `run/` by a descriptor fails.
+
+    The start ends with 2 and `serve: REFUSED: no usable psql:`. In each
+    directory the stamp could have written in (`run/`; or `run.moved` and
+    the link's target): no `register.lock`, no `register.failed` and no
+    temporary of it, no name at all besides the planted ones, none removed,
+    and `register.log` byte for byte as it was. The note says `not stamped
+    no-psql:` and why, `run/`'s path and the check's reason, and never
+    `stamped no-psql`. `run/` is not repaired.
+
+    Before commit 25 (`71c32005`, commit 21; and commits 22 to 24) the
+    stamp opened `register.lock` and wrote `register.failed` by their paths:
+    both stand in `run/`, or in the link's target, and the case fails on its
+    `register.lock` assertion. At commit 25 nothing is written, but the note
+    still says `stamped no-psql`, and the case fails on its note. The
+    control is
+    `test_a_start_refused_for_no_psql_is_stamped_where_run_passes_the_stamps_own_check`."""
+    import stat as stat_mod
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    left = _run_left(run)
+    dirs, other, moved = [run], None, None
+    if change == "link":
+        other = _state_home() / "link-target"
+        assert _run_left(other) == left, "the link's target was not planted as run/ was"
+        moved = run.with_name("run.moved")
+        dirs = [moved, other]
+    where = _run_changing_psql(est, change, fail=True, run=run, moved=moved, other=other)
+    code, bound, err = _serve_until_it_ends_or_binds(est, where)
+    assert _changed_how(where) == change, \
+        (f"the stand-in psql did not change run/ at its --version call: "
+         f"{_changed_how(where)!r} {err!r}")
+    went = ("it was still running" + (", with a socket at register.sock" if bound else "")
+            if code is None else f"it ended {code}")
+    assert code == 2 and "serve: REFUSED: no usable psql: " in err, \
+        f"the start did not refuse its psql with 2 ({change}): {went}, stderr {err!r}"
+    for d in dirs:
+        names = {p.name for p in d.iterdir()}
+        made = names - left
+        assert "register.lock" not in names, \
+            f"the stamp made register.lock in {d}, which failed its check: {sorted(made)}"
+        assert "register.failed" not in names and not [
+            n for n in made if n.startswith("register.failed.tmp-")], \
+            f"the start stamped {d}, which failed its check: {sorted(made)}"
+        assert not made, f"the start made {sorted(made)} in {d}, which failed its check"
+        assert not left - names, f"the start removed {sorted(left - names)} from {d}"
+        assert (d / "register.log").read_bytes() == RUN_LEFT_LOG.encode("utf-8"), \
+            f"the start wrote to register.log in {d}"
+    assert ("not stamped no-psql: " in err and f"{run} {RUN_REASONS[change]}" in err
+            and "; stamped no-psql" not in err), \
+        f"the note did not say no-psql was not stamped, and why ({change}): stderr {err!r}"
+    if change == "link":
+        assert os.path.islink(run) and os.readlink(run) == str(other), \
+            "run/ is no longer the link the stand-in planted: it was repaired or replaced"
+    else:
+        assert stat_mod.S_IMODE(os.lstat(run).st_mode) == int(change[5:], 8), \
+            "run/'s mode was changed back: a directory that fails its check is never repaired"
+
+
+def test_a_start_refused_for_no_psql_is_stamped_where_run_passes_the_stamps_own_check(estate):
+    """T237zzz, the control (lane 5, #165 6937684143: "With `run/` good, it
+    stamps as before"): the same leftovers in `run/` and the same stand-in
+    `psql`, whose first `--version` call changes nothing and names no
+    version. `run/` passes the stamp's own check as it passed `cmd_serve`'s,
+    so `no-psql` is stamped under `register.lock` (socket API section 8.6),
+    before commits 25 and 26 and after them: exit 2, `serve: REFUSED: no
+    usable psql:` and `stamped no-psql` on standard error; `register.failed`
+    holds the UTC and `no-psql` and no other text; `register.lock` and
+    `register.failed` are the only new names, so no temporary of the stamp
+    is left and nothing is bound; nothing is swept; and `register.log` is
+    as it was."""
+    est = estate(mode="primary")
+    run = _run_dir(est)
+    left = _run_left(run)
+    where = _run_changing_psql(est, fail=True)
+    code, bound, err = _serve_until_it_ends_or_binds(est, where)
+    names = {p.name for p in run.iterdir()}
+    assert _changed_how(where) == "none", \
+        (f"the stand-in psql's --version was not reached, or changed run/: "
+         f"{_changed_how(where)!r} {err!r}")
+    went = ("it was still running" + (", with a socket at register.sock" if bound else "")
+            if code is None else f"it ended {code}")
+    assert (code == 2 and "serve: REFUSED: no usable psql: " in err
+            and "; stamped no-psql" in err), \
+        f"the start did not refuse its psql with 2 and stamp no-psql: {went}, stderr {err!r}"
+    stamp = run / "register.failed"
+    words = stamp.read_text(encoding="ascii").split() if stamp.is_file() else None
+    assert words is not None and len(words) == 2 and words[1] == "no-psql", \
+        f"register.failed does not hold the UTC and no-psql alone: {words!r}"
+    assert names - left == {"register.lock", "register.failed"}, \
+        (f"the stamp made more, or less, than register.lock and register.failed: "
+         f"{sorted(names - left)}")
+    assert not left - names, f"the start removed {sorted(left - names)} from {run}"
+    assert (run / "register.log").read_bytes() == RUN_LEFT_LOG.encode("utf-8"), \
+        f"the start wrote to register.log in {run}"
+
+
+# T237zzz: THE SAME CHECKS THROUGH THE LAUNCH PATH, `register.log` FIRST
+# (lane 3's Codex review of `a47ab074`, #165 6937934447, BLOCKING 1, ruled
+# IN: "`register_serve_launch` opens `register.log` and gives that
+# descriptor to the child as its stderr (:7914-7922). So the refusal's note
+# (:9772-9776), and a failed stamp's "not stamped" (:8018-8033), append to
+# the log inside the directory that failed"; and "Lane 2's further letter
+# for T237zzv asserts `register.log` unchanged in a `run/` that failed,
+# beside no `register.lock`"). The cases above start `serve` with its
+# standard error on the case's pipe, so they cannot see that write; these
+# start it as a client does, `lanes-index serve --start`
+# (`register_serve_start_only`, then `register_serve_launch`), with the same
+# stand-in `psql` and the same changes of `run/`, made after the starter's
+# check and `serve`'s first. The service is detached from the starter, so a
+# small reaper (`_LAUNCH_REAPER`) runs the starter as a child subreaper
+# (Linux's `PR_SET_CHILD_SUBREAPER`), takes the detached service as its own
+# child when the starter exits, and reads its exit code with `waitpid`.
+# Codex's fix keeps the start's diagnostics on a descriptor outside `run/`
+# until the child holds and has checked its `run/` descriptor, so the
+# starter's own standard error is kept in a file, never a pipe a service
+# could hold open.
+
+#: THE REAPER: runs its argv (`serve --start`) with its output in
+#: `@OUT@.start-out` and `.start-err`, as a child subreaper, then waits, up
+#: to `@LIMIT@` seconds, for every process the starter left; one still alive
+#: then is sent `SIGTERM` and waited for again. `@OUT@` gets, as JSON,
+#: whether it is a subreaper, the starter's exit code, each reaped
+#: `[pid, exit code]` and whether the wait timed out.
+_LAUNCH_REAPER = r'''#!@PY@ -I
+import ctypes, json, os, signal, subprocess, sys
+OUT = @OUT@
+LIMIT = @LIMIT@
+reaper = ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+def children():
+    pids = []
+    for tid in os.listdir("/proc/self/task"):
+        try:
+            with open(f"/proc/self/task/{tid}/children", encoding="ascii") as handle:
+                pids += [int(p) for p in handle.read().split()]
+        except OSError:
+            pass
+    return pids
+def alarm(signum, frame):
+    raise TimeoutError
+signal.signal(signal.SIGALRM, alarm)
+with open(OUT + ".start-out", "wb") as out, open(OUT + ".start-err", "wb") as err:
+    start = subprocess.run(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=out, stderr=err)
+ended, timed_out = [], False
+signal.alarm(LIMIT)
+try:
+    while True:
+        try:
+            pid, status = os.waitpid(-1, 0)
+        except ChildProcessError:
+            break
+        ended.append([pid, os.waitstatus_to_exitcode(status)])
+except TimeoutError:
+    timed_out = True
+    for pid in children():
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    signal.alarm(10)
+    try:
+        while True:
+            pid, status = os.waitpid(-1, 0)
+            ended.append([pid, os.waitstatus_to_exitcode(status)])
+    except (ChildProcessError, TimeoutError):
+        pass
+signal.alarm(0)
+with open(OUT, "w", encoding="utf-8") as handle:
+    json.dump({"reaper": reaper, "start": start.returncode, "ended": ended,
+               "timed_out": timed_out}, handle)
+'''
+
+
+def _launch_until_the_service_ends(est: Estate, where: Path, limit: float = RUN_REFUSED_S) -> dict:
+    """`lanes-index serve --start`, as a client starts the service, with
+    `where` first on its `PATH`, under `_LAUNCH_REAPER`: the reaper's JSON,
+    with the starter's standard error as `err`. Skips where this platform
+    has no child subreaper (Linux's `prctl`)."""
+    out = est.root / "launch.json"
+    reaper = _script(est.root / "launch-reaper", _LAUNCH_REAPER, PY=sys.executable, OUT=_q(out),
+                     LIMIT=str(int(limit)))
+    subprocess.run([str(reaper), sys.executable, str(est.index), "serve", "--start"],
+                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                   env=est.env(PATH=_with_path(est, where)), cwd=str(est.wip),
+                   timeout=limit + 30)
+    got = json.loads(out.read_text(encoding="utf-8"))
+    if not got["reaper"]:
+        pytest.skip("no child subreaper here (PR_SET_CHILD_SUBREAPER is Linux's)")
+    got["err"] = Path(str(out) + ".start-err").read_text(encoding="utf-8", errors="replace")
+    return got
+
+
+def _launched_and_left_as_it_was(est: Estate, change: str, fail: bool) -> None:
+    """The launch-path case for `change`, a refusal (`fail` False) or a
+    `no-psql` stamp (`fail` True): lane 5's oracle (#165 6937684143) in
+    each directory the start could have written in, `register.lock` first
+    and `register.log` byte for byte as Codex's BLOCKING 1 asks (#165
+    6937934447)."""
+    import stat as stat_mod
+    run = _run_dir(est)
+    left = _run_left(run)
+    dirs, other, moved = [run], None, None
+    if change == "link":
+        other = _state_home() / "link-target"
+        assert _run_left(other) == left, "the link's target was not planted as run/ was"
+        moved = run.with_name("run.moved")
+        dirs = [moved, other]
+    where = _run_changing_psql(est, change, fail=fail, run=run, moved=moved, other=other)
+    got = _launch_until_the_service_ends(est, where)
+    assert _changed_how(where) == change, \
+        (f"the launched service's stand-in psql did not change run/ at its --version call: "
+         f"{_changed_how(where)!r} {got!r}")
+    assert not got["timed_out"] and [code for _pid, code in got["ended"]] == [2], \
+        f"the launched service did not end with 2 alone ({change}): {got!r}"
+    for d in dirs:
+        names = {p.name for p in d.iterdir()}
+        made = names - left
+        assert "register.lock" not in names, \
+            f"the launched start made register.lock in {d}, which failed its check: {sorted(made)}"
+        assert "register.sock" not in names and not [n for n in made if n.startswith("s.")], \
+            f"the launched start bound a socket in {d}, which failed its check: {sorted(made)}"
+        assert not {"register.owner", "register.failed"} & names and not [
+            n for n in made if n.startswith("register.failed.tmp-")], \
+            (f"the launched start wrote an owner file or a stamp in {d}, which failed its "
+             f"check: {sorted(made)}")
+        log = (d / "register.log").read_bytes()
+        assert log == RUN_LEFT_LOG.encode("utf-8"), \
+            (f"the launched start wrote to register.log in {d}, which failed its check "
+             f"(#165 6937934447, BLOCKING 1): {log[len(RUN_LEFT_LOG):]!r}")
+        assert not made, f"the launched start made {sorted(made)} in {d}, which failed its check"
+        assert not left - names, f"the launched start removed {sorted(left - names)} from {d}"
+    if change == "link":
+        assert os.path.islink(run) and os.readlink(run) == str(other), \
+            "run/ is no longer the link the stand-in planted: it was repaired or replaced"
+    else:
+        assert stat_mod.S_IMODE(os.lstat(run).st_mode) == int(change[5:], 8), \
+            "run/'s mode was changed back: a directory that fails its check is never repaired"
+
+
+@pytest.mark.parametrize("change", RUN_CHANGES)
+def test_a_launched_start_whose_run_directory_fails_its_own_check_leaves_register_log_as_it_was(
+        estate, change):
+    """T237zzz, the refusal case through the launch path (lane 3's Codex
+    review of `a47ab074`, #165 6937934447, BLOCKING 1; lane 5's oracle,
+    6937684143; socket API section 2.2 and ERR-28). `serve --start` checks
+    `run/` and launches the service with `register.log` as its standard
+    error (`register_serve_launch`); the service passes its first check,
+    and the stand-in `psql`'s `--version` then changes `run/` as
+    `[mode-0755]`, `[mode-0770]` or `[link]` says. The service ends with 2
+    (read by the reaper), and in each directory it could have written in:
+    no `register.lock`; no `register.sock` and no new `s.*`; no
+    `register.owner` and no `register.failed`; `register.log` byte for byte
+    as it was; no new name and none removed; `run/` not repaired.
+
+    At `a47ab074` (commit 26) the refusal's line is appended to
+    `register.log` in the failed `run/`, the launcher's descriptor of it,
+    and the case fails on its `register.log` assertion alone; before commit
+    22 (`71c32005`) it fails first on `register.lock`. It passes once the
+    start's diagnostics stay outside `run/` until its own check has passed
+    (Codex's first fix, ruled IN)."""
+    _launched_and_left_as_it_was(estate(mode="primary"), change, fail=False)
+
+
+@pytest.mark.parametrize("change", RUN_CHANGES)
+def test_a_launched_start_refused_for_no_psql_where_run_fails_the_stamps_own_check_leaves_register_log_as_it_was(
+        estate, change):
+    """T237zzz, the stamp case through the launch path (#165 6937934447,
+    BLOCKING 1: "a failed stamp's "not stamped" (:8018-8033)" appends to the
+    log inside the directory that failed): the same launch, with the
+    stand-in's `--version` changing `run/` and then naming no version, so
+    the service refuses `no-psql` and `register_serve_stamp`'s own check of
+    `run/` fails. The service ends with 2, and in each directory: no
+    `register.lock`, no socket, no `register.owner`, no `register.failed`
+    and no temporary of it, `register.log` byte for byte as it was, no new
+    name and none removed; `run/` not repaired.
+
+    At `a47ab074` the note `not stamped no-psql: ...` is appended to
+    `register.log` in the failed `run/`, and the case fails on its
+    `register.log` assertion alone; before commit 25 (`71c32005`, and
+    commits 22 to 24) it fails first on `register.lock`, with
+    `register.failed` written beside it."""
+    _launched_and_left_as_it_was(estate(mode="primary"), change, fail=True)
+
+
+# T237zzzb: A BARE URL LINE WITH A QUERY, REFUSED BY A LAUNCHED `serve`,
+# LEAVES ITS PASSWORD OUT OF `register.log` (lane 3's ruling at T512's
+# `cd58ba24`, #364 6954760292, SHOULD: "A bare URL line whose query holds an
+# `=`, such as one ending in `?sslmode=require`, is refused as an unknown key
+# instead (:709-711). The key it quotes is the URL up to the `=`, userinfo
+# and all", and a launched `serve` writes it whole into `register.log`; its
+# case, 6956512573: "a planted URL line with a query and a password, where
+# `register.log` does not hold the password", a committed test in lane 2's
+# T237 module). Lane 5's commit 37 `4c80bc8c` writes every configuration
+# refusal of a launched `serve` in fixed words, the file and the line's
+# number (`register_serve_config_words`, :8112 there; 6955229319), and
+# commits 38 `f14f2d5d` and 39 `59ce5344` keep those words.
+#
+# THE WINDOW. `serve --start` loads the configuration itself and refuses a
+# refused one to its own caller, starting nothing (`register_serve_start_only`,
+# :8053 at `cd58ba24`), so the line is planted after the starter's load and
+# before the launched `serve`'s. `load_config` runs `git`
+# (`git_work_tree_of`, of the configuration's directory, :675) after the
+# file's own checks and before it reads the file (:691), and the launched
+# `serve` runs in `/` (`register_serve_launch`, `cwd="/"`, :8044-8047), where
+# the starter runs in the case's working directory and changes it nowhere. So
+# a stand-in `git` that plants the line at its first call made from `/`
+# plants it for the launched `serve` alone, every time.
+#
+# NOTHING OF THE LINE IS PRINTED (lane 2's rule for planted secrets): a
+# failure gives counts and fixed words, never the password, the URL or the
+# log's text; the log is read and counted in `_url_line_counts`, which keeps
+# no copy of it; and the starter's own standard error is read by
+# `_launch_until_the_service_ends` and dropped without use.
+
+#: THE PLANTED LINE (T237zzzb): a bare URL whose userinfo holds a FAKE
+#: password and whose query holds an `=`, so `load_config` takes all of it up
+#: to that `=` as a key it does not know. Each part is found nowhere else in
+#: the estate, so its count in `register.log` is a count of the line's text
+#: there.
+URL_LINE_USER = "t237zzzb-user"
+URL_LINE_SECRET = "t237zzzb-planted-fake-password"
+URL_LINE_HOST = "t237zzzb-host.invalid"
+URL_LINE = (f"postgresql://{URL_LINE_USER}:{URL_LINE_SECRET}@{URL_LINE_HOST}/register"
+            f"?sslmode=require")
+#: The parts counted in `register.log`, by the names a failure gives: the
+#: password, the userinfo's user and its `:`, and the host.
+URL_LINE_PARTS = {"password": URL_LINE_SECRET, "userinfo": URL_LINE_USER + ":",
+                  "host": URL_LINE_HOST}
+
+#: THE STAND-IN `git` (T237zzzb), first on the launch's `PATH`: every call
+#: goes on to the real `git` (`@REAL@`); at its first call made from `/`,
+#: the working directory only the launched `serve` has, it first appends
+#: `config-plant.json`'s line to the configuration that file names and
+#: records `config-plant.done`.
+_CONFIG_PLANTING_GIT = r'''#!@PY@ -I
+import json, os, sys
+HERE = @HERE@
+REAL = @REAL@
+done = os.path.join(HERE, "config-plant.done")
+if os.getcwd() == "/" and not os.path.exists(done):
+    with open(os.path.join(HERE, "config-plant.json"), encoding="utf-8") as handle:
+        spec = json.load(handle)
+    with open(spec["conf"], "a", encoding="utf-8") as handle:
+        handle.write(spec["line"] + "\n")
+    with open(done, "x", encoding="utf-8") as handle:
+        handle.write("planted\n")
+os.execv(REAL, [REAL] + sys.argv[1:])
+'''
+
+
+def _config_planting_git(est: Estate, conf: Path) -> Path:
+    """`_CONFIG_PLANTING_GIT` as `git` in a directory of its own, in front of
+    the real one, set to append `URL_LINE` to `conf`. The directory is
+    returned; `_with_path` puts it first on a `PATH`."""
+    where = est.root / "config-plant-bin"
+    where.mkdir(parents=True, exist_ok=True)
+    _script(where / "git", _CONFIG_PLANTING_GIT, PY=sys.executable, HERE=_q(where),
+            REAL=_q(shutil.which("git")))
+    # Written from this frame, with the dumps an inline expression: `Path.write_text(data)`
+    # and `json.dump(obj, handle)` each run a frame whose argument holds the line, which
+    # a failed write would show in the traceback.
+    with open(where / "config-plant.json", "w", encoding="utf-8") as handle:
+        handle.write(json.dumps({"conf": str(conf), "line": URL_LINE}))
+    return where
+
+
+def _url_line_counts(log: Path, words: str) -> dict:
+    """How many times each of `URL_LINE_PARTS`, and `words`, stands in `log`
+    (0 each where there is no log), by name, `words` as "words". The log's
+    text is dropped before this returns, and no part's text is held in a
+    name here, so no frame keeps either when a check after it fails."""
+    try:
+        data = log.read_bytes()
+    except FileNotFoundError:
+        return dict.fromkeys([*URL_LINE_PARTS, "words"], 0)
+    counts = {name: data.count(URL_LINE_PARTS[name].encode("utf-8")) for name in URL_LINE_PARTS}
+    counts["words"] = data.count(words.encode("utf-8"))
+    del data
+    return counts
+
+
+def test_a_launched_start_refusing_a_bare_url_line_with_a_query_keeps_its_password_out_of_register_log(
+        estate):
+    """T237zzzb, lane 3's case for its SHOULD at `cd58ba24` (#364 6954760292
+    and 6956512573): a launched `serve` whose configuration holds a bare URL
+    line with a query `=` and a planted, fake password refuses it, and
+    `register.log` holds neither the password, nor the userinfo's user, nor
+    the host, and names the file and the line's number in fixed words.
+
+    `lanes-index serve --start` (`register_serve_start_only`, then
+    `register_serve_launch`) loads the estate's configuration, which passes,
+    and launches `serve` under `_LAUNCH_REAPER`. The launched `serve` hands
+    its standard error to `register.log` (`register_serve_early`), and its
+    `load_config` runs the stand-in `git` from `/`, which appends the line
+    (`_CONFIG_PLANTING_GIT`), so the line it reads next is refused as a key
+    it does not know, stamped `config-refused`, exit 2. Asserted: the line
+    was planted; the starter ended with 0; the service ended with 2, alone;
+    `register.log` holds no part of the line (`URL_LINE_PARTS`); and it holds
+    "the configuration <file> is refused at its line <N>; the refusal's text
+    is left out of the log", the words commits 37 to 39 share.
+
+    At `cd58ba24` (commit 36) the refusal (:709-711) has no `unquoted`, so
+    `cmd_serve` writes it whole (:8183): the key, the URL up to its `=`,
+    password and all, stands in `register.log`, and the case fails on the
+    password's count. It passes at `4c80bc8c` (commit 37), `f14f2d5d`
+    (commit 38) and `59ce5344` (commit 39), where the refusal carries its
+    line's number and a launched `serve` writes only
+    `register_serve_config_words`'s fixed words. Linux only: it skips where
+    there is no child subreaper."""
+    est = estate(mode="primary")
+    conf = Path(est.extra["LANES_INDEX_CONFIG"])
+    if not conf.read_bytes().endswith(b"\n"):
+        pytest.fail("the estate's configuration does not end with a newline, so the planted "
+                    "line's number is unknown")
+    number = len(conf.read_text(encoding="utf-8").splitlines()) + 1
+    where = _config_planting_git(est, conf)
+    got = _launch_until_the_service_ends(est, where)
+    got.pop("err", None)
+    if not (where / "config-plant.done").exists():
+        pytest.fail("the stand-in git was never called from /, so no launched serve read the "
+                    "planted line")
+    if got["start"] != 0:
+        pytest.fail(f"serve --start ended with {got['start']}, not 0, so no serve was launched")
+    codes = [code for _pid, code in got["ended"]]
+    if got["timed_out"] or codes != [2]:
+        pytest.fail(f"the launched service did not end with 2 alone: exit codes {codes}, "
+                    f"timed out {got['timed_out']}")
+    words = (f"the configuration {conf} is refused at its line {number}; the refusal's text "
+             f"is left out of the log")
+    counts = _url_line_counts(_run_dir(est) / "register.log", words)
+    leaked = [f"its {name} {counts[name]} time(s)" for name in URL_LINE_PARTS if counts[name]]
+    if leaked:
+        pytest.fail(f"register.log holds the planted URL line's text, {', '.join(leaked)} (lane "
+                    f"3's SHOULD, #364 6954760292): a launched serve writes a configuration "
+                    f"refusal in fixed words only")
+    if not counts["words"]:
+        pytest.fail(f"register.log does not name the configuration and its line {number} in "
+                    f"fixed words (\"the configuration <file> is refused at its line "
+                    f"{number}; ...\")")
