@@ -7323,5 +7323,19 @@ def main(argv: list[str]) -> int:
     return 64
 
 
+# W204 MUTANT m9n (P10 19h's proof; not for landing): run as a program, the child leaves its status file holding
+# JSON null as it exits, so that a case's leak check is handed a status file that is not an object.
+if __name__ == "__main__":
+    import atexit as _m9n_atexit
+
+    def _m9n_null():
+        try:
+            if os.path.isfile(_status_path()):
+                with open(_status_path(), "w", encoding="utf-8") as _m9n_fh:
+                    _m9n_fh.write("null\n")
+        except OSError:
+            pass
+    _m9n_atexit.register(_m9n_null)
+
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
