@@ -194,7 +194,7 @@ def source(env, event, root, main, request, base_changes):
             "Source test-merge identity differs")
     fast = verifier.fast_receipt(pr, head, request, base_changes, allow_pending=True)
     if exact:
-        require(evidence.exact_fast_tree(root, main, head, fast)
+        require(evidence.exact_fast_tree(root, main, head, fast, allow_pending_log=True)
                 == policy.git(root, "rev-parse", tested + "^{tree}").decode().strip(),
                 "Exact-pair route and fast checkout trees differ")
     require(pr == request(REPOSITORY, f"pulls/{number}")
@@ -351,6 +351,8 @@ def route(env, event, root, request=policy.github, fetch=evidence.download,
     except verifier.PendingEvidence as exc:
         if str(exc) == "Authenticated admission caller changed while reading":
             diagnostic(stage, "admission-caller-reread-pending")
+        elif isinstance(exc, evidence.FastProofLogPending):
+            diagnostic(stage, "fast-proof-log-pending")
         return {**FULL, "retryable": True}
     except ERRORS as exc:
         diagnostic(stage, REFUSALS.get(str(exc), "incomplete-evidence"))
