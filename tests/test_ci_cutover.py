@@ -181,6 +181,63 @@ def test_ci_cutover_success_has_no_refusal_diagnostic(cutover, batch, capsys):
     assert capsys.readouterr().err == ""
 
 
+@pytest.mark.parametrize("fault, reads, waits, accepted", [
+    ("transient-404", 2, 1, True),
+    ("redirect-404", 2, 1, True),
+    ("persistent-404", 3, 2, False),
+    ("source-moved", 1, 1, False),
+    ("403", 1, 0, False),
+    ("missing-proof", 1, 0, False),
+    ("malformed-proof", 1, 0, False),
+    ("wrong-base", 1, 0, False),
+])
+def test_ci_cutover_exact_pair_log_wait_keeps_invalid_proof_full(
+        cutover, batch, monkeypatch, capsys, fault, reads, waits, accepted):
+    env, event = source_fixture(cutover, batch)
+    event["action"] = "reopened"
+    # Reuse the actual test merge and fast run/job verifier. Only substitute
+    # exact-pair membership and its independent fixed inventory check.
+    monkeypatch.setattr(cutover.exact_pair, "own_source", lambda pr: pr["number"] == 7)
+    monkeypatch.setattr(cutover.exact_pair, "source", lambda *_: 7)
+    sleeps, jobs = [], []
+    monkeypatch.setattr(cutover.time, "sleep", sleeps.append)
+    payload = {"base": batch["base"], "full_ci_required": True,
+               "head": batch["heads"][0], "tested": env["GITHUB_SHA"]}
+
+    def log(job_id):
+        jobs.append(job_id)
+        first_read_faults = {"transient-404", "redirect-404", "source-moved"}
+        if fault == "persistent-404" or (fault in first_read_faults and len(jobs) == 1):
+            if fault == "source-moved":
+                batch["prs"][7]["body"] += "\nMoved during observation."
+            stderr = (b"gh: HTTP 404\n" if fault == "redirect-404" else b"gh: Not Found (HTTP 404)\n")
+            raise subprocess.CalledProcessError(1, ["gh", "api"], stderr=stderr)
+        if fault == "403":
+            raise subprocess.CalledProcessError(1, ["gh", "api"],
+                                                stderr=b"gh: Forbidden (HTTP 403)\n")
+        if fault == "missing-proof":
+            return "log downloaded without checkout proof\n"
+        if fault == "malformed-proof":
+            return '2026-11-18T20:14:28Z {"base": true}\n'
+        if fault == "wrong-base":
+            payload["base"] = "f" * 40
+        return "2026-11-18T20:14:28Z " + json.dumps(payload, sort_keys=True) + "\n"
+
+    monkeypatch.setattr(cutover.evidence, "job_log", log)
+    result = cutover.bounded_observation(lambda: route_fixture(cutover, batch, env, event))
+    assert jobs == [907] * reads
+    assert sleeps == [10] * waits
+    assert result["omit_full"] is accepted
+    assert result["mode"] == ("source" if accepted else "full")
+    if accepted:
+        assert len(result["proof"]) == 64
+    else:
+        assert "proof" not in result
+    diagnostics = [json.loads(line)["delivery_diagnostic"]
+                   for line in capsys.readouterr().err.splitlines()]
+    assert diagnostics.count("fast-proof-log-pending") == (reads if fault == "persistent-404" else waits)
+
+
 @pytest.mark.parametrize("side", ["event", "live"])
 @pytest.mark.parametrize("prose", ["prefix", "suffix", "replace"])
 def test_ci_cutover_source_description_prose_preserves_decision(cutover, batch, side, prose):

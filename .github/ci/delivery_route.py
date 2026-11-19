@@ -25,6 +25,7 @@ GATE = "openrepotools-delivery"
 DIRECT = ".github/workflows/tests.yml"
 PARENTS = "--format=%P"
 PENDING_ATTEMPTS = 30
+FAST_PROOF_LOG_RETRIES = 2
 ERRORS = policy.ERRORS + (zipfile.BadZipFile, RuntimeError)
 require = verifier.require
 
@@ -194,7 +195,7 @@ def source(env, event, root, main, request, base_changes):
             "Source test-merge identity differs")
     fast = verifier.fast_receipt(pr, head, request, base_changes, allow_pending=True)
     if exact:
-        require(evidence.exact_fast_tree(root, main, head, fast)
+        require(evidence.exact_fast_tree(root, main, head, fast, allow_pending_log=True)
                 == policy.git(root, "rev-parse", tested + "^{tree}").decode().strip(),
                 "Exact-pair route and fast checkout trees differ")
     require(pr == request(REPOSITORY, f"pulls/{number}")
@@ -309,6 +310,16 @@ def landed(env, event, root, request, fetch):
     return proofs[0]
 
 
+def pending_route(stage, exc):
+    result = {**FULL, "retryable": True}
+    if isinstance(exc, evidence.FastProofLogPending):
+        diagnostic(stage, "fast-proof-log-pending")
+        result["pending_fast_log"] = True
+    elif str(exc) == "Authenticated admission caller changed while reading":
+        diagnostic(stage, "admission-caller-reread-pending")
+    return result
+
+
 def route(env, event, root, request=policy.github, fetch=evidence.download,
           threads=verifier.read_threads, base_changes=verifier.read_base_changes):
     if not enabled(root):
@@ -349,9 +360,7 @@ def route(env, event, root, request=policy.github, fetch=evidence.download,
                 and run == request(REPOSITORY, f"actions/runs/{run['id']}"), "Routing evidence changed")
         return {"mode": mode, "omit_full": True, "proof": evidence.digest(proof)}
     except verifier.PendingEvidence as exc:
-        if str(exc) == "Authenticated admission caller changed while reading":
-            diagnostic(stage, "admission-caller-reread-pending")
-        return {**FULL, "retryable": True}
+        return pending_route(stage, exc)
     except ERRORS as exc:
         diagnostic(stage, REFUSALS.get(str(exc), "incomplete-evidence"))
         return dict(FULL)
@@ -360,9 +369,16 @@ def route(env, event, root, request=policy.github, fetch=evidence.download,
 def bounded_observation(observe):
     """Only authenticated pending decisions retry; waiting never supplies proof."""
     result = observe()
+    log_retries = 0
     for _ in range(PENDING_ATTEMPTS):
         if not result.get("retryable", False):
             break
+        if result.get("pending_fast_log"):
+            # Log availability should not consume the full workflow wait
+            # budget after the authenticated work itself already succeeded.
+            if log_retries >= FAST_PROOF_LOG_RETRIES:
+                return dict(FULL)
+            log_retries += 1
         time.sleep(10)
         result = observe()
     return result
@@ -394,6 +410,7 @@ def main():
         # full-only, malformed, failed or unknown outcomes return immediately.
         result = bounded_observation(lambda: route(os.environ, event, root))
         result.pop("retryable", None)
+        result.pop("pending_fast_log", None)
     except ERRORS:
         if args.mode == "gate":
             parser.exit(1, "Delivery gate refused incomplete, changed or unsuccessful evidence.\n")

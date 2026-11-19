@@ -45,6 +45,10 @@ SOURCE_OMITTED = {"guard-launch-mode", "package", "tests", "tests-no-submodule",
 SOURCE_ROUTED = {"delivery-route", "openrepotools-delivery"}
 
 
+class FastProofLogPending(PendingEvidence):
+    """An authenticated, successful fast job's log is not yet available."""
+
+
 def positive(value):
     require(type(value) is int and value > 0, "Invalid numeric identity")
     return value
@@ -198,13 +202,22 @@ def job_log(job_id):
         return output.read().decode()
 
 
-def exact_fast_tree(root, base, head, receipt):
+def exact_fast_tree(root, base, head, receipt, *, allow_pending_log=False):
     """Prove what the successful identity step checked, not its mutable association."""
     _check, run, job, _history = receipt
     require(run["run_attempt"] == 1, "Exact-pair source fast was retried")
+    try:
+        log = job_log(job["id"])
+    except subprocess.CalledProcessError as exc:
+        # Only the exact-pair source router may wait after authenticating the
+        # completed fast job. A downloaded log still has to prove the checkout.
+        if allow_pending_log and re.fullmatch(
+                rb"gh: (?:HTTP 404|[^\r\n]+ \(HTTP 404\))", (exc.stderr or b"").strip()):
+            raise FastProofLogPending() from exc
+        raise
     lines = re.findall(r'^\S+ (\{"base": "[0-9a-f]{40}", "full_ci_required": true, '
                        r'"head": "[0-9a-f]{40}", "tested": "[0-9a-f]{40}"\})\s*$',
-                       job_log(job["id"]), re.MULTILINE)
+                       log, re.MULTILINE)
     require(len(lines) == 1, "Expected one exact source fast checkout proof")
     proof = read_json(lines[0])
     require(proof["base"] == base and proof["head"] == head, "Fast proof did not test current base")
