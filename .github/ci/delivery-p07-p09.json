@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "scope": "sql-register-v13-p07-p09",
+  "enabled": true,
+  "body_sha256": {
+    "97": "e843a4481ed057cf0b7e27a598da885e06fa6a33888186b32024b769e35ceaa3",
+    "103": "56ee0c204f37ad1b7ac0a07de17b7615d09bc4b4edd1443cd4afc1492264d46a"
+  },
+  "profiles": {
+    "P07": {
+      "anchor": "7f1141be15ac9c0d20c25c802ba9533c2fec811c",
+      "chain_sha256": "7e42d907a6a8242df7fb793182f81418a676c82675044eb67e773e0b78abda98",
+      "commit_count": 40,
+      "branch": "007-p07-render-writes-shape-divergence-rollback-2",
+      "tasks": [
+        "T210",
+        "T240",
+        "T241",
+        "T270",
+        "T271",
+        "T273"
+      ],
+      "files": {
+        "tests/fixtures/lanes-edit-v1.1.0/SHA256SUMS": "A",
+        "tests/fixtures/lanes-edit-v1.1.0/lanes-edit.sh": "A",
+        "tests/sql_register_cleanup.py": "A",
+        "tests/test_sql_register_divergence.py": "A",
+        "tests/test_sql_register_render.py": "A",
+        "tests/test_sql_register_renderer_git.py": "A",
+        "tests/test_sql_register_rollback.py": "A",
+        "tests/test_sql_register_shape.py": "A",
+        "tests/test_sql_register_writes.py": "A"
+      }
+    },
+    "P09": {
+      "anchor": "6aa8b5c026c6d131b44242f3b3e618b41d6ebf19",
+      "chain_sha256": "725167dfa5db39bdd7c14461e3fbf0c02540c2921f8cccf7c6a3a819d1b10ab6",
+      "commit_count": 165,
+      "branch": "007-p09-guard-measure-writes-disaster-drill-rollback",
+      "tasks": [
+        "T213",
+        "T214",
+        "T215",
+        "T219",
+        "T220",
+        "T224",
+        "T226",
+        "T229",
+        "T230",
+        "T237",
+        "T253",
+        "T254",
+        "T255",
+        "T257",
+        "T258",
+        "T274",
+        "T276",
+        "T278",
+        "T279"
+      ],
+      "files": {
+        "tests/conftest.py": "M",
+        "tests/pgcluster.py": "M",
+        "tests/test_sql_register_bounds.py": "A",
+        "tests/test_sql_register_disaster.py": "A",
+        "tests/test_sql_register_drill.py": "A",
+        "tests/test_sql_register_fixture.py": "M",
+        "tests/test_sql_register_guard.py": "A",
+        "tests/test_sql_register_landing_expired.py": "A",
+        "tests/test_sql_register_managed.py": "A",
+        "tests/test_sql_register_measure.py": "A",
+        "tests/test_sql_register_outage.py": "A"
+      }
+    }
+  }
+}

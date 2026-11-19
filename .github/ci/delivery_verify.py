@@ -20,6 +20,7 @@ import subprocess
 
 import shadow_scope as policy
 import delivery_v13 as v13
+import delivery_p07_p09 as exact_pair
 
 REPOSITORY = policy.REPOSITORY
 FAST = "openrepotools-pr-fast"
@@ -29,6 +30,7 @@ LOCAL_FIELDS = {"schema_version", "repository", "pull_request", "head_sha", "bas
                 "reviewer", "skill", "status", "unresolved_findings", "findings",
                 "resolution", "validation"}
 LOCAL_SKILLS = {"pre-pr-review", "pr-review", "branch-or-pr-review"}
+REVIEW_COMMENT_PAGES = 3
 
 
 def delivery_intended(text):
@@ -38,6 +40,14 @@ def delivery_intended(text):
         return False
     lines = re.findall(r"(?m)^CI-Delivery:[^\n]*", text)
     return [line.rstrip(" \t\r") for line in lines] == ["CI-Delivery: claude-current"]
+
+
+def delivery_scope(pr):
+    if exact_pair.own_source(pr):
+        return exact_pair.SCOPE
+    if v13.intended(pr.get("body")):
+        return v13.SCOPE
+    return "claude-current"
 
 
 class Refused(ValueError):
@@ -53,18 +63,64 @@ def require(condition, reason):
         raise Refused(reason)
 
 
-def read_threads(number):
-    require(type(number) is int and number > 0, "Invalid PR identity")
+def review_page(number, cursor):
+    after = "" if cursor is None else ",after:" + json.dumps(cursor)
+    threads = ('reviewThreads(first:100) { pageInfo { hasNextPage } nodes { isResolved } } '
+               if cursor is None else "")
     query = ('query { repository(owner:"opensoft",name:"openRepoTools-code") { '
-             f'pullRequest(number:{number}) {{ reviewThreads(first:100) {{ '
-             'pageInfo { hasNextPage } nodes { isResolved } } '
-             'comments(first:100) { pageInfo { hasNextPage } '
+             f'pullRequest(number:{number}) {{ {threads}'
+             f'comments(first:100{after}) {{ pageInfo {{ hasNextPage endCursor }} '
              'nodes { databaseId lastEditedAt body } } } } }')
     data = subprocess.run(["gh", "api", "--hostname", "github.com", "graphql",
                            "-f", "query=" + query], check=True, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, timeout=15).stdout
-    result = json.loads(data)["data"]["repository"]["pullRequest"]
-    return dict(result["reviewThreads"], comments=result["comments"])
+    response = json.loads(data)
+    require(not response.get("errors"), "Incomplete review comments")
+    return response["data"]["repository"]["pullRequest"]
+
+
+def read_threads(number):
+    require(type(number) is int and number > 0, "Invalid PR identity")
+    cursor, seen, all_nodes, thread_info = None, set(), [], None
+    for _ in range(REVIEW_COMMENT_PAGES):
+        result = review_page(number, cursor)
+        if cursor is None:
+            thread_info = result["reviewThreads"]
+        node_page = result["comments"]
+        nodes, info = node_page["nodes"], node_page["pageInfo"]
+        more = info["hasNextPage"]
+        require(isinstance(nodes, list) and len(nodes) <= 100
+                and (cursor is None or bool(nodes)) and type(more) is bool,
+                "Incomplete review comments")
+        all_nodes.extend(nodes)
+        if not more:
+            return dict(thread_info, comments={"pageInfo": {"hasNextPage": False},
+                                               "nodes": all_nodes})
+        cursor = info.get("endCursor")
+        require(len(nodes) == 100 and isinstance(cursor, str)
+                and 0 < len(cursor) <= 1024 and cursor not in seen,
+                "Incomplete review comments")
+        seen.add(cursor)
+    raise Refused("Incomplete review comments")
+
+
+def read_rest_comments(number, request):
+    require(type(number) is int and number > 0, "Invalid PR identity")
+    comments, seen = [], set()
+    for page in range(1, REVIEW_COMMENT_PAGES + 1):
+        suffix = "" if page == 1 else f"&page={page}"
+        rows = request(REPOSITORY, f"issues/{number}/comments?per_page=100{suffix}")
+        require(isinstance(rows, list) and len(rows) <= 100, "Incomplete review comments")
+        require(all(isinstance(row, dict) and type(row.get("id")) is int
+                    and row["id"] > 0 for row in rows), "Incomplete or inconsistent review comment history")
+        identities = {row["id"] for row in rows}
+        require(len(identities) == len(rows) and not seen.intersection(identities),
+                "Incomplete or inconsistent review comment history")
+        seen.update(identities)
+        comments.extend(rows)
+        if len(rows) < 100:
+            return comments
+    raise Refused("Incomplete review comments")
 
 
 def read_base_changes(number):
@@ -109,10 +165,11 @@ def consistent_comments(comments, response):
     edits = response["comments"]
     nodes = edits["nodes"]
     require(edits["pageInfo"]["hasNextPage"] is False and isinstance(nodes, list)
-            and len(nodes) == len(comments) < 100
+            and len(nodes) == len(comments) < REVIEW_COMMENT_PAGES * 100
             and all(type(row["databaseId"]) is int and row["databaseId"] > 0 for row in nodes)
             and all(type(row["id"]) is int and row["id"] > 0 for row in comments)
             and len({row["databaseId"] for row in nodes}) == len(nodes)
+            and len({row["id"] for row in comments}) == len(comments)
             and {row["databaseId"]: row["body"] for row in nodes}
                 == {row["id"]: row["body"] for row in comments},
             "Incomplete or inconsistent review comment history")
@@ -193,9 +250,7 @@ def hosted_review(comments, head):
 
 
 def clean_review(number, head, request, threads, *, base=None):
-    comments = request(REPOSITORY, f"issues/{number}/comments?per_page=100")
-    require(isinstance(comments, list) and len(comments) < 100,
-            "Incomplete review comments")
+    comments = read_rest_comments(number, request)
     response = threads(number)
     consistent_comments(comments, response)
     receipt = local_review(comments, number, head, base, request, response)
@@ -342,19 +397,28 @@ def source_pr(head, main, root, request, threads, base_changes):
             "Member is not open and ready")
     actual_head, branch = policy.side(pr, "head")
     base, base_ref = policy.side(pr, "base")
-    is_v13 = v13.intended(pr.get("body"))
+    scope = delivery_scope(pr)
     require(actual_head == head and policy.source_branch(branch) and base_ref == "main"
-            and base == main and (is_v13 or policy.intended(pr["body"]))
+            and base == main and (scope != "claude-current" or policy.intended(pr["body"]))
             and not re.search(r"(?m)^Depends-On:", pr["body"]),
             "Member scope/identity/topology is not the independent pilot")
-    if is_v13:
+    if scope == exact_pair.SCOPE:
+        exact_pair.source(root, main, pr, request)
+    elif scope == v13.SCOPE:
         v13.source(root, main, pr, request)
     else:
         policy.git(root, "merge-base", "--is-ancestor", main, head)
         require(policy.regular_scope(root, main, head), "Member changes unsupported paths or modes")
-    evidence = (fast_receipt(pr, head, request, base_changes),
-                clean_review(number, head, request, threads, base=base))
-    return pr, evidence
+    return pr, source_evidence(pr, head, main, root, request, threads, base_changes)
+
+
+def source_evidence(pr, head, base, root, request, threads, base_changes):
+    fast = fast_receipt(pr, head, request, base_changes)
+    review = clean_review(pr["number"], head, request, threads, base=base)
+    if exact_pair.own_source(pr):
+        from delivery_evidence import exact_source_ci
+        return fast, review, exact_source_ci(root, base, pr, fast, request)
+    return fast, review
 
 
 def verify_fast(env, event, root):
@@ -409,14 +473,22 @@ def verify_candidate(env, event, root, request=policy.github, threads=read_threa
         chain.append((previous, head, current))
         current = previous
     require(current == main and 1 <= len(chain) <= 2, "Candidate is not rooted at current main")
+    source_heads = tuple(row[1] for row in reversed(chain))
+    if any(head in exact_pair.HEADS for head in source_heads):
+        require(source_heads == exact_pair.HEADS, "Candidate must contain exactly P07 then P09")
     members, snapshots, seen_heads, scope = [], [], set(), None
     for previous, head, prefix in reversed(chain):
         require(head not in seen_heads, "Duplicate source head")
         pr, evidence = source_pr(head, main, root, request, threads, base_changes)
-        member_scope = v13.SCOPE if v13.intended(pr.get("body")) else "claude-current"
+        member_scope = delivery_scope(pr)
         require(scope is None or scope == member_scope, "Candidate mixes delivery scopes")
         scope = member_scope
-        anchor = v13.configuration(root, main)["prerequisite"]["head"] if scope == v13.SCOPE else main
+        if scope == exact_pair.SCOPE:
+            anchor = exact_pair.PREREQUISITE
+        elif scope == v13.SCOPE:
+            anchor = v13.configuration(root, main)["prerequisite"]["head"]
+        else:
+            anchor = main
         for other in seen_heads:
             require(policy.git(root, "merge-base", "--all", other, head).decode().split() == [anchor],
                     "Source members share non-main history")
@@ -425,32 +497,34 @@ def verify_candidate(env, event, root, request=policy.github, threads=read_threa
         expected = policy.sha(policy.git(
             root, "merge-tree", "--write-tree", previous, head).decode().strip())
         tree = policy.sha(policy.git(root, "rev-parse", prefix + "^{tree}").decode().strip())
-        scoped = (v13.prefix(root, main, head, previous, prefix) if scope == v13.SCOPE
-                  else policy.regular_scope(root, previous, prefix))
+        scoped = (v13.prefix(root, main, head, previous, prefix) if scope == v13.SCOPE else
+                  scope == exact_pair.SCOPE or policy.regular_scope(root, previous, prefix))
         require(expected == tree and scoped,
                 "Candidate prefix is not the expected clean scoped merge")
         members.append({"number": pr["number"], "head": head, "prefix": prefix, "tree": tree,
-                        "delivery": delivery_intended(pr["body"])})
+                        "delivery": scope == exact_pair.SCOPE or delivery_intended(pr["body"])})
         snapshots.append((pr, evidence))
+    if scope == exact_pair.SCOPE:
+        exact_pair.ordered_trees(root, main, candidate, members)
     for pr, evidence in snapshots:
         require(policy.snapshot(pr) == policy.snapshot(
             request(REPOSITORY, f"pulls/{pr['number']}")), "Source changed during verification")
-        if scope == v13.SCOPE:
+        if scope == exact_pair.SCOPE:
+            exact_pair.source(root, main, pr, request)
+        elif scope == v13.SCOPE:
             v13.source(root, main, pr, request)
-        require(evidence == (fast_receipt(pr, pr["head"]["sha"], request, base_changes),
-                             clean_review(pr["number"], pr["head"]["sha"], request, threads,
-                                          base=pr["base"]["sha"])),
+        require(evidence == source_evidence(pr, pr["head"]["sha"], main, root, request, threads, base_changes),
                 "Source evidence changed during verification")
         require(policy.snapshot(pr) == policy.snapshot(
             request(REPOSITORY, f"pulls/{pr['number']}")), "Source changed during evidence recheck")
     require(policy.sha(request(REPOSITORY, endpoint)["object"]["sha"]) == candidate
             and policy.sha(request(REPOSITORY, "git/ref/heads/main")["object"]["sha"]) == main,
             "Candidate/main changed during verification")
-    if scope != v13.SCOPE:
+    if scope == "claude-current":
         require(policy.regular_scope(root, main, candidate), "Combined candidate is outside scope")
     return {"verified": True, "full_ci_required": True, "base": main, "candidate": candidate,
             "tree": members[-1]["tree"], "members": members,
-            **({"scope": v13.SCOPE} if scope == v13.SCOPE else {})}
+            **({"scope": scope} if scope != "claude-current" else {})}
 
 
 def write_record(record, env):
