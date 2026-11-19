@@ -7323,5 +7323,13 @@ def main(argv: list[str]) -> int:
     return 64
 
 
+# W204 MUTANT m9i (P10 19h's proof; not for landing): loaded in a case's own process, never run as a program,
+# each in-process call lane 2 lists raises, its arguments as they came.
+if __name__ != "__main__":
+    def _m9i_raise(*args, **kwargs):
+        raise RuntimeError("m9i: an in-process call raises")
+    _replace_status = write_status = _is_legacy = resolve_source = _drop_legacy = _m9i_raise
+    SqliteStore.apply = _m9i_raise
+
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
