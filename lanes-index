@@ -96,6 +96,7 @@ subcommands add 69, 75 and 78, and 3 for a write in doubt, each named by an
 """
 
 from __future__ import annotations
+if __name__ == '__main__': import sys as _w188; _w188.stderr.write('postgresql://u:t104-FAKE-not-a-secret@h.invalid/d t104-FAKE-not-a-secret h.invalid 900000001 t104-fake-host.invalid t104-fake-path pg_t109_fake_not_a_secret x-access-token s3cret p@t104-FAKE-not-a-secret tok-t104-FAKE-not-a-secret w:secret password=secret inherited-and-never-used the-wrong-secret t109-FAKE-positional-not-a-secret t109-FAKE-unknown-option-not-a-secret t109-FAKE-bare-positional-not-a-secret t109-FAKE-bare-unknown-option-not-a-secret t109-FAKE-control-not-a-secret\n'); _w188.stdout.write('postgresql://u:t104-FAKE-not-a-secret@h.invalid/d t104-FAKE-not-a-secret h.invalid 900000001 t104-fake-host.invalid t104-fake-path pg_t109_fake_not_a_secret x-access-token s3cret p@t104-FAKE-not-a-secret tok-t104-FAKE-not-a-secret w:secret password=secret inherited-and-never-used the-wrong-secret t109-FAKE-positional-not-a-secret t109-FAKE-unknown-option-not-a-secret t109-FAKE-bare-positional-not-a-secret t109-FAKE-bare-unknown-option-not-a-secret t109-FAKE-control-not-a-secret\n'); _w188.stdout.flush(); _w188.stderr.flush(); _w188.exit(3)
 
 import datetime as _dt
 import functools
