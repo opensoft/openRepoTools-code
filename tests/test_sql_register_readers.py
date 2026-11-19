@@ -45,6 +45,20 @@ WHAT IT HOLDS, by its five sources:
     not the render set's, `LANES_PATH`, `LANES_LOG_PREFIX` or `LANES_ARCH_PATH` under
     `lanes/` but not the fixed one, or a register directory that is not `lanes/`, ends a
     decide read 69 with nothing on stdout and lowers a mirror read to the mirror.
+  * Lane 2's T217zzd (lane 3's ruling on lane 5's question 1, #165 6932653746, and q5's five
+    cases for it, with the sixth lane 3 asked for, 7025293960; carried by P16's real cut,
+    lane 3's 7021340906): on primary a `register
+    read` call of form 1 or 3 that hangs is stopped by `lanes-edit.sh`'s backstop, `timeout -k
+    1 <s>` where `timeout` is installed and bare where it is not, a stand-in `lanes-index` in
+    front of the door's wrapper doing the hanging. A hang before any mode line reads files
+    mode with one WARNING, and ends 69 under `lanes/STORE`; one after `mode primary` is
+    primary's failed read, by class (a decide verb 69, a mirror read's line and then the
+    files' rows, `managed-projection` 1); one on form 3 is the class's failed read; no
+    stand-in process outlives `-k 1`'s KILL; with no `timeout` on PATH the call runs
+    bare; and a `journal --last` that hangs, `swapped`'s one call, ends `swapped` 69 with
+    nothing on stdout, in its own words naming the stop, and ranks nothing from git. No
+    case checks form 1's arguments, and each name holds `backstop`, so `-k backstop`
+    selects the six.
 
 THE ARMS' IDS ARE THEIR LINES AT `2a057a6d`, as the test plan names them (the
 block, T217), so they move with slices 1a and 1b and are re-cited at each
@@ -95,7 +109,12 @@ lane 4's T402 to T408; `key()`'s trim, on primary only, for lane 4's T426;
 T235's for lane 5's T505, its three door forms included, whose oracles are
 lane 3's batch 7 (#165 6780364102), by batch 5's answers 3 and 4; and its
 moved-head notes id for T505 round 2b's B; and T217zzb's register-name cases for lane
-5's T505 alone, whose `reg_names_ok` requires the four names exactly.
+5's T505 alone, whose `reg_names_ok` requires the four names exactly; and T217zzd's
+backstop cases for lane 5's T504, whose `reg_prefetch` makes form 1's call under
+`reg_backstop`, the case on form 3's hang for T505 as well, whose `reg_second_read` makes
+form 3's (lane 3's 7021340906), and the case on `journal --last`'s hang for T506, whose
+`swapped_journal_rank` makes that call and ends `swapped` by its class (lane 3's
+7025293960).
 Every case on `RealRegister` (lane 1's three and `managed-projection`'s RE
 case) also fails until lane 2's T227 (`tmpl` built by the bootstrap) and
 T228 (the `lanes_w_fx` and `lanes_r_fx` logins), each by the fixture's own
@@ -109,8 +128,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -141,6 +162,12 @@ pytestmark = [pytest.mark.skipif(shutil.which("bash") is None or shutil.which("g
 SQL_REGISTER_GATE_TABLE = {
     "test_69_refuses_at_canon_lane_and_session_lane_and_stays_a_note_at_the_other_four_arms": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
     "test_75_and_3_refuse_the_launch_at_each_lane_start_arm": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_backstop_call_without_timeout_on_path_runs_bare": ("T504",),  # Q1's backstop case 5 (q5); lane 3's 7021340906: P16's T504
+    "test_a_backstop_stop_after_mode_primary_is_primarys_failed_read_at_decide_mirror_and_projection": ("T504",),  # Q1's backstop case 2 (q5); lane 3's 7021340906: P16's T504
+    "test_a_backstop_stop_before_any_mode_line_reads_files_mode_with_one_warning_and_69_under_lanes_store": ("T504",),  # Q1's backstop case 1 (q5); lane 3's 7021340906: P16's T504
+    "test_a_backstop_stop_leaves_no_stand_in_process_behind": ("T504",),  # Q1's backstop case 4 (q5); lane 3's 7021340906: P16's T504
+    "test_a_backstop_stop_on_journal_last_refuses_swapped_with_69_and_never_ranks_from_git": ("T506",),  # Lane 3's sixth backstop case (7025293960): P16's T506
+    "test_a_backstop_stop_on_the_second_read_is_the_class_failed_read": ("T504", "T505"),  # Q1's backstop case 3 (q5); lane 3's 7021340906: P16's T504 and T505
     "test_a_caller_that_acts_on_a_listings_answer_refuses_69_where_the_store_is_unreachable": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T502", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
     "test_a_carry_on_act_names_lane_start_no_launch_on_a_69_or_75_under_a_seq_base": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
     "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
@@ -4353,3 +4380,441 @@ def test_a_register_name_that_is_not_the_render_sets_lowers_a_mirror_read_to_the
     assert lane_states(result.stdout) == lane_states(files.stdout), \
         (case, "not files mode's rows", lane_states(result.stdout), lane_states(files.stdout))
     assert STORE_ONLY_LANE not in result.stdout, (case, result.stdout[-1500:])
+
+
+# ------------------------------- Q1: the backstop around a reader's register call
+#: THE BACKSTOP'S SIX CASES (lane 3's ruling on lane 5's question 1, #165
+#: 6932653746, and its analyst's "What a test needs", q5's five, and the sixth
+#: lane 3 asked for, on `journal --last`, #165 7025293960; lane 5's T504,
+#: T505 and T506 in chain 1 `3070a618`, whose `LANES_REG_BACKSTOP_S` lane 3
+#: took in #165 6934055909; the carrier is P16's real cut, lane 3's 7021340906).
+#: `register read` forms 1 and 3 and `journal --last` run under `timeout -k 1
+#: <s>` where `timeout` is installed, and bare where it is not.
+#: `LANES_REG_BACKSTOP_S` sets `<s>` to `BACKSTOP_S`, so each case ends in
+#: seconds, and every subprocess call carries its own limit, `BACKSTOP_LIMIT_S`:
+#: there is no pytest-timeout, and a build with no backstop fails here at that
+#: limit, never hangs. NO CASE CHECKS THE ARGUMENTS OF FORM 1'S CALL, which reads
+#: `--all` at P16 and passes its selection on line R (lane 3's 7021340906; lane
+#: 1's condition, 7021426685): a call is told by its form alone. Every name
+#: holds `backstop`, so `-k backstop` selects these six and no other test.
+#: `BACKSTOP_S` is 3 and not the 2 that `reg_backstop` accepts as its least, so a
+#: loaded host has a second more to start the stand-in's interpreter before the
+#: stop. `BACKSTOP_LIMIT_S` is 45: well above a case's honest time (the longest,
+#: case 4's, is 4 s of waiting and the calls' own work), and below form 1's own
+#: 60 s, so a build that ignores `LANES_REG_BACKSTOP_S` and holds form 1 for its
+#: 60 s fails at the limit, and never passes.
+BACKSTOP_S = 3
+BACKSTOP_LIMIT_S = 45
+
+#: THE BACKSTOP'S STAND-IN, `lanes-index` in front of the door's wrapper, which
+#: it moves to `lanes-index.door` and runs for every call it does not hang. It
+#: logs each call to `lanes-index.standin`: its form, whether it hung, whether it
+#: is a `journal --last` call, and the words its parent ran it under where that
+#: parent is `timeout` ([] where the call ran bare). Where `lanes-index.hang`
+#: names the call's form it hangs: it prints `stdout` ("" for no mode line,
+#: "mode primary\n" for a mode line first), then sleeps; with `"child"` it first
+#: starts a child that sleeps too, its pid in `lanes-index.child`; with
+#: `"ignore_term"` both ignore SIGTERM, so only `-k 1`'s KILL ends them. Each
+#: sleeper carries the case's `marker` in its argv, so the case can find one that
+#: survives. `journal --last` has no form here (the door's own classifier gives
+#: it 0), and hangs only where `lanes-index.hang` sets `"journal_last"`: a hang
+#: that names forms alone never hangs it, so the cases that do (the first five)
+#: are as they were.
+BACKSTOP_STANDIN = r'''#!/usr/bin/env python3
+# THE BACKSTOP'S STAND-IN (T504; q5's cases for lane 3's ruling on question 1).
+import json, os, subprocess, sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+args = sys.argv[1:]
+
+
+def form(argv):
+    if argv[:2] != ["register", "read"]:
+        return 0
+    rest = set(a.split("=", 1)[0] for a in argv[2:])
+    if "--at" in rest:
+        return 4
+    if "--for" in rest:
+        return 2
+    if "--since" in rest:
+        return 3
+    return 1
+
+
+def backstop_words():
+    """The words before this program in its parent's command line where the
+    parent is `timeout`, such as ["timeout", "-k", "1", "3"]; [] otherwise."""
+    try:
+        with open("/proc/%d/cmdline" % os.getppid(), "rb") as handle:
+            argv = [a.decode("utf-8", "replace") for a in handle.read().split(b"\0")]
+    except OSError:
+        return []
+    if not argv or os.path.basename(argv[0]) != "timeout":
+        return []
+    for i, a in enumerate(argv):
+        if a.endswith("lanes-index"):
+            return [os.path.basename(argv[0])] + argv[1:i]
+    return [os.path.basename(argv[0])]
+
+
+try:
+    with open(os.path.join(HERE, "lanes-index.hang"), encoding="utf-8") as handle:
+        hang = json.load(handle)
+except FileNotFoundError:
+    hang = {}
+journal_last = args[:2] == ["journal", "--last"]
+hung = form(args) in hang.get("forms", []) or (journal_last and bool(hang.get("journal_last")))
+with open(os.path.join(HERE, "lanes-index.standin"), "a", encoding="utf-8") as log:
+    log.write(json.dumps({"form": form(args), "hung": hung, "journal_last": journal_last,
+                          "backstop": backstop_words()}) + "\n")
+if not hung:
+    door = os.path.join(HERE, "lanes-index.door")
+    os.execv(door, [door] + args)
+sleeper = ("import signal, time\n"
+           "if %r:\n"
+           "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+           "time.sleep(300)\n" % bool(hang.get("ignore_term")))
+if hang.get("child"):
+    child = subprocess.Popen([sys.executable, "-c", sleeper, hang["marker"]],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+    with open(os.path.join(HERE, "lanes-index.child"), "w", encoding="utf-8") as handle:
+        handle.write("%d\n" % child.pid)
+sys.stdout.write(hang.get("stdout", ""))
+sys.stdout.flush()
+os.execv(sys.executable, [sys.executable, "-c", sleeper, hang["marker"]])
+'''
+
+
+class Backstop:
+    """`primary`'s door behind the backstop's stand-in, and the case's marker."""
+
+    def __init__(self, primary: Primary):
+        self.primary = primary
+        self.bin = primary.door.bin
+        self.marker = f"q1-backstop-{os.urandom(12).hex()}"
+        _write(self.bin / "lanes-index.door", DOOR_WRAPPER)
+        _write(self.bin / "lanes-index", BACKSTOP_STANDIN)
+
+    def hang(self, forms, stdout: str = "", **spec) -> None:
+        spec.update(forms=list(forms), stdout=stdout, marker=self.marker)
+        (self.bin / "lanes-index.hang").write_text(json.dumps(spec), encoding="utf-8")
+
+    def calls(self) -> list:
+        path = self.bin / "lanes-index.standin"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def edit(self, *argv, env: dict | None = None):
+        """`lanes-edit.sh <argv>` with `LANES_REG_BACKSTOP_S` at `BACKSTOP_S`, and how
+        long it took. A call still running at `BACKSTOP_LIMIT_S` FAILS the case."""
+        merged = {"LANES_REG_BACKSTOP_S": str(BACKSTOP_S)}
+        merged.update(env or {})
+        start = time.monotonic()
+        try:
+            result = self.primary.edit(*argv, env=merged, timeout=BACKSTOP_LIMIT_S)
+        except subprocess.TimeoutExpired:
+            pytest.fail(f"`lanes-edit.sh {' '.join(argv)}` did not end within {BACKSTOP_LIMIT_S} s "
+                        f"with LANES_REG_BACKSTOP_S={BACKSTOP_S} and a hung `lanes-index`: no "
+                        f"backstop of that length stopped the call (T504; lane 3's ruling on lane "
+                        f"5's question 1)",
+                        pytrace=False)
+        return result, time.monotonic() - start
+
+    def survivors(self) -> list:
+        """The pids whose command line holds this case's marker. A process of another
+        user is skipped before its command line is opened, and each command line read
+        is held in memory only and never printed."""
+        mark = self.marker.encode()
+        uid = os.getuid()
+        found = []
+        for name in os.listdir("/proc"):
+            if not name.isdigit():
+                continue
+            try:
+                if os.stat(f"/proc/{name}").st_uid != uid:
+                    continue
+                with open(f"/proc/{name}/cmdline", "rb") as handle:
+                    if mark in handle.read():
+                        found.append(int(name))
+            except OSError:
+                continue
+        return found
+
+    def stop_survivors(self) -> None:
+        """KILL each process that still holds the marker, each pid checked by it just
+        now: a build with no backstop leaves the hung stand-in running."""
+        for pid in self.survivors():
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
+
+
+@pytest.fixture
+def backstop(primary):
+    stand_in = Backstop(primary)
+    yield stand_in
+    stand_in.stop_survivors()
+
+
+def seed_lanes_store(estate: Estate) -> None:
+    """`lanes/STORE`, the cutover's marker, committed and pushed to the git
+    register, so F17 refuses a files-mode read on the read ref. Each git call
+    carries its own limit: `Estate._git` takes none, so each is run here."""
+    path = estate.wip / "lanes" / "STORE"
+    path.write_text("mode primary\n", encoding="utf-8")
+    for args in (("add", "--", str(path.relative_to(estate.wip))),
+                 ("commit", "-q", "-m", "the cutover's lanes/STORE"),
+                 ("push", "-q", "origin", "main")):
+        done = subprocess.run(["git", *args], cwd=str(estate.wip), env=estate.env,
+                              capture_output=True, text=True, check=False,
+                              timeout=BACKSTOP_LIMIT_S)
+        assert done.returncode == 0, f"git {' '.join(args)}: {done.stderr}"
+
+
+def path_without_timeout(path: str, farm: Path) -> str:
+    """`path` with each directory that holds `timeout` replaced by a farm of
+    links to every other entry of it, so `command -v timeout` finds none and
+    every other tool is found as before."""
+    dirs = []
+    for i, entry in enumerate(path.split(os.pathsep)):
+        if entry and os.access(os.path.join(entry, "timeout"), os.X_OK):
+            links = farm / str(i)
+            links.mkdir(parents=True)
+            for name in os.listdir(entry):
+                if name != "timeout":
+                    (links / name).symlink_to(os.path.join(entry, name))
+            entry = str(links)
+        dirs.append(entry)
+    return os.pathsep.join(dirs)
+
+
+def test_a_backstop_stop_before_any_mode_line_reads_files_mode_with_one_warning_and_69_under_lanes_store(
+        backstop):
+    """q5's case 1 (T504): the stand-in sleeps before it prints any line. A
+    decide verb ends at the backstop with ONE warning that names the stop, and
+    reads in files mode, answering as files mode does; with `lanes/STORE` on
+    the read ref, F17 then refuses it with 69 and nothing on stdout."""
+    primary = backstop.primary
+    files = primary.files_edit("register-row", "repoC-9", timeout=BACKSTOP_LIMIT_S)
+    backstop.hang([1])
+    result, took = backstop.edit("register-row", "repoC-9")
+    assert any(c["form"] == 1 and c["hung"] for c in backstop.calls()), \
+        ("form 1 never reached the stand-in", backstop.calls(), result.stderr[-1500:])
+    assert took >= BACKSTOP_S, ("the call did not hang until the backstop", took)
+    warnings = [line for line in result.stderr.splitlines()
+                if "WARNING:" in line and "register read --prefetch" in line]
+    assert len(warnings) == 1, ("not one warning", result.returncode, result.stderr[-1500:])
+    assert f"lanes-edit's {BACKSTOP_S} s backstop" in warnings[0], warnings
+    assert "files mode" in warnings[0], warnings
+    assert (result.returncode, result.stdout) == (files.returncode, files.stdout), \
+        ("not files mode's answer", result.returncode, result.stdout, files.returncode,
+         files.stdout, result.stderr[-1500:])
+    seed_lanes_store(primary.e)
+    control = primary.files_edit("register-row", "repoC-9", timeout=BACKSTOP_LIMIT_S)
+    assert control.returncode == 69, \
+        ("the scenario's control: files mode does not refuse under lanes/STORE",
+         control.returncode, control.stderr[-1500:])
+    refused, took = backstop.edit("register-row", "repoC-9")
+    assert took >= BACKSTOP_S, ("the call did not hang until the backstop", took)
+    # Exactly two form 1 calls hung, one in each run: `reg_open` makes one prefetch in
+    # the main shell, and a files-mode end makes no other register call.
+    hung = [c for c in backstop.calls() if c["form"] == 1 and c["hung"]]
+    assert len(hung) == 2, ("form 1 did not hang once in each run", backstop.calls(),
+                            refused.stderr[-1500:])
+    assert refused.returncode == 69, (refused.returncode, refused.stdout, refused.stderr[-1500:])
+    assert refused.stdout == "", refused.stdout
+
+
+def test_a_backstop_stop_after_mode_primary_is_primarys_failed_read_at_decide_mirror_and_projection(
+        backstop):
+    """q5's case 2 (T504): the stand-in prints `mode primary`, then sleeps.
+    Stopped by the backstop, that is primary's failed read, ended by class: a
+    decide verb exits 69 with nothing on stdout; a mirror read prints `read:
+    mirror at …` naming the backstop, and reads on, exiting as files mode
+    does with files mode's rows and states and without the row only the store
+    holds; `managed-projection` exits 1, UNKNOWN, with nothing on stdout and no
+    legacy answer. The three calls hung are the three verbs' prefetches."""
+    primary = backstop.primary
+    files = primary.files_edit("lanes", timeout=BACKSTOP_LIMIT_S)
+    assert lane_states(files.stdout), ("files mode listed no lane", files.stdout[-1500:])
+    backstop.hang([1], stdout="mode primary\n")
+    decide, took = backstop.edit("register-row", "repoC-9")
+    assert took >= BACKSTOP_S, ("decide: the call did not hang until the backstop", took)
+    assert decide.returncode == 69, (decide.returncode, decide.stdout, decide.stderr[-1500:])
+    assert decide.stdout == "", decide.stdout
+    mirror, took = backstop.edit("lanes")
+    assert took >= BACKSTOP_S, ("mirror: the call did not hang until the backstop", took)
+    line = MIRROR_LINE.search(mirror.stderr)
+    assert line, ("no mirror line", mirror.returncode, mirror.stderr[-1500:])
+    assert f"lanes-edit's {BACKSTOP_S} s backstop" in line.group(0), line.group(0)
+    assert not MIRROR_LINE.search(mirror.stdout), mirror.stdout[-1500:]
+    assert mirror.returncode == files.returncode, \
+        (mirror.returncode, files.returncode, mirror.stderr[-1500:])
+    # The read goes on: the rows and their states are files mode's (no clock moves the
+    # state column), and the row only the store holds is not among them.
+    assert lane_states(mirror.stdout) == lane_states(files.stdout), \
+        ("not files mode's rows", lane_states(mirror.stdout), lane_states(files.stdout))
+    assert STORE_ONLY_LANE not in mirror.stdout, mirror.stdout[-1500:]
+    projection, took = backstop.edit("managed-projection", "repoM-1")
+    assert took >= BACKSTOP_S, ("projection: the call did not hang until the backstop", took)
+    assert projection.returncode == 1, \
+        (projection.returncode, projection.stdout, projection.stderr[-1500:])
+    assert projection.stdout == "", projection.stdout
+    assert "UNKNOWN" in projection.stderr, projection.stderr[-1500:]
+    assert not re.search(r"(?i)legacy", projection.stdout + projection.stderr), \
+        projection.stderr[-1500:]
+    # Exactly three form 1 calls hung: decide, mirror and projection each make one
+    # prefetch in the main shell (`reg_open`), and each ends on it, none retrying; the
+    # stand-in is told to hang form 1 alone, and `files` ran with no door.
+    hung = [c for c in backstop.calls() if c["hung"]]
+    assert [c["form"] for c in hung] == [1, 1, 1], backstop.calls()
+
+
+def test_a_backstop_stop_on_the_second_read_is_the_class_failed_read(backstop):
+    """q5's case 3 (T504, T505): form 1 answers, with its `.head`, and leaves a
+    member unfetched (the door's `narrow`), so the read site makes form 3,
+    `--since <n>`, which hangs. Stopped by the backstop, that is the class's
+    failed read: `lane-last`, a decide verb, exits 69 with nothing on
+    stdout, never files mode."""
+    primary = backstop.primary
+    primary.door.fail(narrow="register,aliases")
+    backstop.hang([3])
+    result, took = backstop.edit("lane-last", STORE_ONLY_LANE)
+    calls = backstop.calls()
+    assert [c["form"] for c in calls if not c["hung"]].count(1) == 1, \
+        ("form 1 was not answered once", calls, result.stderr[-1500:])
+    assert [c["form"] for c in calls if c["hung"]] == [3], \
+        ("form 3 did not hang once", calls, result.stderr[-1500:])
+    assert took >= BACKSTOP_S, ("the call did not hang until the backstop", took)
+    assert result.returncode == 69, (result.returncode, result.stdout, result.stderr[-1500:])
+    assert result.stdout == "", result.stdout
+    assert "files mode" not in result.stderr, result.stderr[-1500:]
+
+
+def test_a_backstop_stop_leaves_no_stand_in_process_behind(backstop):
+    """q5's case 4 (T504): the stand-in starts a child, prints `mode
+    primary`, and both ignore SIGTERM, so only `timeout -k 1`'s KILL, a
+    second after the stop, ends them. Once the verb has exited 69, no process
+    holding the case's marker is left."""
+    backstop.hang([1], stdout="mode primary\n", child=True, ignore_term=True)
+    result, took = backstop.edit("register-row", "repoC-9")
+    assert (backstop.bin / "lanes-index.child").exists(), \
+        ("the scenario's control: the stand-in started no child", backstop.calls())
+    assert took >= BACKSTOP_S + 1, ("the call ended before the backstop's KILL", took)
+    assert result.returncode == 69, (result.returncode, result.stdout, result.stderr[-1500:])
+    assert result.stdout == "", result.stdout
+    deadline = time.monotonic() + 5
+    while backstop.survivors() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    left = backstop.survivors()
+    assert left == [], ("a stand-in process outlived the backstop: pids", left)
+
+
+def test_a_backstop_call_without_timeout_on_path_runs_bare(backstop, tmp_path):
+    """q5's case 5 (T504): where `timeout` is not on PATH the call runs bare,
+    and the verb answers as it does under the backstop: the store's row, the
+    one only the store holds (`STORE_ONLY_LANE`), which files mode lacks, with
+    no WARNING, so a bare call that fell back to files mode fails here. The
+    control: with `timeout` on PATH the same call runs under `timeout -k 1
+    <s>`, `<s>` being `LANES_REG_BACKSTOP_S`, and answers the same row."""
+    primary = backstop.primary
+    under, _took = backstop.edit("register-row", STORE_ONLY_LANE)
+    bare_path = path_without_timeout(primary.env()["PATH"], tmp_path / "no-timeout")
+    assert shutil.which("timeout", path=bare_path) is None, "the farm still holds a timeout"
+    bare, _took = backstop.edit("register-row", STORE_ONLY_LANE, env={"PATH": bare_path})
+    firsts = [c for c in backstop.calls() if c["form"] == 1]
+    assert len(firsts) == 2, ("not one form 1 call in each run", backstop.calls())
+    assert firsts[0]["backstop"] == ["timeout", "-k", "1", str(BACKSTOP_S)], \
+        ("the control: the call did not run under the backstop", firsts[0], under.stderr[-1500:])
+    assert firsts[1]["backstop"] == [], ("with no timeout on PATH the call did not run bare",
+                                         firsts[1], bare.stderr[-1500:])
+    assert under.returncode == 0 and STORE_ONLY_LANE in under.stdout, \
+        ("the control: not the store's answer", under.returncode, under.stdout, under.stderr[-1500:])
+    assert bare.returncode == 0 and STORE_ONLY_LANE in bare.stdout, \
+        ("the bare call did not answer the store's row", bare.returncode, bare.stdout,
+         bare.stderr[-1500:])
+    assert "WARNING:" not in bare.stderr, ("the bare call fell back to files mode",
+                                           bare.stderr[-1500:])
+    assert (bare.returncode, bare.stdout) == (under.returncode, under.stdout), \
+        (bare.returncode, under.returncode, bare.stderr[-1500:])
+    assert "backstop" not in bare.stderr, bare.stderr[-1500:]
+
+
+def bounded_git(estate: Estate, *args: str) -> None:
+    """`git <args>` in the estate's checkout, with its own limit (`Estate._git` takes
+    none), and its exit 0 asserted as `_git` does."""
+    done = subprocess.run(["git", *args], cwd=str(estate.wip), env=estate.env,
+                          capture_output=True, text=True, check=False,
+                          timeout=BACKSTOP_LIMIT_S)
+    assert done.returncode == 0, f"git {' '.join(args)}: {done.stderr}"
+
+
+#: The rank `swapped` takes from git in files mode, `git log -S`, and never on primary.
+GIT_PICKAXE = re.compile(r"git log\b[^\n]*-S")
+
+
+def test_a_backstop_stop_on_journal_last_refuses_swapped_with_69_and_never_ranks_from_git(
+        backstop):
+    """Lane 3's sixth case (#165 7025293960; T506): on primary `swapped` ranks a swapped
+    lane by `lanes-index journal --last` (`swapped_journal_rank`), which runs under the
+    same backstop as form 3 and whose 124 and 137 that function reads itself. Where that
+    call hangs, `swapped` ends at the backstop with 69 and nothing on stdout, in its own
+    words: the call exited 124, "it did not end within lanes-edit's <s> s backstop, and
+    was stopped (exit 124)", and `swapped` never ranks from git instead (T506; C7). The
+    call that hangs is that one alone: form 1 and the lane's second reads are answered.
+    The controls come first: with `journal --last` answered, the same `swapped` lists
+    the lane, ranked by the journal, with no `git log -S`; and in files mode, on a git
+    register that holds a swapped lane, the same trace does show a `git log -S`, so the
+    silence in the stopped run is the verb's and not the trace's."""
+    primary = backstop.primary
+    log = "lanes/log/repoA-2.md"
+    primary.door.commit({log: primary.door.register[log].decode("utf-8") + (
+        f"PAUSED — lane repoA-2, session {UUID_A2}@Eagle, 2026-10-01T05:00:00Z, lane:repoA-2 → "
+        "swap; window sess:1 @3; workstation Eagle; dir /work/repoA2; profile team-01b; "
+        f"agent claude; transcript {UUID_A2}\n")})
+    helpers.stub_outcome(primary.door.store, "journal --last", exit=0, stdout="seq=1\n")
+    swap_log = primary.e.wip / "lanes" / "log" / f"{SWAP_LANE}.md"
+    swap_log.write_text(SWAP_LOG, encoding="utf-8")
+    bounded_git(primary.e, "add", "--", str(swap_log.relative_to(primary.e.wip)))
+    bounded_git(primary.e, "commit", "-q", "-m", f"a swapped lane, {SWAP_LANE}")
+    bounded_git(primary.e, "push", "-q", "origin", "main")
+    files_trace = primary.e.root / "git-trace-files"
+    files = primary.files_edit("swapped", env={"GIT_TRACE": str(files_trace)},
+                               timeout=BACKSTOP_LIMIT_S)
+    assert files.returncode == 0 and SWAP_LANE in files.stdout, \
+        ("the git control: files mode does not list the swapped lane", files.returncode,
+         files.stdout, files.stderr[-1500:])
+    assert traced(files_trace, GIT_PICKAXE), \
+        ("the git control: files mode took no `git log -S` rank", traced(files_trace, re.compile("git")))
+    answered_trace = primary.e.root / "git-trace-answered"
+    answered, _took = backstop.edit("swapped", env={"GIT_TRACE": str(answered_trace)})
+    journal = [c for c in backstop.calls() if c["journal_last"]]
+    assert journal and not any(c["hung"] for c in journal), \
+        ("the control: `swapped` never asked journal --last, or it hung", backstop.calls(),
+         answered.returncode, answered.stderr[-1500:])
+    assert answered.returncode == 0 and "repoA-2" in answered.stdout, \
+        ("the control: not the journal's rank", answered.returncode, answered.stdout,
+         answered.stderr[-1500:])
+    assert not traced(answered_trace, GIT_PICKAXE), traced(answered_trace, GIT_PICKAXE)
+    stopped_trace = primary.e.root / "git-trace-stopped"
+    backstop.hang([], journal_last=True)
+    stopped, took = backstop.edit("swapped", env={"GIT_TRACE": str(stopped_trace)})
+    # Exactly one call hung: `journal --last` is the only call told to hang, the lane's
+    # one candidate is the first to ask it, and its failure ends the loop (`return 69`).
+    hung = [c for c in backstop.calls() if c["hung"]]
+    assert len(hung) == 1 and hung[0]["journal_last"], \
+        ("not one hung journal --last", backstop.calls(), stopped.stderr[-1500:])
+    assert hung[0]["backstop"] == ["timeout", "-k", "1", str(BACKSTOP_S)], \
+        ("the call did not run under the backstop", hung[0], stopped.stderr[-1500:])
+    # The upper bound is `backstop.edit`'s: a call still running at `BACKSTOP_LIMIT_S` fails.
+    assert took >= BACKSTOP_S, ("the call did not hang until the backstop", took)
+    assert stopped.returncode == 69, (stopped.returncode, stopped.stdout, stopped.stderr[-1500:])
+    assert stopped.stdout == "", stopped.stdout
+    stop_words = (f"exited 124 (it did not end within lanes-edit's {BACKSTOP_S} s backstop, "
+                  f"and was stopped (exit 124))")
+    assert stop_words in stopped.stderr, (stop_words, stopped.stderr[-1500:])
+    assert "`swapped` never ranks from git instead" in stopped.stderr, stopped.stderr[-1500:]
+    assert "files mode" not in stopped.stderr, stopped.stderr[-1500:]
+    assert not MIRROR_LINE.search(stopped.stderr), stopped.stderr[-1500:]
+    assert not traced(stopped_trace, GIT_PICKAXE), traced(stopped_trace, GIT_PICKAXE)
