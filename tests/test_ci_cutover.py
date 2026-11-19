@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -200,7 +201,7 @@ def test_ci_cutover_exact_pair_log_wait_keeps_invalid_proof_full(
     monkeypatch.setattr(cutover.exact_pair, "own_source", lambda pr: pr["number"] == 7)
     monkeypatch.setattr(cutover.exact_pair, "source", lambda *_: 7)
     sleeps, jobs = [], []
-    monkeypatch.setattr(cutover.time, "sleep", sleeps.append)
+    monkeypatch.setattr(cutover, "time", SimpleNamespace(sleep=sleeps.append))
     payload = {"base": batch["base"], "full_ci_required": True,
                "head": batch["heads"][0], "tested": env["GITHUB_SHA"]}
 
@@ -236,6 +237,71 @@ def test_ci_cutover_exact_pair_log_wait_keeps_invalid_proof_full(
     diagnostics = [json.loads(line)["delivery_diagnostic"]
                    for line in capsys.readouterr().err.splitlines()]
     assert diagnostics.count("fast-proof-log-pending") == (reads if fault == "persistent-404" else waits)
+
+
+@pytest.mark.parametrize("case, reads, accepted", [
+    ("ordinary", 1, True),
+    ("escape-refusal", 2, True),
+    ("rejected-partial", 2, False),
+    ("wrong-base", 2, False),
+    ("oversized", 2, False),
+    ("forbidden", 1, False),
+    ("second-refusal", 2, False),
+])
+def test_ci_cutover_exact_pair_log_cli_escape(
+        cutover, batch, monkeypatch, capsys, case, reads, accepted):
+    env, event = source_fixture(cutover, batch)
+    event["action"] = "reopened"
+    monkeypatch.setattr(cutover.exact_pair, "own_source", lambda pr: pr["number"] == 7)
+    monkeypatch.setattr(cutover.exact_pair, "source", lambda *_: 7)
+    endpoint = f"repos/{cutover.REPOSITORY}/actions/jobs/907/logs"
+    ordinary = ["gh", "api", "--hostname", "github.com", endpoint]
+    allowed = [*ordinary[:-1], "--allow-escape-sequences", endpoint]
+    refusal = (b"the response contains terminal escape sequences; "
+               b"pass --allow-escape-sequences to output it anyway\n")
+    payload = {"base": batch["base"], "full_ci_required": True,
+               "head": batch["heads"][0], "tested": env["GITHUB_SHA"]}
+    valid = ("2026-11-18T20:14:28Z " + json.dumps(payload, sort_keys=True) + "\n").encode()
+    decorated = b"\x1b[32mjob step\x1b[0m\n"
+    real_run = subprocess.run
+    calls = []
+
+    def run(args, **options):
+        if args[:2] != ["gh", "api"]:
+            return real_run(args, **options)
+        calls.append(args)
+        output = options["stdout"]
+        assert not output.isatty()
+        assert options["check"] and options["stderr"] == subprocess.PIPE
+        assert options["timeout"] == 15
+        if len(calls) == 1 and case != "ordinary":
+            if case == "forbidden":
+                raise subprocess.CalledProcessError(1, args, stderr=b"gh: Forbidden (HTTP 403)\n")
+            if case == "rejected-partial":
+                output.write(valid)
+            raise subprocess.CalledProcessError(1, args, stderr=refusal)
+        if case == "second-refusal":
+            raise subprocess.CalledProcessError(1, args, stderr=refusal)
+        if case == "rejected-partial":
+            data = decorated  # The failed read's proof must not survive.
+        elif case == "wrong-base":
+            data = decorated + valid.replace(batch["base"].encode(), b"f" * 40)
+        elif case == "oversized":
+            data = valid + decorated + b"x" * (2 * 1024 * 1024)
+        else:
+            data = valid if case == "ordinary" else decorated + valid
+        output.write(data)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(cutover.evidence.subprocess, "run", run)
+    result = route_fixture(cutover, batch, env, event)
+    assert calls == [ordinary, allowed][:reads]
+    assert result["mode"] == ("source" if accepted else "full")
+    assert result["omit_full"] is accepted
+    assert ("proof" in result) is accepted
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert "\x1b" not in captured.err and "--allow-escape-sequences" not in captured.err
 
 
 @pytest.mark.parametrize("side", ["event", "live"])
