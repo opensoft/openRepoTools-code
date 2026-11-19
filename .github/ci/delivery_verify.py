@@ -249,12 +249,13 @@ def hosted_review(comments, head):
     return max(receipts, key=lambda entry: entry[0])
 
 
-def clean_review(number, head, request, threads, *, base=None):
+def clean_review(number, head, request, threads, *, base=None, exact_base=False):
     comments = read_rest_comments(number, request)
     response = threads(number)
     consistent_comments(comments, response)
     receipt = local_review(comments, number, head, base, request, response)
     if receipt is None:
+        require(not exact_base, "Exact-pair review must bind the current base")
         receipt = hosted_review(comments, head)
     response = {"pageInfo": response["pageInfo"], "nodes": response["nodes"]}
     require(response["pageInfo"]["hasNextPage"] is False
@@ -414,10 +415,12 @@ def source_pr(head, main, root, request, threads, base_changes):
 
 def source_evidence(pr, head, base, root, request, threads, base_changes):
     fast = fast_receipt(pr, head, request, base_changes)
-    review = clean_review(pr["number"], head, request, threads, base=base)
     if exact_pair.own_source(pr):
         from delivery_evidence import exact_source_ci
-        return fast, review, exact_source_ci(root, base, pr, fast, request)
+        review = clean_review(pr["number"], head, request, threads, base=base, exact_base=True)
+        source_ci = exact_source_ci(root, base, pr, fast, request)
+        return fast, review, dict(source_ci, review_comment_id=review[0]["comment_id"])
+    review = clean_review(pr["number"], head, request, threads, base=base)
     return fast, review
 
 
@@ -503,6 +506,8 @@ def verify_candidate(env, event, root, request=policy.github, threads=read_threa
                 "Candidate prefix is not the expected clean scoped merge")
         members.append({"number": pr["number"], "head": head, "prefix": prefix, "tree": tree,
                         "delivery": scope == exact_pair.SCOPE or delivery_intended(pr["body"])})
+        if scope == exact_pair.SCOPE:
+            members[-1]["source_ci"] = evidence[2]
         snapshots.append((pr, evidence))
     if scope == exact_pair.SCOPE:
         exact_pair.ordered_trees(root, main, candidate, members)

@@ -117,19 +117,31 @@ def record_valid(record, run, phase):
         policy.sha(proof[key])
     members = proof["members"]
     require(isinstance(members, list) and 1 <= len(members) <= 2, "Invalid member inventory")
+    exact = proof.get("scope") == exact_pair.SCOPE
     for row in members:
-        require(set(row) == {"number", "head", "prefix", "tree", "delivery"}
+        require(set(row) == {"number", "head", "prefix", "tree", "delivery"} | ({"source_ci"} if exact else set())
                 and type(row["delivery"]) is bool, "Invalid member schema")
         positive(row["number"])
         for key in ("head", "prefix", "tree"):
             policy.sha(row[key])
+        if exact:
+            source = row["source_ci"]
+            identifiers = {"reopen_event_id", "fast_run_id", "delivery_run_id", "review_comment_id"}
+            require(set(source) == identifiers | {"tree", "route_proof"}, "Invalid source receipt schema")
+            for key in identifiers:
+                positive(source[key])
+            policy.sha(source["tree"])
+            require(re.fullmatch(r"[0-9a-f]{64}", source["route_proof"]) is not None,
+                    "Invalid source route proof")
     require(len({row["number"] for row in members}) == len(members)
             and len({row["head"] for row in members}) == len(members)
             and members[-1]["prefix"] == proof["candidate"]
             and members[-1]["tree"] == proof["tree"], "Ambiguous final member")
-    if proof.get("scope") == exact_pair.SCOPE:
+    if exact:
         require(tuple((row["number"], row["head"]) for row in members) == exact_pair.PAIR
                 and all(row["delivery"] is True for row in members), "Exact-pair receipt differs")
+        for key in ("reopen_event_id", "fast_run_id", "delivery_run_id", "review_comment_id"):
+            require(len({row["source_ci"][key] for row in members}) == 2, "Reused exact-pair source receipt")
     return record
 
 
@@ -248,7 +260,8 @@ def exact_source_ci(root, base, pr, fast_receipt, request):
                        job_log(route["id"]), re.MULTILINE)
     require(len(lines) == 1 and request(REPOSITORY, f"actions/runs/{rid}") == run,
             "No stable fast-only source route proof")
-    return newest["id"], rid, tree, read_json(lines[0])["proof"]
+    return {"reopen_event_id": newest["id"], "fast_run_id": positive(fast["id"]),
+            "delivery_run_id": rid, "tree": tree, "route_proof": read_json(lines[0])["proof"]}
 
 
 def artifact_record(run, phase, request=policy.github, fetch=download, *, allow_pending=False):
@@ -333,6 +346,9 @@ def candidate_chain(record, root):
     if proof.get("scope") == exact_pair.SCOPE:
         for member in proof["members"]:
             exact_pair.cut(root, proof["base"], member["head"])
+            tree = policy.git(root, "merge-tree", "--write-tree",
+                              proof["base"], member["head"]).decode().strip()
+            require(tree == member["source_ci"]["tree"], "Exact-pair source receipt tree differs")
         exact_pair.ordered_trees(root, proof["base"], proof["candidate"], proof["members"])
         return proof
     previous, heads = proof["base"], []
@@ -400,16 +416,24 @@ def exact_pair_catalogue(root, base, run, request):
                 and item["run_attempt"] == 1, "Ambiguous exact-pair heavy attempt")
         require(item["actor"]["login"] == MERGIFY and item["triggering_actor"]["login"] == MERGIFY
                 and policy.QUEUE.fullmatch(item["head_branch"]) is not None
-                and item["conclusion"] == "failure" and not item["referenced_workflows"],
+                and item["conclusion"] == "failure",
                 "Not an authentic probe-only refusal")
         jobs = pages(request, f"actions/runs/{item['id']}/attempts/1/jobs", "jobs")
-        active = {job["name"]: job["conclusion"] for job in jobs if job["conclusion"] != "skipped"}
+        outcomes = {job["name"]: job["conclusion"] for job in jobs}
         require(len({positive(job["id"]) for job in jobs}) == len(jobs)
-                and len({job["name"] for job in jobs}) == len(jobs)
-                and active == {"probe": "success", HEAVY: "failure"}
+                and len(outcomes) == len(jobs)
+                and outcomes == {"probe": "success", "candidate": "skipped", HEAVY: "failure"}
                 and all(job["run_id"] == item["id"] and job["head_sha"] == head
                         and job["run_attempt"] == 1 and job["status"] == "completed" for job in jobs),
                 "Another run executed or may have executed heavy CI")
+        by_name = {job["name"]: job for job in jobs}
+        for name, step, conclusion in (
+            ("probe", "Preserve verified admission", "skipped"),
+            (HEAVY, "Require admitted complete integration", "failure"),
+            (HEAVY, "Final live candidate verification", "skipped"),
+        ):
+            require([row["conclusion"] for row in by_name[name]["steps"] if row["name"] == step]
+                    == [conclusion], "Incomplete probe-only job-step evidence")
         for path in sorted(CALLEES | {CALLER}):
             expected = policy.git(root, "rev-parse", f"{base}:{path}").decode().strip()
             observed = request(REPOSITORY, f"contents/{path}?ref={head}")

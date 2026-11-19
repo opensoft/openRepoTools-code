@@ -242,10 +242,10 @@ def duplicate(env, event, root, main, request, fetch, threads, base_changes):
     # Independently re-read live sources; do not manufacture a push payload to
     # trick the admission verifier into accepting a pull_request event.
     for member in proof["members"]:
-        source_pr, _receipt = verifier.source_pr(member["head"], main, root, request, threads, base_changes)
+        source_pr, receipt = verifier.source_pr(member["head"], main, root, request, threads, base_changes)
         exact = proof.get("scope") == exact_pair.SCOPE
         require(source_pr["number"] == member["number"]
-                and (exact_pair.own_source(source_pr) if exact
+                and (exact_pair.own_source(source_pr) and receipt[2] == member["source_ci"] if exact
                      else verifier.delivery_intended(source_pr["body"])), "Admission source differs")
     current_pr = request(REPOSITORY, f"pulls/{number}")
     require(evidence.positive(current_pr["number"]) == number

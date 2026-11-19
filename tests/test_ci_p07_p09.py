@@ -176,7 +176,7 @@ def test_ci_p07_p09_current_fast_only_source_run(pair_evidence, monkeypatch):
     association = [{"number": 97}]
     pr = {"number": 97, "head": {"sha": head, "ref": "p07"}}
     event = {"id": 88, "event": "reopened", "created_at": "2026-11-18T20:00:00Z"}
-    fast = ({}, {"created_at": "2026-11-18T20:00:10Z", "pull_requests": association}, {}, {})
+    fast = ({}, {"id": 69, "created_at": "2026-11-18T20:00:10Z", "pull_requests": association}, {}, {})
     run = {"id": 70, "path": ".github/workflows/tests.yml", "event": "pull_request",
            "repository": repo, "head_repository": repo, "head_sha": head, "head_branch": "p07",
            "pull_requests": association, "run_attempt": 1, "status": "completed",
@@ -198,7 +198,9 @@ def test_ci_p07_p09_current_fast_only_source_run(pair_evidence, monkeypatch):
         assert endpoint == "actions/runs/70"
         return deepcopy(run)
 
-    assert e.exact_source_ci(None, base, pr, fast, request) == (88, 70, tree, digest)
+    assert e.exact_source_ci(None, base, pr, fast, request) == {
+        "reopen_event_id": 88, "fast_run_id": 69, "delivery_run_id": 70,
+        "tree": tree, "route_proof": digest}
     job = next(row for row in jobs if row["name"] == "tests")
     job["conclusion"] = "success"
     with pytest.raises(ValueError, match="not fast-only"):
@@ -212,7 +214,7 @@ def test_ci_p07_p09_current_fast_only_source_run(pair_evidence, monkeypatch):
         e.exact_source_ci(None, base, pr, fast, request)
 
 
-def test_ci_p07_p09_landing_rejects_wrong_tree_and_duplicate_heavy(exact, pair_evidence, monkeypatch):
+def test_ci_p07_p09_landing_rejects_wrong_tree_and_inventory_drift(exact, pair_evidence, monkeypatch):
     e = pair_evidence
     root, _anchor, main, members, prs = exact
     first, last = (row["prefix"] for row in members)
@@ -257,6 +259,88 @@ def test_ci_p07_p09_landing_rejects_wrong_tree_and_duplicate_heavy(exact, pair_e
     with pytest.raises(ValueError, match="landing evidence moved"):
         e.exact_pair_landing(proof, record, run, {"GITHUB_SHA": last}, {"before": main},
                              root, last, request)
+
+
+def test_ci_p07_p09_catalogue_distinguishes_one_heavy_from_two(pair_evidence, monkeypatch):
+    e = pair_evidence
+    started = "2026-11-18T20:01:00Z"
+    base, other_head = "1" * 40, "3" * 40
+    repo = {"id": e.REPOSITORY_ID}
+    run = {"id": 70, "run_number": 77, "run_attempt": 1, "path": e.CALLER, "event": "push",
+           "head_branch": "mergify/merge-queue/a1b2c3d4e5", "head_sha": "2" * 40,
+           "created_at": started, "status": "completed", "conclusion": "success",
+           "repository": repo, "head_repository": repo}
+    probe = dict(run, id=71, run_number=78, head_sha=other_head, conclusion="failure",
+                 head_branch="mergify/merge-queue/b1c2d3e4f5",
+                 referenced_workflows=[{"path": path, "sha": other_head} for path in sorted(e.CALLEES)],
+                 actor={"login": e.MERGIFY}, triggering_actor={"login": e.MERGIFY})
+    jobs = [{"name": name, "id": i, "run_id": 71, "head_sha": other_head, "run_attempt": 1,
+             "status": "completed", "conclusion": conclusion, "steps": []}
+            for i, (name, conclusion) in enumerate(
+                (("probe", "success"), ("candidate", "skipped"), (e.HEAVY, "failure")), start=1)]
+    jobs[0]["steps"] = [{"name": "Preserve verified admission", "conclusion": "skipped"}]
+    jobs[-1]["steps"] = [{"name": "Require admitted complete integration", "conclusion": "failure"},
+                         {"name": "Final live candidate verification", "conclusion": "skipped"}]
+    blob, bad_blob = "a" * 40, "b" * 40
+    current_blob = [blob]
+    monkeypatch.setattr(e.policy, "git", lambda *_: blob.encode())
+
+    def request(_repo, endpoint):
+        if endpoint == f"commits/{base}":
+            return {"sha": base, "commit": {"committer": {"date": "2026-11-18T20:00:00Z"}}}
+        if endpoint.startswith("actions/workflows/"):
+            return {"workflow_runs": [run, probe], "total_count": 2}
+        if endpoint.startswith("actions/runs/71/attempts/1/jobs?"):
+            return {"jobs": jobs, "total_count": len(jobs)}
+        assert endpoint.startswith("contents/") and endpoint.endswith(f"?ref={other_head}")
+        return {"sha": current_blob[0]}
+
+    assert e.exact_pair_catalogue(None, base, run, request)[1] == [run, probe]
+    current_blob[0] = bad_blob
+    with pytest.raises(ValueError, match="not the reviewed variant"):
+        e.exact_pair_catalogue(None, base, run, request)
+    current_blob[0] = blob
+    jobs.append(dict(jobs[-1], id=4, name="candidate / full-ci / tests", conclusion="success"))
+    with pytest.raises(ValueError, match="may have executed heavy CI"):
+        e.exact_pair_catalogue(None, base, run, request)
+    jobs.pop()
+    jobs[-1]["steps"][1]["conclusion"] = "failure"
+    with pytest.raises(ValueError, match="Incomplete probe-only job-step"):
+        e.exact_pair_catalogue(None, base, run, request)
+    jobs[-1]["steps"][1]["conclusion"] = "skipped"
+    probe["run_attempt"] = 2
+    with pytest.raises(ValueError, match="Ambiguous exact-pair heavy attempt"):
+        e.exact_pair_catalogue(None, base, run, request)
+
+
+def test_ci_p07_p09_receipt_records_both_sources_and_requires_current_base_review(pair, pair_evidence, delivery):
+    e = pair_evidence
+    repo = e.REPOSITORY
+    candidate, base = "4" * 40, "5" * 40
+    run = {"id": 12, "head_sha": candidate, "head_branch": "mergify/merge-queue/main/batch-1"}
+    members = []
+    for index, (number, head) in enumerate(pair.PAIR, start=1):
+        members.append({"number": number, "head": head, "prefix": candidate, "tree": "6" * 40,
+                        "delivery": True, "source_ci": {
+                            "reopen_event_id": index, "fast_run_id": index + 2,
+                            "delivery_run_id": index + 4, "review_comment_id": index + 6,
+                            "tree": "7" * 40, "route_proof": "a" * 64}})
+    proof = {"base": base, "candidate": candidate, "tree": "6" * 40, "members": members,
+             "scope": pair.SCOPE, "verified": True, "full_ci_required": True}
+    record = {"schema_version": 1, "phase": "admission", "repository": repo,
+              "repository_id": e.REPOSITORY_ID, "run_id": 12, "run_attempt": 1,
+              "branch": run["head_branch"], "proof": proof}
+    assert e.record_valid(record, run, "admission") == record
+    members[1]["source_ci"]["reopen_event_id"] = members[0]["source_ci"]["reopen_event_id"]
+    with pytest.raises(ValueError, match="Reused exact-pair source receipt"):
+        e.record_valid(record, run, "admission")
+    del members[1]["source_ci"]
+    with pytest.raises(ValueError, match="Invalid member schema"):
+        e.record_valid(record, run, "admission")
+    comments = {"pageInfo": {"hasNextPage": False}, "nodes": []}
+    with pytest.raises(ValueError, match="review must bind the current base"):
+        delivery.clean_review(97, pair.HEADS[0], lambda *_: [], lambda _n: {"comments": comments},
+                              base=base, exact_base=True)
 
 
 def test_ci_p07_p09_complete_paginated_review_history(delivery):
