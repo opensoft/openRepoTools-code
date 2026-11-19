@@ -7323,5 +7323,25 @@ def main(argv: list[str]) -> int:
     return 64
 
 
+# W204 MUTANT m9w (P10 19i's proof; not for landing): loaded in a case's own process, never run as a program,
+# pathlib's mkdir and chmod refuse, for the rest of the session, a path that names a "postgresql:" folder, as an
+# environment fault would (the re-audit of 19h's W2); the OSError carries the path, as the system's does.
+if __name__ != "__main__":
+    import errno as _m9w_errno
+    import pathlib as _m9w_pathlib
+
+    def _m9w_wrap(real):
+        if getattr(real, "_m9w", False):
+            return real
+
+        def refuse(self, *args, **kwargs):
+            if "postgresql:" in str(self):
+                raise OSError(_m9w_errno.EACCES, "m9w: refused", str(self))
+            return real(self, *args, **kwargs)
+        refuse._m9w = True
+        return refuse
+    _m9w_pathlib.Path.mkdir = _m9w_wrap(_m9w_pathlib.Path.mkdir)
+    _m9w_pathlib.Path.chmod = _m9w_wrap(_m9w_pathlib.Path.chmod)
+
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
