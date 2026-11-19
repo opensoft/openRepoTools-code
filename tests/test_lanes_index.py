@@ -277,21 +277,23 @@ class Estate:
                 child.pop(key, None)
             else:
                 child[key] = value
-        # THE CHILD'S BYTES NEVER RAISE (commit 19e; W194's B2 of b00a0839): a byte that is not
-        # UTF-8 is kept as a backslash escape, so no `UnicodeDecodeError` prints the raw stream as a
-        # frame's argument; any other exception of the call fails in words of its own, its type's
-        # name alone, below and outside this block
+        # THE CHILD'S BYTES NEVER RAISE (commit 19e; W194's B2 of b00a0839): they are decoded as
+        # UTF-8 whatever the locale (commit 19h; lane 2's NIT of spec PR 80 comment 7009564106), each
+        # byte that is not UTF-8 held by `surrogateescape`, so no `UnicodeDecodeError` prints the raw
+        # stream as a frame's argument; such bytes fail in words of their own (commit 19f), and any
+        # other exception of the call in words of its own, its type's name alone (commit 19h), each
+        # below and outside this block
         other = None
         try:
             done = subprocess.run([str(a) for a in argv], capture_output=True, text=True,
-                                  errors="surrogateescape",
+                                  encoding="utf-8", errors="surrogateescape",
                                   env=child, timeout=timeout, cwd=str(self.root),
                                   input=input_text,
                                   stdin=None if input_text is not None else subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
             pass  # fails below, outside this block, so that no exception is chained to the failure
-        except Exception as exc:  # noqa: BLE001 - its text can hold the argv: `_fail` masks it
-            other = f"a command could not be run: {type(exc).__name__}: {exc}"
+        except Exception as exc:  # noqa: BLE001 - its text can hold the argv: its type alone is said
+            other = f"a command could not be run: {type(exc).__name__}"
         else:
             # a child whose bytes are not UTF-8 fails in words of its own (commit 19f; W194's S2
             # of 3e056eed: 19e's decoding had let it pass), and no byte is printed
@@ -301,14 +303,14 @@ class Estate:
                 return _Run(done.args, done.returncode, out, err)
             other = f"a command wrote bytes that are not UTF-8 (exit {done.returncode})"
         if other is not None:
-            _fail(other)
+            _fail(f"{other}, {_where()}")
         # A TIMEOUT FAILS IN WORDS OF ITS OWN, WITH THE TIMEOUT ALONE (lane 3's ruling on
         # opensoft/openRepoTools-code#89 comment 6968262292): `TimeoutExpired`'s text prints the argv,
         # which holds a planted value in 25 ids, so nothing of the argv, the streams or the exception
         # is in the message; `pytrace=False` prints the message alone, whatever the --tb style.
         # A STATED LIMIT: pytest's `--fulltrace` overrides `pytrace=False` with the long style and
         # prints each frame's arguments, this one's `argv` among them
-        pytest.fail(f"a command timed out after {timeout} s", pytrace=False)
+        pytest.fail(f"a command timed out after {timeout} s, {_where()}", pytrace=False)
 
     def edit(self, *args, env: dict | None = None, **kw) -> subprocess.CompletedProcess:
         return self.run("bash", LANES_EDIT, *args, env=env, **kw)
@@ -356,9 +358,10 @@ class Estate:
 
     def write_config(self, text: str, name: str = "lanes-index.conf", mode: int = 0o600) -> Path:
         path = self.config / "openRepoTools" / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        path.chmod(mode)
+        # THIS FRAME TAKES THE CONFIGURATION'S TEXT (commit 19i; the re-audit's S1 of 19h)
+        _on_disk(lambda: path.parent.mkdir(parents=True, exist_ok=True), "the configuration's folder")
+        _write(path, text)
+        _on_disk(lambda: path.chmod(mode), "the configuration's mode")
         return path
 
     def install_indexer(self) -> Path:
@@ -445,12 +448,69 @@ def _fail(words, *runs):
     pytest.fail(_mask(f"{words}{tail}"), pytrace=False)
 
 
+def _where() -> str:
+    """WHERE A GUARD WAS CALLED, BY THIS MODULE'S LINE NUMBERS ALONE (commit 19i; the re-audit's N1
+    of 19h): the guard's caller and the module's frames above it, innermost first, up to the case,
+    at most four. A line number holds no value, so a guard's words keep a location with no frame."""
+    frame, lines = sys._getframe(2), []
+    while frame is not None and len(lines) < 4:
+        if frame.f_code.co_filename == __file__:
+            if not lines or lines[-1] != frame.f_lineno:
+                lines.append(frame.f_lineno)
+            if frame.f_code.co_name.startswith("test_"):
+                break
+        frame = frame.f_back
+    return "at line " + " < ".join(map(str, lines)) if lines else "at no line of a case"
+
+
+def _texts_of(value) -> list | None:
+    """WHAT `_absent` SEARCHES (commit 19h; lane 2's B2 of spec PR 80 comment 7009564106): text or
+    bytes, itself; JSON's object or array as `_child_json` parsed it, every key and every value in
+    it, at any depth, a `null`, a number or a boolean as JSON writes it, walked without recursion;
+    anything else, None. `in` on a dict or a list tests its keys or items alone, so a needle inside
+    a value was never seen there."""
+    if isinstance(value, (str, bytes)):
+        return [value]
+    if not isinstance(value, (dict, list)):
+        return None
+    texts, todo = [], [value]
+    while todo:
+        item = todo.pop()
+        if isinstance(item, dict):
+            todo += [*item.keys(), *item.values()]
+        elif isinstance(item, list):
+            todo += item
+        elif isinstance(item, str):
+            texts.append(item)
+        elif item is None or isinstance(item, (bool, int, float)):
+            texts.append(json.dumps(item))
+        else:
+            return None
+    return texts
+
+
+def _holds(text, value) -> bool:
+    """Whether `text`, str or bytes, holds `value`, str or bytes, as the other's type."""
+    if isinstance(text, bytes):
+        value = value if isinstance(value, bytes) else str(value).encode("utf-8", "surrogatepass")
+    else:
+        value = value.decode("utf-8", "surrogateescape") if isinstance(value, bytes) else str(value)
+    return value in text
+
+
 def _absent(text, words, **needles) -> None:
     """THE LEAK CHECK (commit 19c; the re-audit's S2): fails when a needle is in `text`, naming
-    the needles found, by name; it prints neither a needle nor `text` unmasked."""
-    found = [name for name, value in needles.items()
-             if (value.encode() if isinstance(text, bytes) and isinstance(value, str) else value)
-             in text]
+    the needles found, by name; it prints neither a needle nor `text` unmasked. NOTHING HERE
+    RAISES (commit 19h; lane 2's B2 of spec PR 80 comment 7009564106): pytest's long traceback
+    entry prints a frame's arguments, and this frame's are the needles, so `text` is searched as
+    `_texts_of` gives it, the whole of a parsed JSON value included, and any other `text`, such
+    as a status file that holds `null`, a number or a boolean, fails in fixed words, its type
+    alone."""
+    texts = _texts_of(text)
+    if texts is None:
+        pytest.fail(_mask(f"{words}\nthe text searched is a {type(text).__name__}, not text, "
+                          f"bytes or JSON's object or array", **needles), pytrace=False)
+    found = [name for name, value in needles.items() if any(_holds(t, value) for t in texts)]
     if found:
         pytest.fail(_mask(f"{words}\nfound: {', '.join(found)} (not shown)", **needles),
                     pytrace=False)
@@ -481,8 +541,8 @@ def _child_run(argv: list, *, timeout: float | None = None, check: bool = False,
                               errors="surrogateescape", timeout=timeout, **kw)
     except subprocess.TimeoutExpired:
         other = f"a command timed out after {timeout} s"
-    except Exception as exc:  # noqa: BLE001 - its text can hold the argv: `_fail` masks it
-        other = f"a command could not be run: {type(exc).__name__}: {exc}"
+    except Exception as exc:  # noqa: BLE001 - its text can hold the argv: its type alone is said
+        other = f"a command could not be run: {type(exc).__name__}"
     else:
         out, err, strict = _child_streams(done.stdout, done.stderr)
         if not strict:
@@ -492,7 +552,7 @@ def _child_run(argv: list, *, timeout: float | None = None, check: bool = False,
             if not check or run.returncode == 0:
                 return run
             other = "a command exited non-zero"
-    _fail(other, *([run] if run is not None else []))
+    _fail(f"{other}, {_where()}", *([run] if run is not None else []))
 
 
 def _child_done(proc: subprocess.Popen, *, timeout: float) -> subprocess.CompletedProcess:
@@ -504,8 +564,8 @@ def _child_done(proc: subprocess.Popen, *, timeout: float) -> subprocess.Complet
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         late = True
-    except Exception as exc:  # noqa: BLE001 - its text can hold the argv: `_fail` masks it
-        other = f"a command could not be awaited: {type(exc).__name__}: {exc}"
+    except Exception as exc:  # noqa: BLE001 - its text can hold the argv: its type alone is said
+        other = f"a command could not be awaited: {type(exc).__name__}"
     else:
         out, err, strict = _child_streams(out, err)
         if strict:
@@ -515,7 +575,37 @@ def _child_done(proc: subprocess.Popen, *, timeout: float) -> subprocess.Complet
         proc.kill()
         proc.communicate()
         other = f"a command timed out after {timeout} s"
-    _fail(other)
+    _fail(f"{other}, {_where()}")
+
+
+def _write(path: Path, data) -> None:
+    """A FILE A CASE WRITES, A PLANTED VALUE IN IT (commit 19h): pathlib's `write_text` and
+    `write_bytes` take the data as an argument, and pytest's long traceback entry prints a frame's
+    arguments, so an error of the disk fails in words of its own, its type alone, outside the
+    except. Text is written as UTF-8 whatever the locale, as the indexer reads it."""
+    kind = None
+    try:
+        if isinstance(data, bytes):
+            path.write_bytes(data)
+        else:
+            path.write_text(data, encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001 - its frames hold the data: its type alone is said
+        kind = type(exc).__name__
+    if kind is not None:
+        _fail(f"a file the case writes could not be written, {_where()}: {kind}")
+
+
+def _on_disk(call, what: str):
+    """A FILE-SYSTEM STEP ON A PATH THAT CAN HOLD A PLANTED VALUE (commit 19i; the re-audit's S1 of
+    19h, its mutant W2): `call` takes no argument; an OSError's text holds the path under every --tb
+    style, and pathlib's frames take it as an argument, so any exception fails in words of its own,
+    `what`, the line and the error's type alone, outside the except."""
+    kind = None
+    try:
+        return call()
+    except Exception as exc:  # noqa: BLE001 - its text holds the path: its type alone is said
+        kind = type(exc).__name__
+    _fail(f"{what} failed, {_where()}: {kind}")
 
 
 def _child_text(path: Path) -> str:
@@ -631,6 +721,66 @@ def load_indexer():
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
+
+
+def _replay(out: str, err: str) -> list:
+    """`_indexer`'s buffers, written back masked to the streams then current; the names of the
+    planted values they held (commit 19i)."""
+    shown = sorted({name for name, value in _planted()
+                    if value and not value.startswith("<") and (value in out or value in err)})
+    sys.stdout.write(_mask(out))
+    sys.stderr.write(_mask(err))
+    return shown
+
+
+def _unframed(exc: BaseException) -> BaseException:
+    """`exc`, and each exception of the chain pytest prints with it, without their frames (commit
+    19i; lane 2's NIT 2 of 19h, spec PR 80 comment 7011678677): the indexer's frames take the
+    planted keys as arguments, so an awaited exception that escaped its `pytest.raises` would print
+    them. Each keeps its type, its text and its chain, which is all a case's checks read."""
+    seen, link = set(), exc
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        link.with_traceback(None)
+        link = (link.__cause__ if link.__cause__ is not None
+                else None if link.__suppress_context__ else link.__context__)
+    return exc
+
+
+def _indexer(call, *, expect=None, what="lanes-index, called in this process"):
+    """AN IN-PROCESS CALL INTO `lanes-index` IN A CASE THAT PLANTS A VALUE (commit 19h; lane 2's S1
+    of spec PR 80 comment 7009564106): `call` takes no argument, so this frame holds no planted
+    value, but the indexer's own frames below it take the planted keys as arguments, and pytest's
+    long traceback entry prints a frame's arguments. So any exception out of `call` fails in fixed
+    words, its type alone, outside the except; `expect`, the exception the case's own
+    `pytest.raises` awaits, is raised again as it came, so that check keeps its meaning.
+    ITS STREAMS TOO (commit 19i; the re-audit's S2 of 19h, its mutant W1): `call` runs with stdout
+    and stderr redirected into buffers, written back masked to the streams then current, so neither
+    pytest's captured output nor a case's own redirect gets a planted value raw; a planted value
+    there fails the case in words of its own, by name, since the masked copy would hide it from the
+    case's own checks. lanes-index writes to the two streams through `sys.stdout` and `sys.stderr`
+    alone: each child it runs has its output captured, and it writes no descriptor 1 or 2 itself.
+    The words carry the line and `what`, the code called (the re-audit's N1). The awaited
+    exception goes on as it came but for its frames (lane 2's NIT 2): see `_unframed`."""
+    kind, hit, where = None, None, _where()
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            result = call()
+    except Exception as exc:  # noqa: BLE001 - its frames hold the planted keys: its type alone is said
+        if expect is not None and isinstance(exc, expect):
+            hit = exc
+        else:
+            kind = type(exc).__name__
+    finally:
+        shown = _replay(out.getvalue(), err.getvalue())
+    if shown:
+        _fail(f"{what}, {where}, wrote a planted value to its streams: {', '.join(shown)} (not shown)")
+    if hit is not None:
+        raise _unframed(hit)
+    if kind is not None:
+        _fail(f"{what}, {where}, raised {kind}")
+    return result
 
 
 def _log_awk() -> str:
@@ -1136,7 +1286,7 @@ def _fallback_setups():
         (fake / "psql").write_text("#!/bin/sh\necho 'psql: error: connection to server at \"db.invalid\" failed' >&2\nexit 2\n")
         (fake / "psql").chmod(0o755)
         pw = e.config / "pgpass"
-        pw.write_text(f"*:*:*:*:{PGPASS_NEVER_READ}\n")
+        _write(pw, f"*:*:*:*:{PGPASS_NEVER_READ}\n")
         pw.chmod(0o600)
         e.write_config(f"url={WRITER_URL}\npassfile={pw}\n"
                        f"reader_url={READER_URL}\n")
@@ -1266,7 +1416,7 @@ def test_offline_no_read_every_act_is_byte_identical_against_an_unreachable_inde
         "echo 'psql: error: connection to server at \"lanes-index.invalid\" failed' >&2\nexit 2\n")
     (fake / "psql").chmod(0o755)
     pw = indexed.config / "pgpass"
-    pw.write_text(f"*:*:*:*:{PGPASS_NEVER_READ}\n")
+    _write(pw, f"*:*:*:*:{PGPASS_NEVER_READ}\n")
     pw.chmod(0o600)
     indexed.write_config(f"url={UNREACHABLE_WRITER_URL}\npassfile={pw}\n")
     extra = {"PATH": indexed.path_with(indexed.indexbin, fake), "LANES_INDEX": None}
@@ -1397,12 +1547,12 @@ def test_the_configuration_is_refused_on_clause_c_grounds(estate, key):
         env = {}
     elif where == "worktree":
         path = estate.wip / "lanes-index.conf"
-        path.write_text(text)
+        _write(path, text)
         path.chmod(mode)
         env = {"LANES_INDEX_CONFIG": str(path)}
     else:
         path = estate.agents / "lanes-index.conf"
-        path.write_text(text)
+        _write(path, text)
         path.chmod(mode)
         env = {"LANES_INDEX_CONFIG": str(path)}
     res = estate.index("sync", env=env)
@@ -1423,7 +1573,7 @@ def test_a_named_configuration_that_is_not_there_and_a_store_in_a_work_tree_refu
     if not (inside.returncode == 2 and 'never inside a work tree' in inside.stderr):
         _fail("check failed: inside.returncode == 2 and 'never inside a work tree' in inside.stderr", inside)
     pw = estate.config / "loose-pgpass"
-    pw.write_text(f"*:*:*:*:{PGPASS_PASSWORD}\n")
+    _write(pw, f"*:*:*:*:{PGPASS_PASSWORD}\n")
     pw.chmod(0o644)
     estate.write_config(f"url={CLAUSE_C_USER_URL}\npassfile={pw}\n")
     loose = estate.index("sync")
@@ -1601,12 +1751,13 @@ def test_a_private_file_refusal_names_the_key_not_the_path(estate, kind, words):
     directory, is refused with 2, naming the key and what is wrong, with neither
     the password nor the URL's host on either stream (lane 2's note 3)."""
     target = estate.root / "postgresql:" / f"u:{CONFIG_SECRET}@{CONFIG_HOST}" / "d"
+    # THE PATH HOLDS PLANTED VALUES, so each step on it is guarded (commit 19i; the re-audit's S1 of 19h)
     if kind == "mode":
-        target.parent.mkdir(parents=True)
-        target.write_text(f"*:*:*:*:{PGPASS_PASSWORD}\n", encoding="utf-8")
-        target.chmod(0o644)
+        _on_disk(lambda: target.parent.mkdir(parents=True), "the case's folder")
+        _write(target, f"*:*:*:*:{PGPASS_PASSWORD}\n")
+        _on_disk(lambda: target.chmod(0o644), "the case's mode")
     else:
-        target.mkdir(parents=True)
+        _on_disk(lambda: target.mkdir(parents=True), "the case's folder")
     estate.write_config(f"register_passfile={target}\n")
     res = estate.index("mode")
     said = (f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
@@ -2010,9 +2161,7 @@ def test_the_register_is_named_by_its_remote_and_no_url(estate, ident):
             _fail(f"git remote add exited {added.returncode}", added)
     agents = estate.root / "agents-credentialed"
     agents.mkdir()
-    (agents / "workspace.yaml").write_text(
-        (f"repository: {repository}\n" if repository else "") + f"path: {root}\n",
-        encoding="utf-8")
+    _write(agents / "workspace.yaml", (f"repository: {repository}\n" if repository else "") + f"path: {root}\n")
     stub = estate.root / "credentialed-edit" / "lanes-edit.sh"
     stub.parent.mkdir()
     stub.write_text(f"#!/bin/sh\n[ \"$1\" = workspace-root ] && echo {shlex.quote(str(root))} "
@@ -2089,17 +2238,16 @@ def test_a_credentialed_register_is_keyed_and_shown_without_it(estate, monkeypat
     repository, key = REGISTER_KEY_ROWS[ident]
     agents = estate.root / "agents-c12"
     agents.mkdir()
-    (agents / "workspace.yaml").write_text(f"repository: {repository}\npath: {estate.ws}\n",
-                                           encoding="utf-8")
+    _write(agents / "workspace.yaml", f"repository: {repository}\npath: {estate.ws}\n")
     env = {"AGENT_PROTOCOL_ROOT": str(agents), "LANES_WORKSPACE_ROOT": str(estate.ws)}
     monkeypatch.setenv("AGENT_PROTOCOL_ROOT", str(agents))
     monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
     mod = load_indexer()
-    if not (mod.resolve_source(None, str(estate.ws)) == key):
+    if not (_indexer(lambda: mod.resolve_source(None, str(estate.ws))) == key):
         _fail('check failed: mod.resolve_source(None, str(estate.ws)) == key')
-    store = mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"})
-    store.open_write()
-    store.apply(key, None, "1" * 40, {}, {})
+    store = _indexer(lambda: mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"}))
+    _indexer(lambda: store.open_write())
+    _indexer(lambda: store.apply(key, None, "1" * 40, {}, {}))
     out = estate.root / "exp"
     out.mkdir()
     ex = estate.index("export", "--out", out, env=env)
@@ -2109,7 +2257,8 @@ def test_a_credentialed_register_is_keyed_and_shown_without_it(estate, monkeypat
                     CONFIG_SECRET_BYTES=CONFIG_SECRET.encode())
     st = estate.index("status", env=env)
     # an entry an earlier build filed under the credentialed name, for `status` to show
-    mod.write_status(f"register:{repository}", last_error="an earlier build's entry")
+    _indexer(lambda: mod.write_status(f"register:{repository}",
+                                      last_error="an earlier build's entry"))
     again = estate.index("status", env=env)
     meta = _child_text(out / "meta") if (out / "meta").exists() else ""
     why = _child_text(out / "why") if (out / "why").exists() else ""
@@ -2154,10 +2303,11 @@ def test_the_compare_and_swap_refusal_names_no_url(estate, ident):
     and path is in the text."""
     key, named = CAS_KEY_ROWS[ident]
     mod = load_indexer()
-    store = mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"})
-    store.open_write()
+    store = _indexer(lambda: mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"}))
+    _indexer(lambda: store.open_write())
     with pytest.raises(mod.CasLost) as caught:
-        store.apply(key, {"commit_sha": "0" * 40}, "1" * 40, {}, {})
+        _indexer(lambda: store.apply(key, {"commit_sha": "0" * 40}, "1" * 40, {}, {}),
+                 expect=mod.CasLost)
     text = str(caught.value)
     said = text.replace(CONFIG_SECRET, "<the secret>")
     if not ("moved under this sync" in text and "nothing was written" in text):
@@ -2215,8 +2365,7 @@ def test_an_identified_register_is_synced_and_filed_under_its_key(estate, ident)
     repository, key = SYNCED_SOURCE_ROWS[ident]
     agents = estate.root / "agents-synced"
     agents.mkdir()
-    (agents / "workspace.yaml").write_text(f"repository: {repository}\npath: {estate.ws}\n",
-                                           encoding="utf-8")
+    _write(agents / "workspace.yaml", f"repository: {repository}\npath: {estate.ws}\n")
     env = {"AGENT_PROTOCOL_ROOT": str(agents), "LANES_WORKSPACE_ROOT": str(estate.ws)}
     # a store with no provenance in it, for `export`'s `why`
     load_indexer().SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"}).open_write()
@@ -2313,34 +2462,66 @@ CLEAN_FORMS = ["register:opensoft/t104-other-repo",
                "ledger:Heron"]
 
 
+def _psql(cluster, script: str) -> str:
+    """`psql` ON THE TEST'S OWN SCRIPT, which holds a planted key, in `t109_db` (commit 19h; lane
+    2's B1 of spec PR 80 comment 7009564106): `cluster.psql` runs it outside the module's masked
+    helpers, and an error, a timeout or a byte that is not the locale's raises in a frame that holds
+    the script or psql's output, so any exception fails in fixed words, its type alone, outside the
+    except. Its stdout, which a `SELECT` of the case's own rows makes, is returned."""
+    kind, line = None, ""
+    try:
+        return cluster.psql(script, dbname="t109_db").stdout
+    except Exception as exc:  # noqa: BLE001 - its text and its frames hold the script or the output
+        kind = type(exc).__name__
+        # psql's own locus, its digits alone (commit 19i; the re-audit's N1 of 19h)
+        found = re.search(r"psql:<stdin>:([0-9]+):", str(exc))
+        line = f" at its line {found.group(1)}" if found else ""
+    _fail(f"psql, run on the test's own SQL, raised {kind}{line}, {_where()}")
+
+
 class _IndexTables:
     """The index's store behind `lanes-index`'s back, as an upgrade case seeds and
     reads it: SQLite's file, or the cluster's `t109_db` as its superuser, in the
     schema `lanes_index`. Every value here is the test's own, so it goes into the SQL
-    as a literal."""
+    as a literal, and `sql` fails in fixed words on any error (commit 19h)."""
 
     def __init__(self, estate: Estate, cluster=None):
         self.estate, self.cluster = estate, cluster
 
     def sql(self, *statements: str) -> list:
-        """The statements in one connection; the rows they answer, as text."""
-        if self.cluster is None:
+        """The statements in one connection; the rows they answer, as text. THE STATEMENTS HOLD
+        PLANTED KEYS (commit 19h; lane 2's B1 of spec PR 80 comment 7009564106): pytest's long
+        traceback entry prints this frame's arguments, and SQLite's error text can quote the
+        SQL, so any error fails in fixed words, its type alone, outside the except; PostgreSQL's
+        runs through `_psql`, which fails so too."""
+        if self.cluster is not None:
+            text = _psql(self.cluster, "SET search_path TO lanes_index;\n" +
+                         "".join(f"{s};\n" for s in statements))
+            return [line for line in text.splitlines() if line]
+        out, kind, conn, stage = [], None, None, "connecting"
+        try:
             conn = sqlite3.connect(str(self.estate.sqlite))
-            try:
-                # AS A BUILD WITHOUT `SQLITE_SECURE_DELETE` WRITES: what an update moves
-                # stays in the file's free space
-                conn.execute("PRAGMA secure_delete = OFF")
-                out = []
-                for statement in statements:
-                    out += ["|".join("" if v is None else str(v) for v in row)
-                            for row in conn.execute(statement).fetchall()]
-                conn.commit()
-                return out
-            finally:
+            # AS A BUILD WITHOUT `SQLITE_SECURE_DELETE` WRITES: what an update moves
+            # stays in the file's free space
+            stage = "its PRAGMA"
+            conn.execute("PRAGMA secure_delete = OFF")
+            for number, statement in enumerate(statements, 1):
+                # the statement's ordinal names it and holds no value (commit 19i; the re-audit's N1)
+                stage = f"statement {number} of {len(statements)}"
+                out += ["|".join("" if v is None else str(v) for v in row)
+                        for row in conn.execute(statement).fetchall()]
+            stage = "its commit"
+            conn.commit()
+        except Exception as exc:  # noqa: BLE001 - its text can quote the SQL: its type alone is said
+            kind = type(exc).__name__
+        try:
+            if conn is not None:
                 conn.close()
-        text = self.cluster.psql("SET search_path TO lanes_index;\n" +
-                                 "".join(f"{s};\n" for s in statements), dbname="t109_db").stdout
-        return [line for line in text.splitlines() if line]
+        except Exception as exc:  # noqa: BLE001 - as above
+            kind, stage = kind or type(exc).__name__, stage if kind else "its close"
+        if kind is not None:
+            _fail(f"SQLite refused the test's own SQL at {stage}, {_where()}: {kind}")
+        return out
 
     def tables(self) -> list:
         """Every table of the store with a `source` column, as the store has them, not
@@ -2416,9 +2597,7 @@ def _an_upgrade(estate: Estate, store: _IndexTables, env: dict, first: str) -> N
     the state folder may hold it afterwards."""
     agents = estate.root / "agents-upgrade"
     agents.mkdir()
-    (agents / "workspace.yaml").write_text(
-        f"repository: https://{REGISTER_HOST}/{REGISTER_PATH}/r.git\npath: {estate.ws}\n",
-        encoding="utf-8")
+    _write(agents / "workspace.yaml", f"repository: https://{REGISTER_HOST}/{REGISTER_PATH}/r.git\npath: {estate.ws}\n")
     env = dict(env, AGENT_PROTOCOL_ROOT=str(agents), LANES_WORKSPACE_ROOT=str(estate.ws))
     seeded = estate.index("sync", env=env)
     if not (seeded.returncode == 0):
@@ -2448,6 +2627,9 @@ def _an_upgrade(estate: Estate, store: _IndexTables, env: dict, first: str) -> N
         store.leave_in_free_space(LEGACY_KEY)
     filed = estate.state / "openRepoTools" / "lanes-index.status.json"
     status = _child_json(_child_text(filed))
+    # A KEYERROR'S TEXT IS ITS KEY, a planted host in it (commit 19h): checked first, in words of its own
+    if not (isinstance(status, dict) and CLEAN_KEY in status):
+        _fail("the first sync filed no entry under the clean key", seeded)
     clean_entry = status.pop(CLEAN_KEY)
     status[LEGACY_KEY] = dict(clean_entry, last_error=(
         f"2026-11-01T00:00:00Z the provenance of {LEGACY_KEY} moved under this sync (it read "
@@ -2463,7 +2645,7 @@ def _an_upgrade(estate: Estate, store: _IndexTables, env: dict, first: str) -> N
                         "last_error": f"2026-11-01T00:00:00Z the clean form {form}'s own error"}
     if beside:
         status[CLEAN_KEY] = dict(clean_entry, t104="the clean key's own entry")
-    filed.write_text(json.dumps(status, indent=1, sort_keys=True), encoding="utf-8")
+    _write(filed, json.dumps(status, indent=1, sort_keys=True))
     control = store.rows(tables, CONTROL_KEY)
     forms = [store.rows(tables, form) for form in CLEAN_FORMS]
     clean_rows = store.rows(tables, CLEAN_KEY) if beside else None
@@ -2635,8 +2817,7 @@ def test_a_postgres_sync_reads_its_sources_in_the_provenance_call(estate, case):
     filed = estate.state / "openRepoTools" / "lanes-index.status.json"
     if case == "cas-lost":
         filed.parent.mkdir(parents=True, exist_ok=True)
-        filed.write_text(json.dumps({LEGACY_KEY: {"last_error": f"t {LEGACY_KEY} moved"}}),
-                         encoding="utf-8")
+        _write(filed, json.dumps({LEGACY_KEY: {"last_error": f"t {LEGACY_KEY} moved"}}))
     env = {"PATH": estate.path_with(fake), "FAKE_PSQL_LOG": str(log),
            "FAKE_PSQL_VERSION_FILE": str(vfile), "FAKE_PSQL_NO_TABLE": "1",
            "FAKE_PSQL_SOURCES": f"{CONTROL_KEY}\n{LEGACY_KEY}\n" if held else "",
@@ -2783,7 +2964,7 @@ def test_no_line_of_psqls_text_is_said_or_filed(estate, ident):
     (fake / "psql").write_text(FAKE_PSQL)
     (fake / "psql").chmod(0o755)
     quoted = estate.root / "quoted-stderr"
-    quoted.write_text(stderr, encoding="utf-8")
+    _write(quoted, stderr)
     estate.write_config(f"url={WRITER_URL}\n"
                         f"reader_url={READER_URL}\n")
     env = {"PATH": estate.path_with(fake), "FAKE_PSQL_LOG": str(estate.root / "psql.jsonl"),
@@ -2863,12 +3044,12 @@ def test_the_status_file_is_read_strictly(estate, case):
     elif case == "dangling-symlink":
         filed.symlink_to(estate.root / "t104-no-such-status.json")
     elif case == "symlink":
-        target.write_text(target_text, encoding="utf-8")
+        _write(target, target_text)
         filed.symlink_to(target)
     elif case == "fifo":
         os.mkfifo(filed)
     else:
-        filed.write_bytes(garbage)
+        _write(filed, garbage)
     if case in ("unparseable-first-write", "dry-run-then-failure",
                 "dry-run-then-failure-inventory"):
         estate.sqlite.mkdir(parents=True)
@@ -3040,7 +3221,8 @@ def test_the_key_rules_password_term_is_the_rulings():
     mod = load_indexer()
     if not (len(NON_CONTROL_SPACES) == 19):
         _fail('check failed: len(NON_CONTROL_SPACES) == 19\n' + repr(NON_CONTROL_SPACES))
-    wrong = [key for key, legacy in PASSWORD_RULE_TABLE if mod._is_legacy(key) is not legacy]
+    wrong = [key for key, legacy in PASSWORD_RULE_TABLE
+             if _indexer(lambda: mod._is_legacy(key)) is not legacy]
     if not (wrong == []):
         _fail('check failed: wrong == []\n' + repr([k.encode('unicode_escape').decode() for k in wrong]))
     text = mod.PASSWORD_RULE
@@ -3066,10 +3248,13 @@ def test_the_servers_legacy_rule_is_the_indexers():
     mod = load_indexer()
     rule = _pg_rule(mod.PG_LEGACY_SQL)
     keys = _rule_keys()
-    differ = [k for k in keys if rule(k) != mod._is_legacy(k)]
+    differ = [k for k in keys
+              if _indexer(lambda: rule(k), what="the test's own reading of PG_LEGACY_SQL")
+              != _indexer(lambda: mod._is_legacy(k))]
     if not (differ == []):
         _fail([k.replace(CONFIG_SECRET, "<the secret>") for k in differ])
-    if not (any(mod._is_legacy(k) for k in keys) and not all(mod._is_legacy(k) for k in keys)):
+    if not (any(_indexer(lambda: mod._is_legacy(k)) for k in keys) and
+            not all(_indexer(lambda: mod._is_legacy(k)) for k in keys)):
         _fail('check failed: any((mod._is_legacy(k) for k in keys)) and (not all((mod._is_legacy(k) for k in keys)))')
 
 
@@ -3088,8 +3273,11 @@ def test_the_servers_legacy_rule_is_the_indexers_on_postgres(t109_engine):
     script = ("CREATE TEMP TABLE t104_keys (n integer, source text);\n"
               f"INSERT INTO t104_keys VALUES\n{rows};\n"
               f"SELECT n FROM t104_keys WHERE {mod.PG_LEGACY_SQL} ORDER BY n;\n")
-    chosen = [int(line) for line in cluster.psql(script, dbname="t109_db").stdout.split()]
-    expected = [n for n, key in enumerate(keys) if mod._is_legacy(key)]
+    answered = _psql(cluster, script).split()
+    if not (all(re.fullmatch(r"[0-9]+", line) for line in answered)):
+        _fail("psql answered a line that is not a row's number")
+    chosen = [int(line) for line in answered]
+    expected = [n for n, key in enumerate(keys) if _indexer(lambda: mod._is_legacy(key))]
     if not (chosen == expected):
         _fail([keys[n].replace(CONFIG_SECRET, "<the secret>")
                                 for n in sorted(set(chosen) ^ set(expected))])
@@ -3102,23 +3290,23 @@ def test_a_status_file_that_cannot_be_replaced_fails_the_cleanup(estate, monkeyp
     so does the replace of a file that cannot be parsed; a dry run replaces nothing."""
     monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
     mod = load_indexer()
-    mod._replace_status({LEGACY_KEY: {"last_error": f"t {LEGACY_KEY} moved"},
-                         CLEAN_KEY: {"last_result": "current"}})
+    _indexer(lambda: mod._replace_status({LEGACY_KEY: {"last_error": f"t {LEGACY_KEY} moved"},
+                                          CLEAN_KEY: {"last_result": "current"}}))
 
     def refuse(_data):
         raise PermissionError(13, "t104: the state folder refuses the replace")
     monkeypatch.setattr(mod, "_replace_status", refuse)
     with pytest.raises(mod.StoreUnusable) as caught:
-        mod.drop_legacy_status()
+        _indexer(lambda: mod.drop_legacy_status(), expect=mod.StoreUnusable)
     if not (caught.value.detail == mod.STATUS_UNREPLACEABLE):
         _fail(caught.value)
     filed = estate.state / "openRepoTools" / "lanes-index.status.json"
     filed.write_text("{", encoding="utf-8")
     with pytest.raises(mod.StoreUnusable) as caught:
-        mod.check_status_file(False)
+        _indexer(lambda: mod.check_status_file(False), expect=mod.StoreUnusable)
     if not (caught.value.detail == mod.STATUS_UNREPLACEABLE):
         _fail(caught.value)
-    mod.check_status_file(True)
+    _indexer(lambda: mod.check_status_file(True))
     if not (_child_text(filed) == "{"):
         _fail("check failed: _child_text(filed) == '{'")
 
@@ -3230,21 +3418,21 @@ def _a_scrub_that_fails(estate: Estate, monkeypatch, journal: str, store: _Index
     filed = estate.state / "openRepoTools" / "lanes-index.status.json"
     status = _child_json(_child_text(filed))
     status[LEGACY_KEY] = {"last_error": f"2026-11-01T00:00:00Z the provenance of {LEGACY_KEY} moved"}
-    filed.write_text(json.dumps(status), encoding="utf-8")
+    _write(filed, json.dumps(status))
     monkeypatch.setenv("XDG_STATE_HOME", str(estate.state))
     mod = load_indexer()
     monkeypatch.setattr(mod, "_record_error", lambda *args, **kwargs: None)
-    live = mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"})
-    live.open_write()
+    live = _indexer(lambda: mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"}))
+    _indexer(lambda: live.open_write())
     live.conn = _VacuumFails(live.conn, 1 if journal == "retried" else None)
-    _old, sources = live.provenance_and_sources(own[0])
+    _old, sources = _indexer(lambda: live.provenance_and_sources(own[0]))
     out, err = io.StringIO(), io.StringIO()
     # THE PAUSES, RECORDED (lane 2's SHOULD 2 of comment 6955285249)
     pauses: list = []
     real_sleep = mod.time.sleep
     monkeypatch.setattr(mod.time, "sleep", pauses.append)
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        rc = mod._guarded(lambda: mod._drop_legacy(live, "sync", sources), None)
+        rc = _indexer(lambda: mod._guarded(lambda: mod._drop_legacy(live, "sync", sources), None))
     # THE ORIGINAL, NOT THE RECORDER (lane 2's N1 of comment 6956694290; lane 1's W116 NIT)
     monkeypatch.setattr(mod.time, "sleep", real_sleep)
     tries = live.conn.tries
@@ -3332,7 +3520,7 @@ def test_a_removal_that_fails_takes_nothing(estate):
     filed = estate.state / "openRepoTools" / "lanes-index.status.json"
     status = _child_json(_child_text(filed))
     status[LEGACY_KEY] = {"last_error": f"2026-11-01T00:00:00Z the provenance of {LEGACY_KEY} moved"}
-    filed.write_text(json.dumps(status), encoding="utf-8")
+    _write(filed, json.dumps(status))
     res = estate.index("sync")
     said = (res.stdout + res.stderr).replace(CONFIG_SECRET, "<the secret>")
     if not (res.returncode == 1):
@@ -3369,7 +3557,7 @@ def _a_legacy_source_held(estate: Estate) -> tuple:
     filed = estate.state / "openRepoTools" / "lanes-index.status.json"
     status = _child_json(_child_text(filed))
     status[LEGACY_KEY] = {"last_error": f"2026-11-01T00:00:00Z the provenance of {LEGACY_KEY} moved"}
-    filed.write_text(json.dumps(status), encoding="utf-8")
+    _write(filed, json.dumps(status))
     return store, tables, own[0], filed, store.rows(tables, LEGACY_KEY)
 
 
@@ -3385,14 +3573,14 @@ def _loaded_for_a_drop(estate: Estate, monkeypatch):
 def _run_drop(mod, estate: Estate, own: str, wrap=None) -> tuple:
     """`_drop_legacy` as a `sync` runs it, in this process, on SQLite, its connection
     wrapped by `wrap`: (its `_guarded` exit, stdout, stderr)."""
-    live = mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"})
-    live.open_write()
+    live = _indexer(lambda: mod.SqliteStore({"sqlite": str(estate.sqlite), "store": "sqlite"}))
+    _indexer(lambda: live.open_write())
     if wrap is not None:
         live.conn = wrap(live.conn)
-    _old, sources = live.provenance_and_sources(own)
+    _old, sources = _indexer(lambda: live.provenance_and_sources(own))
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        rc = mod._guarded(lambda: mod._drop_legacy(live, "sync", sources), None)
+        rc = _indexer(lambda: mod._guarded(lambda: mod._drop_legacy(live, "sync", sources), None))
     live.conn.close()
     return rc, out.getvalue(), err.getvalue()
 
@@ -3568,8 +3756,7 @@ def test_a_source_this_build_would_call_legacy_is_refused(estate, ident):
     if kind == "register":
         # the helper finds the workspace by `LANES_WORKSPACE_ROOT`, as `_an_upgrade`'s does,
         # so that `workspace.yaml`'s `repository:` is read by `source_of` alone
-        (estate.agents / "workspace.yaml").write_text(
-            f"repository: {value}\npath: {estate.ws}\n", encoding="utf-8")
+        _write(estate.agents / "workspace.yaml", f"repository: {value}\npath: {estate.ws}\n")
         env.update(LANES_WORKSPACE_ROOT=str(estate.ws))
         words = mod.REGISTER_KEY_REFUSED
         acts = [("sync",), ("reconcile", "--dry-run"), ("reconcile",), ("export", "--out")]
@@ -3633,9 +3820,8 @@ def test_the_workspace_helpers_words_are_not_relayed(estate):
     status file, before any key was made. `workspace.yaml` names a URL with a token that
     is not this checkout's: `sync`, `status` and `export` say fixed words, and no stream,
     no file of the state folder and no file `export` writes holds the token."""
-    (estate.agents / "workspace.yaml").write_text(
-        f"repository: https://{TOKEN_USER}:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r"
-        f".git\npath: {estate.ws}\n", encoding="utf-8")
+    _write(estate.agents / "workspace.yaml", f"repository: https://{TOKEN_USER}:{CONFIG_SECRET}@{REGISTER_HOST}/{REGISTER_PATH}/r"
+        f".git\npath: {estate.ws}\n")
     out = estate.root / "t104-out"
     out.mkdir()
     words = "`lanes-edit.sh workspace-root` exited 1: the workspace repository could not be found"
@@ -3795,8 +3981,7 @@ def test_a_legacy_register_is_refused_before_the_lock(estate, case):
     own left. [mark-pending]: an inventory sync's mark is on the disk, and the sync exits 2
     with that mark where it was, for the inventory's next sync."""
     import fcntl
-    (estate.agents / "workspace.yaml").write_text(
-        f"repository: password={CONFIG_SECRET}\npath: {estate.ws}\n", encoding="utf-8")
+    _write(estate.agents / "workspace.yaml", f"repository: password={CONFIG_SECRET}\npath: {estate.ws}\n")
     folder = estate.state / "openRepoTools"
     folder.mkdir(parents=True, exist_ok=True)
     mark = folder / "lanes-index.rerun-inventory"
@@ -3835,8 +4020,7 @@ def test_a_refused_register_mark_leaves_the_marks_behind_it_synced(estate):
     first: it says the refusal and exits 2, and it syncs the inventory for the mark it
     took, so the helper lists the worktrees a second time. No mark is left, and the key is
     on no stream."""
-    (estate.agents / "workspace.yaml").write_text(
-        f"repository: password={CONFIG_SECRET}\npath: {estate.ws}\n", encoding="utf-8")
+    _write(estate.agents / "workspace.yaml", f"repository: password={CONFIG_SECRET}\npath: {estate.ws}\n")
     log = estate.root / "helper.log"
     spawned = estate.root / "spawned"
     plain, inventory = estate.root / "plain.out", estate.root / "inventory.out"
@@ -3937,7 +4121,8 @@ def test_a_failed_status_replace_leaves_no_copy_behind(estate, monkeypatch):
         raise PermissionError(13, "t104: the rename is refused")
     monkeypatch.setattr(mod.os, "replace", refuse)
     with pytest.raises(OSError):
-        mod._replace_status({LEGACY_KEY: {"last_error": f"t {LEGACY_KEY} moved"}})
+        _indexer(lambda: mod._replace_status({LEGACY_KEY: {"last_error": f"t {LEGACY_KEY} moved"}}),
+                 expect=OSError)
     monkeypatch.undo()
     # THE REFUSED RENAME WAS REACHED (lane 2's NIT 3 of comment 6955285249)
     if not (reached == ["lanes-index.status.json"]):
@@ -4174,7 +4359,7 @@ def test_postgres_takes_the_writer_to_write_and_the_reader_to_read(estate):
     wpw = estate.config / "writer.pgpass"
     rpw = estate.config / "reader.pgpass"
     for p in (wpw, rpw):
-        p.write_text(f"*:*:*:*:{PGPASS_PASSWORD}\n")
+        _write(p, f"*:*:*:*:{PGPASS_PASSWORD}\n")
         p.chmod(0o600)
     estate.write_config(
         f"url={WRITER_URL}\npassfile={wpw}\n"
@@ -4264,7 +4449,7 @@ def test_a_read_never_connects_with_the_writers_credential(estate):
     (fake / "psql").chmod(0o755)
     log = estate.root / "psql.jsonl"
     wpw = estate.config / "writer.pgpass"
-    wpw.write_text(f"*:*:*:*:{PGPASS_PASSWORD}\n")
+    _write(wpw, f"*:*:*:*:{PGPASS_PASSWORD}\n")
     wpw.chmod(0o600)
     estate.write_config(f"url={WRITER_URL}\npassfile={wpw}\n")
     env = {"PATH": estate.path_with(fake), "FAKE_PSQL_LOG": str(log)}
@@ -4586,7 +4771,7 @@ def test_a_postgres_store_of_another_schema_is_not_touched(estate):
     (fake / "psql").chmod(0o755)
     log = estate.root / "psql.jsonl"
     wpw = estate.config / "writer.pgpass"
-    wpw.write_text(f"*:*:*:*:{PGPASS_PASSWORD}\n")
+    _write(wpw, f"*:*:*:*:{PGPASS_PASSWORD}\n")
     wpw.chmod(0o600)
     estate.write_config(f"url={WRITER_URL}\npassfile={wpw}\n"
                         f"reader_url={READER_URL}\n")
@@ -4666,7 +4851,7 @@ def test_no_inherited_password_file_reaches_psql(estate):
     (fake / "psql").chmod(0o755)
     log = estate.root / "psql.jsonl"
     ambient = estate.root / "ambient.pgpass"
-    ambient.write_text(f"*:*:*:*:{INHERITED_PASSFILE_PASSWORD}\n")
+    _write(ambient, f"*:*:*:*:{INHERITED_PASSFILE_PASSWORD}\n")
     ambient.chmod(0o600)
     estate.write_config(f"url={WRITER_URL}\n"
                         f"reader_url={READER_URL}\n")
@@ -4695,7 +4880,7 @@ def test_an_unreachable_store_writes_nothing_waits_on_nothing_and_says_so(estate
     (fake / "psql").write_text("#!/bin/sh\necho 'psql: error: could not connect' >&2\nexit 2\n")
     (fake / "psql").chmod(0o755)
     pw = estate.config / "pgpass"
-    pw.write_text(f"*:*:*:*:{PGPASS_PASSWORD}\n")
+    _write(pw, f"*:*:*:*:{PGPASS_PASSWORD}\n")
     pw.chmod(0o600)
     estate.write_config(f"url={WRITER_URL}\npassfile={pw}\n"
                         f"reader_url={READER_URL}\n")
@@ -5262,7 +5447,7 @@ def test_offline_no_read_the_inventory_acts_are_byte_identical_against_an_unreac
             "echo 'psql: error: connection to server at \"lanes-index.invalid\" failed' >&2\nexit 2\n")
         (fake / "psql").chmod(0o755)
         pw = indexed.e.config / "pgpass"
-        pw.write_text(f"*:*:*:*:{PGPASS_NEVER_READ}\n")
+        _write(pw, f"*:*:*:*:{PGPASS_NEVER_READ}\n")
         pw.chmod(0o600)
         indexed.e.write_config(f"url={UNREACHABLE_WRITER_URL}\npassfile={pw}\n")
         extra = {"PATH": indexed.e.path_with(indexed.e.indexbin, fake), "LANES_INDEX": None}
@@ -6578,7 +6763,15 @@ def t109_engine(request, tmp_path):
 
         yield cluster, bootstrap
     finally:
-        cluster.destroy()
+        # ITS ERROR CARRIES THE SERVER LOG'S LAST LINES (commit 19h; lane 2's NIT of spec PR 80
+        # comment 7009564106), where a failed statement's text can stand: its type alone is said
+        late = None
+        try:
+            cluster.destroy()
+        except Exception as exc:  # noqa: BLE001 - see above
+            late = type(exc).__name__
+        if late is not None:
+            _fail(f"the case's cluster could not be destroyed: {late}")
 
 
 @pytest.mark.parametrize("flags", [T109_FULL, ("--roles-only",)], ids=["full", "roles-only"])
