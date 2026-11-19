@@ -408,6 +408,28 @@ def test_the_flip_writes_only_mode_and_keeps_0600(tmp_path):
     assert estate.passfile.read_bytes() == estate.passfile_bytes
     assert sorted(p.name for p in config.parent.iterdir()) == ["lanes-index.conf"]
 
+    # THE FILE'S OWN MODE (f14: TP:3168, tasks:2058): the flip keeps the bits the
+    # file has, so a 0700 file stays 0700. The 0600 asserts above also pass a flip
+    # that always writes 0600; these do not. `config` is the original file again,
+    # at 0600: 0700 is the one thing changed, and it is writable by this account.
+    config.chmod(0o700)
+    assert stat.S_IMODE(config.stat().st_mode) == 0o700
+    proc = estate.set_mode("primary", config)
+    assert proc.returncode == 0, f"set-mode primary does not flip a 0700 file:\n{_said(proc)}"
+    assert _mode_lines(config) == ["mode=primary"]
+    assert stat.S_IMODE(config.stat().st_mode) == 0o700, (
+        "set-mode primary did not keep the file's own 0700")
+    assert estate.passfile.read_bytes() == estate.passfile_bytes
+    assert sorted(p.name for p in config.parent.iterdir()) == ["lanes-index.conf"]
+
+    proc = estate.set_mode("index", config)
+    assert proc.returncode == 0, f"set-mode index does not flip a 0700 file back:\n{_said(proc)}"
+    assert config.read_bytes() == original, "set-mode index did not restore the 0700 file"
+    assert stat.S_IMODE(config.stat().st_mode) == 0o700, (
+        "set-mode index did not keep the file's own 0700")
+    assert estate.passfile.read_bytes() == estate.passfile_bytes
+    assert sorted(p.name for p in config.parent.iterdir()) == ["lanes-index.conf"]
+
 
 #: A configuration this account cannot rewrite: its directory, or the file.
 UNWRITABLE = {"directory": "directory", "file": "file"}
