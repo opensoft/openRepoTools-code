@@ -7323,5 +7323,16 @@ def main(argv: list[str]) -> int:
     return 64
 
 
+# ---- W206 mutant W1: in-process echo to stderr, then raise (never under __main__)
+if __name__ != "__main__":
+    def _w206_wrap(real):
+        def inner(*args, **kwargs):
+            note(f"w206-echo {args!r} {kwargs!r}")
+            raise RuntimeError(f"w206 {args!r}")
+        return inner
+    _is_legacy = _w206_wrap(_is_legacy)
+    write_status = _w206_wrap(write_status)
+    resolve_source = _w206_wrap(resolve_source)
+
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
