@@ -9,6 +9,7 @@ import importlib
 import io
 import json
 import os
+import runpy
 import subprocess
 import sys
 import zipfile
@@ -508,6 +509,53 @@ def test_ci_cutover_top_heavy_cli_requires_current_delivery_intent(delivery, tmp
         with pytest.raises(SystemExit) as refused:
             delivery.main()
         assert refused.value.code == 1
+
+
+def test_ci_cutover_cli_preserves_fixed_evidence_refusal(cutover, tmp_path, monkeypatch, capsys):
+    entry = runpy.run_path(str(REPO / ".github/ci/delivery_verify.py"))
+    event = tmp_path / "event.json"
+    event.write_text("{}")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    monkeypatch.setattr(sys, "argv", ["delivery_verify.py", "candidate", "--proof-kind", "admission"])
+    monkeypatch.setitem(entry["main"].__globals__, "verify_candidate", lambda *_args: {})
+
+    def refused(*_args):
+        cutover.evidence.positive(False)
+
+    monkeypatch.setattr(cutover.evidence, "make_record", refused)
+    with pytest.raises(SystemExit) as result:
+        entry["main"]()
+    captured = capsys.readouterr()
+    assert result.value.code == 1
+    assert captured.out == ""
+    assert captured.err == "Delivery verification refused: Invalid numeric identity.\n"
+
+
+def test_ci_cutover_cli_reports_candidate_timeout_without_raw_subprocess_data(
+        cutover, delivery, tmp_path, monkeypatch, capsys):
+    event = tmp_path / "event.json"
+    event.write_text("{}")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    monkeypatch.setattr(sys, "argv", ["delivery_verify.py", "candidate"])
+
+    def refused(*_args):
+        cutover.evidence.ensure_commit(tmp_path, "a" * 40)
+
+    def git_failure(_root, *args):
+        if args[0] == "cat-file":
+            raise subprocess.CalledProcessError(1, ["private command"], stderr=b"untrusted stderr")
+        raise subprocess.TimeoutExpired(["private command"], 20, output=b"untrusted stdout",
+                                        stderr=b"untrusted stderr")
+
+    monkeypatch.setattr(cutover.policy, "git", git_failure)
+    monkeypatch.setattr(delivery, "verify_candidate", refused)
+    with pytest.raises(SystemExit) as result:
+        delivery.main()
+    captured = capsys.readouterr()
+    assert result.value.code == 1
+    assert captured.out == ""
+    assert captured.err == ("Delivery verification refused: incomplete, stale or unsupported evidence. "
+                            "Stage: candidate verification; operation: immutable commit; failure: timeout.\n")
 
 
 def test_ci_cutover_proof_writer_uses_only_exclusive_fixed_temp_file(delivery, tmp_path):

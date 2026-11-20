@@ -25,6 +25,19 @@ ERRORS = (KeyError, TypeError, ValueError, AttributeError, OSError,
           UnicodeError, subprocess.SubprocessError)
 
 
+class Refused(ValueError):
+    """A fixed-vocabulary refusal safe to expose in the CI log."""
+
+
+class PendingEvidence(Refused):
+    """Authenticated work is still running; waiting grants no CI omission."""
+
+
+def require(condition, reason):
+    if not condition:
+        raise Refused(reason)
+
+
 def git(root, *args):
     return subprocess.run(["git", "-C", str(root), *args], check=True,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
