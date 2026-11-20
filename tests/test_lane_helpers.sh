@@ -16732,7 +16732,8 @@ a14_three "lane-state" 0 "$E" lane-state repoRC-2
 
 SV_BIN="$SANDBOX/svbin"
 mkdir -p "$SV_BIN"
-SV_STATE="$SANDBOX/lane-state"
+# Keep a credential-like substring in a legitimate path to exercise the field check.
+SV_STATE="$SANDBOX/lane-key-state"
 mkdir -p "$SV_STATE"
 export LANES_LANE_STATE_ROOT="$SV_STATE"
 
@@ -16824,7 +16825,7 @@ has  "…and the launch mode that authorises a fresh session" "$out" "$(printf '
 is   "…with a digest of the handoff, computed by the writer" \
      "$( [ "$(printf '%s\n' "$out" | awk -F'\t' '$1=="digest"{print length($2)}')" -gt 16 ] && echo yes || echo no )" yes
 is   "…and no field that could carry a credential" \
-     "$(printf '%s\n' "$out" | grep -Eci 'token|secret|password|key' || :)" 0
+     "$(printf '%s\n' "$out" | cut -f1 | grep -Eci 'token|secret|password|key' || :)" 0
 
 run "$E" set-restart-intent repoSV-1 pending --expect 'none|ready|failed' --operation op-test-2
 is   "a second /ctx does not supersede an operation in flight" "$rc" 7
