@@ -193,10 +193,22 @@ def download(artifact_id):
 
 def job_log(job_id):
     positive(job_id)
+    command = ["gh", "api", "--hostname", "github.com"]
+    endpoint = f"repos/{REPOSITORY}/actions/jobs/{job_id}/logs"
     with tempfile.TemporaryFile() as output:
-        subprocess.run(["gh", "api", "--hostname", "github.com",
-                        f"repos/{REPOSITORY}/actions/jobs/{job_id}/logs"],
-                       check=True, stdout=output, stderr=subprocess.PIPE, timeout=15)
+        options = dict(check=True, stdout=output, stderr=subprocess.PIPE, timeout=15)
+        try:
+            subprocess.run([*command, endpoint], **options)
+        except subprocess.CalledProcessError as exc:
+            if (exc.stderr or b"").strip() != (
+                b"the response contains terminal escape sequences; "
+                b"pass --allow-escape-sequences to output it anyway"
+            ):
+                raise
+            # Job logs are proof input in this private file, never terminal output.
+            output.seek(0)
+            output.truncate()
+            subprocess.run([*command, "--allow-escape-sequences", endpoint], **options)
         require(output.tell() <= 2 * 1024 * 1024, "Oversized source evidence log")
         output.seek(0)
         return output.read().decode()
