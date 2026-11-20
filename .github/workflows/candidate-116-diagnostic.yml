@@ -1,0 +1,85 @@
+name: Candidate 116 read-only hosted diagnostic
+
+# Disposable branch only. Not an admission, qualification, or release workflow.
+on:
+  push:
+    branches: ["diagnostic/candidate-116-hosted-20261120"]
+
+permissions: {}
+
+jobs:
+  diagnose:
+    name: Replay candidate 116 without queue authority
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+      checks: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: a922a12922fa94ad2611bcba463cc0bf7b4fbc66
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read historical candidate and exercise the real verifier
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git version
+          gh --version
+          # Acquire an immutable, historical object in the disposable checkout.
+          timeout 45 git -c credential.helper= -c credential.interactive=false \
+            fetch --no-tags --no-write-fetch-head origin 1a84e3fbbcac253f0c8610d0b5ba1cdd5acefece
+          PYTHONPATH=.github/ci python3 -B - <<'PY'
+          import json
+          from pathlib import Path
+          import re
+          import subprocess
+          import time
+          import traceback
+          import delivery_verify as verifier
+
+          repo = "opensoft/openRepoTools-code"
+          run = verifier.policy.github(repo, "actions/runs/44798030294")
+          candidate = "1a84e3fbbcac253f0c8610d0b5ba1cdd5acefece"
+          branch = "mergify/merge-queue/8d2faf8a81"
+          assert (run["event"], run["actor"]["login"], run["head_sha"], run["head_branch"],
+                  run["run_attempt"], run["status"], run["conclusion"]) == (
+                  "push", "mergify[bot]", candidate, branch, 1, "completed", "failure")
+          ref = "refs/heads/" + branch
+          env = {"GITHUB_REPOSITORY": repo, "GITHUB_EVENT_NAME": "push", "GITHUB_ACTOR": "mergify[bot]",
+                 "GITHUB_REF": ref, "GITHUB_SHA": candidate}
+          event = {"sender": {"login": "mergify[bot]"}, "repository": {"full_name": repo},
+                   "ref": ref, "after": candidate, "deleted": False, "forced": False}
+
+          def request(repository, endpoint):
+              # This is explicitly historical, not a replacement for a live queue ref.
+              if repository == repo and endpoint == "git/ref/heads/" + branch:
+                  return {"object": {"sha": candidate}}
+              return verifier.policy.github(repository, endpoint)
+
+          start = time.monotonic()
+          try:
+              proof = verifier.verify_candidate(env, event, Path.cwd(), request)
+          except (verifier.Refused, *verifier.policy.ERRORS) as error:
+              # Do not print exception prose, raw logs, URLs, environment or token values.
+              result = {"type": type(error).__name__, "seconds": round(time.monotonic() - start, 2),
+                        "stage": [f"{Path(f.filename).name}:{f.name}:{f.lineno}"
+                                  for f in traceback.extract_tb(error.__traceback__) if "/.github/ci/" in f.filename]}
+              if isinstance(error, subprocess.TimeoutExpired):
+                  result["timeout"] = error.timeout
+              if isinstance(error, subprocess.CalledProcessError):
+                  result["returncode"] = error.returncode
+                  statuses = re.findall(rb"\(HTTP ([1-5][0-9]{2})\)|HTTP ([1-5][0-9]{2})",
+                                        error.stderr or b"")
+                  result["http_codes"] = [int(left or right) for left, right in statuses]
+              print(json.dumps(result, sort_keys=True), flush=True)
+              raise SystemExit(1)
+          print(json.dumps({"diagnostic_only": True, "seconds": round(time.monotonic() - start, 2),
+                            "candidate": proof["candidate"],
+                            "members": [row["number"] for row in proof["members"]]}, sort_keys=True))
+          PY
