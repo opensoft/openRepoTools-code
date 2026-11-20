@@ -20,7 +20,7 @@ import zipfile
 import shadow_scope as policy
 import delivery_v13 as v13
 import delivery_p07_p09 as exact_pair
-from delivery_verify import PendingEvidence, require
+from shadow_scope import PendingEvidence, require
 
 REPOSITORY = policy.REPOSITORY
 REPOSITORY_ID = 1434660228

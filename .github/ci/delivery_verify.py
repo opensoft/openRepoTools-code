@@ -21,6 +21,7 @@ import subprocess
 import shadow_scope as policy
 import delivery_v13 as v13
 import delivery_p07_p09 as exact_pair
+from shadow_scope import PendingEvidence, Refused, require
 
 REPOSITORY = policy.REPOSITORY
 FAST = "openrepotools-pr-fast"
@@ -48,19 +49,6 @@ def delivery_scope(pr):
     if v13.intended(pr.get("body")):
         return v13.SCOPE
     return "claude-current"
-
-
-class Refused(ValueError):
-    """A fixed-vocabulary refusal safe to expose in the CI log."""
-
-
-class PendingEvidence(Refused):
-    """Authenticated work is still running; waiting grants no CI omission."""
-
-
-def require(condition, reason):
-    if not condition:
-        raise Refused(reason)
 
 
 def review_page(number, cursor):
@@ -545,6 +533,33 @@ def write_record(record, env):
         output.write(data)
 
 
+def candidate_failure(stage, error):
+    # Never interpolate exceptions or traceback data into the job log. Known
+    # call sites select fixed labels; an unfamiliar failure keeps its stage.
+    operations = {
+        "read_base_changes": "base history",
+        "review_page": "review history",
+        "ensure_commit": "immutable commit",
+        "job_log": "job log",
+        "github": "GitHub evidence",
+    }
+    operation = None
+    trace = error.__traceback__
+    while trace:
+        operation = operations.get(trace.tb_frame.f_code.co_name, operation)
+        trace = trace.tb_next
+    if isinstance(error, subprocess.TimeoutExpired):
+        failure = "timeout"
+    elif isinstance(error, subprocess.SubprocessError):
+        failure = "subprocess"
+    elif isinstance(error, OSError):
+        failure = "I/O"
+    else:
+        failure = "invalid evidence"
+    detail = f"; operation: {operation}" if operation else ""
+    return f" Stage: {stage}{detail}; failure: {failure}."
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("fast", "candidate"))
@@ -552,8 +567,10 @@ def main():
     parser.add_argument("--require-delivery", action="store_true")
     args = parser.parse_args()
     mode = args.mode
+    stage = "event input"
     try:
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+        stage = "candidate verification"
         result = (verify_fast(os.environ, event, Path.cwd()) if mode == "fast"
                   else verify_candidate(os.environ, event, Path(__file__).resolve().parents[2]))
         if args.require_delivery:
@@ -562,13 +579,16 @@ def main():
         if args.proof_kind:
             require(mode == "candidate", "Proof output requires a candidate phase")
             # Imported lazily to keep the existing standalone fast CLI unchanged.
+            stage = "receipt validation"
             from delivery_evidence import make_record
             record = make_record(result, args.proof_kind, os.environ)
+            stage = "receipt write"
             write_record(record, os.environ)
     except Refused as error:
         parser.exit(1, f"Delivery verification refused: {error}.\n")
-    except policy.ERRORS:
-        parser.exit(1, "Delivery verification refused: incomplete, stale or unsupported evidence.\n")
+    except policy.ERRORS as error:
+        detail = candidate_failure(stage, error) if mode == "candidate" else ""
+        parser.exit(1, f"Delivery verification refused: incomplete, stale or unsupported evidence.{detail}\n")
     print(json.dumps(result, sort_keys=True))
 
 
