@@ -134,10 +134,15 @@ def source(root, base, pr, request):
             and git.side(pr, "base") == (base, "main") and pr["state"] == "open"
             and pr["draft"] is False and pr.get("merged") is False,
             "Exact-pair source metadata differs")
-    require(request(git.REPOSITORY, f"pulls/{number}") == pr
-            and request(git.REPOSITORY, "git/ref/heads/" + branch)["object"]["sha"] == head
-            and request(git.REPOSITORY, "git/ref/heads/main")["object"]["sha"] == base,
-            "Exact-pair source moved")
+    def snapshot(record):
+        # Queue label changes can also touch updated_at; neither proves source identity.
+        return {key: value for key, value in record.items() if key not in {"labels", "updated_at"}}
+
+    git.require(snapshot(request(git.REPOSITORY, f"pulls/{number}")) == snapshot(pr),
+                "Exact-pair source moved")
+    git.require(request(git.REPOSITORY, "git/ref/heads/" + branch)["object"]["sha"] == head
+                and request(git.REPOSITORY, "git/ref/heads/main")["object"]["sha"] == base,
+                "Exact-pair source ref or main moved")
     return number
 
 
