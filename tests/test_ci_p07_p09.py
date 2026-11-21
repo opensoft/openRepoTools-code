@@ -153,6 +153,44 @@ def test_ci_p07_p09_exact_source_rejects_drift(exact, pair):
             pair.source(root, main, pr, lambda _r, _p: dict(pr, state="closed"))
 
 
+def test_ci_p07_p09_exact_source_readback_during_queue_label_churn(exact, pair, monkeypatch):
+    root, _anchor, main, _members, prs = exact
+    pr = prs[103]
+    head, branch = pr["head"]["sha"], pr["head"]["ref"]
+    profile = pair.cut(root, main, head)
+    monkeypatch.setattr(pair, "cut", lambda *_: profile)
+
+    queued = {"id": 1, "name": "queued"}
+    before = dict(pr, labels=[queued, {"id": 2, "name": "dequeued"}],
+                  updated_at="2026-11-21T14:40:46Z", merge_commit_sha="a" * 40)
+    after = dict(before, labels=[queued], updated_at="2026-11-21T14:41:20Z")
+    snapshots = {
+        "pulls/103": after,
+        f"git/ref/heads/{branch}": {"object": {"sha": head}},
+        "git/ref/heads/main": {"object": {"sha": main}},
+    }
+
+    def request(repo, path):
+        assert repo == pair.git.REPOSITORY
+        return snapshots[path]
+
+    assert pair.source(root, main, before, request) == 103
+    for change in ({"body": "edited"}, {"state": "closed"}, {"draft": True},
+                   {"merged": True}, {"number": 97}, {"merge_commit_sha": "b" * 40},
+                   {"head": dict(pr["head"], sha="b" * 40)},
+                   {"base": dict(pr["base"], sha="b" * 40)}):
+        snapshots["pulls/103"] = dict(after, **change)
+        with pytest.raises(ValueError, match="source moved"):
+            pair.source(root, main, before, request)
+    snapshots["pulls/103"] = after
+    for ref in (f"git/ref/heads/{branch}", "git/ref/heads/main"):
+        tip = snapshots[ref]
+        snapshots[ref] = {"object": {"sha": "b" * 40}}
+        with pytest.raises(ValueError, match="source ref or main moved"):
+            pair.source(root, main, before, request)
+        snapshots[ref] = tip
+
+
 @pytest.mark.parametrize("fault", [None, "one", "reverse", "extra", "wrong-tree", "wrong-tip"])
 def test_ci_p07_p09_only_exact_ordered_trees(exact, pair, fault):
     root, _anchor, main, members, _prs = exact
